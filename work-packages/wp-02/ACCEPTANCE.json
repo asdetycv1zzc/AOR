@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "taskId": "WP-02",
+  "specVersion": "2.0.0",
+  "requirements": ["AOR-INV-001", "AOR-INV-002", "AOR-INV-005", "AOR-INV-007", "AOR-INV-008", "AOR-INV-014", "AOR-INV-015", "AOR-ORCH-001", "AOR-ORCH-002", "AOR-ORCH-004", "AOR-ORCH-005", "AOR-ACC-001", "AOR-ACC-002", "AOR-ACC-003", "AOR-ACC-004", "AOR-ACC-005", "AOR-ACC-010", "AOR-ACC-011", "AOR-ACC-018", "AOR-ACC-023", "AOR-ACC-024", "AOR-ACC-031", "AOR-ACC-032", "AOR-ACC-033", "AOR-ACC-037", "AOR-ACC-039", "AOR-ACC-040"],
+  "criteria": [
+    {"id": "WP02-AC-001", "evidence": "state transition tests", "required": true},
+    {"id": "WP02-AC-002", "evidence": "idempotency and outbox tests", "required": true},
+    {"id": "WP02-AC-003", "evidence": "projection replay tests", "required": true},
+    {"id": "WP02-AC-004", "evidence": "PostgreSQL migration validation", "required": true}
+  ]
+}
