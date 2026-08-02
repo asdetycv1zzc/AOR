@@ -1,0 +1,6 @@
+Agent Organization Runtime
+Copyright 2026 Akimisaka
+
+This product includes software developed by the AOR contributors.
+
+Third-party dependency notices are generated from the locked dependency graph for each release and stored with the release SBOM. The bootstrap source has no third-party runtime dependency.

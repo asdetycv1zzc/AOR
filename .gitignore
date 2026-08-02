@@ -1,0 +1,12 @@
+/bin/
+/.cache/
+/dist/
+/coverage/
+/release-evidence/
+*.out
+*.test
+.env
+.env.*
+!.env.example
+.DS_Store
+node_modules/

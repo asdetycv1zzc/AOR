@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "taskId": "WP-00",
+  "specVersion": "2.0.0",
+  "criteria": [
+    {"id": "WP00-AC-001", "evidence": "make verify", "required": true},
+    {"id": "WP00-AC-002", "evidence": "conformance repository check", "required": true},
+    {"id": "WP00-AC-003", "evidence": "ADR section validation", "required": true},
+    {"id": "WP00-AC-004", "evidence": "requirement catalog validation", "required": true}
+  ]
+}

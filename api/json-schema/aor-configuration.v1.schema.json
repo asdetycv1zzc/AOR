@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aor.local/config/aor-configuration.v1.schema.json",
+  "title": "AOR Configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": {"const": "aor.io/v1"},
+    "kind": {"const": "AORConfiguration"},
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["environment"],
+      "properties": {
+        "environment": {"enum": ["development", "test", "preproduction", "production"]}
+      }
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["concurrency", "attempts", "protocols", "modelGateway", "knowledge", "sandbox", "audit", "telemetry", "retention"],
+      "properties": {
+        "concurrency": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["globalActiveAgents", "roleSoftLimits"],
+          "properties": {
+            "globalActiveAgents": {"type": "integer", "const": 8},
+            "roleSoftLimits": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["goal", "plan", "execution", "audit", "knowledgeCurator"],
+              "properties": {
+                "goal": {"type": "integer", "minimum": 1, "maximum": 2, "default": 2},
+                "plan": {"type": "integer", "minimum": 1, "maximum": 4, "default": 4},
+                "execution": {"type": "integer", "minimum": 1, "maximum": 6, "default": 6},
+                "audit": {"type": "integer", "minimum": 1, "maximum": 4, "default": 4},
+                "knowledgeCurator": {"type": "integer", "const": 1}
+              }
+            }
+          }
+        },
+        "attempts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["moduleMax", "integrationMax"],
+          "properties": {
+            "moduleMax": {"type": "integer", "const": 3},
+            "integrationMax": {"type": "integer", "const": 3}
+          }
+        },
+        "protocols": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["a2a", "aop", "mcp", "cloudEvents"],
+          "properties": {
+            "a2a": {"const": "1.0"},
+            "aop": {"const": "1.0"},
+            "mcp": {"const": "2025-11-25"},
+            "mcpExperimental": {"const": "2026-07-28-RC"},
+            "cloudEvents": {"const": "1.0"}
+          }
+        },
+        "modelGateway": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["defaultTimeoutSeconds", "structuredOutputRepairAttempts", "providerPools"],
+          "properties": {
+            "defaultTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 3600, "default": 600},
+            "structuredOutputRepairAttempts": {"type": "integer", "minimum": 0, "maximum": 2, "default": 2},
+            "providerPools": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id", "provider", "secretRef"],
+                "properties": {
+                  "id": {"type": "string", "minLength": 1},
+                  "provider": {"type": "string", "minLength": 1},
+                  "secretRef": {"type": "string", "pattern": "^secret://"}
+                }
+              }
+            }
+          }
+        },
+        "knowledge": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["root", "maxSearchRefs", "defaultSearchRefs", "maxReadLines", "maxReadBytes"],
+          "properties": {
+            "root": {"type": "string", "minLength": 1},
+            "maxSearchRefs": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+            "defaultSearchRefs": {"type": "integer", "minimum": 1, "maximum": 20, "default": 8},
+            "maxReadLines": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 200},
+            "maxReadBytes": {"type": "integer", "minimum": 1024, "maximum": 1048576, "default": 32768}
+          }
+        },
+        "sandbox": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["linuxLevel", "windowsLevel", "allowWindowsUntrustedExecution", "linuxDefaultNetworkMode", "windowsNetworkIsolation", "providers"],
+          "properties": {
+            "linuxLevel": {"const": "CONTAINER"},
+            "windowsLevel": {"const": "NONE"},
+            "allowWindowsUntrustedExecution": {"const": false},
+            "linuxDefaultNetworkMode": {"const": "DENY_ALL"},
+            "windowsNetworkIsolation": {"const": "NONE"},
+            "providers": {"type": "array", "items": {"type": "object"}}
+          }
+        },
+        "audit": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["pipelineVersion", "requireFreshAuditorPerSubmission", "deterministicOrder"],
+          "properties": {
+            "pipelineVersion": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+            "requireFreshAuditorPerSubmission": {"const": true},
+            "deterministicOrder": {"const": "topology-package-path"}
+          }
+        },
+        "telemetry": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["recordModelContent", "recordToolContent"],
+          "properties": {
+            "recordModelContent": {"type": "boolean", "default": false},
+            "recordToolContent": {"type": "boolean", "default": false}
+          }
+        },
+        "retention": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["securityAuditDays", "promptContentDays"],
+          "properties": {
+            "securityAuditDays": {"type": "integer", "minimum": 400, "default": 400},
+            "promptContentDays": {"type": "integer", "minimum": 0, "maximum": 30, "default": 30}
+          }
+        }
+      }
+    }
+  }
+}

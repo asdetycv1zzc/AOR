@@ -1,0 +1,14 @@
+* @aor-maintainers
+
+/api/ @aor-protocol
+/internal/state/ @aor-control-plane
+/internal/workflow/ @aor-control-plane
+/migrations/ @aor-control-plane
+/policies/ @aor-security
+/sandbox/ @aor-security
+/security-corpus/ @aor-security
+/prompts/ @aor-agent-role-owners @aor-security
+/audit/hidden-test-runner/ @aor-audit
+/.github/workflows/ @aor-platform @aor-security
+/deploy/ @aor-platform @aor-security
+/scripts/release* @aor-platform @aor-security

@@ -1,0 +1,5 @@
+# WP-00 Changelog
+
+## 0.1.0 - 2026-08-02
+
+- Established the initial bootstrap specification.

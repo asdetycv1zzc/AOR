@@ -1,0 +1,894 @@
+catalogVersion: 1
+spec:
+  name: Agent Organization Runtime Production Specification
+  version: 2.0.0
+  baselineDate: 2026-08-02
+  conflictResolution: adr/0026-specification-conflict-resolution.md
+requirements:
+  - id: AOR-INV-001
+    title: Agents cannot write system facts directly
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: architecture
+    status: planned
+  - id: AOR-INV-002
+    title: Goal approval gates planning and development
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: architecture
+    status: planned
+  - id: AOR-INV-003
+    title: Goal negotiation has no automatic round limit
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: architecture
+    status: planned
+  - id: AOR-INV-004
+    title: Global active Agent concurrency is at most eight
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: architecture
+    status: planned
+  - id: AOR-INV-005
+    title: Executors cannot decide completion
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: architecture
+    status: planned
+  - id: AOR-INV-006
+    title: Every LLM audit uses a fresh blind Auditor
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: architecture
+    status: planned
+  - id: AOR-INV-007
+    title: A ModuleTask allows at most three attempts per series
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: architecture
+    status: planned
+  - id: AOR-INV-008
+    title: Third failure decisions belong directly to the user
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: architecture
+    status: planned
+  - id: AOR-INV-009
+    title: Only Knowledge Curator may write knowledge
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: architecture
+    status: planned
+  - id: AOR-INV-010
+    title: Secrets are never exposed to Agents or sandboxes
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: architecture
+    status: planned
+  - id: AOR-INV-011
+    title: Permanent effects revalidate authority at commit time
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: architecture
+    status: planned
+  - id: AOR-INV-012
+    title: Evidence and references bind immutable versions and hashes
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: architecture
+    status: planned
+  - id: AOR-INV-013
+    title: Untrusted production code runs only in Linux containers
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: architecture
+    status: planned
+  - id: AOR-INV-014
+    title: Message processing is idempotent under duplication and disorder
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: architecture
+    status: planned
+  - id: AOR-INV-015
+    title: Human approvals are immutable records
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: architecture
+    status: planned
+  - id: AOR-ORCH-001
+    title: Orchestrator is the sole business state writer
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: control-plane
+    status: planned
+  - id: AOR-ORCH-002
+    title: State event and outbox update atomically
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: control-plane
+    status: planned
+  - id: AOR-ORCH-003
+    title: Workflow code performs no direct side effects
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: control-plane
+    status: planned
+  - id: AOR-ORCH-004
+    title: Commands use optimistic expected versions
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: control-plane
+    status: planned
+  - id: AOR-ORCH-005
+    title: Duplicate commands return the original result
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: control-plane
+    status: planned
+  - id: AOR-GOAL-001
+    title: Goal negotiation supports unlimited rounds
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: goal-workflow
+    status: planned
+  - id: AOR-GOAL-002
+    title: Cost and time never auto-approve a goal
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: goal-workflow
+    status: planned
+  - id: AOR-GOAL-003
+    title: Inactive goal negotiation may suspend and resume
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: goal-workflow
+    status: planned
+  - id: AOR-GOAL-004
+    title: Agent agreement cannot replace user approval
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: goal-workflow
+    status: planned
+  - id: AOR-GOAL-005
+    title: Approval binds GoalSpec identity version digest and user
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: goal-workflow
+    status: planned
+  - id: AOR-GOAL-006
+    title: Material goal changes create a new immutable version
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: goal-workflow
+    status: planned
+  - id: AOR-ACC-001
+    title: Production acceptance criterion 001
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: control-plane
+    status: planned
+  - id: AOR-ACC-002
+    title: Production acceptance criterion 002
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: control-plane
+    status: planned
+  - id: AOR-ACC-003
+    title: Production acceptance criterion 003
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: control-plane
+    status: planned
+  - id: AOR-ACC-004
+    title: Production acceptance criterion 004
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: control-plane
+    status: planned
+  - id: AOR-ACC-005
+    title: Production acceptance criterion 005
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: control-plane
+    status: planned
+  - id: AOR-ACC-006
+    title: Production acceptance criterion 006
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: control-plane
+    status: planned
+  - id: AOR-ACC-007
+    title: Production acceptance criterion 007
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: control-plane
+    status: planned
+  - id: AOR-ACC-008
+    title: Production acceptance criterion 008
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: control-plane
+    status: planned
+  - id: AOR-ACC-009
+    title: Production acceptance criterion 009
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: control-plane
+    status: planned
+  - id: AOR-ACC-010
+    title: Production acceptance criterion 010
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: control-plane
+    status: planned
+  - id: AOR-ACC-011
+    title: Production acceptance criterion 011
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: control-plane
+    status: planned
+  - id: AOR-ACC-012
+    title: Production acceptance criterion 012
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: control-plane
+    status: planned
+  - id: AOR-ACC-013
+    title: Production acceptance criterion 013
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: control-plane
+    status: planned
+  - id: AOR-ACC-014
+    title: Production acceptance criterion 014
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: control-plane
+    status: planned
+  - id: AOR-ACC-015
+    title: Production acceptance criterion 015
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: control-plane
+    status: planned
+  - id: AOR-ACC-016
+    title: Production acceptance criterion 016
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: control-plane
+    status: planned
+  - id: AOR-ACC-017
+    title: Production acceptance criterion 017
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: control-plane
+    status: planned
+  - id: AOR-ACC-018
+    title: Production acceptance criterion 018
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: control-plane
+    status: planned
+  - id: AOR-ACC-019
+    title: Production acceptance criterion 019
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: control-plane
+    status: planned
+  - id: AOR-ACC-020
+    title: Production acceptance criterion 020
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: control-plane
+    status: planned
+  - id: AOR-ACC-021
+    title: Production acceptance criterion 021
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: protocol
+    status: planned
+  - id: AOR-ACC-022
+    title: Production acceptance criterion 022
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: protocol
+    status: planned
+  - id: AOR-ACC-023
+    title: Production acceptance criterion 023
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: protocol
+    status: planned
+  - id: AOR-ACC-024
+    title: Production acceptance criterion 024
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: protocol
+    status: planned
+  - id: AOR-ACC-025
+    title: Production acceptance criterion 025
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: protocol
+    status: planned
+  - id: AOR-ACC-026
+    title: Production acceptance criterion 026
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: protocol
+    status: planned
+  - id: AOR-ACC-027
+    title: Production acceptance criterion 027
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: protocol
+    status: planned
+  - id: AOR-ACC-028
+    title: Production acceptance criterion 028
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: protocol
+    status: planned
+  - id: AOR-ACC-029
+    title: Production acceptance criterion 029
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: protocol
+    status: planned
+  - id: AOR-ACC-030
+    title: Production acceptance criterion 030
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: protocol
+    status: planned
+  - id: AOR-ACC-031
+    title: Production acceptance criterion 031
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: persistence
+    status: planned
+  - id: AOR-ACC-032
+    title: Production acceptance criterion 032
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: persistence
+    status: planned
+  - id: AOR-ACC-033
+    title: Production acceptance criterion 033
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: persistence
+    status: planned
+  - id: AOR-ACC-034
+    title: Production acceptance criterion 034
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: persistence
+    status: planned
+  - id: AOR-ACC-035
+    title: Production acceptance criterion 035
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: persistence
+    status: planned
+  - id: AOR-ACC-036
+    title: Production acceptance criterion 036
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: persistence
+    status: planned
+  - id: AOR-ACC-037
+    title: Production acceptance criterion 037
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: persistence
+    status: planned
+  - id: AOR-ACC-038
+    title: Production acceptance criterion 038
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: persistence
+    status: planned
+  - id: AOR-ACC-039
+    title: Production acceptance criterion 039
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: persistence
+    status: planned
+  - id: AOR-ACC-040
+    title: Production acceptance criterion 040
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: persistence
+    status: planned
+  - id: AOR-ACC-041
+    title: Production acceptance criterion 041
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: security
+    status: planned
+  - id: AOR-ACC-042
+    title: Production acceptance criterion 042
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: security
+    status: planned
+  - id: AOR-ACC-043
+    title: Production acceptance criterion 043
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: security
+    status: planned
+  - id: AOR-ACC-044
+    title: Production acceptance criterion 044
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: security
+    status: planned
+  - id: AOR-ACC-045
+    title: Production acceptance criterion 045
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: security
+    status: planned
+  - id: AOR-ACC-046
+    title: Production acceptance criterion 046
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: security
+    status: planned
+  - id: AOR-ACC-047
+    title: Production acceptance criterion 047
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: security
+    status: planned
+  - id: AOR-ACC-048
+    title: Production acceptance criterion 048
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: security
+    status: planned
+  - id: AOR-ACC-049
+    title: Production acceptance criterion 049
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: security
+    status: planned
+  - id: AOR-ACC-050
+    title: Production acceptance criterion 050
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: security
+    status: planned
+  - id: AOR-ACC-051
+    title: Production acceptance criterion 051
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: security
+    status: planned
+  - id: AOR-ACC-052
+    title: Production acceptance criterion 052
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: security
+    status: planned
+  - id: AOR-ACC-053
+    title: Production acceptance criterion 053
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: security
+    status: planned
+  - id: AOR-ACC-054
+    title: Production acceptance criterion 054
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: security
+    status: planned
+  - id: AOR-ACC-055
+    title: Production acceptance criterion 055
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: security
+    status: planned
+  - id: AOR-ACC-056
+    title: Production acceptance criterion 056
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: reliability
+    status: planned
+  - id: AOR-ACC-057
+    title: Production acceptance criterion 057
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: reliability
+    status: planned
+  - id: AOR-ACC-058
+    title: Production acceptance criterion 058
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: reliability
+    status: planned
+  - id: AOR-ACC-059
+    title: Production acceptance criterion 059
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: reliability
+    status: planned
+  - id: AOR-ACC-060
+    title: Production acceptance criterion 060
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: reliability
+    status: planned
+  - id: AOR-ACC-061
+    title: Production acceptance criterion 061
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: reliability
+    status: planned
+  - id: AOR-ACC-062
+    title: Production acceptance criterion 062
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: reliability
+    status: planned
+  - id: AOR-ACC-063
+    title: Production acceptance criterion 063
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: reliability
+    status: planned
+  - id: AOR-ACC-064
+    title: Production acceptance criterion 064
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: reliability
+    status: planned
+  - id: AOR-ACC-065
+    title: Production acceptance criterion 065
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: reliability
+    status: planned
+  - id: AOR-ACC-066
+    title: Production acceptance criterion 066
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: performance
+    status: planned
+  - id: AOR-ACC-067
+    title: Production acceptance criterion 067
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: performance
+    status: planned
+  - id: AOR-ACC-068
+    title: Production acceptance criterion 068
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: performance
+    status: planned
+  - id: AOR-ACC-069
+    title: Production acceptance criterion 069
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: performance
+    status: planned
+  - id: AOR-ACC-070
+    title: Production acceptance criterion 070
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: performance
+    status: planned
+  - id: AOR-ACC-071
+    title: Production acceptance criterion 071
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: performance
+    status: planned
+  - id: AOR-ACC-072
+    title: Production acceptance criterion 072
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: performance
+    status: planned
+  - id: AOR-ACC-073
+    title: Production acceptance criterion 073
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: performance
+    status: planned
+  - id: AOR-ACC-074
+    title: Production acceptance criterion 074
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: performance
+    status: planned
+  - id: AOR-ACC-075
+    title: Production acceptance criterion 075
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: performance
+    status: planned
+  - id: AOR-ACC-076
+    title: Production acceptance criterion 076
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: performance
+    status: planned
+  - id: AOR-ACC-077
+    title: Production acceptance criterion 077
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: performance
+    status: planned
+  - id: AOR-ACC-078
+    title: Production acceptance criterion 078
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: observability
+    status: planned
+  - id: AOR-ACC-079
+    title: Production acceptance criterion 079
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: observability
+    status: planned
+  - id: AOR-ACC-080
+    title: Production acceptance criterion 080
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: observability
+    status: planned
+  - id: AOR-ACC-081
+    title: Production acceptance criterion 081
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: observability
+    status: planned
+  - id: AOR-ACC-082
+    title: Production acceptance criterion 082
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: observability
+    status: planned
+  - id: AOR-ACC-083
+    title: Production acceptance criterion 083
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: observability
+    status: planned
+  - id: AOR-ACC-084
+    title: Production acceptance criterion 084
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: observability
+    status: planned
+  - id: AOR-ACC-085
+    title: Production acceptance criterion 085
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: observability
+    status: planned
+  - id: AOR-ACC-086
+    title: Production acceptance criterion 086
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: platform
+    status: planned
+  - id: AOR-ACC-087
+    title: Production acceptance criterion 087
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: platform
+    status: planned
+  - id: AOR-ACC-088
+    title: Production acceptance criterion 088
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: platform
+    status: planned
+  - id: AOR-ACC-089
+    title: Production acceptance criterion 089
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: platform
+    status: planned
+  - id: AOR-ACC-090
+    title: Production acceptance criterion 090
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: platform
+    status: planned
+  - id: AOR-ACC-091
+    title: Production acceptance criterion 091
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: platform
+    status: planned
+  - id: AOR-ACC-092
+    title: Production acceptance criterion 092
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: operations
+    status: planned
+  - id: AOR-ACC-093
+    title: Production acceptance criterion 093
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: operations
+    status: planned
+  - id: AOR-ACC-094
+    title: Production acceptance criterion 094
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: operations
+    status: planned
+  - id: AOR-ACC-095
+    title: Production acceptance criterion 095
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: operations
+    status: planned
+  - id: AOR-ACC-096
+    title: Production acceptance criterion 096
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: operations
+    status: planned
+  - id: AOR-ACC-097
+    title: Production acceptance criterion 097
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: operations
+    status: planned
+  - id: AOR-ACC-098
+    title: Repository has no unowned deferred work or skipped tests
+    implementation:
+      - internal/bootstrap/validate.go
+    tests:
+      - internal/bootstrap/validate_test.go
+    evidenceType: go-test+repository-check
+    owner: operations
+    status: implemented
+  - id: AOR-ACC-099
+    title: Required architecture decisions exist and match implementation
+    implementation:
+      - adr/
+      - internal/bootstrap/validate.go
+    tests:
+      - internal/bootstrap/validate_test.go
+    evidenceType: go-test+adr-validation
+    owner: operations
+    status: implemented
+  - id: AOR-ACC-100
+    title: Production acceptance criterion 100
+    implementation: []
+    tests: []
+    evidenceType: pending
+    owner: operations
+    status: planned
