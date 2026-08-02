@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "taskId": "WP-01",
+  "specVersion": "2.0.0",
+  "requirements": ["AOR-ACC-021", "AOR-ACC-022", "AOR-ACC-025", "AOR-ACC-026", "AOR-ACC-027", "AOR-ACC-029", "AOR-ACC-030", "AOR-ACC-094"],
+  "criteria": [
+    {"id": "WP01-AC-001", "evidence": "schema and fixture conformance", "required": true},
+    {"id": "WP01-AC-002", "evidence": "AOP compatibility tests", "required": true},
+    {"id": "WP01-AC-003", "evidence": "OpenAPI and AsyncAPI lint", "required": true},
+    {"id": "WP01-AC-004", "evidence": "cross-language serialization", "required": true}
+  ]
+}
