@@ -1,0 +1,12 @@
+{
+  "specversion": "1.0",
+  "id": "evt_1",
+  "source": "urn:aor:service:orchestrator",
+  "type": "io.aor.project.created.v1",
+  "subject": "projects/prj_1",
+  "time": "2030-01-01T00:00:00Z",
+  "datacontenttype": "application/json",
+  "dataschema": "https://schemas.aor.local/events/project-created.v1.schema.json",
+  "traceparent": "00-00000000000000000000000000000001-0000000000000001-01",
+  "data": {"projectId": "prj_1", "aggregateVersion": 1}
+}

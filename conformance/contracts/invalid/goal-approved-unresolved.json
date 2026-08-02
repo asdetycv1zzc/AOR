@@ -1,0 +1,29 @@
+{
+  "content": {
+    "goalSpecVersion": 1,
+    "projectId": "prj_1",
+    "version": 1,
+    "title": "Unresolved goal",
+    "summary": "This must not be approved.",
+    "problemStatement": "An item remains open.",
+    "businessOutcomes": [{"id": "outcome_1", "statement": "Invalid approval"}],
+    "scope": {"included": [], "excluded": []},
+    "userPersonas": [],
+    "functionalRequirements": [],
+    "nonFunctionalRequirements": {"security": [], "privacy": [], "performance": [], "reliability": [], "operability": []},
+    "constraints": [],
+    "assumptions": [],
+    "decisions": [],
+    "unresolvedItems": ["open decision"],
+    "acceptanceCriteria": [{"id": "criterion_1", "statement": "resolve the decision", "evidenceType": "USER_APPROVAL"}],
+    "riskTolerance": "LOW",
+    "humanApprovalPoints": [],
+    "dataClassification": "INTERNAL",
+    "deploymentTargets": [],
+    "sourceReferences": [],
+    "createdAt": "2030-01-01T00:00:00Z",
+    "createdBy": {"agentInstanceId": "agt_1", "role": "GOAL_PROPOSER"}
+  },
+  "status": "APPROVED",
+  "contentSha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+}

@@ -1,0 +1,13 @@
+{
+  "cases": [
+    {"name": "goal draft", "schema": "api/json-schema/goal-spec.v1.schema.json", "instance": "conformance/contracts/valid/goal-spec.json", "valid": true},
+    {"name": "approved goal with unresolved work", "schema": "api/json-schema/goal-spec.v1.schema.json", "instance": "conformance/contracts/invalid/goal-approved-unresolved.json", "valid": false},
+    {"name": "windows NONE disclosure", "schema": "api/json-schema/module-spec.v1.schema.json", "instance": "conformance/contracts/valid/module-windows.json", "valid": true},
+    {"name": "windows network isolation claim", "schema": "api/json-schema/module-spec.v1.schema.json", "instance": "conformance/contracts/invalid/module-windows-allowlist.json", "valid": false},
+    {"name": "submission attempt series", "schema": "api/json-schema/submission-manifest.v1.schema.json", "instance": "conformance/contracts/valid/submission.json", "valid": true},
+    {"name": "goal AOP intent", "schema": "api/aop/aor-envelope.v1.schema.json", "instance": "conformance/aop/valid/goal.json", "valid": true},
+    {"name": "unknown AOP intent", "schema": "api/aop/aor-envelope.v1.schema.json", "instance": "conformance/aop/invalid/unknown-intent.json", "valid": false},
+    {"name": "AOR A2A Agent Card", "schema": "api/a2a/aor-agent-card-profile.v1.schema.json", "instance": "conformance/a2a/valid/agent-card.json", "valid": true},
+    {"name": "CloudEvents envelope", "schema": "api/json-schema/cloud-event.v1.schema.json", "instance": "conformance/cloudevents/valid/project-created.json", "valid": true}
+  ]
+}

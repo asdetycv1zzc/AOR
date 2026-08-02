@@ -1,0 +1,13 @@
+{
+  "name": "AOR Execution Agent Runtime",
+  "description": "Executes one versioned ModuleSpec under deterministic control.",
+  "supportedInterfaces": [{"url": "https://aor.example.invalid/a2a/v1", "protocolBinding": "HTTP+JSON", "protocolVersion": "1.0"}],
+  "capabilities": {"streaming": true, "pushNotifications": true, "extensions": [{"uri": "urn:aor:aop:v1", "description": "AOR control extension", "required": true}]},
+  "skills": [{"id": "aor-executor-v1", "name": "AOR Module Executor", "description": "Implements one ModuleSpec", "tags": ["executor"]}],
+  "inputModes": ["application/json"],
+  "outputModes": ["application/json"],
+  "authenticationSchemes": ["mTLS"],
+  "expiresAt": "2030-01-01T00:00:00Z",
+  "kid": "kid_1",
+  "signature": "detached-jws-value"
+}

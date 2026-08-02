@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aor.local/aor-error.v1.schema.json",
+  "title": "AOR Problem Details v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "title", "status", "detail", "error"],
+  "properties": {
+    "type": {"type": "string", "format": "uri"},
+    "title": {"type": "string", "minLength": 1},
+    "status": {"type": "integer", "minimum": 400, "maximum": 599},
+    "detail": {"type": "string", "minLength": 1},
+    "instance": {"type": "string", "format": "uri-reference"},
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable", "correlationId"],
+      "properties": {
+        "code": {"type": "string", "pattern": "^AOR_[A-Z0-9_]+$"},
+        "message": {"type": "string", "minLength": 1, "maxLength": 512},
+        "retryable": {"type": "boolean"},
+        "details": {"type": "object", "propertyNames": {"enum": ["actualVersion", "expectedVersion", "limit", "policyVersion", "ruleId", "scope", "subjectType"]}},
+        "correlationId": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

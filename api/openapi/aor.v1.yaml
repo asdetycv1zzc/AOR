@@ -1,0 +1,432 @@
+openapi: 3.2.0
+info:
+  title: Agent Organization Runtime API
+  version: 1.0.0
+  description: Deterministic, tenant-scoped control API for SPEC 2.0.0.
+servers:
+  - url: https://aor.example.invalid
+security:
+  - oidc: [aor]
+  - mutualTLS: []
+tags:
+  - name: Projects
+  - name: Goals
+  - name: Plans
+  - name: Tasks
+  - name: Artifacts
+  - name: Knowledge
+  - name: Budgets
+  - name: Administration
+paths:
+  /v1/projects:
+    post:
+      tags: [Projects]
+      operationId: createProject
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProjectCreate'}
+      responses:
+        '201': {$ref: '#/components/responses/ProjectCreated'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      tags: [Projects]
+      operationId: getProject
+      responses:
+        '200': {$ref: '#/components/responses/Project'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}/state:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      tags: [Projects]
+      operationId: getProjectState
+      responses:
+        '200': {$ref: '#/components/responses/Project'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}:pause:
+    $ref: '#/components/pathItems/ProjectCommand'
+  /v1/projects/{projectId}:resume:
+    $ref: '#/components/pathItems/ProjectCommand'
+  /v1/projects/{projectId}:abort:
+    $ref: '#/components/pathItems/ProjectCommand'
+  /v1/projects/{projectId}:archive:
+    $ref: '#/components/pathItems/ProjectCommand'
+  /v1/projects/{projectId}:request-deletion:
+    $ref: '#/components/pathItems/ProjectCommand'
+  /v1/projects/{projectId}:approve-release:
+    $ref: '#/components/pathItems/ProjectCommand'
+  /v1/projects/{projectId}/export:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      tags: [Projects]
+      operationId: exportProject
+      responses:
+        '200':
+          description: Content-addressed project export
+          headers:
+            ETag: {$ref: '#/components/headers/ETag'}
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}/goal/messages:
+    $ref: '#/components/pathItems/ProjectCommand'
+  /v1/projects/{projectId}/goal/specs:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      tags: [Goals]
+      operationId: listGoalSpecs
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200': {$ref: '#/components/responses/Page'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}/goal/specs/{version}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/Version'
+    get:
+      tags: [Goals]
+      operationId: getGoalSpec
+      responses:
+        '200':
+          description: Immutable GoalSpec
+          headers:
+            ETag: {$ref: '#/components/headers/ETag'}
+          content:
+            application/json:
+              schema: {$ref: '../json-schema/goal-spec.v1.schema.json'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}/goal/specs/{version}:approve:
+    $ref: '#/components/pathItems/VersionedProjectCommand'
+  /v1/projects/{projectId}/goal/specs/{version}:reject:
+    $ref: '#/components/pathItems/VersionedProjectCommand'
+  /v1/projects/{projectId}/goal:change:
+    $ref: '#/components/pathItems/ProjectCommand'
+  /v1/projects/{projectId}/plans:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      tags: [Plans]
+      operationId: listPlans
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200': {$ref: '#/components/responses/Page'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}/plans/{version}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/Version'
+    get:
+      tags: [Plans]
+      operationId: getPlan
+      responses:
+        '200':
+          description: Immutable PlanSpec
+          headers:
+            ETag: {$ref: '#/components/headers/ETag'}
+          content:
+            application/json:
+              schema: {$ref: '../json-schema/plan-spec.v1.schema.json'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}/tasks:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      tags: [Tasks]
+      operationId: listTasks
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200': {$ref: '#/components/responses/Page'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}/tasks/{taskId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/TaskId'
+    get:
+      tags: [Tasks]
+      operationId: getTask
+      responses:
+        '200': {$ref: '#/components/responses/Entity'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}/tasks/{taskId}/submissions:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/TaskId'
+    get:
+      tags: [Tasks]
+      operationId: listTaskSubmissions
+      responses:
+        '200': {$ref: '#/components/responses/Page'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}/tasks/{taskId}/audits:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/TaskId'
+    get:
+      tags: [Tasks]
+      operationId: listTaskAudits
+      responses:
+        '200': {$ref: '#/components/responses/Page'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}/tasks/{taskId}/decisions:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/TaskId'
+    post:
+      tags: [Tasks]
+      operationId: decideTask
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TaskDecision'}
+      responses:
+        '202': {$ref: '#/components/responses/CommandAccepted'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}/tasks/{taskId}/decision-report:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/TaskId'
+    get:
+      tags: [Tasks]
+      operationId: getTaskDecisionReport
+      responses:
+        '200':
+          description: Signed third-attempt report
+          headers:
+            ETag: {$ref: '#/components/headers/ETag'}
+          content:
+            application/json:
+              schema: {$ref: '../json-schema/user-decision-report.v1.schema.json'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}/artifacts:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      tags: [Artifacts]
+      operationId: listArtifacts
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200': {$ref: '#/components/responses/Page'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}/artifacts/{artifactId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/ArtifactId'
+    get:
+      tags: [Artifacts]
+      operationId: getArtifact
+      responses:
+        '200': {$ref: '#/components/responses/Entity'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}/knowledge:search:
+    $ref: '#/components/pathItems/ProjectCommand'
+  /v1/projects/{projectId}/knowledge:read-range:
+    $ref: '#/components/pathItems/ProjectCommand'
+  /v1/projects/{projectId}/knowledge/manifest:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      tags: [Knowledge]
+      operationId: getKnowledgeManifest
+      responses:
+        '200': {$ref: '#/components/responses/Entity'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}/budgets:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      tags: [Budgets]
+      operationId: getBudgets
+      responses:
+        '200': {$ref: '#/components/responses/Entity'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}/usage:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      tags: [Budgets]
+      operationId: getUsage
+      responses:
+        '200': {$ref: '#/components/responses/Entity'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}/budgets:adjust:
+    $ref: '#/components/pathItems/ProjectCommand'
+  /v1/projects/{projectId}/events:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      tags: [Projects]
+      operationId: streamProjectEvents
+      parameters:
+        - name: after
+          in: query
+          schema: {type: string, maxLength: 512}
+      responses:
+        '200':
+          description: Resumable tenant-filtered CloudEvents stream
+          content:
+            text/event-stream:
+              schema: {type: string}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/admin/doctor:
+    $ref: '#/components/pathItems/AdminCommand'
+  /v1/admin/policies:test:
+    $ref: '#/components/pathItems/AdminCommand'
+  /v1/admin/sandboxes:probe:
+    $ref: '#/components/pathItems/AdminCommand'
+components:
+  securitySchemes:
+    oidc:
+      type: openIdConnect
+      openIdConnectUrl: https://identity.example.invalid/.well-known/openid-configuration
+    mutualTLS:
+      type: mutualTLS
+  headers:
+    ETag:
+      description: Opaque aggregate version tag.
+      schema: {type: string, pattern: '^"[A-Za-z0-9._:-]+"$'}
+  parameters:
+    ProjectId: {name: projectId, in: path, required: true, schema: {type: string, pattern: '^[A-Za-z][A-Za-z0-9_-]{2,127}$'}}
+    TaskId: {name: taskId, in: path, required: true, schema: {type: string, pattern: '^[A-Za-z][A-Za-z0-9_-]{2,127}$'}}
+    ArtifactId: {name: artifactId, in: path, required: true, schema: {type: string, pattern: '^[A-Za-z][A-Za-z0-9_-]{2,127}$'}}
+    Version: {name: version, in: path, required: true, schema: {type: integer, minimum: 1}}
+    Cursor: {name: cursor, in: query, schema: {type: string, maxLength: 512}}
+    IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 256}}
+    IfMatch: {name: If-Match, in: header, required: true, schema: {type: string, minLength: 3, maxLength: 256}}
+  schemas:
+    ProjectCreate:
+      type: object
+      additionalProperties: false
+      required: [name, goalAgentCount, dataClassification]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 256}
+        goalAgentCount: {type: integer, minimum: 1, maximum: 2}
+        dataClassification: {enum: [PUBLIC, INTERNAL, CONFIDENTIAL, RESTRICTED]}
+    Project:
+      type: object
+      required: [id, state, stateVersion]
+      properties:
+        id: {type: string}
+        state: {type: string}
+        stateVersion: {type: integer, minimum: 0}
+    Command:
+      type: object
+      additionalProperties: true
+      required: [expectedVersion]
+      properties:
+        expectedVersion: {type: integer, minimum: 0}
+        sha256: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+    TaskDecision:
+      type: object
+      additionalProperties: false
+      required: [decision, expectedVersion]
+      properties:
+        decision: {enum: [ABORT_PROJECT, ABORT_MODULE, REVISE_GOAL, REVISE_MODULE_SPEC, HAND_OFF_TO_HUMAN, AUTHORIZE_NEW_ATTEMPT_SERIES]}
+        expectedVersion: {type: integer, minimum: 0}
+    Page:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array}
+        nextCursor: {type: string}
+  responses:
+    ProjectCreated:
+      description: Project created
+      headers:
+        ETag: {$ref: '#/components/headers/ETag'}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Project'}
+    Project:
+      description: Project resource
+      headers:
+        ETag: {$ref: '#/components/headers/ETag'}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Project'}
+    CommandAccepted:
+      description: Command accepted exactly once
+      headers:
+        ETag: {$ref: '#/components/headers/ETag'}
+      content:
+        application/json:
+          schema: {type: object, required: [commandId], properties: {commandId: {type: string}}}
+    Page:
+      description: Opaque-cursor page
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Page'}
+    Entity:
+      description: Tenant-scoped entity
+      headers:
+        ETag: {$ref: '#/components/headers/ETag'}
+      content:
+        application/json:
+          schema: {type: object, additionalProperties: true}
+    Problem:
+      description: Redacted AOR Problem Details
+      content:
+        application/problem+json:
+          schema: {$ref: '../json-schema/aor-error.v1.schema.json'}
+  pathItems:
+    ProjectCommand:
+      post:
+        tags: [Projects]
+        parameters:
+          - $ref: '#/components/parameters/ProjectId'
+          - $ref: '#/components/parameters/IdempotencyKey'
+          - $ref: '#/components/parameters/IfMatch'
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Command'}
+        responses:
+          '202': {$ref: '#/components/responses/CommandAccepted'}
+          default: {$ref: '#/components/responses/Problem'}
+    VersionedProjectCommand:
+      post:
+        tags: [Goals]
+        parameters:
+          - $ref: '#/components/parameters/ProjectId'
+          - $ref: '#/components/parameters/Version'
+          - $ref: '#/components/parameters/IdempotencyKey'
+          - $ref: '#/components/parameters/IfMatch'
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Command'}
+        responses:
+          '202': {$ref: '#/components/responses/CommandAccepted'}
+          default: {$ref: '#/components/responses/Problem'}
+    AdminCommand:
+      post:
+        tags: [Administration]
+        parameters:
+          - $ref: '#/components/parameters/IdempotencyKey'
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        responses:
+          '200': {$ref: '#/components/responses/Entity'}
+          default: {$ref: '#/components/responses/Problem'}

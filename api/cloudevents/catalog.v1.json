@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "catalogVersion": "1.0",
+  "specVersion": "1.0",
+  "events": {
+    "io.aor.project.created.v1": "https://schemas.aor.local/events/project-created.v1.schema.json",
+    "io.aor.goal.proposed.v1": "https://schemas.aor.local/events/goal-proposed.v1.schema.json",
+    "io.aor.goal.approved.v1": "https://schemas.aor.local/events/goal-approved.v1.schema.json",
+    "io.aor.goal.superseded.v1": "https://schemas.aor.local/events/goal-superseded.v1.schema.json",
+    "io.aor.plan.published.v1": "https://schemas.aor.local/events/plan-published.v1.schema.json",
+    "io.aor.module.defined.v1": "https://schemas.aor.local/events/module-defined.v1.schema.json",
+    "io.aor.module.execution-leased.v1": "https://schemas.aor.local/events/module-execution-leased.v1.schema.json",
+    "io.aor.module.implementation-submitted.v1": "https://schemas.aor.local/events/module-implementation-submitted.v1.schema.json",
+    "io.aor.module.deterministic-audit-passed.v1": "https://schemas.aor.local/events/module-deterministic-audit-passed.v1.schema.json",
+    "io.aor.module.deterministic-audit-failed.v1": "https://schemas.aor.local/events/module-deterministic-audit-failed.v1.schema.json",
+    "io.aor.module.llm-audit-passed.v1": "https://schemas.aor.local/events/module-llm-audit-passed.v1.schema.json",
+    "io.aor.module.llm-audit-failed.v1": "https://schemas.aor.local/events/module-llm-audit-failed.v1.schema.json",
+    "io.aor.module.blocked-user-decision.v1": "https://schemas.aor.local/events/module-blocked-user-decision.v1.schema.json",
+    "io.aor.module.integrated.v1": "https://schemas.aor.local/events/module-integrated.v1.schema.json",
+    "io.aor.approval.committed.v1": "https://schemas.aor.local/events/approval-committed.v1.schema.json",
+    "io.aor.project.completed.v1": "https://schemas.aor.local/events/project-completed.v1.schema.json"
+  }
+}

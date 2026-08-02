@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package aor.v1;
+
+option go_package = "github.com/akimisaka/aor/pkg/sdk/aorv1;aorv1";
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+message SpecRef {
+  uint64 version = 1;
+  string sha256 = 2;
+}
+
+message PrincipalRef {
+  string principal_id = 1;
+  string principal_type = 2;
+  string tenant_id = 3;
+  string project_id = 4;
+}
+
+message CommandEnvelope {
+  string command_id = 1;
+  string idempotency_key = 2;
+  string correlation_id = 3;
+  PrincipalRef principal = 4;
+  string aggregate_type = 5;
+  string aggregate_id = 6;
+  uint64 expected_aggregate_version = 7;
+  google.protobuf.Struct payload = 8;
+  google.protobuf.Timestamp created_at = 9;
+}
+
+message CommandResult {
+  string command_id = 1;
+  string aggregate_id = 2;
+  uint64 aggregate_version = 3;
+  string event_id = 4;
+  google.protobuf.Struct result = 5;
+}
+
+message AORError {
+  string code = 1;
+  string message = 2;
+  bool retryable = 3;
+  map<string, string> details = 4;
+  string correlation_id = 5;
+}

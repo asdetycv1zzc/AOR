@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aor.local/state.v1.schema.json",
+  "title": "AOR Persisted States v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["projectStates", "moduleTaskStates", "agentStates"],
+  "properties": {
+    "projectStates": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"enum": ["CREATED", "GOAL_NEGOTIATING", "GOAL_SUSPENDED", "PLANNING", "EXECUTING", "INTEGRATING", "GLOBAL_AUDIT", "BLOCKED_USER_DECISION", "PAUSED", "COMPLETED", "ABORTED", "FAILED_SYSTEM", "ARCHIVED"]}
+    },
+    "moduleTaskStates": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"enum": ["DEFINED", "QUEUED_PLANNING", "PLANNING", "READY_EXECUTION", "QUEUED_EXECUTION", "EXECUTING", "SUBMITTED", "DETERMINISTIC_AUDIT", "LLM_AUDIT", "REWORK_REQUIRED", "BLOCKED_DEPENDENCY", "BLOCKED_USER_DECISION", "PASSED", "INTEGRATED", "CANCELED", "SUPERSEDED"]}
+    },
+    "agentStates": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"enum": ["DECLARED", "QUEUED", "LEASED", "STARTING", "RUNNING", "WAITING_INPUT", "WAITING_TOOL", "WAITING_DEPENDENCY", "COMPLETED", "FAILED", "CANCELED", "EXPIRED", "TERMINATED"]}
+    }
+  }
+}

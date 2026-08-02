@@ -1,0 +1,68 @@
+asyncapi: 3.1.0
+info:
+  title: Agent Organization Runtime Domain Events
+  version: 1.0.0
+  description: CloudEvents 1.0 contracts for durable AOR state publication.
+defaultContentType: application/cloudevents+json
+servers:
+  production:
+    host: nats.aor.example.invalid:4222
+    protocol: nats
+    description: NATS JetStream with mTLS workload identity.
+    security:
+      - $ref: '#/components/securitySchemes/mutualTLS'
+channels:
+  projectEvents:
+    address: aor.projects.{projectId}.events.v1
+    parameters:
+      projectId:
+        description: Opaque tenant-authorized project identifier.
+    messages:
+      domainEvent:
+        $ref: '#/components/messages/DomainEvent'
+  projectDeadLetters:
+    address: aor.projects.{projectId}.dead-letter.v1
+    parameters:
+      projectId:
+        description: Opaque tenant-authorized project identifier.
+    messages:
+      domainEvent:
+        $ref: '#/components/messages/DomainEvent'
+operations:
+  publishProjectEvent:
+    action: send
+    channel:
+      $ref: '#/channels/projectEvents'
+    messages:
+      - $ref: '#/channels/projectEvents/messages/domainEvent'
+    bindings:
+      nats:
+        bindingVersion: 0.1.0
+  consumeProjectEvent:
+    action: receive
+    channel:
+      $ref: '#/channels/projectEvents'
+    messages:
+      - $ref: '#/channels/projectEvents/messages/domainEvent'
+    description: Consumers deduplicate event ID and order by aggregateVersion.
+  consumeDeadLetter:
+    action: receive
+    channel:
+      $ref: '#/channels/projectDeadLetters'
+    messages:
+      - $ref: '#/channels/projectDeadLetters/messages/domainEvent'
+    description: Dead letters are retained, inspected, and replayed idempotently.
+components:
+  messages:
+    DomainEvent:
+      name: AORDomainEvent
+      title: AOR CloudEvents envelope
+      contentType: application/cloudevents+json
+      payload:
+        $ref: '../json-schema/cloud-event.v1.schema.json'
+      correlationId:
+        location: '$message.payload#/traceparent'
+  securitySchemes:
+    mutualTLS:
+      type: X509
+      description: SPIFFE-compatible workload certificate.

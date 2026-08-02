@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aor.local/approval-record.v1.schema.json",
+  "title": "AOR Immutable Approval Record v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["approvalVersion", "approvalId", "tenantId", "projectId", "approvalType", "subjectType", "subjectId", "subjectVersion", "subjectSha256", "principalId", "reason", "constraints", "issuedAt", "signature"],
+  "properties": {
+    "approvalVersion": {"const": 1},
+    "approvalId": {"$ref": "common.v1.schema.json#/$defs/opaqueId"},
+    "tenantId": {"$ref": "common.v1.schema.json#/$defs/opaqueId"},
+    "projectId": {"$ref": "common.v1.schema.json#/$defs/opaqueId"},
+    "approvalType": {"enum": ["APPROVE_GOAL", "APPROVE_RELEASE", "RESET_ATTEMPTS", "RISK_ACCEPTANCE", "BREAK_GLASS", "PERMANENT_SIDE_EFFECT"]},
+    "subjectType": {"enum": ["GOAL_SPEC", "PLAN_SPEC", "MODULE_SPEC", "MODULE_TASK", "ATTEMPT_SERIES", "RELEASE", "TOOL_INVOCATION", "KNOWLEDGE_CHANGE"]},
+    "subjectId": {"$ref": "common.v1.schema.json#/$defs/opaqueId"},
+    "subjectVersion": {"type": "integer", "minimum": 1},
+    "subjectSha256": {"$ref": "common.v1.schema.json#/$defs/sha256"},
+    "principalId": {"$ref": "common.v1.schema.json#/$defs/opaqueId"},
+    "reason": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "constraints": {"type": "object", "additionalProperties": true},
+    "issuedAt": {"type": "string", "format": "date-time"},
+    "expiresAt": {"type": "string", "format": "date-time"},
+    "revokedAt": {"type": "string", "format": "date-time"},
+    "signature": {"$ref": "common.v1.schema.json#/$defs/signature"}
+  }
+}

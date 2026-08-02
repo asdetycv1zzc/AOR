@@ -1,0 +1,29 @@
+{
+  "content": {
+    "goalSpecVersion": 1,
+    "projectId": "prj_1",
+    "version": 1,
+    "title": "Build AOR",
+    "summary": "Implement the approved AOR baseline.",
+    "problemStatement": "Agent work requires deterministic control and evidence.",
+    "businessOutcomes": [{"id": "outcome_1", "statement": "Auditable delivery"}],
+    "scope": {"included": ["control plane"], "excluded": ["production deployment"]},
+    "userPersonas": ["operator"],
+    "functionalRequirements": ["versioned goals"],
+    "nonFunctionalRequirements": {"security": ["fail closed"], "privacy": [], "performance": [], "reliability": [], "operability": []},
+    "constraints": ["global concurrency eight"],
+    "assumptions": [],
+    "decisions": [],
+    "unresolvedItems": [],
+    "acceptanceCriteria": [{"id": "criterion_1", "statement": "contracts validate", "evidenceType": "AUTOMATED"}],
+    "riskTolerance": "LOW",
+    "humanApprovalPoints": ["goal approval"],
+    "dataClassification": "INTERNAL",
+    "deploymentTargets": ["linux"],
+    "sourceReferences": ["SPEC.md"],
+    "createdAt": "2030-01-01T00:00:00Z",
+    "createdBy": {"agentInstanceId": "agt_1", "role": "GOAL_PROPOSER"}
+  },
+  "status": "DRAFT",
+  "contentSha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+}

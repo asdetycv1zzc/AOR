@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aor.local/a2a/aor-agent-card-profile.v1.schema.json",
+  "title": "AOR A2A 1.0 Agent Card Profile",
+  "type": "object",
+  "required": ["name", "description", "supportedInterfaces", "capabilities", "skills", "inputModes", "outputModes", "authenticationSchemes", "expiresAt", "kid", "signature"],
+  "properties": {
+    "name": {"type": "string", "minLength": 1, "maxLength": 128},
+    "description": {"type": "string", "minLength": 1, "maxLength": 1024},
+    "supportedInterfaces": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["url", "protocolBinding", "protocolVersion"], "properties": {"url": {"type": "string", "format": "uri"}, "protocolBinding": {"const": "HTTP+JSON"}, "protocolVersion": {"const": "1.0"}}}},
+    "capabilities": {
+      "type": "object",
+      "required": ["extensions"],
+      "properties": {
+        "streaming": {"type": "boolean"},
+        "pushNotifications": {"type": "boolean"},
+        "extensions": {"type": "array", "contains": {"type": "object", "required": ["uri", "required"], "properties": {"uri": {"const": "urn:aor:aop:v1"}, "required": {"const": true}}}, "minContains": 1}
+      }
+    },
+    "skills": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["id", "name", "tags"], "properties": {"id": {"type": "string", "minLength": 1}, "name": {"type": "string", "minLength": 1}, "description": {"type": "string"}, "tags": {"type": "array", "minItems": 1, "items": {"type": "string"}}}}},
+    "inputModes": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "outputModes": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "authenticationSchemes": {"type": "array", "minItems": 1, "items": {"enum": ["mTLS", "OIDC"]}},
+    "expiresAt": {"type": "string", "format": "date-time"},
+    "kid": {"type": "string", "minLength": 1},
+    "signature": {"type": "string", "minLength": 16}
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aor.local/cloud-event.v1.schema.json",
+  "title": "AOR CloudEvents 1.0 Envelope",
+  "type": "object",
+  "required": ["specversion", "id", "source", "type", "subject", "time", "datacontenttype", "dataschema", "traceparent", "data"],
+  "properties": {
+    "specversion": {"const": "1.0"},
+    "id": {"$ref": "common.v1.schema.json#/$defs/opaqueId"},
+    "source": {"type": "string", "format": "uri"},
+    "type": {"type": "string", "pattern": "^io\\.aor\\.[a-z][a-z0-9-]*\\.[a-z][a-z0-9-]*\\.v[1-9][0-9]*$"},
+    "subject": {"type": "string", "pattern": "^projects/[A-Za-z0-9_-]+(?:/(?:tasks|agents|audits|approvals)/[A-Za-z0-9_-]+)?$"},
+    "time": {"type": "string", "format": "date-time"},
+    "datacontenttype": {"const": "application/json"},
+    "dataschema": {"type": "string", "format": "uri"},
+    "traceparent": {"$ref": "common.v1.schema.json#/$defs/traceparent"},
+    "tracestate": {"type": "string", "maxLength": 512},
+    "data": {"type": "object", "required": ["projectId", "aggregateVersion"], "properties": {"projectId": {"$ref": "common.v1.schema.json#/$defs/opaqueId"}, "aggregateVersion": {"type": "integer", "minimum": 1}}}
+  }
+}

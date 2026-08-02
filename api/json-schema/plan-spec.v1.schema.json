@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aor.local/plan-spec.v1.schema.json",
+  "title": "AOR PlanSpec v1",
+  "type": "object",
+  "required": ["planSpecVersion", "projectId", "goalSpecRef", "architecture", "qualityAttributes", "modules", "integrationPlan", "releasePlan", "testStrategy", "rollbackStrategy", "openDecisions", "sha256"],
+  "properties": {
+    "planSpecVersion": {"const": 1},
+    "projectId": {"$ref": "common.v1.schema.json#/$defs/opaqueId"},
+    "goalSpecRef": {"$ref": "common.v1.schema.json#/$defs/specRef"},
+    "architecture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["style", "components", "dataFlows", "trustBoundaries", "deploymentUnits"],
+      "properties": {"style": {"type": "string", "minLength": 1}, "components": {"type": "array"}, "dataFlows": {"type": "array"}, "trustBoundaries": {"type": "array"}, "deploymentUnits": {"type": "array"}}
+    },
+    "qualityAttributes": {"type": "array"},
+    "modules": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["moduleId", "name", "responsibility", "executionPlatform", "sandboxLevel", "ownedPaths", "forbiddenPaths", "publicInterfaces", "dependencies", "acceptanceCriteria", "risk"],
+        "properties": {
+          "moduleId": {"$ref": "common.v1.schema.json#/$defs/opaqueId"},
+          "name": {"type": "string", "minLength": 1},
+          "responsibility": {"type": "string", "minLength": 1},
+          "executionPlatform": {"enum": ["LINUX", "WINDOWS"]},
+          "sandboxLevel": {"enum": ["CONTAINER", "NONE"]},
+          "ownedPaths": {"type": "array"},
+          "forbiddenPaths": {"type": "array"},
+          "publicInterfaces": {"type": "array"},
+          "dependencies": {"type": "array"},
+          "acceptanceCriteria": {"type": "array", "minItems": 1},
+          "risk": {"enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]}
+        },
+        "allOf": [
+          {"if": {"properties": {"executionPlatform": {"const": "LINUX"}}}, "then": {"properties": {"sandboxLevel": {"const": "CONTAINER"}}}},
+          {"if": {"properties": {"executionPlatform": {"const": "WINDOWS"}}}, "then": {"properties": {"sandboxLevel": {"const": "NONE"}}}}
+        ]
+      }
+    },
+    "integrationPlan": {"type": "array"},
+    "releasePlan": {"type": "array"},
+    "testStrategy": {"type": "array"},
+    "rollbackStrategy": {"type": "array"},
+    "openDecisions": {"type": "array"},
+    "sha256": {"$ref": "common.v1.schema.json#/$defs/sha256"}
+  }
+}

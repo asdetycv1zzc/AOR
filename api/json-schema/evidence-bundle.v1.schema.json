@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aor.local/evidence-bundle.v1.schema.json",
+  "title": "AOR Evidence Bundle v1",
+  "type": "object",
+  "required": ["evidenceBundleVersion", "projectId", "taskId", "attemptSeriesId", "attempt", "specVersion", "baseCommit", "submissionCommit", "pipelineVersion", "policyBundleDigest", "executionPlatform", "isolationLevel", "sandboxAttestation", "checks", "findings", "artifacts", "llmAudit", "manifestSha256", "signature"],
+  "properties": {
+    "evidenceBundleVersion": {"const": 1},
+    "projectId": {"$ref": "common.v1.schema.json#/$defs/opaqueId"},
+    "taskId": {"$ref": "common.v1.schema.json#/$defs/opaqueId"},
+    "attemptSeriesId": {"$ref": "common.v1.schema.json#/$defs/opaqueId"},
+    "attempt": {"type": "integer", "minimum": 1, "maximum": 3},
+    "specVersion": {"type": "integer", "minimum": 1},
+    "baseCommit": {"$ref": "common.v1.schema.json#/$defs/commit"},
+    "submissionCommit": {"$ref": "common.v1.schema.json#/$defs/commit"},
+    "pipelineVersion": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "policyBundleDigest": {"$ref": "common.v1.schema.json#/$defs/sha256"},
+    "executionPlatform": {"enum": ["LINUX", "WINDOWS"]},
+    "isolationLevel": {"enum": ["CONTAINER", "NONE"]},
+    "sandboxAttestation": {"type": "string", "minLength": 1},
+    "checks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/check"}},
+    "findings": {"type": "array"},
+    "artifacts": {"type": "array"},
+    "llmAudit": {"$ref": "#/$defs/llmAudit"},
+    "manifestSha256": {"$ref": "common.v1.schema.json#/$defs/sha256"},
+    "signature": {"$ref": "common.v1.schema.json#/$defs/signature"}
+  },
+  "allOf": [
+    {"if": {"properties": {"executionPlatform": {"const": "LINUX"}}}, "then": {"properties": {"isolationLevel": {"const": "CONTAINER"}, "sandboxAttestation": {"pattern": "^oci:"}}}},
+    {"if": {"properties": {"executionPlatform": {"const": "WINDOWS"}}}, "then": {"properties": {"isolationLevel": {"const": "NONE"}, "sandboxAttestation": {"const": "windows:none"}}}}
+  ],
+  "$defs": {
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["checkId", "ordinal", "type", "status", "tool", "startedAt", "completedAt", "stdoutUri", "stderrUri", "resultUri", "resultSha256"],
+      "properties": {
+        "checkId": {"type": "string", "minLength": 1},
+        "ordinal": {"type": "integer", "minimum": 1},
+        "type": {"type": "string", "minLength": 1},
+        "status": {"enum": ["PASS", "FAIL", "ERROR", "SKIPPED"]},
+        "tool": {"type": "object", "additionalProperties": false, "required": ["name", "version", "digest"], "properties": {"name": {"type": "string", "minLength": 1}, "version": {"type": "string", "minLength": 1}, "digest": {"$ref": "common.v1.schema.json#/$defs/sha256"}}},
+        "startedAt": {"type": "string", "format": "date-time"},
+        "completedAt": {"type": "string", "format": "date-time"},
+        "stdoutUri": {"$ref": "common.v1.schema.json#/$defs/artifactUri"},
+        "stderrUri": {"$ref": "common.v1.schema.json#/$defs/artifactUri"},
+        "resultUri": {"$ref": "common.v1.schema.json#/$defs/artifactUri"},
+        "resultSha256": {"$ref": "common.v1.schema.json#/$defs/sha256"}
+      }
+    },
+    "llmAudit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["auditorRunId", "modelIdentity", "promptDigest", "contextManifestDigest", "verdict"],
+      "properties": {"auditorRunId": {"$ref": "common.v1.schema.json#/$defs/opaqueId"}, "modelIdentity": {"type": "string", "minLength": 1}, "promptDigest": {"$ref": "common.v1.schema.json#/$defs/sha256"}, "contextManifestDigest": {"$ref": "common.v1.schema.json#/$defs/sha256"}, "verdict": {"enum": ["PASS", "FAIL", "INCONCLUSIVE"]}}
+    }
+  }
+}

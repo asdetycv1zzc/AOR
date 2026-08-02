@@ -1,0 +1,17 @@
+{
+  "aopVersion": "1.0",
+  "messageId": "msg_1",
+  "idempotencyKey": "idem_1",
+  "correlationId": "corr_1",
+  "projectId": "prj_1",
+  "goalSpec": {"version": 1, "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"},
+  "sender": {"agentInstanceId": "agt_1", "role": "GOAL_PROPOSER", "leaseId": "lease_1"},
+  "scope": "PROJECT",
+  "intent": "PROPOSE_GOAL",
+  "expectedAggregateVersion": 0,
+  "artifactRefs": [],
+  "knowledgeRefs": [],
+  "createdAt": "2030-01-01T00:00:00Z",
+  "expiresAt": "2030-01-01T00:10:00Z",
+  "futureOptionalField": {"supported": true}
+}

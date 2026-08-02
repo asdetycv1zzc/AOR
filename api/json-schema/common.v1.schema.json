@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aor.local/common.v1.schema.json",
+  "title": "AOR Common Types v1",
+  "$defs": {
+    "opaqueId": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{2,127}$"},
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "artifactUri": {"type": "string", "pattern": "^artifact://[A-Za-z0-9._~:/-]+$"},
+    "traceparent": {"type": "string", "pattern": "^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"},
+    "specRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "sha256"],
+      "properties": {
+        "version": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "agentIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agentInstanceId", "role"],
+      "properties": {
+        "agentInstanceId": {"$ref": "#/$defs/opaqueId"},
+        "role": {"type": "string", "minLength": 1, "maxLength": 64},
+        "provider": {"type": "string", "maxLength": 128},
+        "model": {"type": "string", "maxLength": 256},
+        "leaseId": {"$ref": "#/$defs/opaqueId"}
+      }
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "kid", "jws"],
+      "properties": {
+        "type": {"enum": ["detached-jws", "sigstore-bundle", "kms-signature"]},
+        "kid": {"type": "string", "minLength": 1, "maxLength": 256},
+        "jws": {"type": "string", "minLength": 16, "maxLength": 16384}
+      }
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "submissionVersion": 1,
+  "projectId": "prj_1",
+  "moduleTaskId": "task_1",
+  "attemptSeriesId": "series_1",
+  "attempt": 1,
+  "moduleSpecRef": {"version": 1, "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"},
+  "baseCommit": "0000000000000000000000000000000000000001",
+  "headCommit": "0000000000000000000000000000000000000002",
+  "changedFiles": ["internal/state/project.go"],
+  "deletedFiles": [],
+  "createdFiles": [],
+  "claimedCriteria": ["criterion_1"],
+  "localTestEvidenceRefs": [],
+  "agentIdentity": {"agentInstanceId": "agt_1", "role": "EXECUTOR", "leaseId": "lease_1"},
+  "createdAt": "2030-01-01T00:00:00Z",
+  "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+}

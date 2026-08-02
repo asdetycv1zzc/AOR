@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/akimisaka/aor/internal/bootstrap"
+	contractcheck "github.com/akimisaka/aor/internal/contracts"
 )
 
 type result struct {
@@ -17,7 +18,7 @@ type result struct {
 
 func main() {
 	if len(os.Args) != 2 {
-		fail("usage", []bootstrap.Finding{{Code: "INVALID_ARGUMENT", Message: "usage: aor-conformance <source-format|schemas|repository|secrets|licenses>"}})
+		fail("usage", []bootstrap.Finding{{Code: "INVALID_ARGUMENT", Message: "usage: aor-conformance <source-format|schemas|contracts|aop|a2a|cloudevents|openapi|asyncapi|repository|secrets|licenses>"}})
 	}
 	root, err := os.Getwd()
 	if err != nil {
@@ -31,6 +32,9 @@ func main() {
 		findings = bootstrap.CheckGoFormat(root)
 	case "schemas":
 		findings = bootstrap.ValidateJSONDocuments(root)
+		findings = append(findings, convertContractFindings(contractcheck.ValidateRepositoryContracts(root))...)
+	case "contracts", "aop", "a2a", "cloudevents", "openapi", "asyncapi":
+		findings = convertContractFindings(contractcheck.ValidateRepositoryContracts(root))
 	case "repository":
 		findings = append(findings, bootstrap.ValidateRepository(root)...)
 		findings = append(findings, bootstrap.ValidateADRs(root, 25)...)
@@ -58,6 +62,14 @@ func main() {
 		fail(check, findings)
 	}
 	write(result{Check: check, Status: "PASS"})
+}
+
+func convertContractFindings(input []contractcheck.Finding) []bootstrap.Finding {
+	output := make([]bootstrap.Finding, 0, len(input))
+	for _, finding := range input {
+		output = append(output, bootstrap.Finding{Code: finding.Code, Path: finding.Path, Message: finding.Message})
+	}
+	return output
 }
 
 func fail(check string, findings []bootstrap.Finding) {

@@ -335,12 +335,18 @@ requirements:
     owner: protocol
     status: planned
   - id: AOR-ACC-022
-    title: Production acceptance criterion 022
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: AOP optional-field compatibility and required-capability rejection
+    implementation:
+      - pkg/aop/
+      - api/aop/aor-envelope.v1.schema.json
+      - api/a2a/aor-agent-card-profile.v1.schema.json
+    tests:
+      - pkg/aop/envelope_test.go
+      - pkg/aop/agent_card_test.go
+      - internal/contracts/validator_test.go
+    evidenceType: go-test+schema-fixtures
     owner: protocol
-    status: planned
+    status: implemented
   - id: AOR-ACC-023
     title: Production acceptance criterion 023
     implementation: []
@@ -356,12 +362,17 @@ requirements:
     owner: protocol
     status: planned
   - id: AOR-ACC-025
-    title: Production acceptance criterion 025
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: CloudEvents envelope and catalog validation
+    implementation:
+      - pkg/cloudevents/
+      - api/json-schema/cloud-event.v1.schema.json
+      - api/cloudevents/catalog.v1.json
+    tests:
+      - pkg/cloudevents/event_test.go
+      - internal/contracts/validator_test.go
+    evidenceType: go-test+schema-fixtures
     owner: protocol
-    status: planned
+    status: implemented
   - id: AOR-ACC-026
     title: Production acceptance criterion 026
     implementation: []
@@ -839,12 +850,17 @@ requirements:
     owner: operations
     status: planned
   - id: AOR-ACC-094
-    title: Production acceptance criterion 094
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: External API event Schema and error contracts are machine readable
+    implementation:
+      - api/openapi/aor.v1.yaml
+      - api/asyncapi/aor-events.v1.yaml
+      - api/json-schema/
+      - api/errors/catalog.v1.json
+    tests:
+      - internal/contracts/validator_test.go
+    evidenceType: schema-compile+catalog-parity
     owner: operations
-    status: planned
+    status: implemented
   - id: AOR-ACC-095
     title: Production acceptance criterion 095
     implementation: []

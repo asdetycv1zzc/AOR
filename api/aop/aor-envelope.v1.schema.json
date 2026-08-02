@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aor.local/aor-envelope.v1.schema.json",
+  "title": "AOR AOP v1 Envelope",
+  "type": "object",
+  "required": ["aopVersion", "messageId", "idempotencyKey", "correlationId", "projectId", "goalSpec", "sender", "scope", "intent", "expectedAggregateVersion", "artifactRefs", "knowledgeRefs", "createdAt", "expiresAt"],
+  "properties": {
+    "aopVersion": {"const": "1.0"},
+    "messageId": {"type": "string", "minLength": 1, "maxLength": 128},
+    "idempotencyKey": {"type": "string", "minLength": 1, "maxLength": 256},
+    "correlationId": {"type": "string", "minLength": 1, "maxLength": 128},
+    "causationId": {"type": "string", "minLength": 1, "maxLength": 128},
+    "projectId": {"$ref": "common.v1.schema.json#/$defs/opaqueId"},
+    "goalSpec": {"$ref": "common.v1.schema.json#/$defs/specRef"},
+    "planSpec": {"$ref": "common.v1.schema.json#/$defs/specRef"},
+    "moduleSpec": {"$ref": "common.v1.schema.json#/$defs/specRef"},
+    "taskId": {"$ref": "common.v1.schema.json#/$defs/opaqueId"},
+    "attemptSeriesId": {"$ref": "common.v1.schema.json#/$defs/opaqueId"},
+    "attempt": {"type": "integer", "minimum": 1, "maximum": 3},
+    "sender": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agentInstanceId", "role", "leaseId"],
+      "properties": {
+        "agentInstanceId": {"$ref": "common.v1.schema.json#/$defs/opaqueId"},
+        "role": {"enum": ["GOAL_PROPOSER", "GOAL_CHALLENGER", "PLAN_SUPERVISOR", "MODULE_PLANNER", "EXECUTOR", "MODULE_AUDITOR", "GLOBAL_AUDITOR", "KNOWLEDGE_CURATOR"]},
+        "provider": {"type": "string", "maxLength": 128},
+        "model": {"type": "string", "maxLength": 256},
+        "leaseId": {"$ref": "common.v1.schema.json#/$defs/opaqueId"}
+      }
+    },
+    "scope": {"enum": ["PROJECT", "TASK"]},
+    "intent": {"enum": ["PROPOSE_GOAL", "CHALLENGE_GOAL", "REQUEST_USER_REVIEW", "APPROVE_GOAL_REQUESTED", "PROPOSE_PLAN", "DEFINE_MODULE", "REQUEST_AGENT", "ASSIGN_MODULE", "REQUEST_KNOWLEDGE", "RETURN_KNOWLEDGE_REFS", "REQUEST_TOOL", "SUBMIT_IMPLEMENTATION", "REPORT_DETERMINISTIC_AUDIT", "REPORT_LLM_AUDIT", "REQUEST_REWORK", "REPORT_MODULE_COMPLETE", "REPORT_MODULE_BLOCKED", "REPORT_PLAN_COMPLETE", "REQUEST_GLOBAL_AUDIT", "REPORT_GLOBAL_AUDIT", "REQUEST_USER_DECISION", "CANCEL_TASK", "PAUSE_PROJECT", "RESUME_PROJECT"]},
+    "expectedAggregateVersion": {"type": "integer", "minimum": 0},
+    "artifactRefs": {"type": "array", "maxItems": 100, "items": {"$ref": "common.v1.schema.json#/$defs/artifactUri"}},
+    "knowledgeRefs": {"type": "array", "maxItems": 100, "items": {"type": "string", "minLength": 1}},
+    "budgetContext": {"type": "object", "additionalProperties": false, "required": ["accountId"], "properties": {"accountId": {"$ref": "common.v1.schema.json#/$defs/opaqueId"}, "reservationId": {"$ref": "common.v1.schema.json#/$defs/opaqueId"}}},
+    "traceContext": {"type": "object", "additionalProperties": false, "required": ["traceparent"], "properties": {"traceparent": {"$ref": "common.v1.schema.json#/$defs/traceparent"}, "tracestate": {"type": "string", "maxLength": 512}}},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "expiresAt": {"type": "string", "format": "date-time"},
+    "signature": {"type": "string", "maxLength": 16384}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"intent": {"enum": ["PROPOSE_GOAL", "CHALLENGE_GOAL", "REQUEST_USER_REVIEW", "APPROVE_GOAL_REQUESTED", "PAUSE_PROJECT", "RESUME_PROJECT"]}}},
+      "then": {"properties": {"scope": {"const": "PROJECT"}}, "not": {"anyOf": [{"required": ["planSpec"]}, {"required": ["moduleSpec"]}, {"required": ["taskId"]}, {"required": ["attemptSeriesId"]}, {"required": ["attempt"]}]}}
+    },
+    {
+      "if": {"properties": {"intent": {"enum": ["PROPOSE_PLAN", "REPORT_PLAN_COMPLETE", "REQUEST_GLOBAL_AUDIT", "REPORT_GLOBAL_AUDIT"]}}},
+      "then": {"required": ["planSpec"], "properties": {"scope": {"const": "PROJECT"}}, "not": {"anyOf": [{"required": ["moduleSpec"]}, {"required": ["taskId"]}, {"required": ["attemptSeriesId"]}, {"required": ["attempt"]}]}}
+    },
+    {
+      "if": {"properties": {"intent": {"enum": ["DEFINE_MODULE", "ASSIGN_MODULE", "CANCEL_TASK"]}}},
+      "then": {"required": ["planSpec", "moduleSpec", "taskId"], "properties": {"scope": {"const": "TASK"}}, "not": {"anyOf": [{"required": ["attemptSeriesId"]}, {"required": ["attempt"]}]}}
+    },
+    {
+      "if": {"properties": {"intent": {"enum": ["SUBMIT_IMPLEMENTATION", "REPORT_DETERMINISTIC_AUDIT", "REPORT_LLM_AUDIT", "REQUEST_REWORK", "REPORT_MODULE_COMPLETE", "REPORT_MODULE_BLOCKED", "REQUEST_USER_DECISION"]}}},
+      "then": {"required": ["planSpec", "moduleSpec", "taskId", "attemptSeriesId", "attempt"], "properties": {"scope": {"const": "TASK"}}}
+    },
+    {
+      "if": {"properties": {"intent": {"const": "REQUEST_USER_DECISION"}}},
+      "then": {"properties": {"attempt": {"const": 3}}}
+    },
+    {
+      "if": {"properties": {"intent": {"enum": ["REQUEST_AGENT", "REQUEST_KNOWLEDGE", "RETURN_KNOWLEDGE_REFS", "REQUEST_TOOL"]}, "scope": {"const": "TASK"}}},
+      "then": {"required": ["planSpec", "moduleSpec", "taskId"]}
+    },
+    {
+      "if": {"properties": {"intent": {"enum": ["REQUEST_AGENT", "REQUEST_KNOWLEDGE", "RETURN_KNOWLEDGE_REFS", "REQUEST_TOOL"]}, "scope": {"const": "PROJECT"}}},
+      "then": {"not": {"anyOf": [{"required": ["moduleSpec"]}, {"required": ["taskId"]}, {"required": ["attemptSeriesId"]}, {"required": ["attempt"]}]}}
+    }
+  ]
+}

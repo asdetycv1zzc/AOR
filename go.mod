@@ -2,4 +2,10 @@ module github.com/akimisaka/aor
 
 go 1.26.0
 
-toolchain go1.26.0
+require (
+	github.com/deszhou/jcs v1.0.0
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
+	gopkg.in/yaml.v3 v3.0.1
+)
+
+require golang.org/x/text v0.14.0 // indirect
