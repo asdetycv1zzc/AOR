@@ -3,7 +3,7 @@
   "$id": "https://schemas.aor.local/common.v1.schema.json",
   "title": "AOR Common Types v1",
   "$defs": {
-    "opaqueId": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{2,127}$"},
+    "opaqueId": {"type": "string", "pattern": "^(?:[A-Za-z][A-Za-z0-9_-]{2,127}|[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$"},
     "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "artifactUri": {"type": "string", "pattern": "^artifact://[A-Za-z0-9._~:/-]+$"},
