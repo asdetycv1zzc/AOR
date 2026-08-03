@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "taskId": "WP-07",
+  "specVersion": "2.0.0",
+  "requirements": [
+    "AOR-INV-001",
+    "AOR-INV-004",
+    "AOR-INV-005",
+    "AOR-INV-010",
+    "AOR-ACC-008",
+    "AOR-ACC-017",
+    "AOR-ACC-029",
+    "AOR-ACC-041"
+  ],
+  "criteria": [
+    {"id": "WP07-AC-001", "evidence": "lifecycle and lease boundary tests", "required": true},
+    {"id": "WP07-AC-002", "evidence": "global slot limit, soft-limit and aging tests", "required": true},
+    {"id": "WP07-AC-003", "evidence": "prompt integrity and blind-audit context tests", "required": true},
+    {"id": "WP07-AC-004", "evidence": "Model Gateway and Tool Broker binding tests", "required": true},
+    {"id": "WP07-AC-005", "evidence": "late-result and cancellation tests", "required": true},
+    {"id": "WP07-AC-006", "evidence": "signed A2A/AOP Agent Card tests", "required": true}
+  ]
+}
+

@@ -69,8 +69,9 @@ type Principal struct {
 }
 
 type Lease struct {
-	ID        string `json:"id"`
-	ExpiresAt string `json:"expiresAt"`
+	ID           string `json:"id"`
+	ExpiresAt    string `json:"expiresAt"`
+	FencingToken int64  `json:"fencingToken"`
 }
 
 type Approval struct {
