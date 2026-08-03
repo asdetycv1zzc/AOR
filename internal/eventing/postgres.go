@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
 )
@@ -192,6 +193,142 @@ VALUES ($1::uuid, $2, $3, $4, $5::jsonb, $6, $7::jsonb)`,
 	return TransactionResult{Result: cloneJSON(request.Result), Events: cloneEvents(request.Events)}, nil
 }
 
+func (s *PostgresStore) ClaimOutbox(ctx context.Context, tenantID string, now time.Time, limit int, lease time.Duration) ([]OutboxClaim, error) {
+	if tenantID == "" || now.IsZero() || limit <= 0 || lease <= 0 {
+		return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "outbox claim"})
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := setTenant(ctx, tx, tenantID); err != nil {
+		return nil, err
+	}
+	claimUntil := now.Add(lease)
+	rows, err := tx.QueryContext(ctx, `
+WITH ready AS (
+  SELECT id
+  FROM outbox
+  WHERE tenant_id = $1::uuid AND published_at IS NULL AND next_attempt_at <= $2
+  ORDER BY next_attempt_at, id
+  LIMIT $3
+  FOR UPDATE SKIP LOCKED
+), claimed AS (
+  UPDATE outbox AS item
+  SET attempt_count = item.attempt_count + 1, next_attempt_at = $4
+  FROM ready
+  WHERE item.id = ready.id
+  RETURNING item.id, item.tenant_id, item.event_id, item.attempt_count, item.next_attempt_at
+)
+SELECT claimed.id::text, event.event_id::text, event.tenant_id::text, event.project_id::text,
+       event.aggregate_type, event.aggregate_id, event.aggregate_version, event.event_type,
+       event.payload_jsonb, event.payload_sha256, event.metadata_jsonb, event.created_at,
+       claimed.attempt_count, claimed.next_attempt_at
+FROM claimed
+JOIN domain_events AS event
+  ON event.tenant_id = claimed.tenant_id AND event.event_id = claimed.event_id
+ORDER BY claimed.next_attempt_at, claimed.id`, tenantID, now, limit, claimUntil)
+	if err != nil {
+		return nil, err
+	}
+	claims := make([]OutboxClaim, 0, limit)
+	for rows.Next() {
+		var record OutboxRecord
+		var event DomainEvent
+		var payload []byte
+		var metadata []byte
+		if err := rows.Scan(
+			&record.ID, &event.EventID, &event.TenantID, &event.ProjectID,
+			&event.AggregateType, &event.AggregateID, &event.AggregateVersion, &event.Type,
+			&payload, &event.PayloadSHA256, &metadata, &event.OccurredAt,
+			&record.Attempts, &record.NextAttempt,
+		); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		var values map[string]string
+		if err := json.Unmarshal(metadata, &values); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("decode outbox event metadata: %w", err)
+		}
+		event.Payload = cloneJSON(payload)
+		event.CorrelationID = values["correlationId"]
+		event.CausationID = values["causationId"]
+		record.Event = event
+		claims = append(claims, OutboxClaim{Record: record, Attempt: record.Attempts})
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return claims, nil
+}
+
+func (s *PostgresStore) MarkOutboxPublished(ctx context.Context, tenantID, outboxID string, attempt int, publishedAt time.Time) error {
+	if tenantID == "" || outboxID == "" || attempt <= 0 || publishedAt.IsZero() {
+		return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "outbox publish"})
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := setTenant(ctx, tx, tenantID); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `
+UPDATE outbox
+SET published_at = $4, next_attempt_at = $4
+WHERE tenant_id = $1::uuid AND id = $2::uuid AND attempt_count = $3 AND published_at IS NULL`, tenantID, outboxID, attempt, publishedAt)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return ErrOutboxClaimLost
+	}
+	return tx.Commit()
+}
+
+func (s *PostgresStore) RetryOutbox(ctx context.Context, tenantID, outboxID string, attempt int, nextAttempt time.Time) error {
+	if tenantID == "" || outboxID == "" || attempt <= 0 || nextAttempt.IsZero() {
+		return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "outbox retry"})
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := setTenant(ctx, tx, tenantID); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `
+UPDATE outbox
+SET next_attempt_at = $4
+WHERE tenant_id = $1::uuid AND id = $2::uuid AND attempt_count = $3 AND published_at IS NULL`, tenantID, outboxID, attempt, nextAttempt)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return ErrOutboxClaimLost
+	}
+	return tx.Commit()
+}
+
 func syncProjectRow(ctx context.Context, tx *sql.Tx, request TransactionRequest, update ProjectionUpdate) error {
 	var projection struct {
 		ID                 string `json:"id"`
@@ -325,3 +462,4 @@ func cloneEvents(events []DomainEvent) []DomainEvent {
 }
 
 var _ Store = (*PostgresStore)(nil)
+var _ OutboxStore = (*PostgresStore)(nil)

@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
+	"time"
 
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
@@ -102,7 +104,8 @@ func (s *MemoryStore) Execute(_ context.Context, request TransactionRequest) (Tr
 		event = cloneEvent(event)
 		s.events[event.EventID] = event
 		s.versions[versionKey(request.TenantID, event.AggregateType, event.AggregateID, event.AggregateVersion)] = event.EventID
-		s.outbox[event.EventID] = OutboxRecord{ID: "outbox_" + event.EventID, Event: event, NextAttempt: event.OccurredAt}
+		outboxID := "outbox_" + event.EventID
+		s.outbox[outboxID] = OutboxRecord{ID: outboxID, Event: event, NextAttempt: event.OccurredAt}
 		events[index] = event
 	}
 	for _, approval := range request.Approvals {
@@ -126,6 +129,80 @@ func (s *MemoryStore) Stats() StoreStats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return StoreStats{Projections: len(s.projections), Events: len(s.events), Outbox: len(s.outbox), CommandResults: len(s.commands), Approvals: len(s.approvals)}
+}
+
+func (s *MemoryStore) ClaimOutbox(ctx context.Context, tenantID string, now time.Time, limit int, lease time.Duration) ([]OutboxClaim, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if tenantID == "" || now.IsZero() || limit <= 0 || lease <= 0 {
+		return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "outbox claim"})
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ready := make([]OutboxRecord, 0, len(s.outbox))
+	for _, record := range s.outbox {
+		if record.Event.TenantID == tenantID && record.PublishedAt == nil && !record.NextAttempt.After(now) {
+			ready = append(ready, cloneOutboxRecord(record))
+		}
+	}
+	sort.Slice(ready, func(left, right int) bool {
+		if ready[left].NextAttempt.Equal(ready[right].NextAttempt) {
+			return ready[left].ID < ready[right].ID
+		}
+		return ready[left].NextAttempt.Before(ready[right].NextAttempt)
+	})
+	if len(ready) > limit {
+		ready = ready[:limit]
+	}
+	claims := make([]OutboxClaim, len(ready))
+	for index, record := range ready {
+		record.Attempts++
+		record.NextAttempt = now.Add(lease)
+		s.outbox[record.ID] = cloneOutboxRecord(record)
+		claims[index] = OutboxClaim{Record: cloneOutboxRecord(record), Attempt: record.Attempts}
+	}
+	return claims, nil
+}
+
+func (s *MemoryStore) MarkOutboxPublished(ctx context.Context, tenantID, outboxID string, attempt int, publishedAt time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if tenantID == "" || outboxID == "" || attempt <= 0 || publishedAt.IsZero() {
+		return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "outbox publish"})
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, found := s.outbox[outboxID]
+	if !found || record.Event.TenantID != tenantID || record.PublishedAt != nil || record.Attempts != attempt {
+		return ErrOutboxClaimLost
+	}
+	published := publishedAt
+	record.PublishedAt = &published
+	s.outbox[outboxID] = cloneOutboxRecord(record)
+	return nil
+}
+
+func (s *MemoryStore) RetryOutbox(ctx context.Context, tenantID, outboxID string, attempt int, nextAttempt time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if tenantID == "" || outboxID == "" || attempt <= 0 || nextAttempt.IsZero() {
+		return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "outbox retry"})
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, found := s.outbox[outboxID]
+	if !found || record.Event.TenantID != tenantID || record.PublishedAt != nil || record.Attempts != attempt {
+		return ErrOutboxClaimLost
+	}
+	record.NextAttempt = nextAttempt
+	s.outbox[outboxID] = cloneOutboxRecord(record)
+	return nil
 }
 
 func (s *MemoryStore) lookupLocked(tenantID, principalID, idempotencyKey, requestSHA256 string) (TransactionResult, bool, error) {
@@ -235,6 +312,15 @@ func cloneApproval(value ApprovalRecord) ApprovalRecord {
 	return value
 }
 
+func cloneOutboxRecord(value OutboxRecord) OutboxRecord {
+	value.Event = cloneEvent(value.Event)
+	if value.PublishedAt != nil {
+		publishedAt := *value.PublishedAt
+		value.PublishedAt = &publishedAt
+	}
+	return value
+}
+
 func cloneResult(value TransactionResult) TransactionResult {
 	value.Result = cloneJSON(value.Result)
 	value.Events = append([]DomainEvent(nil), value.Events...)
@@ -247,3 +333,5 @@ func cloneResult(value TransactionResult) TransactionResult {
 func cloneJSON(value json.RawMessage) json.RawMessage {
 	return append(json.RawMessage(nil), value...)
 }
+
+var _ OutboxStore = (*MemoryStore)(nil)
