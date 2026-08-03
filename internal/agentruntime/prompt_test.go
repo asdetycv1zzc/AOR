@@ -80,8 +80,8 @@ func TestPromptAndContextIntegrityFailures(t *testing.T) {
 
 func TestPromptRejectsKnownCredentialFamilies(t *testing.T) {
 	tests := map[string]string{
-		"github classic":    "ghp_0123456789abcdefghijklmnopqrstuvwxyz",
-		"github fine grain": "github_pat_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEF",
+		"github classic":    "ghp_" + "0123456789abcdefghijklmnopqrstuvwxyz",
+		"github fine grain": "github_pat_" + "0123456789abcdefghijklmnopqrstuvwxyz_ABCDEF",
 		"gitlab":            "glpat-0123456789abcdefghijklmnop",
 		"slack":             "xoxb-0123456789-abcdefghijklmnop",
 		"google":            "AIza0123456789abcdefghijklmnopqrstuvwxy",
