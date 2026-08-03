@@ -1,4 +1,4 @@
-.PHONY: build test lint schema cross-language sdk repository-check secret-scan license-scan state-machine verify
+.PHONY: build test lint schema cross-language sdk backup-restore supply-chain repository-check secret-scan license-scan state-machine verify
 
 GOCACHE ?= $(CURDIR)/.cache/go-build
 GOMODCACHE ?= $(CURDIR)/.cache/go-mod
@@ -28,6 +28,12 @@ sdk:
 	node --experimental-strip-types conformance/contracts/sdk/typescript.ts
 	python3 conformance/contracts/sdk/python.py
 
+backup-restore:
+	go test ./internal/backup ./internal/artifact
+
+supply-chain:
+	go test ./internal/supplychain
+
 repository-check:
 	go run ./cmd/aor-conformance repository
 
@@ -40,4 +46,4 @@ license-scan:
 state-machine:
 	go run ./cmd/aor-conformance state-machine
 
-verify: build lint test schema cross-language sdk repository-check secret-scan license-scan state-machine
+verify: build lint test schema cross-language sdk backup-restore supply-chain repository-check secret-scan license-scan state-machine
