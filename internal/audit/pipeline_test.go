@@ -3,9 +3,11 @@ package audit
 import (
 	"context"
 	"errors"
+	"io"
 	"testing"
 	"time"
 
+	"github.com/akimisaka/aor/internal/artifact"
 	"github.com/akimisaka/aor/pkg/contracts"
 )
 
@@ -73,6 +75,89 @@ func TestBlindInputRejectsExecutorContent(t *testing.T) {
 	if validateBlindInput(input) == nil {
 		t.Fatal("untrusted path accepted as blind context")
 	}
+}
+
+func TestPipelineStreamsOneGiBArtifactWithoutWholeOutputBuffer(t *testing.T) {
+	factory := &testAuditorFactory{}
+	signer, err := NewHMACSigner([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisher := &boundedArtifactPublisher{}
+	pipeline, err := NewPipelineWithArtifactStore([]Check{largeStreamCheck{}}, factory, signer, NewMemoryEvidenceStore(), publisher, "pipeline-1", func() time.Time {
+		return time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := testManifest()
+	result, err := pipeline.Run(context.Background(), DeterministicInput{TenantID: "tenant-1", Manifest: manifest, ModuleSpecRef: manifest.ModuleSpecRef, AllowedPaths: []string{"owned/..."}, PolicyDigest: digestBytes([]byte("policy")), Platform: contracts.PlatformLinux, Isolation: contracts.IsolationContainer, SandboxAttestation: "oci:sha256:container"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Verdict != "PASS" || publisher.puts != 3 || publisher.maximumSize != 1<<30 || publisher.maximumWrite > 1<<20 {
+		t.Fatalf("streaming bounds were not preserved: verdict=%s puts=%d size=%d write=%d", result.Verdict, publisher.puts, publisher.maximumSize, publisher.maximumWrite)
+	}
+}
+
+type largeStreamCheck struct{}
+
+func (largeStreamCheck) ID() string { return "large-stream" }
+
+func (largeStreamCheck) Run(context.Context, DeterministicInput) CheckResult {
+	return CheckResult{Status: StatusPass, ResultStream: &StreamOutput{MediaType: "application/octet-stream", Write: func(ctx context.Context, destination io.Writer) error {
+		chunk := make([]byte, 1<<20)
+		var written int64
+		for written < 1<<30 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			amount, err := destination.Write(chunk)
+			if err != nil {
+				return err
+			}
+			if amount != len(chunk) {
+				return io.ErrShortWrite
+			}
+			written += int64(amount)
+		}
+		return nil
+	}}}
+}
+
+type boundedArtifactPublisher struct {
+	puts         int
+	maximumSize  int64
+	maximumWrite int
+}
+
+func (publisher *boundedArtifactPublisher) Put(ctx context.Context, request artifact.PutRequest, produce func(io.Writer) error) (artifact.Manifest, error) {
+	writer := &boundedWriter{}
+	if err := produce(writer); err != nil {
+		return artifact.Manifest{}, err
+	}
+	publisher.puts++
+	if writer.size > publisher.maximumSize {
+		publisher.maximumSize = writer.size
+	}
+	if writer.maximumWrite > publisher.maximumWrite {
+		publisher.maximumWrite = writer.maximumWrite
+	}
+	digest := digestBytes([]byte(request.ArtifactID))
+	return artifact.Manifest{URI: "artifact://sha256/" + digest[len("sha256:"):], SHA256: digest, Size: writer.size}, ctx.Err()
+}
+
+type boundedWriter struct {
+	size         int64
+	maximumWrite int
+}
+
+func (writer *boundedWriter) Write(value []byte) (int, error) {
+	if len(value) > writer.maximumWrite {
+		writer.maximumWrite = len(value)
+	}
+	writer.size += int64(len(value))
+	return len(value), nil
 }
 
 func testManifest() contracts.SubmissionManifest {

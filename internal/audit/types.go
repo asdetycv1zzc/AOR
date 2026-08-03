@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
+	"github.com/akimisaka/aor/internal/artifact"
 	"github.com/akimisaka/aor/pkg/contracts"
 )
 
@@ -16,6 +18,7 @@ var (
 	ErrDeterministicGate  = errors.New("deterministic audit gate failed")
 	ErrBlindContext       = errors.New("auditor context is not blind")
 	ErrAuditorUnavailable = errors.New("fresh auditor is unavailable")
+	ErrArtifactStore      = errors.New("audit artifact store is required for streaming output")
 )
 
 type CheckStatus string
@@ -27,11 +30,25 @@ const (
 )
 
 type CheckResult struct {
-	Status   CheckStatus
-	Findings []string
-	Stdout   []byte
-	Stderr   []byte
-	Result   []byte
+	Status       CheckStatus
+	Findings     []string
+	Stdout       []byte
+	Stderr       []byte
+	Result       []byte
+	StdoutStream *StreamOutput
+	StderrStream *StreamOutput
+	ResultStream *StreamOutput
+}
+
+// StreamOutput lets a check hand a large result directly to the artifact store.
+// The callback must not retain the destination after it returns.
+type StreamOutput struct {
+	MediaType string
+	Write     func(context.Context, io.Writer) error
+}
+
+type ArtifactPublisher interface {
+	Put(context.Context, artifact.PutRequest, func(io.Writer) error) (artifact.Manifest, error)
 }
 
 type Check interface {
@@ -40,6 +57,7 @@ type Check interface {
 }
 
 type DeterministicInput struct {
+	TenantID           string
 	Manifest           contracts.SubmissionManifest
 	ModuleSpecRef      contracts.SpecRef
 	AllowedPaths       []string
@@ -142,10 +160,11 @@ type AuditResult struct {
 }
 
 type Pipeline struct {
-	checks   []Check
-	auditors AuditorFactory
-	signer   Signer
-	store    EvidenceStore
-	clock    func() time.Time
-	version  string
+	checks    []Check
+	auditors  AuditorFactory
+	signer    Signer
+	store     EvidenceStore
+	artifacts ArtifactPublisher
+	clock     func() time.Time
+	version   string
 }

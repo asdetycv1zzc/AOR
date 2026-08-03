@@ -5,12 +5,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"path"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/akimisaka/aor/internal/artifact"
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 	"github.com/akimisaka/aor/pkg/contracts"
 )
@@ -18,6 +21,14 @@ import (
 var digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 func NewPipeline(checks []Check, auditors AuditorFactory, signer Signer, store EvidenceStore, version string, clock func() time.Time) (*Pipeline, error) {
+	return newPipeline(checks, auditors, signer, store, nil, version, clock)
+}
+
+func NewPipelineWithArtifactStore(checks []Check, auditors AuditorFactory, signer Signer, store EvidenceStore, artifacts ArtifactPublisher, version string, clock func() time.Time) (*Pipeline, error) {
+	return newPipeline(checks, auditors, signer, store, artifacts, version, clock)
+}
+
+func newPipeline(checks []Check, auditors AuditorFactory, signer Signer, store EvidenceStore, artifacts ArtifactPublisher, version string, clock func() time.Time) (*Pipeline, error) {
 	if signer == nil || store == nil || strings.TrimSpace(version) == "" {
 		return nil, ErrInvalidInput
 	}
@@ -34,7 +45,7 @@ func NewPipeline(checks []Check, auditors AuditorFactory, signer Signer, store E
 		}
 		seen[check.ID()] = true
 	}
-	return &Pipeline{checks: append([]Check(nil), checks...), auditors: auditors, signer: signer, store: store, clock: clock, version: version}, nil
+	return &Pipeline{checks: append([]Check(nil), checks...), auditors: auditors, signer: signer, store: store, artifacts: artifacts, clock: clock, version: version}, nil
 }
 
 func (p *Pipeline) Run(ctx context.Context, input DeterministicInput) (AuditResult, error) {
@@ -44,8 +55,12 @@ func (p *Pipeline) Run(ctx context.Context, input DeterministicInput) (AuditResu
 	if err := validateInput(input); err != nil {
 		return AuditResult{}, err
 	}
+	if p.artifacts != nil && strings.TrimSpace(input.TenantID) == "" {
+		return AuditResult{}, ErrInvalidInput
+	}
 	checks := make([]contracts.EvidenceCheck, 0, len(p.checks))
 	findings := []string{}
+	artifactRefs := []string{}
 	for ordinal, check := range p.checks {
 		started := p.clock().UTC()
 		result := check.Run(ctx, cloneDeterministicInput(input))
@@ -57,10 +72,14 @@ func (p *Pipeline) Run(ctx context.Context, input DeterministicInput) (AuditResu
 		if result.Status != StatusPass {
 			findings = append(findings, result.Findings...)
 		}
-		resultDigest := digestBytes(result.Result)
-		checks = append(checks, contracts.EvidenceCheck{CheckID: check.ID(), Ordinal: ordinal + 1, Type: "DETERMINISTIC", Status: status, Tool: contracts.CheckTool{Name: "aor-audit", Version: p.version, Digest: digestBytes([]byte(p.version))}, StartedAt: started.Format(time.RFC3339), CompletedAt: ended.Format(time.RFC3339), StdoutURI: artifactURI(result.Stdout), StderrURI: artifactURI(result.Stderr), ResultURI: artifactURI(result.Result), ResultSHA256: resultDigest})
+		outputs, err := p.persistCheckOutputs(ctx, input, check.ID(), result)
+		if err != nil {
+			return AuditResult{}, err
+		}
+		artifactRefs = appendUnique(artifactRefs, outputs.refs...)
+		checks = append(checks, contracts.EvidenceCheck{CheckID: check.ID(), Ordinal: ordinal + 1, Type: "DETERMINISTIC", Status: status, Tool: contracts.CheckTool{Name: "aor-audit", Version: p.version, Digest: digestBytes([]byte(p.version))}, StartedAt: started.Format(time.RFC3339), CompletedAt: ended.Format(time.RFC3339), StdoutURI: outputs.stdout, StderrURI: outputs.stderr, ResultURI: outputs.result, ResultSHA256: outputs.resultDigest})
 	}
-	bundle := contracts.EvidenceBundle{EvidenceBundleVersion: 1, ProjectID: input.Manifest.ProjectID, TaskID: input.Manifest.ModuleTaskID, AttemptSeriesID: input.Manifest.AttemptSeriesID, Attempt: input.Manifest.Attempt, SpecVersion: input.ModuleSpecRef.Version, BaseCommit: input.Manifest.BaseCommit, SubmissionCommit: input.Manifest.HeadCommit, PipelineVersion: p.version, PolicyBundleDigest: input.PolicyDigest, ExecutionPlatform: input.Platform, IsolationLevel: input.Isolation, SandboxAttestation: input.SandboxAttestation, Checks: checks, Findings: append([]string(nil), findings...), Artifacts: []string{}, LLMAudit: contracts.LLMAudit{Verdict: "NOT_RUN"}}
+	bundle := contracts.EvidenceBundle{EvidenceBundleVersion: 1, ProjectID: input.Manifest.ProjectID, TaskID: input.Manifest.ModuleTaskID, AttemptSeriesID: input.Manifest.AttemptSeriesID, Attempt: input.Manifest.Attempt, SpecVersion: input.ModuleSpecRef.Version, BaseCommit: input.Manifest.BaseCommit, SubmissionCommit: input.Manifest.HeadCommit, PipelineVersion: p.version, PolicyBundleDigest: input.PolicyDigest, ExecutionPlatform: input.Platform, IsolationLevel: input.Isolation, SandboxAttestation: input.SandboxAttestation, Checks: checks, Findings: append([]string(nil), findings...), Artifacts: artifactRefs, LLMAudit: contracts.LLMAudit{Verdict: "NOT_RUN"}}
 	if len(findings) == 0 {
 		blind := BlindAuditInput{ProjectID: input.Manifest.ProjectID, TaskID: input.Manifest.ModuleTaskID, Attempt: input.Manifest.Attempt, ModuleSpecRef: input.ModuleSpecRef, BaseCommit: input.Manifest.BaseCommit, SubmissionCommit: input.Manifest.HeadCommit, ChangedFiles: append([]string(nil), input.Manifest.ChangedFiles...), DeterministicChecks: append([]contracts.EvidenceCheck(nil), checks...)}
 		if p.auditors == nil {
@@ -255,6 +274,108 @@ func artifactURI(value []byte) string {
 		return "artifact://empty"
 	}
 	return "artifact://sha256/" + strings.TrimPrefix(digestBytes(value), "sha256:")
+}
+
+type persistedOutputs struct {
+	stdout       string
+	stderr       string
+	result       string
+	resultDigest string
+	refs         []string
+}
+
+func (p *Pipeline) persistCheckOutputs(ctx context.Context, input DeterministicInput, checkID string, result CheckResult) (persistedOutputs, error) {
+	if p.artifacts == nil {
+		if result.StdoutStream != nil || result.StderrStream != nil || result.ResultStream != nil {
+			return persistedOutputs{}, ErrArtifactStore
+		}
+		return persistedOutputs{stdout: artifactURI(result.Stdout), stderr: artifactURI(result.Stderr), result: artifactURI(result.Result), resultDigest: digestBytes(result.Result)}, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	outputs := persistedOutputs{}
+	var err error
+	outputs.stdout, err = p.persistOutput(ctx, input, checkID, "stdout", result.Stdout, result.StdoutStream)
+	if err != nil {
+		return persistedOutputs{}, err
+	}
+	outputs.stderr, err = p.persistOutput(ctx, input, checkID, "stderr", result.Stderr, result.StderrStream)
+	if err != nil {
+		return persistedOutputs{}, err
+	}
+	outputs.result, err = p.persistOutput(ctx, input, checkID, "result", result.Result, result.ResultStream)
+	if err != nil {
+		return persistedOutputs{}, err
+	}
+	outputs.resultDigest = strings.TrimPrefix(outputs.result, "artifact://sha256/")
+	if len(outputs.resultDigest) == 64 {
+		outputs.resultDigest = "sha256:" + outputs.resultDigest
+	} else {
+		return persistedOutputs{}, artifact.ErrIntegrity
+	}
+	outputs.refs = appendUnique(outputs.refs, outputs.stdout, outputs.stderr, outputs.result)
+	return outputs, nil
+}
+
+func (p *Pipeline) persistOutput(ctx context.Context, input DeterministicInput, checkID, kind string, value []byte, stream *StreamOutput) (string, error) {
+	if stream != nil && len(value) > 0 {
+		return "", ErrInvalidInput
+	}
+	mediaType := "application/octet-stream"
+	if kind == "stdout" || kind == "stderr" {
+		mediaType = "text/plain; charset=utf-8"
+	}
+	var produce func(io.Writer) error
+	if stream != nil {
+		if stream.Write == nil {
+			return "", ErrInvalidInput
+		}
+		if stream.MediaType != "" {
+			mediaType = stream.MediaType
+		}
+		produce = func(destination io.Writer) error {
+			return stream.Write(ctx, destination)
+		}
+	} else {
+		contents := append([]byte(nil), value...)
+		produce = func(destination io.Writer) error {
+			_, err := destination.Write(contents)
+			return err
+		}
+	}
+	manifest, err := p.artifacts.Put(ctx, artifact.PutRequest{TenantID: input.TenantID, ProjectID: input.Manifest.ProjectID, TaskID: input.Manifest.ModuleTaskID, ArtifactID: auditArtifactID(input, checkID, kind), MediaType: mediaType, CreatedBy: "aor-audit-service", RetentionPolicy: "audit-evidence", Encrypted: true}, produce)
+	if err != nil {
+		return "", err
+	}
+	if !digestPattern.MatchString(manifest.SHA256) || manifest.URI != "artifact://sha256/"+strings.TrimPrefix(manifest.SHA256, "sha256:") || manifest.Size < 0 {
+		return "", artifact.ErrIntegrity
+	}
+	return manifest.URI, nil
+}
+
+func auditArtifactID(input DeterministicInput, checkID, kind string) string {
+	seed := input.Manifest.ProjectID + "\x00" + input.Manifest.ModuleTaskID + "\x00" + input.Manifest.AttemptSeriesID + "\x00" + strconv.Itoa(input.Manifest.Attempt) + "\x00" + checkID + "\x00" + kind
+	digest := sha256.Sum256([]byte(seed))
+	return "audit-" + hex.EncodeToString(digest[:])
+}
+
+func appendUnique(values []string, additions ...string) []string {
+	seen := make(map[string]struct{}, len(values)+len(additions))
+	for _, value := range values {
+		seen[value] = struct{}{}
+	}
+	for _, value := range additions {
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		values = append(values, value)
+	}
+	return values
 }
 
 func digestBytes(value []byte) string {
