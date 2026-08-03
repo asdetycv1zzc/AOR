@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "taskId": "WP-09",
+  "specVersion": "2.0.0",
+  "requirements": ["AOR-ACC-007", "AOR-INV-011", "AOR-ACC-034", "AOR-ACC-039"],
+  "criteria": [
+    {"id": "WP09-AC-001", "evidence": "internal/repository/service_test.go", "required": true},
+    {"id": "WP09-AC-002", "evidence": "internal/repository/service.go", "required": true},
+    {"id": "WP09-AC-003", "evidence": "WP-15 preproduction filesystem and hard-link report", "required": true, "environmentGate": true}
+  ]
+}
