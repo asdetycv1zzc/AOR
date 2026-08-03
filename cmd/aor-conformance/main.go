@@ -8,6 +8,7 @@ import (
 
 	"github.com/akimisaka/aor/internal/bootstrap"
 	contractcheck "github.com/akimisaka/aor/internal/contracts"
+	"github.com/akimisaka/aor/internal/state"
 )
 
 type result struct {
@@ -18,7 +19,7 @@ type result struct {
 
 func main() {
 	if len(os.Args) != 2 {
-		fail("usage", []bootstrap.Finding{{Code: "INVALID_ARGUMENT", Message: "usage: aor-conformance <source-format|schemas|contracts|aop|a2a|cloudevents|openapi|asyncapi|repository|secrets|licenses>"}})
+		fail("usage", []bootstrap.Finding{{Code: "INVALID_ARGUMENT", Message: "usage: aor-conformance <source-format|schemas|contracts|aop|a2a|cloudevents|openapi|asyncapi|state-machine|repository|secrets|licenses>"}})
 	}
 	root, err := os.Getwd()
 	if err != nil {
@@ -35,6 +36,10 @@ func main() {
 		findings = append(findings, convertContractFindings(contractcheck.ValidateRepositoryContracts(root))...)
 	case "contracts", "aop", "a2a", "cloudevents", "openapi", "asyncapi":
 		findings = convertContractFindings(contractcheck.ValidateRepositoryContracts(root))
+	case "state-machine":
+		for _, err := range state.Conformance() {
+			findings = append(findings, bootstrap.Finding{Code: "STATE_CONFORMANCE_FAILED", Path: "conformance/state-machine/core.feature", Message: err.Error()})
+		}
 	case "repository":
 		findings = append(findings, bootstrap.ValidateRepository(root)...)
 		findings = append(findings, bootstrap.ValidateADRs(root, 25)...)

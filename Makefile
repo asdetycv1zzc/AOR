@@ -1,4 +1,4 @@
-.PHONY: build test lint schema cross-language repository-check secret-scan license-scan verify
+.PHONY: build test lint schema cross-language repository-check secret-scan license-scan state-machine verify
 
 GOCACHE ?= $(CURDIR)/.cache/go-build
 GOMODCACHE ?= $(CURDIR)/.cache/go-mod
@@ -31,4 +31,7 @@ secret-scan:
 license-scan:
 	go run ./cmd/aor-conformance licenses
 
-verify: build lint test schema cross-language repository-check secret-scan license-scan
+state-machine:
+	go run ./cmd/aor-conformance state-machine
+
+verify: build lint test schema cross-language repository-check secret-scan license-scan state-machine

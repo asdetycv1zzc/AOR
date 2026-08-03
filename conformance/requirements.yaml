@@ -7,25 +7,35 @@ spec:
 requirements:
   - id: AOR-INV-001
     title: Agents cannot write system facts directly
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/orchestrator/service.go
+      - internal/state/
+    tests:
+      - internal/orchestrator/service_test.go
+      - tests/integration/state_replay_test.go
+    evidenceType: go-test+event-log
     owner: architecture
-    status: planned
+    status: implemented
   - id: AOR-INV-002
     title: Goal approval gates planning and development
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/orchestrator/service.go
+      - internal/state/project.go
+    tests:
+      - internal/orchestrator/service_test.go
+      - internal/state/project_test.go
+    evidenceType: go-test+state-transition
     owner: architecture
-    status: planned
+    status: implemented
   - id: AOR-INV-003
     title: Goal negotiation has no automatic round limit
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/state/project.go
+    tests:
+      - internal/state/project_test.go
+    evidenceType: go-test
     owner: architecture
-    status: planned
+    status: implemented
   - id: AOR-INV-004
     title: Global active Agent concurrency is at most eight
     implementation: []
@@ -35,11 +45,15 @@ requirements:
     status: planned
   - id: AOR-INV-005
     title: Executors cannot decide completion
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/state/task.go
+      - pkg/contracts/types.go
+    tests:
+      - pkg/contracts/types_test.go
+      - internal/state/project_test.go
+    evidenceType: go-test
     owner: architecture
-    status: planned
+    status: implemented
   - id: AOR-INV-006
     title: Every LLM audit uses a fresh blind Auditor
     implementation: []
@@ -49,18 +63,26 @@ requirements:
     status: planned
   - id: AOR-INV-007
     title: A ModuleTask allows at most three attempts per series
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/state/task.go
+      - migrations/postgres/000001_core.up.sql
+    tests:
+      - internal/state/task_test.go
+      - tests/integration/third_attempt_test.go
+    evidenceType: go-test+database-constraint
     owner: architecture
-    status: planned
+    status: implemented
   - id: AOR-INV-008
     title: Third failure decisions belong directly to the user
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/state/task.go
+      - internal/orchestrator/service.go
+    tests:
+      - internal/state/task_test.go
+      - tests/integration/third_attempt_test.go
+    evidenceType: go-test+event-log
     owner: architecture
-    status: planned
+    status: implemented
   - id: AOR-INV-009
     title: Only Knowledge Curator may write knowledge
     implementation: []
@@ -98,95 +120,147 @@ requirements:
     status: planned
   - id: AOR-INV-014
     title: Message processing is idempotent under duplication and disorder
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/eventing/
+      - internal/projection/
+      - internal/idempotency/
+    tests:
+      - internal/eventing/memory_test.go
+      - internal/eventing/inbox_test.go
+      - internal/projection/projector_test.go
+    evidenceType: go-test+event-replay
     owner: architecture
-    status: planned
+    status: implemented
   - id: AOR-INV-015
     title: Human approvals are immutable records
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - migrations/postgres/000001_core.up.sql
+      - internal/eventing/store.go
+      - internal/eventing/memory.go
+      - internal/orchestrator/service.go
+      - internal/state/project.go
+      - internal/state/approval.go
+    tests:
+      - internal/eventing/migration_test.go
+      - internal/eventing/memory_test.go
+      - internal/state/project_test.go
+    evidenceType: migration-constraint+go-test
     owner: architecture
-    status: planned
+    status: implemented
   - id: AOR-ORCH-001
     title: Orchestrator is the sole business state writer
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/orchestrator/service.go
+      - internal/state/
+    tests:
+      - internal/orchestrator/service_test.go
+    evidenceType: go-test
     owner: control-plane
-    status: planned
+    status: implemented
   - id: AOR-ORCH-002
     title: State event and outbox update atomically
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/eventing/memory.go
+      - internal/eventing/postgres.go
+      - migrations/postgres/000001_core.up.sql
+    tests:
+      - internal/eventing/memory_test.go
+      - internal/eventing/migration_test.go
+    evidenceType: transaction-test+migration
     owner: control-plane
-    status: planned
+    status: implemented
   - id: AOR-ORCH-003
     title: Workflow code performs no direct side effects
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/workflow/history.go
+    tests:
+      - internal/workflow/history_test.go
+    evidenceType: deterministic-replay-test
     owner: control-plane
-    status: planned
+    status: implemented
   - id: AOR-ORCH-004
     title: Commands use optimistic expected versions
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/orchestrator/service.go
+      - internal/eventing/
+    tests:
+      - internal/orchestrator/service_test.go
+      - internal/eventing/memory_test.go
+    evidenceType: go-test
     owner: control-plane
-    status: planned
+    status: implemented
   - id: AOR-ORCH-005
     title: Duplicate commands return the original result
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/eventing/memory.go
+      - internal/eventing/postgres.go
+    tests:
+      - internal/eventing/memory_test.go
+      - internal/orchestrator/service_test.go
+    evidenceType: go-test
     owner: control-plane
-    status: planned
+    status: implemented
   - id: AOR-GOAL-001
     title: Goal negotiation supports unlimited rounds
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/state/project.go
+    tests:
+      - internal/state/project_test.go
+    evidenceType: 100-round-go-test
     owner: goal-workflow
-    status: planned
+    status: implemented
   - id: AOR-GOAL-002
     title: Cost and time never auto-approve a goal
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/state/project.go
+    tests:
+      - internal/state/project_test.go
+    evidenceType: go-test
     owner: goal-workflow
-    status: planned
+    status: implemented
   - id: AOR-GOAL-003
     title: Inactive goal negotiation may suspend and resume
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/state/project.go
+    tests:
+      - internal/state/project_test.go
+    evidenceType: go-test+state-transition
     owner: goal-workflow
-    status: planned
+    status: implemented
   - id: AOR-GOAL-004
     title: Agent agreement cannot replace user approval
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/state/project.go
+      - migrations/postgres/000001_core.up.sql
+    tests:
+      - internal/state/project_test.go
+    evidenceType: go-test+approval-record
     owner: goal-workflow
-    status: planned
+    status: implemented
   - id: AOR-GOAL-005
     title: Approval binds GoalSpec identity version digest and user
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/state/project.go
+      - internal/state/approval.go
+      - internal/eventing/store.go
+      - internal/orchestrator/service.go
+      - pkg/contracts/validate_raw.go
+    tests:
+      - internal/state/project_test.go
+      - pkg/contracts/validate_raw_test.go
+    evidenceType: go-test+canonical-hash
     owner: goal-workflow
-    status: planned
+    status: implemented
   - id: AOR-GOAL-006
     title: Material goal changes create a new immutable version
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/state/project.go
+      - internal/orchestrator/service.go
+    tests:
+      - tests/integration/goal_supersede_test.go
+    evidenceType: integration-event-log
     owner: goal-workflow
-    status: planned
+    status: implemented
   - id: AOR-ACC-001
     title: Production acceptance criterion 001
     implementation: []
@@ -202,19 +276,24 @@ requirements:
     owner: control-plane
     status: planned
   - id: AOR-ACC-003
-    title: Production acceptance criterion 003
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: One hundred goal rounds do not auto-approve or develop
+    implementation:
+      - internal/state/project.go
+    tests:
+      - internal/state/project_test.go
+    evidenceType: 100-round-go-test
     owner: control-plane
-    status: planned
+    status: implemented
   - id: AOR-ACC-004
-    title: Production acceptance criterion 004
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Goal change supersedes only impacted tasks
+    implementation:
+      - internal/state/project.go
+      - internal/orchestrator/service.go
+    tests:
+      - tests/integration/goal_supersede_test.go
+    evidenceType: integration-event-log
     owner: control-plane
-    status: planned
+    status: implemented
   - id: AOR-ACC-005
     title: Production acceptance criterion 005
     implementation: []
@@ -307,12 +386,15 @@ requirements:
     owner: control-plane
     status: planned
   - id: AOR-ACC-018
-    title: Production acceptance criterion 018
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Orchestrator state survives commit-result failure and retry
+    implementation:
+      - internal/eventing/memory.go
+      - internal/orchestrator/service.go
+    tests:
+      - internal/eventing/memory_test.go
+    evidenceType: failure-injection+idempotent-retry
     owner: control-plane
-    status: planned
+    status: implemented
   - id: AOR-ACC-019
     title: Production acceptance criterion 019
     implementation: []
@@ -348,19 +430,27 @@ requirements:
     owner: protocol
     status: implemented
   - id: AOR-ACC-023
-    title: Production acceptance criterion 023
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Identical idempotent commands have one effect
+    implementation:
+      - internal/eventing/memory.go
+      - internal/orchestrator/service.go
+    tests:
+      - internal/eventing/memory_test.go
+      - internal/orchestrator/service_test.go
+    evidenceType: 100-repeat-go-test
     owner: protocol
-    status: planned
+    status: implemented
   - id: AOR-ACC-024
-    title: Production acceptance criterion 024
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Changed idempotent command bodies conflict
+    implementation:
+      - internal/eventing/memory.go
+      - internal/orchestrator/service.go
+    tests:
+      - internal/eventing/memory_test.go
+      - internal/orchestrator/service_test.go
+    evidenceType: digest-conflict-go-test
     owner: protocol
-    status: planned
+    status: implemented
   - id: AOR-ACC-025
     title: CloudEvents envelope and catalog validation
     implementation:
@@ -423,12 +513,15 @@ requirements:
     owner: persistence
     status: planned
   - id: AOR-ACC-033
-    title: Production acceptance criterion 033
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Duplicate and out-of-order events preserve projection invariants
+    implementation:
+      - internal/projection/projector.go
+    tests:
+      - internal/projection/projector_test.go
+      - tests/integration/state_replay_test.go
+    evidenceType: duplicate-disorder-replay
     owner: persistence
-    status: planned
+    status: implemented
   - id: AOR-ACC-034
     title: Production acceptance criterion 034
     implementation: []
@@ -465,19 +558,25 @@ requirements:
     owner: persistence
     status: planned
   - id: AOR-ACC-039
-    title: Production acceptance criterion 039
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Replaced specs reject stale task submissions
+    implementation:
+      - internal/state/task.go
+    tests:
+      - internal/state/task_test.go
+    evidenceType: stale-spec-go-test
     owner: persistence
-    status: planned
+    status: implemented
   - id: AOR-ACC-040
-    title: Production acceptance criterion 040
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Immutable event log rebuilds online projection
+    implementation:
+      - internal/projection/projector.go
+      - internal/eventing/memory.go
+    tests:
+      - tests/integration/state_replay_test.go
+      - internal/projection/projector_test.go
+    evidenceType: event-replay-digest
     owner: persistence
-    status: planned
+    status: implemented
   - id: AOR-ACC-041
     title: Production acceptance criterion 041
     implementation: []

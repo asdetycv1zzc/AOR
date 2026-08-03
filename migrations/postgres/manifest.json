@@ -1,0 +1,13 @@
+{
+  "migrationManifestVersion": 1,
+  "database": "postgresql",
+  "migrations": [
+    {
+      "version": 1,
+      "mode": "EXPAND",
+      "file": "000001_core.up.sql",
+      "sha256": "sha256:83ce842cfe34fa3ac7cbcc19db11b7fad3e4656b4162293b00fc15c8bedbd110",
+      "destructive": false
+    }
+  ]
+}

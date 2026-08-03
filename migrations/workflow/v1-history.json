@@ -1,0 +1,8 @@
+{
+  "workflowVersion": 1,
+  "steps": [
+    {"aggregateVersion": 1, "eventType": "io.aor.project.created.v1", "eventSha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"},
+    {"aggregateVersion": 2, "eventType": "io.aor.goal.proposed.v1", "eventSha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111"},
+    {"aggregateVersion": 3, "eventType": "io.aor.goal.approved.v1", "eventSha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222"}
+  ]
+}
