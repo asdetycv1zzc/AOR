@@ -168,11 +168,16 @@ func runGroup(ctx context.Context, root, group string) ([]RequirementResult, err
 
 func conformanceRequirement(group string) string {
 	switch group {
-	case "a2a": return "AOR-ACC-021"
-	case "aop": return "AOR-ACC-022"
-	case "mcp": return "AOR-ACC-028"
-	case "idempotency": return "AOR-ACC-023"
-	default: return "AOR-ACC-025"
+	case "a2a":
+		return "AOR-ACC-021"
+	case "aop":
+		return "AOR-ACC-022"
+	case "mcp":
+		return "AOR-ACC-028"
+	case "idempotency":
+		return "AOR-ACC-023"
+	default:
+		return "AOR-ACC-025"
 	}
 }
 
