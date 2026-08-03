@@ -29,6 +29,24 @@ func TestEventRejectsMissingAggregateVersion(t *testing.T) {
 	}
 }
 
+func TestEventRejectsMissingOrMismatchedCorrelation(t *testing.T) {
+	event := validEvent()
+	event.TaskIDReason = ""
+	if err := event.Validate(); err == nil {
+		t.Fatal("event accepted an unexplained missing task")
+	}
+	event = validEvent()
+	event.ProjectID = "another-project"
+	if err := event.Validate(); err == nil {
+		t.Fatal("event accepted mismatched project correlation")
+	}
+	event = validEvent()
+	event.Traceparent = "00-00000000000000000000000000000000-0000000000000000-01"
+	if err := event.Validate(); err == nil {
+		t.Fatal("event accepted an all-zero trace context")
+	}
+}
+
 func validEvent() Event {
 	return Event{
 		SpecVersion:     "1.0",
@@ -40,6 +58,9 @@ func validEvent() Event {
 		DataContentType: "application/json",
 		DataSchema:      "https://schemas.aor.local/events/project-created.v1.schema.json",
 		Traceparent:     "00-00000000000000000000000000000001-0000000000000001-01",
+		ProjectID:       "prj_1",
+		TaskIDReason:    "NOT_CREATED",
+		AgentRunReason:  "NOT_CREATED",
 		Data:            json.RawMessage(`{"projectId":"prj_1","aggregateVersion":1}`),
 	}
 }

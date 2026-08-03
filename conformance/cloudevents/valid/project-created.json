@@ -8,5 +8,8 @@
   "datacontenttype": "application/json",
   "dataschema": "https://schemas.aor.local/events/project-created.v1.schema.json",
   "traceparent": "00-00000000000000000000000000000001-0000000000000001-01",
+  "aorprojectid": "prj_1",
+  "aortaskidreason": "NOT_CREATED",
+  "aoragentrunidreason": "NOT_CREATED",
   "data": {"projectId": "prj_1", "aggregateVersion": 1}
 }

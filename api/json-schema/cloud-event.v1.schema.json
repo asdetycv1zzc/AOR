@@ -3,7 +3,7 @@
   "$id": "https://schemas.aor.local/cloud-event.v1.schema.json",
   "title": "AOR CloudEvents 1.0 Envelope",
   "type": "object",
-  "required": ["specversion", "id", "source", "type", "subject", "time", "datacontenttype", "dataschema", "traceparent", "data"],
+  "required": ["specversion", "id", "source", "type", "subject", "time", "datacontenttype", "dataschema", "traceparent", "aorprojectid", "data"],
   "properties": {
     "specversion": {"const": "1.0"},
     "id": {"$ref": "common.v1.schema.json#/$defs/opaqueId"},
@@ -15,6 +15,15 @@
     "dataschema": {"type": "string", "format": "uri"},
     "traceparent": {"$ref": "common.v1.schema.json#/$defs/traceparent"},
     "tracestate": {"type": "string", "maxLength": 512},
+    "aorprojectid": {"$ref": "common.v1.schema.json#/$defs/opaqueId"},
+    "aortaskid": {"$ref": "common.v1.schema.json#/$defs/opaqueId"},
+    "aortaskidreason": {"enum": ["NOT_APPLICABLE", "NOT_CREATED", "UNAVAILABLE", "REDACTED_BY_POLICY"]},
+    "aoragentrunid": {"$ref": "common.v1.schema.json#/$defs/opaqueId"},
+    "aoragentrunidreason": {"enum": ["NOT_APPLICABLE", "NOT_CREATED", "UNAVAILABLE", "REDACTED_BY_POLICY"]},
     "data": {"type": "object", "required": ["projectId", "aggregateVersion"], "properties": {"projectId": {"$ref": "common.v1.schema.json#/$defs/opaqueId"}, "aggregateVersion": {"type": "integer", "minimum": 1}}}
-  }
+  },
+  "allOf": [
+    {"oneOf": [{"required": ["aortaskid"], "not": {"required": ["aortaskidreason"]}}, {"required": ["aortaskidreason"], "not": {"required": ["aortaskid"]}}]},
+    {"oneOf": [{"required": ["aoragentrunid"], "not": {"required": ["aoragentrunidreason"]}}, {"required": ["aoragentrunidreason"], "not": {"required": ["aoragentrunid"]}}]}
+  ]
 }
