@@ -536,3 +536,65 @@ func (g GoalSpec) Validate() error {
 	}
 	return validateDigest(g.ContentSHA256)
 }
+
+func (p PlanSpec) Validate() error {
+	if p.PlanSpecVersion < 1 || p.ProjectID == "" || p.Architecture.Style == "" || len(p.Modules) == 0 {
+		return fmt.Errorf("plan identity, architecture, and modules are required")
+	}
+	if err := p.GoalSpecRef.Validate(); err != nil {
+		return fmt.Errorf("goal reference: %w", err)
+	}
+	modules := make(map[string]PlanModule, len(p.Modules))
+	for _, module := range p.Modules {
+		if module.ModuleID == "" || module.Name == "" || module.Responsibility == "" || len(module.AcceptanceCriteria) == 0 || !validPlatformIsolation(module.ExecutionPlatform, module.SandboxLevel) {
+			return fmt.Errorf("plan module identity, ownership, acceptance, or platform is invalid")
+		}
+		switch module.Risk {
+		case "LOW", "MEDIUM", "HIGH", "CRITICAL":
+		default:
+			return fmt.Errorf("plan module risk is invalid")
+		}
+		if _, exists := modules[module.ModuleID]; exists {
+			return fmt.Errorf("plan module IDs must be unique")
+		}
+		modules[module.ModuleID] = module
+	}
+	indegree := make(map[string]int, len(modules))
+	reverse := make(map[string][]string, len(modules))
+	for id, module := range modules {
+		seen := make(map[string]bool, len(module.Dependencies))
+		for _, dependency := range module.Dependencies {
+			if dependency == id || seen[dependency] {
+				return fmt.Errorf("plan module dependency is cyclic or duplicated")
+			}
+			if _, exists := modules[dependency]; !exists {
+				return fmt.Errorf("plan module dependency is unknown")
+			}
+			seen[dependency] = true
+			indegree[id]++
+			reverse[dependency] = append(reverse[dependency], id)
+		}
+	}
+	queue := make([]string, 0, len(modules))
+	for id := range modules {
+		if indegree[id] == 0 {
+			queue = append(queue, id)
+		}
+	}
+	visited := 0
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		visited++
+		for _, dependent := range reverse[id] {
+			indegree[dependent]--
+			if indegree[dependent] == 0 {
+				queue = append(queue, dependent)
+			}
+		}
+	}
+	if visited != len(modules) {
+		return fmt.Errorf("plan module dependency graph must be acyclic")
+	}
+	return validateDigest(p.SHA256)
+}

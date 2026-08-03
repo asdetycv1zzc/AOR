@@ -5,7 +5,7 @@
   "type": "object",
   "required": ["planSpecVersion", "projectId", "goalSpecRef", "architecture", "qualityAttributes", "modules", "integrationPlan", "releasePlan", "testStrategy", "rollbackStrategy", "openDecisions", "sha256"],
   "properties": {
-    "planSpecVersion": {"const": 1},
+    "planSpecVersion": {"type": "integer", "minimum": 1},
     "projectId": {"$ref": "common.v1.schema.json#/$defs/opaqueId"},
     "goalSpecRef": {"$ref": "common.v1.schema.json#/$defs/specRef"},
     "architecture": {

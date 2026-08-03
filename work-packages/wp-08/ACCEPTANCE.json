@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "taskId": "WP-08",
+  "specVersion": "2.0.0",
+  "requirements": ["AOR-GOAL-001", "AOR-GOAL-002", "AOR-GOAL-004", "AOR-GOAL-005", "AOR-GOAL-006", "AOR-ACC-001", "AOR-ACC-002", "AOR-ACC-003", "AOR-ACC-004", "AOR-ACC-005"],
+  "criteria": [
+    {"id": "WP08-AC-001", "evidence": "internal/goalplan/goal_test.go", "required": true},
+    {"id": "WP08-AC-002", "evidence": "internal/goalplan/planner_test.go", "required": true},
+    {"id": "WP08-AC-003", "evidence": "internal/orchestrator/plan_test.go", "required": true},
+    {"id": "WP08-AC-004", "evidence": "pkg/contracts/validate_raw_test.go", "required": true}
+  ]
+}

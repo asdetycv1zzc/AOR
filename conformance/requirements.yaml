@@ -262,25 +262,33 @@ requirements:
     owner: goal-workflow
     status: implemented
   - id: AOR-ACC-001
-    title: Production acceptance criterion 001
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Single-agent GoalSpec flow requires explicit approval before planning
+    implementation:
+      - internal/goalplan/
+      - internal/orchestrator/
+    tests:
+      - internal/goalplan/goal_test.go
+    evidenceType: go-test+immutable-artifacts
     owner: control-plane
-    status: planned
+    status: implemented
   - id: AOR-ACC-002
-    title: Production acceptance criterion 002
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Dual goal agents produce independent records and approval binds version and hash
+    implementation:
+      - internal/goalplan/
+      - internal/state/approval.go
+    tests:
+      - internal/goalplan/goal_test.go
+    evidenceType: go-test+approval-record
     owner: control-plane
-    status: planned
+    status: implemented
   - id: AOR-ACC-003
     title: One hundred goal rounds do not auto-approve or develop
     implementation:
       - internal/state/project.go
+      - internal/goalplan/goal.go
     tests:
       - internal/state/project_test.go
+      - internal/goalplan/goal_test.go
     evidenceType: 100-round-go-test
     owner: control-plane
     status: implemented
@@ -289,18 +297,27 @@ requirements:
     implementation:
       - internal/state/project.go
       - internal/orchestrator/service.go
+      - internal/goalplan/goal.go
     tests:
       - tests/integration/goal_supersede_test.go
+      - internal/goalplan/planner_test.go
     evidenceType: integration-event-log
     owner: control-plane
     status: implemented
   - id: AOR-ACC-005
-    title: Production acceptance criterion 005
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Plan Supervisor produces a validated DAG ModuleSpecs interfaces and criteria
+    implementation:
+      - internal/goalplan/planner.go
+      - internal/goalplan/validation.go
+      - internal/orchestrator/plan.go
+      - pkg/contracts/validate_raw.go
+    tests:
+      - internal/goalplan/planner_test.go
+      - internal/orchestrator/plan_test.go
+      - pkg/contracts/validate_raw_test.go
+    evidenceType: go-test+atomic-event-publication
     owner: control-plane
-    status: planned
+    status: implemented
   - id: AOR-ACC-006
     title: Production acceptance criterion 006
     implementation: []

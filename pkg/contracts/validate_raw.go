@@ -34,6 +34,50 @@ func ValidateGoalJSON(input []byte) error {
 	return goal.Validate()
 }
 
+func ValidatePlanJSON(input []byte) error {
+	canonical, err := canonicaljson.Canonicalize(input)
+	if err != nil {
+		return err
+	}
+	var plan PlanSpec
+	if err := json.Unmarshal(canonical, &plan); err != nil {
+		return fmt.Errorf("decode PlanSpec: %w", err)
+	}
+	if err := plan.Validate(); err != nil {
+		return err
+	}
+	digest, err := canonicaljson.DigestObjectWithoutFields(canonical, "sha256", "signature")
+	if err != nil {
+		return err
+	}
+	if !sameDigest(digest, plan.SHA256) {
+		return fmt.Errorf("plan digest mismatch")
+	}
+	return nil
+}
+
+func ValidateModuleJSON(input []byte) error {
+	canonical, err := canonicaljson.Canonicalize(input)
+	if err != nil {
+		return err
+	}
+	var module ModuleSpec
+	if err := json.Unmarshal(canonical, &module); err != nil {
+		return fmt.Errorf("decode ModuleSpec: %w", err)
+	}
+	if err := module.Validate(); err != nil {
+		return err
+	}
+	digest, err := canonicaljson.DigestObjectWithoutFields(canonical, "sha256", "signature")
+	if err != nil {
+		return err
+	}
+	if !sameDigest(digest, module.SHA256) {
+		return fmt.Errorf("module digest mismatch")
+	}
+	return nil
+}
+
 func ValidateSubmissionJSON(input []byte) error {
 	canonical, err := canonicaljson.Canonicalize(input)
 	if err != nil {

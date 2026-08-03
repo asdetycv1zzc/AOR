@@ -1,6 +1,7 @@
 package contracts
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -42,5 +43,46 @@ func TestValidateSubmissionJSONBindsUnknownOptionalFields(t *testing.T) {
 	}
 	if err := ValidateSubmissionJSON(mutated); err == nil {
 		t.Fatal("unknown field mutation was not detected")
+	}
+}
+
+func TestValidatePlanJSONBindsDAGAndDigest(t *testing.T) {
+	plan := PlanSpec{
+		PlanSpecVersion: 1,
+		ProjectID:       "prj_1",
+		GoalSpecRef:     SpecRef{Version: 2, SHA256: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+		Architecture:    Architecture{Style: "modular"},
+		Modules: []PlanModule{
+			{ModuleID: "mod_api", Name: "API", Responsibility: "HTTP boundary", ExecutionPlatform: PlatformLinux, SandboxLevel: IsolationContainer, AcceptanceCriteria: []string{"api works"}, Risk: "HIGH"},
+			{ModuleID: "mod_worker", Name: "Worker", Responsibility: "background work", ExecutionPlatform: PlatformLinux, SandboxLevel: IsolationContainer, Dependencies: []string{"mod_api"}, AcceptanceCriteria: []string{"work completes"}, Risk: "MEDIUM"},
+		},
+	}
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.SHA256, err = canonicaljson.DigestObjectWithoutFields(encoded, "sha256", "signature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ = json.Marshal(plan)
+	if err := ValidatePlanJSON(encoded); err != nil {
+		t.Fatal(err)
+	}
+	plan.PlanSpecVersion = 2
+	plan.SHA256 = ""
+	encoded, _ = json.Marshal(plan)
+	plan.SHA256, err = canonicaljson.DigestObjectWithoutFields(encoded, "sha256", "signature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ = json.Marshal(plan)
+	if err := ValidatePlanJSON(encoded); err != nil {
+		t.Fatal(err)
+	}
+	plan.Modules[1].Dependencies = []string{"mod_worker"}
+	encoded, _ = json.Marshal(plan)
+	if err := ValidatePlanJSON(encoded); err == nil {
+		t.Fatal("cyclic plan accepted")
 	}
 }
