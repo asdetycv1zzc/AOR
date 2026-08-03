@@ -2,7 +2,7 @@ package aor.authz
 
 import rego.v1
 
-default decision := {
+default_deny := {
     "decision": "DENY",
     "policyVersion": data.aor.policy.version,
     "reasonCodes": ["DEFAULT_DENY"],
@@ -35,11 +35,28 @@ valid_scope if {
     input.principal.tenantId in {"", input.project.tenantId}
 }
 
+read_allowed if {
+    valid_scope
+    input.action in read_actions
+}
+
 active_lease if {
     input.lease.id != ""
     input.lease.policyVersion == data.aor.policy.version
     input.lease.fencingToken > 0
     time.parse_rfc3339_ns(input.lease.expiresAt) > time.now_ns()
+}
+
+repo_write_allowed if {
+    valid_scope
+    input.action in {"repo.write", "repo.apply_patch"}
+    input.principal.type == "AGENT_INSTANCE"
+    input.principal.role == "EXECUTOR"
+    input.project.state == "EXECUTING"
+    input.task.state == "EXECUTING"
+    active_lease
+    some owned in input.task.ownedPaths
+    glob.match(owned, ["/"], input.resource.path)
 }
 
 decision := {
@@ -48,8 +65,7 @@ decision := {
     "reasonCodes": ["ROLE_ALLOWED", "PROJECT_SCOPE_VALID"],
     "ruleId": "aor.read",
 } if {
-    valid_scope
-    input.action in read_actions
+    read_allowed
 }
 
 decision := {
@@ -63,13 +79,7 @@ decision := {
         "expiresAt": input.lease.expiresAt,
     },
 } if {
-    valid_scope
-    input.action in {"repo.write", "repo.apply_patch"}
-    input.principal.type == "AGENT_INSTANCE"
-    input.principal.role == "EXECUTOR"
-    input.project.state == "EXECUTING"
-    input.task.state == "EXECUTING"
-    active_lease
+    repo_write_allowed
     some owned in input.task.ownedPaths
     glob.match(owned, ["/"], input.resource.path)
 }
@@ -89,6 +99,36 @@ decision := {
 curator_missing_approval if {
     input.action == "knowledge.write"
     not input.approval.id
+}
+
+matched if {
+    read_allowed
+}
+
+matched if {
+    repo_write_allowed
+}
+
+matched if {
+    valid_scope
+    input.action == "knowledge.write"
+    input.principal.role == "KNOWLEDGE_CURATOR"
+    not input.approval.id
+}
+
+matched if {
+    valid_scope
+    input.action == "knowledge.write"
+    input.principal.role == "KNOWLEDGE_CURATOR"
+    input.approval.id != ""
+    active_lease
+}
+
+matched if {
+    valid_scope
+    input.action in side_effect_actions
+    not active_lease
+    not curator_missing_approval
 }
 
 decision := {
@@ -115,4 +155,8 @@ decision := {
     input.action in side_effect_actions
     not active_lease
     not curator_missing_approval
+}
+
+decision := default_deny if {
+    not matched
 }
