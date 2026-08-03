@@ -124,6 +124,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -171,12 +172,14 @@ func (c *Client) request(ctx context.Context, method, route string, options Requ
 	}
 	endpoint.RawQuery = options.Query.Encode()
 	var body bytes.Buffer
+	var bodyReader io.Reader
 	if options.Body != nil {
 		if err := json.NewEncoder(&body).Encode(options.Body); err != nil {
 			return nil, err
 		}
+		bodyReader = &body
 	}
-	request, err := http.NewRequestWithContext(ctx, method, endpoint.String(), &body)
+	request, err := http.NewRequestWithContext(ctx, method, endpoint.String(), bodyReader)
 	if err != nil {
 		return nil, err
 	}
