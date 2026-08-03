@@ -1,4 +1,4 @@
-.PHONY: build test lint schema cross-language repository-check secret-scan license-scan state-machine verify
+.PHONY: build test lint schema cross-language sdk repository-check secret-scan license-scan state-machine verify
 
 GOCACHE ?= $(CURDIR)/.cache/go-build
 GOMODCACHE ?= $(CURDIR)/.cache/go-mod
@@ -22,6 +22,12 @@ cross-language:
 	node --experimental-strip-types conformance/contracts/cross-language/typescript.ts
 	python3 conformance/contracts/cross-language/python.py
 
+sdk:
+	go run ./cmd/aor-sdkgen -check -root .
+	go test ./sdk/go/aor
+	node --experimental-strip-types conformance/contracts/sdk/typescript.ts
+	python3 conformance/contracts/sdk/python.py
+
 repository-check:
 	go run ./cmd/aor-conformance repository
 
@@ -34,4 +40,4 @@ license-scan:
 state-machine:
 	go run ./cmd/aor-conformance state-machine
 
-verify: build lint test schema cross-language repository-check secret-scan license-scan state-machine
+verify: build lint test schema cross-language sdk repository-check secret-scan license-scan state-machine

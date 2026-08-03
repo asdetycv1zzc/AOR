@@ -52,16 +52,22 @@ paths:
         default: {$ref: '#/components/responses/Problem'}
   /v1/projects/{projectId}:pause:
     $ref: '#/components/pathItems/ProjectCommand'
+    x-operation-id: pauseProject
   /v1/projects/{projectId}:resume:
     $ref: '#/components/pathItems/ProjectCommand'
+    x-operation-id: resumeProject
   /v1/projects/{projectId}:abort:
     $ref: '#/components/pathItems/ProjectCommand'
+    x-operation-id: abortProject
   /v1/projects/{projectId}:archive:
     $ref: '#/components/pathItems/ProjectCommand'
+    x-operation-id: archiveProject
   /v1/projects/{projectId}:request-deletion:
     $ref: '#/components/pathItems/ProjectCommand'
+    x-operation-id: requestProjectDeletion
   /v1/projects/{projectId}:approve-release:
     $ref: '#/components/pathItems/ProjectCommand'
+    x-operation-id: approveProjectRelease
   /v1/projects/{projectId}/export:
     parameters:
       - $ref: '#/components/parameters/ProjectId'
@@ -79,6 +85,7 @@ paths:
         default: {$ref: '#/components/responses/Problem'}
   /v1/projects/{projectId}/goal/messages:
     $ref: '#/components/pathItems/ProjectCommand'
+    x-operation-id: sendGoalMessage
   /v1/projects/{projectId}/goal/specs:
     parameters:
       - $ref: '#/components/parameters/ProjectId'
@@ -108,10 +115,13 @@ paths:
         default: {$ref: '#/components/responses/Problem'}
   /v1/projects/{projectId}/goal/specs/{version}:approve:
     $ref: '#/components/pathItems/VersionedProjectCommand'
+    x-operation-id: approveGoalSpec
   /v1/projects/{projectId}/goal/specs/{version}:reject:
     $ref: '#/components/pathItems/VersionedProjectCommand'
+    x-operation-id: rejectGoalSpec
   /v1/projects/{projectId}/goal:change:
     $ref: '#/components/pathItems/ProjectCommand'
+    x-operation-id: changeGoal
   /v1/projects/{projectId}/plans:
     parameters:
       - $ref: '#/components/parameters/ProjectId'
@@ -237,8 +247,10 @@ paths:
         default: {$ref: '#/components/responses/Problem'}
   /v1/projects/{projectId}/knowledge:search:
     $ref: '#/components/pathItems/ProjectCommand'
+    x-operation-id: searchKnowledge
   /v1/projects/{projectId}/knowledge:read-range:
     $ref: '#/components/pathItems/ProjectCommand'
+    x-operation-id: readKnowledgeRange
   /v1/projects/{projectId}/knowledge/manifest:
     parameters:
       - $ref: '#/components/parameters/ProjectId'
@@ -268,6 +280,7 @@ paths:
         default: {$ref: '#/components/responses/Problem'}
   /v1/projects/{projectId}/budgets:adjust:
     $ref: '#/components/pathItems/ProjectCommand'
+    x-operation-id: adjustBudget
   /v1/projects/{projectId}/events:
     parameters:
       - $ref: '#/components/parameters/ProjectId'
@@ -287,10 +300,13 @@ paths:
         default: {$ref: '#/components/responses/Problem'}
   /v1/admin/doctor:
     $ref: '#/components/pathItems/AdminCommand'
+    x-operation-id: runDoctor
   /v1/admin/policies:test:
     $ref: '#/components/pathItems/AdminCommand'
+    x-operation-id: testPolicies
   /v1/admin/sandboxes:probe:
     $ref: '#/components/pathItems/AdminCommand'
+    x-operation-id: probeSandboxes
 components:
   securitySchemes:
     oidc:
