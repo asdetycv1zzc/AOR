@@ -8,7 +8,7 @@ import (
 )
 
 func main() {
-	if err := command.WriteVersion("aor-worker"); err != nil {
+	if err := command.Run("aor-worker"); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

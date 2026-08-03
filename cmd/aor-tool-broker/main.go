@@ -8,7 +8,7 @@ import (
 )
 
 func main() {
-	if err := command.WriteVersion("aor-tool-broker"); err != nil {
+	if err := command.Run("aor-tool-broker"); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

@@ -8,7 +8,7 @@ import (
 )
 
 func main() {
-	if err := command.WriteVersion("aor-model-gateway"); err != nil {
+	if err := command.Run("aor-model-gateway"); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

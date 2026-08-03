@@ -8,7 +8,7 @@ import (
 )
 
 func main() {
-	if err := command.WriteVersion("aor-server"); err != nil {
+	if err := command.Run("aor-server"); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
