@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "taskId": "WP-12",
+  "specVersion": "2.0.0",
+  "requirements": ["AOR-ACC-019", "AOR-INV-011", "AOR-ACC-023", "AOR-ACC-024"],
+  "criteria": [
+    {"id": "WP12-AC-001", "evidence": "internal/integration/queue_test.go", "required": true},
+    {"id": "WP12-AC-002", "evidence": "internal/integration/queue.go", "required": true},
+    {"id": "WP12-AC-003", "evidence": "WP-15 protected-branch and provenance report", "required": true, "environmentGate": true}
+  ]
+}
