@@ -1,6 +1,7 @@
 package modelgateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -94,6 +95,43 @@ func TestGatewayRetriesInvalidStructuredOutputAtMostTwice(t *testing.T) {
 	}
 	if adapter.index != 3 {
 		t.Fatalf("attempts = %d", adapter.index)
+	}
+	account, _ := ledger.Account("acct")
+	if account.SpentMicros != 3 || account.ReservedMicros != 0 {
+		t.Fatalf("retry costs were not fully settled: %#v", account)
+	}
+}
+
+func TestGatewayBoundsResponsesAndChargesFailedProviderCalls(t *testing.T) {
+	ledger := NewBudgetLedger(func() time.Time { return time.Unix(0, 0) })
+	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "acct", LimitMicros: 10_000_000}); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &mockAdapter{responses: []NormalizedResponse{{Content: json.RawMessage(bytes.Repeat([]byte("x"), MaximumResponseBytes+1)), Usage: Usage{CostMicros: 7}}}}
+	gateway := NewGateway(ledger, time.Now)
+	if err := gateway.Register("mock", "model", adapter, Pricing{InputMicrosPerToken: 1, OutputMicrosPerToken: 1}); err != nil {
+		t.Fatal(err)
+	}
+	request := NormalizedRequest{RequestID: "large", TenantID: "ten", ProjectID: "prj", AgentInstanceID: "agt", Role: "EXECUTOR", Model: "model", PromptBundleVersion: "p1", Messages: []Message{{Role: "user", Content: "hello"}}, MaxOutputTokens: 10, DataClassification: "INTERNAL"}
+	if _, err := gateway.Generate(context.Background(), request, GenerateOptions{Provider: "mock", AccountID: "acct", ReservationID: "large-res", MaxAttempts: 1}); !errors.Is(err, ErrOutputTooLarge) {
+		t.Fatalf("oversized response error = %v", err)
+	}
+	account, _ := ledger.Account("acct")
+	if account.SpentMicros != 7 {
+		t.Fatalf("oversized provider call was not charged: %#v", account)
+	}
+
+	failing := &mockAdapter{}
+	if err := gateway.Register("failing", "model", failing, Pricing{InputMicrosPerToken: 1, OutputMicrosPerToken: 1}); err != nil {
+		t.Fatal(err)
+	}
+	request.RequestID = "failed"
+	if _, err := gateway.Generate(context.Background(), request, GenerateOptions{Provider: "failing", AccountID: "acct", ReservationID: "failed-res", MaxAttempts: 1}); err == nil {
+		t.Fatal("provider failure was accepted")
+	}
+	account, _ = ledger.Account("acct")
+	if account.SpentMicros != 27 {
+		t.Fatalf("failed provider call was not conservatively charged: %#v", account)
 	}
 }
 

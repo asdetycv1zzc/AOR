@@ -4,10 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
+)
+
+const (
+	MaximumResponseBytes       = 4 << 20
+	MaximumResponseSchemaBytes = 256 << 10
 )
 
 type Gateway struct {
@@ -80,22 +86,71 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 		return NormalizedResponse{}, redactError(err)
 	}
 	pricing := g.pricing[key]
-	worst := estimate.InputTokens*pricing.InputMicrosPerToken + int64(request.MaxOutputTokens)*pricing.OutputMicrosPerToken
+	inputCost, err := multiplyCost(estimate.InputTokens, pricing.InputMicrosPerToken)
+	if err != nil {
+		return NormalizedResponse{}, err
+	}
+	outputCost, err := multiplyCost(int64(request.MaxOutputTokens), pricing.OutputMicrosPerToken)
+	if err != nil {
+		return NormalizedResponse{}, err
+	}
+	worst, err := addCost(inputCost, outputCost)
+	if err != nil {
+		return NormalizedResponse{}, err
+	}
 	if request.WorstCaseCostMicros > worst {
 		worst = request.WorstCaseCostMicros
 	}
-	if _, err := g.ledger.Reserve(ctx, options.AccountID, options.ReservationID, request.RequestID, worst); err != nil {
+	if estimate.InputTokens < 0 || worst < 0 || worst > math.MaxInt64/int64(options.MaxAttempts) {
+		return NormalizedResponse{}, ErrInvalidRequest
+	}
+	reserved := worst * int64(options.MaxAttempts)
+	if _, err := g.ledger.Reserve(ctx, options.AccountID, options.ReservationID, request.RequestID, reserved); err != nil {
 		return NormalizedResponse{}, err
 	}
 	var lastErr error
+	var incurred int64
 	for attempt := 0; attempt < options.MaxAttempts; attempt++ {
 		response, generateErr := adapter.Generate(ctx, request)
 		if generateErr != nil {
-			_, _ = g.ledger.Reconcile(ctx, options.ReservationID, worst)
+			incurred, err = addCost(incurred, worst)
+			if err != nil {
+				return NormalizedResponse{}, err
+			}
+			if _, err := g.ledger.Reconcile(ctx, options.ReservationID, incurred); err != nil {
+				return NormalizedResponse{}, err
+			}
 			return NormalizedResponse{}, redactError(generateErr)
+		}
+		attemptCost := response.Usage.CostMicros
+		if attemptCost < 0 {
+			attemptCost = worst
+		}
+		if attemptCost == 0 && worst > 0 {
+			attemptCost = worst
+		}
+		incurred, err = addCost(incurred, attemptCost)
+		if err != nil {
+			return NormalizedResponse{}, err
 		}
 		if response.ModelVersion == "" {
 			response.ModelVersion = capabilities.ActualModelVersion
+		}
+		if response.RequestID != "" && response.RequestID != request.RequestID {
+			lastErr = ErrOutputSchema
+			continue
+		}
+		if len(response.Content) > MaximumResponseBytes {
+			if _, err := g.ledger.Settle(ctx, options.ReservationID, incurred); err != nil {
+				return NormalizedResponse{}, err
+			}
+			return NormalizedResponse{}, ErrOutputTooLarge
+		}
+		if containsCredentialLike(string(response.Content)) {
+			if _, err := g.ledger.Settle(ctx, options.ReservationID, incurred); err != nil {
+				return NormalizedResponse{}, err
+			}
+			return NormalizedResponse{}, ErrCredentialDetected
 		}
 		if err := validateResponse(request.ResponseSchema, response.Content); err != nil {
 			lastErr = err
@@ -107,12 +162,14 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 		if response.Usage.ModelVersion == "" {
 			response.Usage.ModelVersion = response.ModelVersion
 		}
-		if _, settleErr := g.ledger.Settle(ctx, options.ReservationID, response.Usage.CostMicros); settleErr != nil {
+		if _, settleErr := g.ledger.Settle(ctx, options.ReservationID, incurred); settleErr != nil {
 			return NormalizedResponse{}, settleErr
 		}
 		return response, nil
 	}
-	_ = g.ledger.Release(ctx, options.ReservationID)
+	if _, err := g.ledger.Settle(ctx, options.ReservationID, incurred); err != nil {
+		return NormalizedResponse{}, err
+	}
 	if lastErr != nil {
 		return NormalizedResponse{}, lastErr
 	}
@@ -127,7 +184,7 @@ func validateRequest(request NormalizedRequest) error {
 	if err != nil || containsCredentialLike(string(encoded)) {
 		return ErrCredentialDetected
 	}
-	if len(request.ResponseSchema) != 0 && !json.Valid(request.ResponseSchema) {
+	if len(request.ResponseSchema) > MaximumResponseSchemaBytes || len(request.ResponseSchema) != 0 && !json.Valid(request.ResponseSchema) {
 		return ErrInvalidRequest
 	}
 	for _, message := range request.Messages {
@@ -139,7 +196,7 @@ func validateRequest(request NormalizedRequest) error {
 }
 
 func validateResponse(schemaJSON, content []byte) error {
-	if len(content) == 0 || !json.Valid(content) {
+	if len(content) == 0 || len(content) > MaximumResponseBytes || !json.Valid(content) {
 		return ErrOutputSchema
 	}
 	if len(schemaJSON) == 0 {
@@ -163,6 +220,20 @@ func validateResponse(schemaJSON, content []byte) error {
 		return ErrOutputSchema
 	}
 	return nil
+}
+
+func addCost(current, additional int64) (int64, error) {
+	if current < 0 || additional < 0 || current > math.MaxInt64-additional {
+		return 0, ErrInvalidRequest
+	}
+	return current + additional, nil
+}
+
+func multiplyCost(units, rate int64) (int64, error) {
+	if units < 0 || rate < 0 || units > 0 && rate > math.MaxInt64/units {
+		return 0, ErrInvalidRequest
+	}
+	return units * rate, nil
 }
 
 func (g *Gateway) String() string {

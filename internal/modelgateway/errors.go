@@ -9,5 +9,6 @@ var (
 	ErrInvalidRequest      = errors.New("invalid normalized model request")
 	ErrProviderNotAllowed  = errors.New("model provider or model is not allowed")
 	ErrOutputSchema        = errors.New("model output does not satisfy response schema")
+	ErrOutputTooLarge      = errors.New("model output exceeds the response size limit")
 	ErrCredentialDetected  = errors.New("credential-like content rejected")
 )
