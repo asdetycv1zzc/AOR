@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -361,9 +360,6 @@ func TestAuthorizationAndPathChecksFailClosed(t *testing.T) {
 }
 
 func TestFileRepositoryRejectsSymlinkRootsAndTampering(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink creation requires platform privileges on Windows")
-	}
 	base := t.TempDir()
 	target := filepath.Join(base, "target")
 	if err := os.Mkdir(target, 0o750); err != nil {
