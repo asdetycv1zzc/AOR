@@ -157,11 +157,15 @@ func TestProductionUntrustedExecutionRequiresLinuxContainer(t *testing.T) {
 	manager, _ := testManager(t, func() time.Time { return authzTestNow })
 	engine := testEngine(manager, func() time.Time { return authzTestNow })
 	input := testInput()
-	input.Resource.Attributes = map[string]string{"environment": "production", "workloadTrust": "UNTRUSTED"}
+	input.Task.ExecutionPlatform = "WINDOWS"
+	input.Task.SandboxLevel = "NONE"
+	input.Task.WorkloadTrust = "UNTRUSTED"
+	input.Task.DeploymentProfile = "PRODUCTION"
+	input.Resource.Attributes = map[string]string{"environment": "local", "workloadTrust": "TRUSTED"}
 	input.Context = ExecutionContext{Platform: "WINDOWS", SandboxLevel: "NONE"}
 	decision, err := engine.EvaluateLeaseGrant(context.Background(), input)
 	if decision.Decision != DecisionDeny || err == nil {
-		t.Fatalf("untrusted Windows workload accepted: decision=%#v err=%v", decision, err)
+		t.Fatalf("spoofed resource attributes bypassed trusted execution scope: decision=%#v err=%v", decision, err)
 	}
 	assertAuthzErrorCode(t, err, aorerrors.CodeSandboxLevelInsufficient)
 }

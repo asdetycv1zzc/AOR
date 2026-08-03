@@ -2,7 +2,6 @@ package authz
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"github.com/akimisaka/aor/internal/authn"
@@ -243,15 +242,25 @@ func reasonForError(err error) string {
 }
 
 func (e *Engine) validateExecutionBoundary(input PolicyInput) error {
-	production := strings.EqualFold(input.Resource.Attributes["environment"], "production")
-	untrusted := strings.EqualFold(input.Resource.Attributes["workloadTrust"], "UNTRUSTED")
-	if production && untrusted && (input.Context.Platform != "LINUX" || input.Context.SandboxLevel != "CONTAINER") {
+	if !RequiresTask(input.Action) {
+		return nil
+	}
+	task := input.Task
+	if IsSideEffect(input.Action) && !validTaskExecutionScope(task) {
+		return aorerrors.New(aorerrors.CodeSandboxLevelInsufficient, "", map[string]any{"scope": "trusted task execution profile"})
+	}
+	if input.Context.Platform != "" && input.Context.Platform != task.ExecutionPlatform || input.Context.SandboxLevel != "" && input.Context.SandboxLevel != task.SandboxLevel {
+		return aorerrors.New(aorerrors.CodeSandboxLevelInsufficient, "", map[string]any{"scope": "execution context mismatch"})
+	}
+	production := task.DeploymentProfile == "PRODUCTION"
+	untrusted := task.WorkloadTrust == "UNTRUSTED" || task.HostileMultiTenant || task.RequiresNetworkIsolation || task.RequiresHiddenConfidentiality
+	if production && untrusted && (task.ExecutionPlatform != "LINUX" || task.SandboxLevel != "CONTAINER") {
 		return aorerrors.New(aorerrors.CodeSandboxLevelInsufficient, "", map[string]any{"scope": "production untrusted workload"})
 	}
-	if input.Context.Platform == "WINDOWS" && input.Context.SandboxLevel != "NONE" {
+	if task.ExecutionPlatform == "WINDOWS" && task.SandboxLevel != "NONE" {
 		return aorerrors.New(aorerrors.CodeSandboxLevelInsufficient, "", map[string]any{"scope": "windows isolation"})
 	}
-	if input.Context.Platform == "LINUX" && input.Context.SandboxLevel != "" && input.Context.SandboxLevel != "CONTAINER" {
+	if task.ExecutionPlatform == "LINUX" && task.SandboxLevel != "CONTAINER" {
 		return aorerrors.New(aorerrors.CodeSandboxLevelInsufficient, "", map[string]any{"scope": "linux isolation"})
 	}
 	return nil

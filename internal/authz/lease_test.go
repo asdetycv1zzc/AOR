@@ -33,7 +33,7 @@ func testInput() PolicyInput {
 	return PolicyInput{
 		Principal:       testPrincipal(),
 		Project:         ProjectScope{TenantID: "tenant_1", ID: "project_1", State: "EXECUTING", StateVersion: 7, Classification: "INTERNAL"},
-		Task:            TaskScope{TenantID: "tenant_1", ProjectID: "project_1", ID: "task_1", State: "EXECUTING", StateVersion: 9, SpecDigest: testSpecDigest, OwnedPaths: []string{"internal/auth/**"}},
+		Task:            TaskScope{TenantID: "tenant_1", ProjectID: "project_1", ID: "task_1", State: "EXECUTING", StateVersion: 9, SpecDigest: testSpecDigest, OwnedPaths: []string{"internal/auth/**"}, ExecutionPlatform: "LINUX", SandboxLevel: "CONTAINER", WorkloadTrust: "TRUSTED", DeploymentProfile: "PRODUCTION"},
 		Action:          ActionRepoWrite,
 		Resource:        Resource{Type: "repository_path", Path: "internal/auth/token.go"},
 		ParameterDigest: testParamsDigest,

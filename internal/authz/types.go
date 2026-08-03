@@ -63,13 +63,20 @@ type ProjectScope struct {
 // TaskScope is intentionally a narrow projection. OwnedPaths are policy data,
 // not a path authorization result supplied by the caller.
 type TaskScope struct {
-	TenantID     string   `json:"tenantId"`
-	ProjectID    string   `json:"projectId"`
-	ID           string   `json:"id"`
-	State        string   `json:"state"`
-	StateVersion int64    `json:"stateVersion"`
-	SpecDigest   string   `json:"specDigest"`
-	OwnedPaths   []string `json:"ownedPaths"`
+	TenantID                      string   `json:"tenantId"`
+	ProjectID                     string   `json:"projectId"`
+	ID                            string   `json:"id"`
+	State                         string   `json:"state"`
+	StateVersion                  int64    `json:"stateVersion"`
+	SpecDigest                    string   `json:"specDigest"`
+	OwnedPaths                    []string `json:"ownedPaths"`
+	ExecutionPlatform             string   `json:"executionPlatform"`
+	SandboxLevel                  string   `json:"sandboxLevel"`
+	WorkloadTrust                 string   `json:"workloadTrust"`
+	DeploymentProfile             string   `json:"deploymentProfile"`
+	HostileMultiTenant            bool     `json:"hostileMultiTenant"`
+	RequiresNetworkIsolation      bool     `json:"requiresNetworkIsolation"`
+	RequiresHiddenConfidentiality bool     `json:"requiresHiddenConfidentiality"`
 }
 
 type Resource struct {
@@ -145,6 +152,9 @@ func (input PolicyInput) Validate(now time.Time) *aorerrors.Error {
 		if input.Project.TenantID != input.Task.TenantID || input.Project.ID != input.Task.ProjectID {
 			return aorerrors.New(aorerrors.CodeForbidden, "", map[string]any{"scope": "task project"})
 		}
+		if IsSideEffect(input.Action) && !validTaskExecutionScope(input.Task) {
+			return aorerrors.New(aorerrors.CodeSandboxLevelInsufficient, "", map[string]any{"scope": "trusted task execution profile"})
+		}
 	}
 	if input.Principal.TenantID != "" && input.Principal.TenantID != input.Project.TenantID {
 		return aorerrors.New(aorerrors.CodeForbidden, "", map[string]any{"scope": "tenant"})
@@ -190,6 +200,17 @@ func (input PolicyInput) Validate(now time.Time) *aorerrors.Error {
 		}
 	}
 	return nil
+}
+
+func validTaskExecutionScope(task TaskScope) bool {
+	if task.DeploymentProfile != "LOCAL" && task.DeploymentProfile != "TEST" && task.DeploymentProfile != "PREPRODUCTION" && task.DeploymentProfile != "PRODUCTION" {
+		return false
+	}
+	if task.WorkloadTrust != "TRUSTED" && task.WorkloadTrust != "UNTRUSTED" {
+		return false
+	}
+	return (task.ExecutionPlatform == "LINUX" && task.SandboxLevel == "CONTAINER") ||
+		(task.ExecutionPlatform == "WINDOWS" && task.SandboxLevel == "NONE")
 }
 
 func sensitiveAttributeName(value string) bool {
