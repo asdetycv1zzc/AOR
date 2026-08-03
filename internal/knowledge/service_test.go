@@ -454,7 +454,8 @@ func TestServiceUsesWP03LeaseAndApprovalBindings(t *testing.T) {
 		projects: map[string]authz.ProjectScope{"tenant-1/project-a": {TenantID: "tenant-1", ID: "project-a", State: "EXECUTING", StateVersion: 7, Classification: "INTERNAL"}},
 		tasks: map[string]authz.TaskScope{"tenant-1/project-a/task-curate": {
 			TenantID: "tenant-1", ProjectID: "project-a", ID: "task-curate", State: "EXECUTING", StateVersion: 3,
-			SpecDigest: "sha256:" + strings.Repeat("1", 64),
+			SpecDigest: "sha256:" + strings.Repeat("1", 64), ExecutionPlatform: "LINUX", SandboxLevel: "CONTAINER",
+			WorkloadTrust: "TRUSTED", DeploymentProfile: "TEST",
 		}},
 	}
 	signer, err := authz.NewHMACSigner([]byte(strings.Repeat("k", 32)))
