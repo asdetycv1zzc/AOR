@@ -44,6 +44,12 @@ type DomainEvent struct {
 	OccurredAt       time.Time       `json:"occurredAt"`
 	CorrelationID    string          `json:"correlationId"`
 	CausationID      string          `json:"causationId,omitempty"`
+	Traceparent      string          `json:"traceparent,omitempty"`
+	Tracestate       string          `json:"tracestate,omitempty"`
+	TaskID           string          `json:"taskId,omitempty"`
+	TaskIDReason     string          `json:"taskIdReason,omitempty"`
+	AgentRunID       string          `json:"agentRunId,omitempty"`
+	AgentRunReason   string          `json:"agentRunReason,omitempty"`
 }
 
 type OutboxRecord struct {

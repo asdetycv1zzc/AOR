@@ -28,6 +28,16 @@ func Externalize(event DomainEvent, options CloudEventOptions) (cloudevents.Even
 	if event.EventID == "" || event.ProjectID == "" || event.Type == "" || event.OccurredAt.IsZero() || len(event.Payload) == 0 {
 		return cloudevents.Event{}, ErrExternalCorrelation
 	}
+	if options.Traceparent == "" {
+		options.Traceparent = event.Traceparent
+		options.Tracestate = event.Tracestate
+	}
+	if options.TaskID == "" && options.TaskReason == "" {
+		options.TaskID, options.TaskReason = event.TaskID, event.TaskIDReason
+	}
+	if options.AgentRunID == "" && options.AgentReason == "" {
+		options.AgentRunID, options.AgentReason = event.AgentRunID, event.AgentRunReason
+	}
 	if options.Source == "" || options.Traceparent == "" {
 		return cloudevents.Event{}, ErrExternalCorrelation
 	}

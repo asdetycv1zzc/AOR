@@ -198,7 +198,7 @@ VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, $8, $9, $10, '{}'::jsonb, 
 
 	eventIDs := make([]string, 0, len(request.Events))
 	for _, event := range request.Events {
-		metadata, marshalErr := json.Marshal(map[string]string{"correlationId": event.CorrelationID, "causationId": event.CausationID})
+		metadata, marshalErr := json.Marshal(map[string]string{"correlationId": event.CorrelationID, "causationId": event.CausationID, "traceparent": event.Traceparent, "tracestate": event.Tracestate, "taskId": event.TaskID, "taskIdReason": event.TaskIDReason, "agentRunId": event.AgentRunID, "agentRunReason": event.AgentRunReason})
 		if marshalErr != nil {
 			return TransactionResult{}, marshalErr
 		}
@@ -298,6 +298,12 @@ ORDER BY claimed.next_attempt_at, claimed.id`, tenantID, now, limit, claimUntil)
 		event.Payload = cloneJSON(payload)
 		event.CorrelationID = values["correlationId"]
 		event.CausationID = values["causationId"]
+		event.Traceparent = values["traceparent"]
+		event.Tracestate = values["tracestate"]
+		event.TaskID = values["taskId"]
+		event.TaskIDReason = values["taskIdReason"]
+		event.AgentRunID = values["agentRunId"]
+		event.AgentRunReason = values["agentRunReason"]
 		record.Event = event
 		claims = append(claims, OutboxClaim{Record: record, Attempt: record.Attempts})
 	}
@@ -485,6 +491,12 @@ func scanEvent(scanner eventScanner) (DomainEvent, error) {
 	}
 	event.CorrelationID = values["correlationId"]
 	event.CausationID = values["causationId"]
+	event.Traceparent = values["traceparent"]
+	event.Tracestate = values["tracestate"]
+	event.TaskID = values["taskId"]
+	event.TaskIDReason = values["taskIdReason"]
+	event.AgentRunID = values["agentRunId"]
+	event.AgentRunReason = values["agentRunReason"]
 	return event, nil
 }
 
