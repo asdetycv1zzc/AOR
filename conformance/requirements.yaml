@@ -523,9 +523,11 @@ requirements:
     status: implemented
   - id: AOR-ACC-021
     title: A2A 1.0 baseline interoperability suite passes
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - pkg/a2a/client.go
+    tests:
+      - pkg/a2a/client_test.go
+    evidenceType: go-test+protocol-fixtures+external-interoperability-gate
     owner: protocol
     status: planned
   - id: AOR-ACC-022
@@ -577,53 +579,81 @@ requirements:
     status: implemented
   - id: AOR-ACC-026
     title: OpenAPI generated clients pass in Go TypeScript and Python
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/sdkgen/generator.go
+      - cmd/aor-sdkgen/main.go
+      - sdk/go/aor/client.gen.go
+      - sdk/typescript/aor-client.gen.ts
+      - sdk/python/aor_client_gen.py
+    tests:
+      - internal/sdkgen/generator_test.go
+      - sdk/go/aor/client_test.go
+      - conformance/contracts/sdk/typescript.ts
+      - conformance/contracts/sdk/python.py
+    evidenceType: deterministic-generator+go-typescript-python-conformance
     owner: protocol
-    status: planned
+    status: implemented
   - id: AOR-ACC-027
     title: AsyncAPI optional field evolution preserves older consumers
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - pkg/asyncapi/consumer.go
+    tests:
+      - pkg/asyncapi/consumer_test.go
+    evidenceType: go-test+backward-compatible-consumer
     owner: protocol
-    status: planned
+    status: implemented
   - id: AOR-ACC-028
     title: MCP versions negotiate capabilities without silent security downgrade
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - pkg/mcp/negotiation.go
+    tests:
+      - pkg/mcp/negotiation_test.go
+    evidenceType: go-test+fail-closed-capability-negotiation
     owner: protocol
-    status: planned
+    status: implemented
   - id: AOR-ACC-029
     title: External events correlate trace Project Task and AgentRun context
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/eventing/cloud_event.go
+      - pkg/cloudevents/event.go
+    tests:
+      - internal/eventing/cloud_event_test.go
+      - pkg/cloudevents/event_test.go
+    evidenceType: go-test+external-event-producer-gate
     owner: protocol
     status: planned
   - id: AOR-ACC-030
     title: Agent Card cryptographic signing expiry revocation and rotation pass
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/agentruntime/card.go
+    tests:
+      - internal/agentruntime/card_test.go
+    evidenceType: go-test+key-ring-rotation
     owner: protocol
-    status: planned
+    status: implemented
   - id: AOR-ACC-031
     title: Workflow projection and event bus replay converge after injected faults
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/projection/replay.go
+      - internal/eventing/memory.go
+      - internal/eventing/postgres.go
+    tests:
+      - internal/projection/replay_test.go
+      - internal/projection/projector_test.go
+    evidenceType: replay-digest+durable-fault-injection-gate
     owner: persistence
     status: planned
   - id: AOR-ACC-032
     title: Transactional outbox loses no event across the commit publish crash window
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/eventing/outbox.go
+      - internal/eventing/postgres.go
+    tests:
+      - internal/eventing/outbox_test.go
+      - internal/eventing/memory_test.go
+    evidenceType: transactional-outbox+failure-injection
     owner: persistence
-    status: planned
+    status: implemented
   - id: AOR-ACC-033
     title: Duplicate and out-of-order events preserve projection invariants
     implementation:
@@ -637,35 +667,42 @@ requirements:
   - id: AOR-ACC-034
     title: Artifact content hash is verified before atomic publication
     implementation:
-      - internal/goalplan/artifact.go
-      - internal/eventing/store.go
+      - internal/artifact/store.go
+      - internal/artifact/file.go
     tests:
-      - internal/goalplan/artifact_test.go
-      - internal/eventing/memory_test.go
-    evidenceType: go-test+object-store-manifest-protocol-required
+      - internal/artifact/store_test.go
+    evidenceType: staged-stream+hash-before-manifest
     owner: persistence
-    status: planned
+    status: implemented
   - id: AOR-ACC-035
     title: Referenced artifacts remain readable and hash-valid while orphans are reclaimed
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/artifact/store.go
+      - internal/artifact/scanner.go
+    tests:
+      - internal/artifact/store_test.go
+    evidenceType: verified-read+orphan-reclamation
     owner: persistence
-    status: planned
+    status: implemented
   - id: AOR-ACC-036
     title: Backup restore leaves no dangling Project Goal Plan Task Audit or Artifact reference
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/backup/verify.go
+      - deploy/backup/restore-checklist.md
+    tests:
+      - internal/backup/verify_test.go
+    evidenceType: restore-graph+artifact-hash+restore-drill-gate
     owner: persistence
     status: planned
   - id: AOR-ACC-037
     title: At-least-once Workflow Activities deduplicate external side effects
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/workflow/activity.go
+    tests:
+      - internal/workflow/activity_test.go
+    evidenceType: go-test+stable-side-effect-key
     owner: persistence
-    status: planned
+    status: implemented
   - id: AOR-ACC-038
     title: Lease renewal advances fencing and rejects stale holders
     implementation:
@@ -693,9 +730,11 @@ requirements:
     implementation:
       - internal/projection/projector.go
       - internal/eventing/memory.go
+      - internal/projection/replay.go
     tests:
       - tests/integration/state_replay_test.go
       - internal/projection/projector_test.go
+      - internal/projection/replay_test.go
     evidenceType: event-replay-digest+durable-full-reconciliation-required
     owner: persistence
     status: planned
@@ -723,7 +762,7 @@ requirements:
       - internal/authz/lease_test.go
     evidenceType: go-test+exact-tool-lease-binding-required
     owner: security
-    status: planned
+    status: implemented
   - id: AOR-ACC-043
     title: Prompt injection cannot bypass Tool Broker knowledge policy or hidden-test isolation
     implementation: []
@@ -746,16 +785,23 @@ requirements:
     status: planned
   - id: AOR-ACC-045
     title: SSRF defenses cover private loopback metadata rebinding redirects and IP ambiguity
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/toolbroker/network.go
+    tests:
+      - internal/toolbroker/network_test.go
+    evidenceType: go-test+resolved-dial-binding
     owner: security
-    status: planned
+    status: implemented
   - id: AOR-ACC-046
     title: Path defenses cover traversal links junctions case folding and Unicode normalization
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/repository/service.go
+      - internal/repository/file_open_unix.go
+      - internal/repository/file_open_windows.go
+    tests:
+      - internal/repository/service_test.go
+      - security-corpus/path-boundary.json
+    evidenceType: go-test+cross-platform-filesystem-gate
     owner: security
     status: planned
   - id: AOR-ACC-047
@@ -777,7 +823,7 @@ requirements:
       - internal/toolbroker/broker_test.go
     evidenceType: go-test+broker-auditor-write-invariant-required
     owner: security
-    status: planned
+    status: implemented
   - id: AOR-ACC-049
     title: Executors cannot read hidden tests private audit policy or unpublished workspaces
     implementation: []
@@ -787,11 +833,13 @@ requirements:
     status: planned
   - id: AOR-ACC-050
     title: Images binaries SBOM provenance and release manifests verify offline
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/supplychain/verify.go
+    tests:
+      - internal/supplychain/verify_test.go
+    evidenceType: offline-digest+ed25519-signature+sbom-provenance
     owner: security
-    status: planned
+    status: implemented
   - id: AOR-ACC-051
     title: High and critical dependency vulnerabilities are zero at release
     implementation: []
@@ -859,16 +907,21 @@ requirements:
     status: planned
   - id: AOR-ACC-058
     title: Thirty-minute provider outage remains recoverable without exhausting budget
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/modelgateway/gateway.go
+    tests:
+      - internal/modelgateway/mock_test.go
+    evidenceType: bounded-circuit-breaker+budget-reconciliation-gate
     owner: reliability
     status: planned
   - id: AOR-ACC-059
     title: Event bus interruption drains the durable outbox after recovery
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/eventing/outbox.go
+      - internal/eventing/postgres.go
+    tests:
+      - internal/eventing/outbox_test.go
+    evidenceType: durable-outbox+recovery-drain-gate
     owner: reliability
     status: planned
   - id: AOR-ACC-060
@@ -880,16 +933,23 @@ requirements:
     status: planned
   - id: AOR-ACC-061
     title: Object-store faults cannot commit dangling artifact references
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/artifact/store.go
+      - internal/artifact/file.go
+    tests:
+      - internal/artifact/store_test.go
+    evidenceType: staged-publication+object-store-fault-gate
     owner: reliability
     status: planned
   - id: AOR-ACC-062
     title: Clock skew cannot extend leases or bypass expiry and fencing
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/authz/lease.go
+      - internal/toolbroker/broker.go
+    tests:
+      - internal/authz/lease_test.go
+      - internal/toolbroker/broker_test.go
+    evidenceType: trusted-server-time+fencing-gate
     owner: reliability
     status: planned
   - id: AOR-ACC-063
@@ -908,11 +968,13 @@ requirements:
     status: planned
   - id: AOR-ACC-065
     title: Workflow upgrades replay old histories without nondeterminism
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/workflow/history.go
+    tests:
+      - internal/workflow/history_test.go
+    evidenceType: version-marker+deterministic-replay
     owner: reliability
-    status: planned
+    status: implemented
   - id: AOR-ACC-066
     title: Three-replica control API sustains required throughput and p95 latency
     implementation: []
@@ -957,9 +1019,14 @@ requirements:
     status: planned
   - id: AOR-ACC-072
     title: Provider and Tool costs reconcile without unexplained calls or rounding drift
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/modelgateway/budget.go
+      - internal/modelgateway/postgres_budget.go
+      - internal/modelgateway/gateway.go
+    tests:
+      - internal/modelgateway/budget_test.go
+      - internal/modelgateway/mock_test.go
+    evidenceType: serializable-ledger+attempt-accounting+drift-gate
     owner: performance
     status: planned
   - id: AOR-ACC-073
@@ -985,11 +1052,14 @@ requirements:
     status: planned
   - id: AOR-ACC-076
     title: One GiB audit artifacts upload and download by bounded streaming
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/audit/pipeline.go
+      - internal/artifact/store.go
+    tests:
+      - internal/audit/pipeline_test.go
+    evidenceType: one-gib-streaming+bounded-writes
     owner: performance
-    status: planned
+    status: implemented
   - id: AOR-ACC-077
     title: Log trace attribute and Tool output sizes are bounded
     implementation:
@@ -1009,8 +1079,10 @@ requirements:
     implementation:
       - internal/observability/trace.go
       - internal/observability/propagation.go
+      - internal/eventing/cloud_event.go
     tests:
       - internal/observability/trace_test.go
+      - internal/eventing/cloud_event_test.go
     evidenceType: go-test+cross-service-instrumentation-required+deployed-trace-gate
     owner: observability
     status: planned
@@ -1171,11 +1243,15 @@ requirements:
     status: planned
   - id: AOR-ACC-093
     title: Configuration reference covers defaults ranges sensitivity dynamics and restart requirements
-    implementation: []
-    tests: []
-    evidenceType: configuration-catalog-required
+    implementation:
+      - internal/deployment/config.go
+      - deploy/configuration-catalog.json
+      - deploy/configuration-reference.md
+    tests:
+      - internal/deployment/config_test.go
+    evidenceType: configuration-catalog+schema-leaf-validation
     owner: operations
-    status: planned
+    status: implemented
   - id: AOR-ACC-094
     title: External API event Schema and error contracts are machine readable
     implementation:
@@ -1204,9 +1280,15 @@ requirements:
     status: planned
   - id: AOR-ACC-097
     title: Deployment packages include licenses notices SBOM and provenance
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/supplychain/verify.go
+      - LICENSE
+      - NOTICE
+      - deploy/
+    tests:
+      - internal/supplychain/verify_test.go
+      - internal/bootstrap/validate_test.go
+    evidenceType: package-manifest+offline-sbom-provenance-gate
     owner: operations
     status: planned
   - id: AOR-ACC-098
