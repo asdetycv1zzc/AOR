@@ -19,6 +19,15 @@ type scriptedGoalInvoker struct {
 	unresolved  bool
 }
 
+type goalPlanCommitBoundary struct{}
+
+func (goalPlanCommitBoundary) Validate(_ context.Context, validation orchestrator.CommitValidation) error {
+	if validation.TenantID == "" || validation.ProjectID == "" || validation.PrincipalID == "" || validation.Action == "" || validation.ParameterDigest == "" || validation.CommitAt.IsZero() {
+		return orchestrator.ErrCommitBoundary
+	}
+	return nil
+}
+
 func (i *scriptedGoalInvoker) Invoke(_ context.Context, invocation AgentInvocation) (AgentRecord, error) {
 	i.invocations = append(i.invocations, invocation)
 	switch invocation.Role {
@@ -128,7 +137,7 @@ func TestApprovalRejectsUnresolvedGoalBeforeStateChange(t *testing.T) {
 func negotiationHarness(t *testing.T, agentCount int) (*Negotiator, *scriptedGoalInvoker, *orchestrator.Service) {
 	t.Helper()
 	events := eventing.NewMemoryStore()
-	service := orchestrator.New(events, goalPlanClock)
+	service := orchestrator.NewWithBoundary(events, goalPlanClock, goalPlanCommitBoundary{})
 	requests := []orchestrator.ProjectRequest{
 		{TenantID: "tenant_1", ProjectID: "prj_1", PrincipalID: "usr_1", IdempotencyKey: "create", ExpectedVersion: 0, Command: state.ProjectCommand{Type: state.ProjectCommandCreate, GoalAgentCount: agentCount}},
 		{TenantID: "tenant_1", ProjectID: "prj_1", PrincipalID: "usr_1", IdempotencyKey: "start", ExpectedVersion: 1, Command: state.ProjectCommand{Type: state.ProjectCommandStartGoalNegotiation}},

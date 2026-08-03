@@ -12,14 +12,8 @@ import (
 var ErrCommitBoundary = errors.New("orchestrator commit boundary rejected the command")
 
 type CommitAuthorization struct {
-	PrincipalType   string
-	Role            string
-	LeaseID         string
-	FencingToken    int64
-	ExpiresAt       time.Time
-	PolicyVersion   string
-	BudgetAccountID string
-	Signature       string
+	Capability CommitCapability `json:"capability"`
+	Signature  string           `json:"signature"`
 }
 
 type CommitValidation struct {
@@ -78,13 +72,20 @@ func (s *Service) validateTaskCommit(ctx context.Context, request TaskRequest, p
 	if command.AuditEvidenceSHA256 != "" {
 		evidence = append(evidence, command.AuditEvidenceSHA256)
 	}
-	claims := map[string]bool{
-		"submission_validated":   command.SubmissionValidated,
-		"fresh_auditor":          command.FreshAuditor,
-		"blind_audit_context":    command.BlindAuditContext,
-		"no_blocking_findings":   command.NoBlockingFindings,
-		"dependencies_satisfied": command.DependenciesSatisfied,
-		"merge_gate_passed":      command.MergeGatePassed,
+	claims := map[string]bool{}
+	switch command.Type {
+	case state.TaskCommandStartAudit:
+		claims["submission_validated"] = command.SubmissionValidated
+	case state.TaskCommandLLMSuccess:
+		claims["fresh_auditor"] = command.FreshAuditor
+		claims["blind_audit_context"] = command.BlindAuditContext
+		claims["no_blocking_findings"] = command.NoBlockingFindings
+	case state.TaskCommandLLMFailure:
+		claims["fresh_auditor"] = command.FreshAuditor
+		claims["blind_audit_context"] = command.BlindAuditContext
+	case state.TaskCommandIntegrate:
+		claims["dependencies_satisfied"] = command.DependenciesSatisfied
+		claims["merge_gate_passed"] = command.MergeGatePassed
 	}
 	moduleRef := command.ModuleSpecRef
 	if moduleRef.Version == 0 {
@@ -132,6 +133,7 @@ func cloneCommitValidation(value CommitValidation) CommitValidation {
 		claims[key] = enabled
 	}
 	value.Claims = claims
+	value.Authorization.Capability = cloneCommitCapability(value.Authorization.Capability)
 	return value
 }
 
