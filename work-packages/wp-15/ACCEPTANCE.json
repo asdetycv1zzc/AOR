@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "taskId": "WP-15",
+  "specVersion": "2.0.0",
+  "requirements": ["AOR-ACC-050", "AOR-ACC-051", "AOR-ACC-098", "AOR-ACC-100"],
+  "criteria": [
+    {"id": "WP15-AC-001", "evidence": "internal/conformance/runner_test.go", "required": true},
+    {"id": "WP15-AC-002", "evidence": "conformance/release/release-evidence.schema.json", "required": true},
+    {"id": "WP15-AC-003", "evidence": "signed preproduction release-evidence.json", "required": true, "environmentGate": true}
+  ]
+}

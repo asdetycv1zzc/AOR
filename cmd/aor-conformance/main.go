@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/akimisaka/aor/internal/bootstrap"
+	aorconformance "github.com/akimisaka/aor/internal/conformance"
 	contractcheck "github.com/akimisaka/aor/internal/contracts"
 	"github.com/akimisaka/aor/internal/state"
 )
@@ -18,8 +21,8 @@ type result struct {
 }
 
 func main() {
-	if len(os.Args) != 2 {
-		fail("usage", []bootstrap.Finding{{Code: "INVALID_ARGUMENT", Message: "usage: aor-conformance <source-format|schemas|contracts|aop|a2a|cloudevents|openapi|asyncapi|state-machine|repository|secrets|licenses>"}})
+	if len(os.Args) < 2 {
+		fail("usage", []bootstrap.Finding{{Code: "INVALID_ARGUMENT", Message: "usage: aor-conformance <check> or run --profile <test|preproduction|production> --spec-version <version>"}})
 	}
 	root, err := os.Getwd()
 	if err != nil {
@@ -27,6 +30,13 @@ func main() {
 	}
 
 	check := os.Args[1]
+	if check == "run" {
+		runConformance(root, os.Args[2:])
+		return
+	}
+	if len(os.Args) != 2 {
+		fail("usage", []bootstrap.Finding{{Code: "INVALID_ARGUMENT", Message: "single-check mode accepts exactly one check"}})
+	}
 	var findings []bootstrap.Finding
 	switch check {
 	case "source-format":
@@ -67,6 +77,61 @@ func main() {
 		fail(check, findings)
 	}
 	write(result{Check: check, Status: "PASS"})
+}
+
+func runConformance(root string, arguments []string) {
+	profile := "test"
+	specVersion := "2.0.0"
+	target := ""
+	output := ""
+	groups := []string{}
+	for index := 0; index < len(arguments); index++ {
+		if index+1 >= len(arguments) {
+			fail("run", []bootstrap.Finding{{Code: "INVALID_ARGUMENT", Message: arguments[index]}})
+		}
+		value := arguments[index+1]
+		switch arguments[index] {
+		case "--profile":
+			profile = value
+		case "--spec-version":
+			specVersion = value
+		case "--target":
+			target = value
+		case "--output":
+			output = value
+		case "--groups":
+			groups = strings.Split(value, ",")
+		default:
+			fail("run", []bootstrap.Finding{{Code: "INVALID_ARGUMENT", Message: arguments[index]}})
+		}
+		index++
+	}
+	var signer aorconformance.Signer
+	if key := os.Getenv("AOR_RELEASE_SIGNING_KEY"); key != "" {
+		created, err := aorconformance.NewHMACSigner([]byte(key))
+		if err != nil {
+			fail("run", []bootstrap.Finding{{Code: "SIGNER_INVALID", Message: err.Error()}})
+		}
+		signer = created
+	}
+	runner := aorconformance.NewRunner(nil)
+	evidence, err := runner.Run(context.Background(), aorconformance.Request{Root: root, Target: target, Profile: profile, SpecVersion: specVersion, OutputDir: output, Groups: groups, Signer: signer})
+	encoded, marshalErr := json.Marshal(result{Check: "run", Status: "PASS"})
+	if marshalErr != nil {
+		os.Exit(2)
+	}
+	if output != "" {
+		encoded, _ = json.Marshal(struct {
+			Check    string `json:"check"`
+			Status   string `json:"status"`
+			Evidence string `json:"evidence"`
+		}{Check: "run", Status: "PASS", Evidence: filepath.Join(output, "release-evidence.json")})
+	}
+	if err != nil {
+		fail("run", []bootstrap.Finding{{Code: "CONFORMANCE_FAILED", Path: output, Message: err.Error()}})
+	}
+	os.Stdout.Write(append(encoded, '\n'))
+	_ = evidence
 }
 
 func convertContractFindings(input []contractcheck.Finding) []bootstrap.Finding {

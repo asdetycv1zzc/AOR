@@ -1,0 +1,8 @@
+{
+  "corpusVersion": "1.0",
+  "cases": [
+    {"id": "path-001", "input": "../outside", "expected": "DENY"},
+    {"id": "path-002", "input": ".git/config", "expected": "DENY"},
+    {"id": "path-003", "input": "owned/file.go", "expected": "ALLOW_IF_OWNED"}
+  ]
+}
