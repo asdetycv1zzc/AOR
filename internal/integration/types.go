@@ -14,6 +14,7 @@ var (
 	ErrConflict       = errors.New("integration conflict")
 	ErrNotAudited     = errors.New("integration audit has not passed")
 	ErrMergeConflict  = errors.New("merge executor reported a conflict")
+	ErrMergePending   = errors.New("integration merge is pending recovery")
 	ErrImmutable      = errors.New("integration result is immutable")
 )
 
@@ -38,6 +39,27 @@ type Request struct {
 	PolicyDigest    string
 	ExpectedVersion int64
 	CreatedAt       time.Time
+	PrincipalID     string
+	LeaseID         string
+	FencingToken    int64
+}
+
+type VerifiedRequest struct {
+	TenantID        string
+	ProjectID       string
+	IntegrationID   string
+	BaseCommit      string
+	Candidates      []Candidate
+	PolicyDigest    string
+	ExpectedVersion int64
+	PrincipalID     string
+	LeaseID         string
+	FencingToken    int64
+	Authorization   string
+}
+
+type Gate interface {
+	Validate(context.Context, Request) (VerifiedRequest, error)
 }
 
 type Finding struct {
@@ -65,15 +87,18 @@ type MergeResult struct {
 	RequestDigest string `json:"requestDigest"`
 	Audit         Audit  `json:"audit"`
 	Duplicate     bool   `json:"duplicate"`
+	Pending       bool   `json:"pending"`
 }
 
 type MergeExecutor interface {
 	Merge(context.Context, string, []string, string) (string, error)
+	Lookup(context.Context, string) (string, bool, error)
 }
 
 type Store interface {
 	Get(context.Context, string, string) (MergeResult, bool, error)
-	Put(context.Context, MergeResult) error
+	Reserve(context.Context, MergeResult) (MergeResult, bool, error)
+	Complete(context.Context, MergeResult) error
 }
 
 type MemoryStore struct {
@@ -90,16 +115,36 @@ func (s *MemoryStore) Get(_ context.Context, tenantID, id string) (MergeResult, 
 	return cloneResult(result), ok, nil
 }
 
-func (s *MemoryStore) Put(_ context.Context, result MergeResult) error {
+func (s *MemoryStore) Reserve(_ context.Context, result MergeResult) (MergeResult, bool, error) {
 	key := result.TenantID + "\x00" + result.IntegrationID
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if prior, ok := s.items[key]; ok {
-		if prior.Commit == result.Commit && prior.RequestDigest == result.RequestDigest && prior.Audit.EvidenceSHA256 == result.Audit.EvidenceSHA256 {
+		if prior.RequestDigest == result.RequestDigest {
+			return cloneResult(prior), false, nil
+		}
+		return MergeResult{}, false, ErrImmutable
+	}
+	result.Pending = true
+	s.items[key] = cloneResult(result)
+	return cloneResult(result), true, nil
+}
+
+func (s *MemoryStore) Complete(_ context.Context, result MergeResult) error {
+	key := result.TenantID + "\x00" + result.IntegrationID
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prior, ok := s.items[key]
+	if !ok || prior.RequestDigest != result.RequestDigest || prior.Audit.EvidenceSHA256 != result.Audit.EvidenceSHA256 {
+		return ErrImmutable
+	}
+	if !prior.Pending {
+		if prior.Commit == result.Commit {
 			return nil
 		}
 		return ErrImmutable
 	}
+	result.Pending = false
 	s.items[key] = cloneResult(result)
 	return nil
 }
