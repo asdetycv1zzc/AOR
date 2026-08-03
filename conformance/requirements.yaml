@@ -38,11 +38,13 @@ requirements:
     status: implemented
   - id: AOR-INV-004
     title: Global active Agent concurrency is at most eight
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/agentruntime/slots.go
+    tests:
+      - internal/agentruntime/slots_test.go
+    evidenceType: go-test+race
     owner: architecture
-    status: planned
+    status: implemented
   - id: AOR-INV-005
     title: Executors cannot decide completion
     implementation:
@@ -56,11 +58,15 @@ requirements:
     status: implemented
   - id: AOR-INV-006
     title: Every LLM audit uses a fresh blind Auditor
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/audit/pipeline.go
+      - internal/agentruntime/prompt.go
+    tests:
+      - internal/audit/pipeline_test.go
+      - internal/agentruntime/prompt_test.go
+    evidenceType: go-test+blind-context
     owner: architecture
-    status: planned
+    status: implemented
   - id: AOR-INV-007
     title: A ModuleTask allows at most three attempts per series
     implementation:
@@ -85,39 +91,75 @@ requirements:
     status: implemented
   - id: AOR-INV-009
     title: Only Knowledge Curator may write knowledge
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/knowledge/service.go
+      - internal/knowledge/file_repository.go
+    tests:
+      - internal/knowledge/service_test.go
+    evidenceType: go-test+filesystem-boundary
     owner: architecture
-    status: planned
+    status: implemented
   - id: AOR-INV-010
     title: Secrets are never exposed to Agents or sandboxes
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/modelgateway/redact.go
+      - internal/observability/log.go
+      - internal/agentruntime/prompt.go
+    tests:
+      - internal/modelgateway/mock_test.go
+      - internal/observability/log_test.go
+      - internal/agentruntime/prompt_test.go
+    evidenceType: go-test+secret-scan+end-to-end-production-gate
     owner: architecture
     status: planned
   - id: AOR-INV-011
     title: Permanent effects revalidate authority at commit time
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/authz/engine.go
+      - internal/agentruntime/runtime.go
+      - internal/orchestrator/boundary.go
+      - internal/orchestrator/capability.go
+      - internal/repository/service.go
+      - internal/integration/gate.go
+      - internal/toolbroker/broker.go
+    tests:
+      - internal/authz/lease_test.go
+      - internal/agentruntime/runtime_test.go
+      - internal/orchestrator/capability_test.go
+      - internal/repository/service_test.go
+      - internal/integration/gate_test.go
+      - internal/toolbroker/broker_test.go
+    evidenceType: go-test+signed-capability+all-write-path-adapter-gate
     owner: architecture
     status: planned
   - id: AOR-INV-012
     title: Evidence and references bind immutable versions and hashes
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/goalplan/artifact.go
+      - internal/repository/service.go
+      - internal/audit/pipeline.go
+      - internal/knowledge/service.go
+    tests:
+      - internal/goalplan/artifact_test.go
+      - internal/repository/service_test.go
+      - internal/audit/pipeline_test.go
+      - internal/knowledge/service_test.go
+    evidenceType: go-test+canonical-hash
     owner: architecture
-    status: planned
+    status: implemented
   - id: AOR-INV-013
     title: Untrusted production code runs only in Linux containers
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/sandbox/provider.go
+      - internal/authz/engine.go
+      - internal/deployment/config.go
+    tests:
+      - internal/sandbox/provider_test.go
+      - internal/sandbox/windows_backend_test.go
+      - internal/deployment/config_test.go
+    evidenceType: go-test+attestation
     owner: architecture
-    status: planned
+    status: implemented
   - id: AOR-INV-014
     title: Message processing is idempotent under duplication and disorder
     implementation:
@@ -319,89 +361,136 @@ requirements:
     owner: control-plane
     status: implemented
   - id: AOR-ACC-006
-    title: Production acceptance criterion 006
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: One hundred queued tasks never exceed eight active Agents
+    implementation:
+      - internal/agentruntime/slots.go
+    tests:
+      - internal/agentruntime/slots_test.go
+    evidenceType: go-test+race
     owner: control-plane
-    status: planned
+    status: implemented
   - id: AOR-ACC-007
-    title: Production acceptance criterion 007
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Execution boundary reports and enforces platform isolation
+    implementation:
+      - internal/sandbox/provider.go
+      - internal/sandbox/docker_backend.go
+      - internal/sandbox/windows_backend.go
+      - internal/repository/service.go
+    tests:
+      - internal/sandbox/provider_test.go
+      - internal/sandbox/docker_backend_test.go
+      - internal/sandbox/windows_backend_test.go
+      - internal/repository/service_test.go
+    evidenceType: go-test+production-environment-gate
     owner: control-plane
-    status: planned
+    status: implemented
   - id: AOR-ACC-008
-    title: Production acceptance criterion 008
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Auditor context excludes Executor explanations and private context
+    implementation:
+      - internal/audit/pipeline.go
+      - internal/agentruntime/prompt.go
+    tests:
+      - internal/audit/pipeline_test.go
+      - internal/agentruntime/prompt_test.go
+    evidenceType: go-test+blind-context
     owner: control-plane
-    status: planned
+    status: implemented
   - id: AOR-ACC-009
-    title: Production acceptance criterion 009
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Audit file list and check order are deterministic
+    implementation:
+      - internal/audit/pipeline.go
+    tests:
+      - internal/audit/pipeline_test.go
+    evidenceType: go-test+canonical-order
     owner: control-plane
-    status: planned
+    status: implemented
   - id: AOR-ACC-010
-    title: Production acceptance criterion 010
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Third failed attempt blocks automated task progress
+    implementation:
+      - internal/state/task.go
+      - internal/orchestrator/service.go
+    tests:
+      - internal/state/task_test.go
+      - tests/integration/third_attempt_test.go
+    evidenceType: go-test+event-log
     owner: control-plane
-    status: planned
+    status: implemented
   - id: AOR-ACC-011
-    title: Production acceptance criterion 011
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Third failure freezes dependants and emits a user-decision report
+    implementation:
+      - internal/state/task.go
+      - internal/orchestrator/service.go
+      - api/json-schema/user-decision-report.v1.schema.json
+    tests:
+      - internal/state/task_test.go
+      - tests/integration/third_attempt_test.go
+      - internal/contracts/validator_test.go
+    evidenceType: go-test+schema+event-log
     owner: control-plane
-    status: planned
+    status: implemented
   - id: AOR-ACC-012
-    title: Production acceptance criterion 012
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Non-Curator principals cannot write the knowledge root
+    implementation:
+      - internal/knowledge/service.go
+      - internal/knowledge/file_repository.go
+    tests:
+      - internal/knowledge/service_test.go
+    evidenceType: go-test+cross-platform-environment-gate
     owner: control-plane
-    status: planned
+    status: implemented
   - id: AOR-ACC-013
-    title: Production acceptance criterion 013
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Knowledge references retain path revision hash and line range
+    implementation:
+      - internal/knowledge/service.go
+      - internal/knowledge/types.go
+    tests:
+      - internal/knowledge/service_test.go
+    evidenceType: go-test+immutable-revision
     owner: control-plane
-    status: planned
+    status: implemented
   - id: AOR-ACC-014
-    title: Production acceptance criterion 014
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Knowledge and artifacts are tenant and project isolated
+    implementation:
+      - internal/knowledge/service.go
+      - internal/knowledge/file_repository.go
+      - internal/goalplan/artifact.go
+    tests:
+      - internal/knowledge/service_test.go
+      - internal/goalplan/artifact_test.go
+    evidenceType: go-test+tenant-scope
     owner: control-plane
-    status: planned
+    status: implemented
   - id: AOR-ACC-015
-    title: Production acceptance criterion 015
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Project inheritance grants only pinned read-only revisions
+    implementation:
+      - internal/knowledge/service.go
+    tests:
+      - internal/knowledge/service_test.go
+    evidenceType: go-test+immutable-inheritance
     owner: control-plane
-    status: planned
+    status: implemented
   - id: AOR-ACC-016
-    title: Production acceptance criterion 016
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Model providers share one normalized budgeted protocol
+    implementation:
+      - internal/modelgateway/gateway.go
+      - internal/modelgateway/types.go
+    tests:
+      - internal/modelgateway/mock_test.go
+    evidenceType: go-test+adapter-contract
     owner: control-plane
-    status: planned
+    status: implemented
   - id: AOR-ACC-017
-    title: Production acceptance criterion 017
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Cancellation propagates to active model tool and lease work
+    implementation:
+      - internal/agentruntime/runtime.go
+      - internal/sandbox/provider.go
+    tests:
+      - internal/agentruntime/runtime_test.go
+      - internal/agentruntime/slots_test.go
+      - internal/sandbox/provider_test.go
+    evidenceType: go-test+race
     owner: control-plane
-    status: planned
+    status: implemented
   - id: AOR-ACC-018
     title: Orchestrator state survives commit-result failure and retry
     implementation:
@@ -413,21 +502,27 @@ requirements:
     owner: control-plane
     status: implemented
   - id: AOR-ACC-019
-    title: Production acceptance criterion 019
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Integration audit blocks path and interface conflicts before merge
+    implementation:
+      - internal/integration/queue.go
+    tests:
+      - internal/integration/queue_test.go
+    evidenceType: go-test+immutable-audit
     owner: control-plane
-    status: planned
+    status: implemented
   - id: AOR-ACC-020
-    title: Production acceptance criterion 020
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Project completion requires integrated tasks goal audit and signed release facts
+    implementation:
+      - internal/state/project.go
+      - internal/orchestrator/service.go
+    tests:
+      - internal/state/project_test.go
+      - internal/orchestrator/service_test.go
+    evidenceType: go-test+state-transition
     owner: control-plane
-    status: planned
+    status: implemented
   - id: AOR-ACC-021
-    title: Production acceptance criterion 021
+    title: A2A 1.0 baseline interoperability suite passes
     implementation: []
     tests: []
     evidenceType: pending
@@ -481,49 +576,49 @@ requirements:
     owner: protocol
     status: implemented
   - id: AOR-ACC-026
-    title: Production acceptance criterion 026
+    title: OpenAPI generated clients pass in Go TypeScript and Python
     implementation: []
     tests: []
     evidenceType: pending
     owner: protocol
     status: planned
   - id: AOR-ACC-027
-    title: Production acceptance criterion 027
+    title: AsyncAPI optional field evolution preserves older consumers
     implementation: []
     tests: []
     evidenceType: pending
     owner: protocol
     status: planned
   - id: AOR-ACC-028
-    title: Production acceptance criterion 028
+    title: MCP versions negotiate capabilities without silent security downgrade
     implementation: []
     tests: []
     evidenceType: pending
     owner: protocol
     status: planned
   - id: AOR-ACC-029
-    title: Production acceptance criterion 029
+    title: External events correlate trace Project Task and AgentRun context
     implementation: []
     tests: []
     evidenceType: pending
     owner: protocol
     status: planned
   - id: AOR-ACC-030
-    title: Production acceptance criterion 030
+    title: Agent Card cryptographic signing expiry revocation and rotation pass
     implementation: []
     tests: []
     evidenceType: pending
     owner: protocol
     status: planned
   - id: AOR-ACC-031
-    title: Production acceptance criterion 031
+    title: Workflow projection and event bus replay converge after injected faults
     implementation: []
     tests: []
     evidenceType: pending
     owner: persistence
     status: planned
   - id: AOR-ACC-032
-    title: Production acceptance criterion 032
+    title: Transactional outbox loses no event across the commit publish crash window
     implementation: []
     tests: []
     evidenceType: pending
@@ -540,38 +635,48 @@ requirements:
     owner: persistence
     status: implemented
   - id: AOR-ACC-034
-    title: Production acceptance criterion 034
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Artifact content hash is verified before atomic publication
+    implementation:
+      - internal/goalplan/artifact.go
+      - internal/eventing/store.go
+    tests:
+      - internal/goalplan/artifact_test.go
+      - internal/eventing/memory_test.go
+    evidenceType: go-test+object-store-manifest-protocol-required
     owner: persistence
     status: planned
   - id: AOR-ACC-035
-    title: Production acceptance criterion 035
+    title: Referenced artifacts remain readable and hash-valid while orphans are reclaimed
     implementation: []
     tests: []
     evidenceType: pending
     owner: persistence
     status: planned
   - id: AOR-ACC-036
-    title: Production acceptance criterion 036
+    title: Backup restore leaves no dangling Project Goal Plan Task Audit or Artifact reference
     implementation: []
     tests: []
     evidenceType: pending
     owner: persistence
     status: planned
   - id: AOR-ACC-037
-    title: Production acceptance criterion 037
+    title: At-least-once Workflow Activities deduplicate external side effects
     implementation: []
     tests: []
     evidenceType: pending
     owner: persistence
     status: planned
   - id: AOR-ACC-038
-    title: Production acceptance criterion 038
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Lease renewal advances fencing and rejects stale holders
+    implementation:
+      - internal/authz/lease.go
+      - internal/agentruntime/runtime.go
+      - internal/state/task.go
+    tests:
+      - internal/authz/lease_test.go
+      - internal/agentruntime/runtime_test.go
+      - internal/state/task_test.go
+    evidenceType: go-test+race+durable-lease-store-gate
     owner: persistence
     status: planned
   - id: AOR-ACC-039
@@ -591,378 +696,484 @@ requirements:
     tests:
       - tests/integration/state_replay_test.go
       - internal/projection/projector_test.go
-    evidenceType: event-replay-digest
+    evidenceType: event-replay-digest+durable-full-reconciliation-required
     owner: persistence
-    status: implemented
+    status: planned
   - id: AOR-ACC-041
-    title: Production acceptance criterion 041
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Credentials are redacted and excluded from Agent-facing boundaries
+    implementation:
+      - internal/modelgateway/redact.go
+      - internal/observability/log.go
+      - internal/agentruntime/prompt.go
+    tests:
+      - internal/modelgateway/mock_test.go
+      - internal/observability/log_test.go
+      - internal/agentruntime/prompt_test.go
+    evidenceType: go-test+repository-secret-scan+live-boundary-corpus-gate
     owner: security
     status: planned
   - id: AOR-ACC-042
-    title: Production acceptance criterion 042
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Tool Broker authorizes complete principal project task tool and parameter scope
+    implementation:
+      - internal/toolbroker/broker.go
+      - internal/authz/engine.go
+    tests:
+      - internal/toolbroker/broker_test.go
+      - internal/authz/engine_test.go
+      - internal/authz/lease_test.go
+    evidenceType: go-test+exact-tool-lease-binding-required
     owner: security
     status: planned
   - id: AOR-ACC-043
-    title: Production acceptance criterion 043
+    title: Prompt injection cannot bypass Tool Broker knowledge policy or hidden-test isolation
     implementation: []
     tests: []
     evidenceType: pending
     owner: security
     status: planned
   - id: AOR-ACC-044
-    title: Production acceptance criterion 044
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Revoked short-lived capability leases fail on the next write
+    implementation:
+      - internal/authz/lease.go
+      - internal/toolbroker/broker.go
+      - internal/repository/service.go
+    tests:
+      - internal/authz/lease_test.go
+      - internal/toolbroker/broker_test.go
+      - internal/repository/service_test.go
+    evidenceType: go-test+all-write-path-adapter-gate
     owner: security
     status: planned
   - id: AOR-ACC-045
-    title: Production acceptance criterion 045
+    title: SSRF defenses cover private loopback metadata rebinding redirects and IP ambiguity
     implementation: []
     tests: []
     evidenceType: pending
     owner: security
     status: planned
   - id: AOR-ACC-046
-    title: Production acceptance criterion 046
+    title: Path defenses cover traversal links junctions case folding and Unicode normalization
     implementation: []
     tests: []
     evidenceType: pending
     owner: security
     status: planned
   - id: AOR-ACC-047
-    title: Production acceptance criterion 047
+    title: Malicious Linux dependency scripts cannot reach host credentials or unauthorized networks
     implementation: []
     tests: []
     evidenceType: pending
     owner: security
     status: planned
   - id: AOR-ACC-048
-    title: Production acceptance criterion 048
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Auditor roles cannot write repositories policies or their own evidence
+    implementation:
+      - internal/agentruntime/runtime.go
+      - internal/audit/pipeline.go
+      - internal/toolbroker/broker.go
+    tests:
+      - internal/agentruntime/runtime_test.go
+      - internal/audit/pipeline_test.go
+      - internal/toolbroker/broker_test.go
+    evidenceType: go-test+broker-auditor-write-invariant-required
     owner: security
     status: planned
   - id: AOR-ACC-049
-    title: Production acceptance criterion 049
+    title: Executors cannot read hidden tests private audit policy or unpublished workspaces
     implementation: []
     tests: []
     evidenceType: pending
     owner: security
     status: planned
   - id: AOR-ACC-050
-    title: Production acceptance criterion 050
+    title: Images binaries SBOM provenance and release manifests verify offline
     implementation: []
     tests: []
     evidenceType: pending
     owner: security
     status: planned
   - id: AOR-ACC-051
-    title: Production acceptance criterion 051
+    title: High and critical dependency vulnerabilities are zero at release
     implementation: []
     tests: []
     evidenceType: pending
     owner: security
     status: planned
   - id: AOR-ACC-052
-    title: Production acceptance criterion 052
+    title: Tenant existence cannot be inferred through errors timing counts or enumeration
     implementation: []
     tests: []
     evidenceType: pending
     owner: security
     status: planned
   - id: AOR-ACC-053
-    title: Production acceptance criterion 053
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Model output receives schema size and semantic validation
+    implementation:
+      - internal/modelgateway/gateway.go
+      - internal/agentruntime/runtime.go
+    tests:
+      - internal/modelgateway/mock_test.go
+      - internal/agentruntime/runtime_test.go
+    evidenceType: go-test+provider-response-bound-required
     owner: security
     status: planned
   - id: AOR-ACC-054
-    title: Production acceptance criterion 054
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Production untrusted workloads fail closed outside Linux containers
+    implementation:
+      - internal/authz/engine.go
+      - internal/sandbox/provider.go
+      - internal/deployment/config.go
+    tests:
+      - internal/authz/engine_test.go
+      - internal/sandbox/provider_test.go
+      - internal/deployment/config_test.go
+    evidenceType: go-test+production-environment-gate
     owner: security
-    status: planned
+    status: implemented
   - id: AOR-ACC-055
-    title: Production acceptance criterion 055
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Windows workers report native-process NONE and reject untrusted workloads
+    implementation:
+      - internal/sandbox/windows_backend.go
+      - deploy/windows/worker.yaml
+      - internal/deployment/config.go
+    tests:
+      - internal/sandbox/windows_backend_test.go
+      - internal/sandbox/provider_test.go
+      - internal/deployment/config_test.go
+    evidenceType: go-test+windows-environment-gate
     owner: security
-    status: planned
+    status: implemented
   - id: AOR-ACC-056
-    title: Production acceptance criterion 056
+    title: Random stateless service termination recovers active workflows without state corruption
     implementation: []
     tests: []
     evidenceType: pending
     owner: reliability
     status: planned
   - id: AOR-ACC-057
-    title: Production acceptance criterion 057
+    title: Terminated workers leave no Linux process residue and disclose Windows NONE limitations
     implementation: []
     tests: []
     evidenceType: pending
     owner: reliability
     status: planned
   - id: AOR-ACC-058
-    title: Production acceptance criterion 058
+    title: Thirty-minute provider outage remains recoverable without exhausting budget
     implementation: []
     tests: []
     evidenceType: pending
     owner: reliability
     status: planned
   - id: AOR-ACC-059
-    title: Production acceptance criterion 059
+    title: Event bus interruption drains the durable outbox after recovery
     implementation: []
     tests: []
     evidenceType: pending
     owner: reliability
     status: planned
   - id: AOR-ACC-060
-    title: Production acceptance criterion 060
+    title: Database failover meets RPO and RTO without split-brain writes
     implementation: []
     tests: []
     evidenceType: pending
     owner: reliability
     status: planned
   - id: AOR-ACC-061
-    title: Production acceptance criterion 061
+    title: Object-store faults cannot commit dangling artifact references
     implementation: []
     tests: []
     evidenceType: pending
     owner: reliability
     status: planned
   - id: AOR-ACC-062
-    title: Production acceptance criterion 062
+    title: Clock skew cannot extend leases or bypass expiry and fencing
     implementation: []
     tests: []
     evidenceType: pending
     owner: reliability
     status: planned
   - id: AOR-ACC-063
-    title: Production acceptance criterion 063
+    title: Regional recovery drills meet RPO RTO and retain evidence for twenty-four months
     implementation: []
     tests: []
     evidenceType: pending
     owner: reliability
     status: planned
   - id: AOR-ACC-064
-    title: Production acceptance criterion 064
+    title: Configuration rollout failure automatically rolls back within fifteen minutes
     implementation: []
     tests: []
     evidenceType: pending
     owner: reliability
     status: planned
   - id: AOR-ACC-065
-    title: Production acceptance criterion 065
+    title: Workflow upgrades replay old histories without nondeterminism
     implementation: []
     tests: []
     evidenceType: pending
     owner: reliability
     status: planned
   - id: AOR-ACC-066
-    title: Production acceptance criterion 066
+    title: Three-replica control API sustains required throughput and p95 latency
     implementation: []
     tests: []
     evidenceType: pending
     owner: performance
     status: planned
   - id: AOR-ACC-067
-    title: Production acceptance criterion 067
+    title: Control API p99 latency meets the production objective
     implementation: []
     tests: []
     evidenceType: pending
     owner: performance
     status: planned
   - id: AOR-ACC-068
-    title: Production acceptance criterion 068
+    title: Event commit-to-consumption p99 latency meets the production objective
     implementation: []
     tests: []
     evidenceType: pending
     owner: performance
     status: planned
   - id: AOR-ACC-069
-    title: Production acceptance criterion 069
+    title: Projection state query p99 latency meets the production objective
     implementation: []
     tests: []
     evidenceType: pending
     owner: performance
     status: planned
   - id: AOR-ACC-070
-    title: Production acceptance criterion 070
+    title: Capability Lease issuance p99 latency meets the production objective
     implementation: []
     tests: []
     evidenceType: pending
     owner: performance
     status: planned
   - id: AOR-ACC-071
-    title: Production acceptance criterion 071
+    title: Cancellation terminates the worker process tree within ten seconds at p99
     implementation: []
     tests: []
     evidenceType: pending
     owner: performance
     status: planned
   - id: AOR-ACC-072
-    title: Production acceptance criterion 072
+    title: Provider and Tool costs reconcile without unexplained calls or rounding drift
     implementation: []
     tests: []
     evidenceType: pending
     owner: performance
     status: planned
   - id: AOR-ACC-073
-    title: Production acceptance criterion 073
+    title: One thousand queued ModuleTasks remain lossless fair and bounded to eight active per Project
     implementation: []
     tests: []
     evidenceType: pending
     owner: performance
     status: planned
   - id: AOR-ACC-074
-    title: Production acceptance criterion 074
+    title: One hundred concurrent Projects remain isolated with bounded resource growth
     implementation: []
     tests: []
     evidenceType: pending
     owner: performance
     status: planned
   - id: AOR-ACC-075
-    title: Production acceptance criterion 075
+    title: Ten thousand Project events replay within ten minutes and bounded peak memory
     implementation: []
     tests: []
     evidenceType: pending
     owner: performance
     status: planned
   - id: AOR-ACC-076
-    title: Production acceptance criterion 076
+    title: One GiB audit artifacts upload and download by bounded streaming
     implementation: []
     tests: []
     evidenceType: pending
     owner: performance
     status: planned
   - id: AOR-ACC-077
-    title: Production acceptance criterion 077
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Log trace attribute and Tool output sizes are bounded
+    implementation:
+      - internal/observability/attributes.go
+      - internal/observability/log.go
+      - internal/observability/trace.go
+      - internal/toolbroker/broker.go
+    tests:
+      - internal/observability/log_test.go
+      - internal/observability/trace_test.go
+      - internal/toolbroker/broker_test.go
+    evidenceType: go-test+production-load-gate
     owner: performance
-    status: planned
+    status: implemented
   - id: AOR-ACC-078
-    title: Production acceptance criterion 078
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Trace context spans user model tool Git and audit boundaries
+    implementation:
+      - internal/observability/trace.go
+      - internal/observability/propagation.go
+    tests:
+      - internal/observability/trace_test.go
+    evidenceType: go-test+cross-service-instrumentation-required+deployed-trace-gate
     owner: observability
     status: planned
   - id: AOR-ACC-079
-    title: Production acceptance criterion 079
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Logs carry mandatory correlation fields or explicit absence reasons
+    implementation:
+      - internal/observability/log.go
+      - internal/observability/attributes.go
+    tests:
+      - internal/observability/log_test.go
+    evidenceType: go-test
     owner: observability
-    status: planned
+    status: implemented
   - id: AOR-ACC-080
-    title: Production acceptance criterion 080
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Telemetry excludes prompts source credentials PII and hidden tests
+    implementation:
+      - internal/observability/log.go
+      - internal/observability/attributes.go
+    tests:
+      - internal/observability/log_test.go
+      - internal/observability/trace_test.go
+    evidenceType: go-test+repository-secret-scan
     owner: observability
-    status: planned
+    status: implemented
   - id: AOR-ACC-081
-    title: Production acceptance criterion 081
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: SLO alerts are validated by live fault drills
+    implementation:
+      - observability/prometheus-rules.yaml
+      - observability/fault-drills.yaml
+    tests:
+      - internal/observability/config_test.go
+      - work-packages/wp-13/TEST_PLAN.md
+    evidenceType: configuration-test+production-environment-gate
     owner: observability
     status: planned
   - id: AOR-ACC-082
-    title: Production acceptance criterion 082
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Cost metrics retain project role model task and attempt dimensions
+    implementation:
+      - internal/observability/metrics.go
+      - observability/grafana-dashboard.json
+    tests:
+      - internal/observability/metrics_test.go
+      - internal/observability/config_test.go
+    evidenceType: go-test+dashboard-parse
     owner: observability
-    status: planned
+    status: implemented
   - id: AOR-ACC-083
-    title: Production acceptance criterion 083
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Audit rework takeover cache and tool-denial metrics are bounded
+    implementation:
+      - internal/observability/metrics.go
+    tests:
+      - internal/observability/metrics_test.go
+    evidenceType: go-test+cardinality-limit
     owner: observability
-    status: planned
+    status: implemented
   - id: AOR-ACC-084
-    title: Production acceptance criterion 084
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Sampling always retains errors third attempts security and budget denials
+    implementation:
+      - internal/observability/sampling.go
+    tests:
+      - internal/observability/trace_test.go
+    evidenceType: go-test
     owner: observability
-    status: planned
+    status: implemented
   - id: AOR-ACC-085
-    title: Production acceptance criterion 085
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Audit logs are separated signed chained and configured for WORM retention
+    implementation:
+      - internal/observability/audit.go
+      - observability/audit-storage-policy.yaml
+    tests:
+      - internal/observability/audit_test.go
+      - internal/observability/config_test.go
+    evidenceType: go-test+production-worm-gate
     owner: observability
-    status: planned
+    status: implemented
   - id: AOR-ACC-086
-    title: Production acceptance criterion 086
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Linux amd64 is the required production platform
+    implementation:
+      - deploy/helm/values.yaml
+      - internal/sandbox/docker_backend.go
+      - .github/workflows/ci.yml
+    tests:
+      - internal/sandbox/docker_backend_test.go
+      - internal/deployment/config_test.go
+    evidenceType: go-test+ci-linux-amd64+production-environment-gate
     owner: platform
-    status: planned
+    status: implemented
   - id: AOR-ACC-087
-    title: Production acceptance criterion 087
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Linux arm64 is a supported secondary platform
+    implementation:
+      - .github/workflows/ci.yml
+    tests:
+      - .github/workflows/ci.yml
+    evidenceType: cross-compile+native-linux-arm64-gate
     owner: platform
     status: planned
   - id: AOR-ACC-088
-    title: Production acceptance criterion 088
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Windows support matrix pins OS versions and isolation NONE
+    implementation:
+      - deploy/windows/README.md
+      - deploy/windows/worker.yaml
+      - internal/deployment/config.go
+    tests:
+      - internal/deployment/config_test.go
+      - internal/sandbox/windows_backend_test.go
+    evidenceType: go-test+support-matrix
     owner: platform
-    status: planned
+    status: implemented
   - id: AOR-ACC-089
-    title: Production acceptance criterion 089
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Windows paths newlines case folding and long paths pass native tests
+    implementation:
+      - internal/repository/service.go
+      - internal/repository/file_open_windows.go
+    tests:
+      - internal/repository/service_test.go
+      - deploy/windows/README.md
+    evidenceType: cross-compile+native-windows-filesystem-gate
     owner: platform
     status: planned
   - id: AOR-ACC-090
-    title: Production acceptance criterion 090
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Supported platforms produce equivalent functional audit results with explicit security differences
+    implementation:
+      - internal/audit/pipeline.go
+      - internal/sandbox/provider.go
+    tests:
+      - internal/audit/pipeline_test.go
+      - internal/sandbox/provider_test.go
+    evidenceType: cross-platform-equivalence-test-required
     owner: platform
     status: planned
   - id: AOR-ACC-091
-    title: Production acceptance criterion 091
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Linux container failure is fatal and Windows rejects isolation-required work
+    implementation:
+      - internal/sandbox/provider.go
+      - internal/sandbox/docker_backend.go
+      - internal/sandbox/windows_backend.go
+      - internal/authz/engine.go
+    tests:
+      - internal/sandbox/provider_test.go
+      - internal/sandbox/docker_backend_test.go
+      - internal/sandbox/windows_backend_test.go
+      - internal/authz/engine_test.go
+    evidenceType: go-test+native-worker-environment-gate
     owner: platform
-    status: planned
+    status: implemented
   - id: AOR-ACC-092
-    title: Production acceptance criterion 092
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Operators can install back up restore upgrade and roll back using documentation alone
+    implementation:
+      - deploy/README.md
+      - deploy/compose/README.md
+      - deploy/backup/restore-checklist.md
+      - runbooks/README.md
+    tests:
+      - internal/deployment/config_test.go
+      - work-packages/wp-14/TEST_PLAN.md
+    evidenceType: documentation+isolated-operator-drill-gate
     owner: operations
     status: planned
   - id: AOR-ACC-093
-    title: Production acceptance criterion 093
+    title: Configuration reference covers defaults ranges sensitivity dynamics and restart requirements
     implementation: []
     tests: []
-    evidenceType: pending
+    evidenceType: configuration-catalog-required
     owner: operations
     status: planned
   - id: AOR-ACC-094
@@ -978,21 +1189,21 @@ requirements:
     owner: operations
     status: implemented
   - id: AOR-ACC-095
-    title: Production acceptance criterion 095
+    title: Every Runbook has drill evidence from the last one hundred eighty days
     implementation: []
     tests: []
     evidenceType: pending
     owner: operations
     status: planned
   - id: AOR-ACC-096
-    title: Production acceptance criterion 096
+    title: Data retention deletion export and legal hold flows are executable and tested
     implementation: []
     tests: []
     evidenceType: pending
     owner: operations
     status: planned
   - id: AOR-ACC-097
-    title: Production acceptance criterion 097
+    title: Deployment packages include licenses notices SBOM and provenance
     implementation: []
     tests: []
     evidenceType: pending
@@ -1018,9 +1229,14 @@ requirements:
     owner: operations
     status: implemented
   - id: AOR-ACC-100
-    title: Production acceptance criterion 100
-    implementation: []
-    tests: []
-    evidenceType: pending
+    title: Requirement traceability matrix has no blank required entry
+    implementation:
+      - conformance/requirements.yaml
+      - internal/bootstrap/validate.go
+      - internal/conformance/runner.go
+    tests:
+      - internal/bootstrap/validate_test.go
+      - internal/conformance/runner_test.go
+    evidenceType: catalog-validation+all-production-gates-required
     owner: operations
     status: planned
