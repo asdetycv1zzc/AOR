@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "taskId": "WP-06",
+  "specVersion": "2.0.0",
+  "requirements": ["AOR-INV-013", "AOR-ACC-007", "AOR-ACC-043", "AOR-ACC-047", "AOR-ACC-049", "AOR-ACC-054", "AOR-ACC-055"],
+  "criteria": [
+    {"id": "WP06-AC-001", "evidence": "internal/sandbox/provider_test.go", "required": true},
+    {"id": "WP06-AC-002", "evidence": "internal/sandbox/docker_backend_test.go", "required": true},
+    {"id": "WP06-AC-003", "evidence": "internal/sandbox/windows_backend_test.go", "required": true},
+    {"id": "WP06-AC-004", "evidence": "WP-15 live sandbox security report", "required": true}
+  ]
+}
