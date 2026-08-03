@@ -84,6 +84,7 @@ func TestRetentionSamplerNeverDropsCriticalOutcomes(t *testing.T) {
 	cases := []TraceOutcome{
 		{Failed: true},
 		{Failed: true, Attempt: 3},
+		{Attempt: 3},
 		{SecurityDenied: true},
 		{BudgetDenied: true},
 		{Critical: true},

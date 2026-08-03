@@ -23,7 +23,7 @@ type RetentionSampler struct {
 }
 
 func (s RetentionSampler) ShouldSample(trace TraceContext, outcome TraceOutcome) bool {
-	if outcome.Critical || outcome.SecurityDenied || outcome.BudgetDenied || outcome.Failed || (outcome.Attempt >= 3 && outcome.Failed) {
+	if outcome.Critical || outcome.SecurityDenied || outcome.BudgetDenied || outcome.Failed || outcome.Attempt >= 3 {
 		return true
 	}
 	rate := s.NormalRate
