@@ -28,8 +28,32 @@ type LeaseProof struct {
 	ExpiresAt    time.Time
 }
 
+type LeaseAction string
+
+const (
+	LeaseActionCreateWorkspace LeaseAction = "repository.workspace.create"
+	LeaseActionWriteFile       LeaseAction = "repository.file.write"
+	LeaseActionDeleteFile      LeaseAction = "repository.file.delete"
+	LeaseActionSubmit          LeaseAction = "repository.submission.commit"
+)
+
+type LeaseValidation struct {
+	Proof           LeaseProof
+	Action          LeaseAction
+	TenantID        string
+	ProjectID       string
+	TaskID          string
+	AttemptSeriesID string
+	Attempt         int
+	ModuleSpecRef   contracts.SpecRef
+	AgentInstanceID string
+	Role            string
+	ResourcePath    string
+	ParameterDigest string
+}
+
 type LeaseValidator interface {
-	Validate(context.Context, LeaseProof) error
+	Validate(context.Context, LeaseValidation) error
 }
 
 type WorkspaceRequest struct {
@@ -53,6 +77,7 @@ type Workspace struct {
 	Attempt         int
 	AttemptSeriesID string
 	Path            string
+	Branch          string
 	BaseCommit      string
 	AllowedPaths    []string
 	ForbiddenPaths  []string
@@ -84,9 +109,11 @@ type SubmissionRequest struct {
 }
 
 type Submission struct {
-	Manifest  contracts.SubmissionManifest `json:"manifest"`
-	Workspace Workspace                    `json:"workspace"`
-	CommitAt  time.Time                    `json:"commitAt"`
+	Manifest       contracts.SubmissionManifest `json:"manifest"`
+	Workspace      Workspace                    `json:"workspace"`
+	CommitAt       time.Time                    `json:"commitAt"`
+	IdempotencyKey string                       `json:"idempotencyKey"`
+	RequestSHA256  string                       `json:"requestSha256"`
 }
 
 type Signer interface {
@@ -95,7 +122,7 @@ type Signer interface {
 }
 
 type SubmissionStore interface {
-	Get(context.Context, string, string, int) (Submission, bool, error)
+	Get(context.Context, string, string, string, int) (Submission, bool, error)
 	Put(context.Context, Submission) error
 }
 
@@ -108,19 +135,19 @@ func NewMemorySubmissionStore() *MemorySubmissionStore {
 	return &MemorySubmissionStore{items: make(map[string]Submission)}
 }
 
-func (s *MemorySubmissionStore) Get(_ context.Context, tenantID, taskID string, attempt int) (Submission, bool, error) {
+func (s *MemorySubmissionStore) Get(_ context.Context, tenantID, taskID, attemptSeriesID string, attempt int) (Submission, bool, error) {
 	s.mu.RLock()
-	value, ok := s.items[submissionKey(tenantID, taskID, attempt)]
+	value, ok := s.items[submissionKey(tenantID, taskID, attemptSeriesID, attempt)]
 	s.mu.RUnlock()
 	return cloneSubmission(value), ok, nil
 }
 
 func (s *MemorySubmissionStore) Put(_ context.Context, submission Submission) error {
-	key := submissionKey(submission.Workspace.TenantID, submission.Workspace.TaskID, submission.Manifest.Attempt)
+	key := submissionKey(submission.Workspace.TenantID, submission.Workspace.TaskID, submission.Manifest.AttemptSeriesID, submission.Manifest.Attempt)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if prior, ok := s.items[key]; ok {
-		if prior.Manifest.SHA256 == submission.Manifest.SHA256 {
+		if prior.Manifest.SHA256 == submission.Manifest.SHA256 && prior.IdempotencyKey == submission.IdempotencyKey {
 			return nil
 		}
 		return ErrSubmissionConflict
@@ -129,8 +156,8 @@ func (s *MemorySubmissionStore) Put(_ context.Context, submission Submission) er
 	return nil
 }
 
-func submissionKey(tenantID, taskID string, attempt int) string {
-	return tenantID + "\x00" + taskID + "\x00" + strconv.Itoa(attempt)
+func submissionKey(tenantID, taskID, attemptSeriesID string, attempt int) string {
+	return tenantID + "\x00" + taskID + "\x00" + attemptSeriesID + "\x00" + strconv.Itoa(attempt)
 }
 
 func cloneSubmission(value Submission) Submission {
@@ -143,5 +170,6 @@ func cloneSubmission(value Submission) Submission {
 		signature := *value.Manifest.Signature
 		value.Manifest.Signature = &signature
 	}
+	value.Workspace = cloneWorkspace(value.Workspace)
 	return value
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path"
@@ -31,6 +32,7 @@ type Service struct {
 	signer     Signer
 	clock      func() time.Time
 	mu         sync.RWMutex
+	submitMu   sync.Mutex
 	workspaces map[string]Workspace
 }
 
@@ -61,9 +63,6 @@ func (s *Service) CreateWorkspace(ctx context.Context, request WorkspaceRequest)
 	if !safeIDPattern.MatchString(request.TenantID) || !safeIDPattern.MatchString(request.ProjectID) || !safeIDPattern.MatchString(request.TaskID) || !safeIDPattern.MatchString(request.AttemptSeriesID) || request.Attempt < 1 || request.Attempt > 3 || request.ModuleSpec.Validate() != nil || request.AgentIdentity.AgentInstanceID == "" || request.AgentIdentity.Role != "EXECUTOR" || request.AgentIdentity.LeaseID != request.Lease.ID || request.Lease.ID == "" || request.Lease.FencingToken < 1 {
 		return Workspace{}, ErrInvalidRequest
 	}
-	if err := s.validateLease(ctx, request.Lease); err != nil {
-		return Workspace{}, err
-	}
 	if err := validateCommit(request.BaseCommit); err != nil {
 		return Workspace{}, ErrInvalidRequest
 	}
@@ -81,6 +80,20 @@ func (s *Service) CreateWorkspace(ctx context.Context, request WorkspaceRequest)
 	if filepath.Clean(source) == filepath.Clean(directory) {
 		return Workspace{}, ErrInvalidRequest
 	}
+	moduleSpecRef := contracts.SpecRef{Version: request.ModuleSpec.ModuleSpecVersion, SHA256: request.ModuleSpec.SHA256}
+	parameterDigest, err := leaseParameterDigest(struct {
+		Source          string            `json:"source"`
+		BaseCommit      string            `json:"baseCommit"`
+		ModuleSpecRef   contracts.SpecRef `json:"moduleSpecRef"`
+		AttemptSeriesID string            `json:"attemptSeriesId"`
+		Attempt         int               `json:"attempt"`
+	}{source, request.BaseCommit, moduleSpecRef, request.AttemptSeriesID, request.Attempt})
+	if err != nil {
+		return Workspace{}, err
+	}
+	if err := s.validateLease(ctx, LeaseValidation{Proof: request.Lease, Action: LeaseActionCreateWorkspace, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, AttemptSeriesID: request.AttemptSeriesID, Attempt: request.Attempt, ModuleSpecRef: moduleSpecRef, AgentInstanceID: request.AgentIdentity.AgentInstanceID, Role: request.AgentIdentity.Role, ResourcePath: directory, ParameterDigest: parameterDigest}); err != nil {
+		return Workspace{}, err
+	}
 	if err := os.MkdirAll(filepath.Dir(directory), 0o700); err != nil {
 		return Workspace{}, err
 	}
@@ -93,7 +106,7 @@ func (s *Service) CreateWorkspace(ctx context.Context, request WorkspaceRequest)
 	if _, err := git(ctx, directory, "rev-parse", "--verify", request.BaseCommit+"^{commit}"); err != nil {
 		return Workspace{}, ErrInitialCommitNeeded
 	}
-	workspace := Workspace{ID: id, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, Attempt: request.Attempt, AttemptSeriesID: request.AttemptSeriesID, Path: directory, BaseCommit: request.BaseCommit, AllowedPaths: append([]string(nil), request.ModuleSpec.AllowedPaths...), ForbiddenPaths: append([]string(nil), request.ModuleSpec.ForbiddenPaths...), ModuleSpecRef: contracts.SpecRef{Version: request.ModuleSpec.ModuleSpecVersion, SHA256: request.ModuleSpec.SHA256}, AgentIdentity: request.AgentIdentity}
+	workspace := Workspace{ID: id, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, Attempt: request.Attempt, AttemptSeriesID: request.AttemptSeriesID, Path: directory, Branch: workspaceBranch(request), BaseCommit: request.BaseCommit, AllowedPaths: append([]string(nil), request.ModuleSpec.AllowedPaths...), ForbiddenPaths: append([]string(nil), request.ModuleSpec.ForbiddenPaths...), ModuleSpecRef: moduleSpecRef, AgentIdentity: request.AgentIdentity}
 	if err := checkoutCommit(ctx, workspace, request.BaseCommit); err != nil {
 		return Workspace{}, err
 	}
@@ -108,15 +121,23 @@ func (s *Service) WriteFile(ctx context.Context, request WriteRequest) error {
 	if err != nil {
 		return err
 	}
-	if err := s.validateLease(ctx, request.Lease); err != nil {
-		return err
-	}
 	relative, err := ownedPath(workspace, request.Path)
 	if err != nil {
 		return err
 	}
 	if len(request.Content) > 4<<20 {
 		return ErrInvalidRequest
+	}
+	parameterDigest, err := leaseParameterDigest(struct {
+		Path   string `json:"path"`
+		SHA256 string `json:"sha256"`
+		Size   int    `json:"size"`
+	}{relative, DigestBytes(request.Content), len(request.Content)})
+	if err != nil {
+		return err
+	}
+	if err := s.validateWorkspaceLease(ctx, workspace, request.Lease, LeaseActionWriteFile, relative, parameterDigest); err != nil {
+		return err
 	}
 	target := filepath.Join(workspace.Path, filepath.FromSlash(relative))
 	if err := rejectSymlinkTree(workspace.Path, target); err != nil {
@@ -128,11 +149,20 @@ func (s *Service) WriteFile(ctx context.Context, request WriteRequest) error {
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return err
 	}
-	file, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	file, err := openFileNoFollow(target)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
+	if unsafeFile, statErr := file.Stat(); statErr != nil || hasMultipleLinks(unsafeFile) {
+		return ErrPathDenied
+	}
+	if err := file.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
 	if _, err := file.Write(request.Content); err != nil {
 		return err
 	}
@@ -144,11 +174,17 @@ func (s *Service) DeleteFile(ctx context.Context, request DeleteRequest) error {
 	if err != nil {
 		return err
 	}
-	if err := s.validateLease(ctx, request.Lease); err != nil {
-		return err
-	}
 	relative, err := ownedPath(workspace, request.Path)
 	if err != nil {
+		return err
+	}
+	parameterDigest, err := leaseParameterDigest(struct {
+		Path string `json:"path"`
+	}{relative})
+	if err != nil {
+		return err
+	}
+	if err := s.validateWorkspaceLease(ctx, workspace, request.Lease, LeaseActionDeleteFile, relative, parameterDigest); err != nil {
 		return err
 	}
 	target := filepath.Join(workspace.Path, filepath.FromSlash(relative))
@@ -174,7 +210,16 @@ func (s *Service) ReadFile(ctx context.Context, workspaceID, name string) ([]byt
 	if err := rejectSymlinkTree(workspace.Path, target); err != nil {
 		return nil, err
 	}
-	content, err := os.ReadFile(target)
+	file, err := openReadFileNoFollow(target)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || hasMultipleLinks(info) {
+		return nil, ErrPathDenied
+	}
+	content, err := io.ReadAll(io.LimitReader(file, (4<<20)+1))
 	if err != nil {
 		return nil, err
 	}
@@ -185,15 +230,14 @@ func (s *Service) ReadFile(ctx context.Context, workspaceID, name string) ([]byt
 }
 
 func (s *Service) Submit(ctx context.Context, request SubmissionRequest) (Submission, error) {
+	s.submitMu.Lock()
+	defer s.submitMu.Unlock()
 	workspace, err := s.workspace(request.WorkspaceID)
 	if err != nil {
 		return Submission{}, err
 	}
-	if request.Attempt != workspace.Attempt || request.Attempt < 1 || request.Attempt > 3 || request.IdempotencyKey == "" {
+	if request.Attempt != workspace.Attempt || request.Attempt < 1 || request.Attempt > 3 || !safeCommitMetadata(request.IdempotencyKey) {
 		return Submission{}, ErrInvalidRequest
-	}
-	if err := s.validateLease(ctx, request.Lease); err != nil {
-		return Submission{}, err
 	}
 	if request.CreatedAt.IsZero() {
 		request.CreatedAt = s.clock().UTC()
@@ -201,9 +245,19 @@ func (s *Service) Submit(ctx context.Context, request SubmissionRequest) (Submis
 	if !request.CreatedAt.Before(s.clock().UTC().Add(time.Minute)) {
 		return Submission{}, ErrInvalidRequest
 	}
-	if prior, found, err := s.store.Get(ctx, workspace.TenantID, workspace.TaskID, request.Attempt); err != nil {
+	requestDigest, err := submissionRequestDigest(request)
+	if err != nil {
+		return Submission{}, err
+	}
+	if err := s.validateWorkspaceLease(ctx, workspace, request.Lease, LeaseActionSubmit, workspace.Path, requestDigest); err != nil {
+		return Submission{}, err
+	}
+	if prior, found, err := s.store.Get(ctx, workspace.TenantID, workspace.TaskID, workspace.AttemptSeriesID, request.Attempt); err != nil {
 		return Submission{}, err
 	} else if found {
+		if prior.IdempotencyKey != request.IdempotencyKey || prior.RequestSHA256 != requestDigest {
+			return Submission{}, ErrSubmissionConflict
+		}
 		return cloneSubmission(prior), nil
 	}
 	changed, deleted, created, err := s.commitWorkspace(ctx, workspace, request.Lease, request.IdempotencyKey)
@@ -231,7 +285,7 @@ func (s *Service) Submit(ctx context.Context, request SubmissionRequest) (Submis
 	if err := manifest.Validate(); err != nil {
 		return Submission{}, err
 	}
-	submission := Submission{Manifest: manifest, Workspace: cloneWorkspace(workspace), CommitAt: s.clock().UTC()}
+	submission := Submission{Manifest: manifest, Workspace: cloneWorkspace(workspace), CommitAt: s.clock().UTC(), IdempotencyKey: request.IdempotencyKey, RequestSHA256: requestDigest}
 	if err := s.store.Put(ctx, submission); err != nil {
 		return Submission{}, err
 	}
@@ -256,25 +310,49 @@ func (s *Service) workspace(id string) (Workspace, error) {
 	return cloneWorkspace(workspace), nil
 }
 
-func (s *Service) validateLease(ctx context.Context, lease LeaseProof) error {
+func (s *Service) validateWorkspaceLease(ctx context.Context, workspace Workspace, proof LeaseProof, action LeaseAction, resourcePath, parameterDigest string) error {
+	if proof.ID == "" || proof.ID != workspace.AgentIdentity.LeaseID {
+		return ErrLeaseStale
+	}
+	return s.validateLease(ctx, LeaseValidation{Proof: proof, Action: action, TenantID: workspace.TenantID, ProjectID: workspace.ProjectID, TaskID: workspace.TaskID, AttemptSeriesID: workspace.AttemptSeriesID, Attempt: workspace.Attempt, ModuleSpecRef: workspace.ModuleSpecRef, AgentInstanceID: workspace.AgentIdentity.AgentInstanceID, Role: workspace.AgentIdentity.Role, ResourcePath: resourcePath, ParameterDigest: parameterDigest})
+}
+
+func (s *Service) validateLease(ctx context.Context, validation LeaseValidation) error {
 	if err := contextErr(ctx); err != nil {
 		return err
 	}
-	if lease.ID == "" || lease.FencingToken < 1 || lease.ExpiresAt.IsZero() || !s.clock().Before(lease.ExpiresAt) {
+	lease := validation.Proof
+	if lease.ID == "" || lease.FencingToken < 1 || lease.ExpiresAt.IsZero() || !s.clock().Before(lease.ExpiresAt) || validation.Action == "" || validation.TenantID == "" || validation.ProjectID == "" || validation.TaskID == "" || validation.AttemptSeriesID == "" || validation.Attempt < 1 || validation.Attempt > 3 || validation.ModuleSpecRef.Validate() != nil || validation.AgentInstanceID == "" || validation.Role != "EXECUTOR" || validation.ResourcePath == "" || !strings.HasPrefix(validation.ParameterDigest, "sha256:") {
 		return ErrLeaseStale
 	}
 	if s.leases == nil {
 		return ErrLeaseRequired
 	}
-	if err := s.leases.Validate(ctx, lease); err != nil {
+	if err := s.leases.Validate(ctx, validation); err != nil {
 		return fmt.Errorf("%w: %v", ErrLeaseStale, err)
 	}
 	return nil
 }
 
 func (s *Service) commitWorkspace(ctx context.Context, workspace Workspace, lease LeaseProof, idempotencyKey string) ([]string, []string, []string, error) {
-	if idempotencyKey == "" {
+	if !safeCommitMetadata(idempotencyKey) {
 		return nil, nil, nil, ErrInvalidRequest
+	}
+	expectedMessage := submissionCommitMessage(workspace, idempotencyKey)
+	head, err := git(ctx, workspace.Path, "rev-parse", "HEAD")
+	if err != nil {
+		return nil, nil, nil, ErrGitUnavailable
+	}
+	if strings.TrimSpace(head) != workspace.BaseCommit {
+		message, messageErr := git(ctx, workspace.Path, "log", "-1", "--format=%B")
+		if messageErr != nil || strings.TrimSpace(message) != strings.TrimSpace(expectedMessage) {
+			return nil, nil, nil, ErrRepositoryDirty
+		}
+		nameStatus, statusErr := git(ctx, workspace.Path, "diff", "--name-status", "--find-renames", "-z", workspace.BaseCommit+"..HEAD")
+		if statusErr != nil {
+			return nil, nil, nil, ErrGitUnavailable
+		}
+		return classifyChanges(nameStatus)
 	}
 	status, err := git(ctx, workspace.Path, "status", "--porcelain=v1", "-z")
 	if err != nil {
@@ -295,11 +373,10 @@ func (s *Service) commitWorkspace(ctx context.Context, workspace Workspace, leas
 	if _, err := git(ctx, workspace.Path, "diff", "--cached", "--check"); err != nil {
 		return nil, nil, nil, ErrRepositoryDirty
 	}
-	message := fmt.Sprintf("aor(%s): attempt-%d %s", workspace.TaskID, workspace.Attempt, idempotencyKey)
-	if _, err := git(ctx, workspace.Path, "commit", "--no-verify", "-m", message); err != nil {
+	if _, err := git(ctx, workspace.Path, "commit", "--no-verify", "-m", expectedMessage); err != nil {
 		return nil, nil, nil, ErrGitUnavailable
 	}
-	nameStatus, err := git(ctx, workspace.Path, "diff", "--name-status", "--find-renames", workspace.BaseCommit+"..HEAD")
+	nameStatus, err := git(ctx, workspace.Path, "diff", "--name-status", "--find-renames", "-z", workspace.BaseCommit+"..HEAD")
 	if err != nil {
 		return nil, nil, nil, ErrGitUnavailable
 	}
@@ -307,7 +384,10 @@ func (s *Service) commitWorkspace(ctx context.Context, workspace Workspace, leas
 }
 
 func checkoutCommit(ctx context.Context, workspace Workspace, commit string) error {
-	if _, err := git(ctx, workspace.Path, "checkout", "--detach", commit); err != nil {
+	if workspace.Branch == "" {
+		return ErrInvalidRequest
+	}
+	if _, err := git(ctx, workspace.Path, "checkout", "-B", workspace.Branch, commit); err != nil {
 		return ErrGitUnavailable
 	}
 	return nil
@@ -367,7 +447,7 @@ func matchesPath(pattern, candidate string) bool {
 	if !ok {
 		return false
 	}
-	if cleanPattern == candidate || strings.HasSuffix(cleanPattern, "/...") && (candidate == strings.TrimSuffix(cleanPattern, "/...") || strings.HasPrefix(candidate, strings.TrimSuffix(cleanPattern, "/...")+"/")) {
+	if cleanPattern == candidate || recursivePatternMatch(cleanPattern, candidate) {
 		return true
 	}
 	if strings.ContainsAny(cleanPattern, "*?[") {
@@ -377,12 +457,28 @@ func matchesPath(pattern, candidate string) bool {
 	return strings.HasPrefix(candidate, cleanPattern+"/")
 }
 
+func recursivePatternMatch(pattern, candidate string) bool {
+	for _, suffix := range []string{"/...", "/**"} {
+		if strings.HasSuffix(pattern, suffix) {
+			root := strings.TrimSuffix(pattern, suffix)
+			return candidate == root || strings.HasPrefix(candidate, root+"/")
+		}
+	}
+	return false
+}
+
 func cleanRelative(value string) (string, bool) {
 	if value == "" || strings.ContainsRune(value, 0) {
 		return "", false
 	}
-	clean := path.Clean(strings.ReplaceAll(value, "\\", "/"))
-	if clean == "." || strings.HasPrefix(clean, "/") || clean == ".." || strings.HasPrefix(clean, "../") {
+	for _, character := range value {
+		if character < 0x20 || character > 0x7e {
+			return "", false
+		}
+	}
+	normalized := strings.ReplaceAll(value, "\\", "/")
+	clean := path.Clean(normalized)
+	if clean != normalized || clean == "." || strings.HasPrefix(clean, "/") || clean == ".." || strings.HasPrefix(clean, "../") {
 		return "", false
 	}
 	return clean, true
@@ -432,7 +528,7 @@ func parseStatusPaths(value string) ([]string, error) {
 			return nil, ErrRepositoryDirty
 		}
 		paths = append(paths, name)
-		if part[0] == 'R' || part[0] == 'C' {
+		if part[0] == 'R' || part[0] == 'C' || part[1] == 'R' || part[1] == 'C' {
 			if index+1 >= len(parts) || parts[index+1] == "" {
 				return nil, ErrRepositoryDirty
 			}
@@ -446,18 +542,34 @@ func parseStatusPaths(value string) ([]string, error) {
 
 func classifyChanges(value string) ([]string, []string, []string, error) {
 	var changed, deleted, created []string
-	for _, line := range strings.Split(strings.TrimSpace(value), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
+	parts := strings.Split(value, "\x00")
+	for index := 0; index < len(parts); {
+		status := parts[index]
+		index++
+		if status == "" {
 			continue
 		}
-		name := fields[len(fields)-1]
-		changed = append(changed, name)
-		switch fields[0][0] {
+		if index >= len(parts) || parts[index] == "" {
+			return nil, nil, nil, ErrRepositoryDirty
+		}
+		first := parts[index]
+		index++
+		switch status[0] {
+		case 'R', 'C':
+			if index >= len(parts) || parts[index] == "" {
+				return nil, nil, nil, ErrRepositoryDirty
+			}
+			second := parts[index]
+			index++
+			changed = append(changed, first, second)
 		case 'D':
-			deleted = append(deleted, name)
+			changed = append(changed, first)
+			deleted = append(deleted, first)
 		case 'A':
-			created = append(created, name)
+			changed = append(changed, first)
+			created = append(created, first)
+		default:
+			changed = append(changed, first)
 		}
 	}
 	sort.Strings(changed)
@@ -495,18 +607,63 @@ func workspaceID(request WorkspaceRequest) string {
 	return request.TenantID + ":" + request.ProjectID + ":" + request.TaskID + ":" + strconv.Itoa(request.Attempt)
 }
 
+func workspaceBranch(request WorkspaceRequest) string {
+	return "agent/" + branchPart(request.ProjectID) + "/" + branchPart(request.TaskID) + "/attempt-" + strconv.Itoa(request.Attempt)
+}
+
+func branchPart(value string) string {
+	var builder strings.Builder
+	for _, character := range value {
+		if character >= 'A' && character <= 'Z' || character >= 'a' && character <= 'z' || character >= '0' && character <= '9' || character == '-' || character == '_' {
+			builder.WriteRune(character)
+		} else {
+			builder.WriteByte('_')
+		}
+	}
+	if builder.Len() == 0 {
+		return "unknown"
+	}
+	return builder.String()
+}
+
+func submissionCommitMessage(workspace Workspace, idempotencyKey string) string {
+	return fmt.Sprintf("aor(%s): submission attempt %d\n\nAOR-Task: %s\nAOR-Attempt: %d\nAOR-Attempt-Series: %s\nAOR-Module-Spec: v%d %s\nAOR-Agent: %s\nAOR-Lease: %s\nAOR-Idempotency-Key: %s", workspace.TaskID, workspace.Attempt, workspace.TaskID, workspace.Attempt, workspace.AttemptSeriesID, workspace.ModuleSpecRef.Version, workspace.ModuleSpecRef.SHA256, workspace.AgentIdentity.AgentInstanceID, workspace.AgentIdentity.LeaseID, idempotencyKey)
+}
+
+func safeCommitMetadata(value string) bool {
+	return value != "" && len(value) <= 256 && !strings.ContainsAny(value, "\r\n\x00")
+}
+
 func cleanID(value string) string {
 	return strings.NewReplacer("/", "_", "\\", "_", "..", "_").Replace(value)
 }
 
 func validateCommit(value string) error {
-	if len(value) != 40 {
+	if len(value) != 40 || strings.ToLower(value) != value {
 		return ErrInvalidRequest
 	}
 	if _, err := hex.DecodeString(value); err != nil {
 		return ErrInvalidRequest
 	}
 	return nil
+}
+
+func leaseParameterDigest(value any) (string, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	return canonicaljson.Digest(encoded)
+}
+
+func submissionRequestDigest(request SubmissionRequest) (string, error) {
+	return leaseParameterDigest(struct {
+		WorkspaceID           string   `json:"workspaceId"`
+		Attempt               int      `json:"attempt"`
+		ClaimedCriteria       []string `json:"claimedCriteria"`
+		LocalTestEvidenceRefs []string `json:"localTestEvidenceRefs"`
+		IdempotencyKey        string   `json:"idempotencyKey"`
+	}{request.WorkspaceID, request.Attempt, request.ClaimedCriteria, request.LocalTestEvidenceRefs, request.IdempotencyKey})
 }
 
 func contextErr(ctx context.Context) error {
