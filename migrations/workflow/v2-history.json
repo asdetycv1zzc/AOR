@@ -1,0 +1,21 @@
+{
+  "workflowVersion": 2,
+  "versionMarkers": [
+    {
+      "changeId": "history-schema",
+      "version": 2
+    }
+  ],
+  "steps": [
+    {
+      "aggregateVersion": 1,
+      "eventType": "io.aor.project.created.v1",
+      "eventSha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "aggregateVersion": 2,
+      "eventType": "io.aor.goal.proposed.v1",
+      "eventSha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    }
+  ]
+}
