@@ -8,6 +8,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/akimisaka/aor/pkg/canonicaljson"
@@ -17,6 +18,7 @@ type Queue struct {
 	store    Store
 	executor MergeExecutor
 	clock    func() time.Time
+	mu       sync.Mutex
 }
 
 func NewQueue(store Store, executor MergeExecutor, clock func() time.Time) (*Queue, error) {
@@ -76,6 +78,8 @@ func (q *Queue) Audit(ctx context.Context, request Request) (Audit, error) {
 }
 
 func (q *Queue) Merge(ctx context.Context, request Request) (MergeResult, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
 	if err := validateRequest(request); err != nil {
 		return MergeResult{}, err
 	}

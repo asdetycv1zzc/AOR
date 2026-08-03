@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/akimisaka/aor/pkg/contracts"
@@ -68,6 +69,33 @@ func TestQueueTreatsCandidateOrderAsCanonical(t *testing.T) {
 	replay, err := queue.Merge(context.Background(), request)
 	if err != nil || !replay.Duplicate || merger.calls != 1 {
 		t.Fatalf("candidate order changed immutable replay: %#v calls=%d", replay, merger.calls)
+	}
+}
+
+func TestQueueConcurrentReplayHasOneMergeSideEffect(t *testing.T) {
+	merger := &fakeMerger{commit: commit(7)}
+	queue, _ := NewQueue(NewMemoryStore(), merger, nil)
+	request := validRequest()
+	const calls = 100
+	errorsCh := make(chan error, calls)
+	var group sync.WaitGroup
+	for index := 0; index < calls; index++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			_, err := queue.Merge(context.Background(), request)
+			errorsCh <- err
+		}()
+	}
+	group.Wait()
+	close(errorsCh)
+	for err := range errorsCh {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if merger.calls != 1 {
+		t.Fatalf("merge side effect count = %d", merger.calls)
 	}
 }
 
