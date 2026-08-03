@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -42,19 +44,19 @@ func (m *mockAdapter) NormalizeUsage(raw any) (Usage, error) {
 
 func TestBudgetLedgerSettlementIsIdempotent(t *testing.T) {
 	ledger := NewBudgetLedger(func() time.Time { return time.Unix(0, 0) })
-	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "acct", LimitMicros: 100}); err != nil {
+	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "acct", TenantID: "ten", LimitMicros: 100}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ledger.Reserve(context.Background(), "acct", "res", "req", 80); err != nil {
+	if _, err := ledger.Reserve(context.Background(), "ten", "acct", "res", "req", 80); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ledger.Settle(context.Background(), "res", 50); err != nil {
+	if _, err := ledger.Settle(context.Background(), "ten", "res", 50); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ledger.Settle(context.Background(), "res", 50); err != nil {
+	if _, err := ledger.Settle(context.Background(), "ten", "res", 50); err != nil {
 		t.Fatal(err)
 	}
-	account, _ := ledger.Account("acct")
+	account, _ := ledger.Account("ten", "acct")
 	if account.SpentMicros != 50 || account.ReservedMicros != 0 {
 		t.Fatalf("account = %#v", account)
 	}
@@ -63,7 +65,7 @@ func TestBudgetLedgerSettlementIsIdempotent(t *testing.T) {
 func TestGatewayRejectsBudgetBeforeProvider(t *testing.T) {
 	adapter := &mockAdapter{responses: []NormalizedResponse{{Content: json.RawMessage(`{"ok":true}`), Usage: Usage{CostMicros: 1}}}}
 	ledger := NewBudgetLedger(time.Now)
-	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "acct", LimitMicros: 1}); err != nil {
+	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "acct", TenantID: "ten", LimitMicros: 1}); err != nil {
 		t.Fatal(err)
 	}
 	gateway := NewGateway(ledger, time.Now)
@@ -82,7 +84,7 @@ func TestGatewayRejectsBudgetBeforeProvider(t *testing.T) {
 func TestGatewayRetriesInvalidStructuredOutputAtMostTwice(t *testing.T) {
 	adapter := &mockAdapter{responses: []NormalizedResponse{{Content: json.RawMessage(`{"wrong":true}`), Usage: Usage{CostMicros: 1}}, {Content: json.RawMessage(`{"wrong":true}`), Usage: Usage{CostMicros: 1}}, {Content: json.RawMessage(`{"ok":true}`), Usage: Usage{CostMicros: 1}}}}
 	ledger := NewBudgetLedger(time.Now)
-	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "acct", LimitMicros: 1000}); err != nil {
+	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "acct", TenantID: "ten", LimitMicros: 1000}); err != nil {
 		t.Fatal(err)
 	}
 	gateway := NewGateway(ledger, time.Now)
@@ -96,7 +98,7 @@ func TestGatewayRetriesInvalidStructuredOutputAtMostTwice(t *testing.T) {
 	if adapter.index != 3 {
 		t.Fatalf("attempts = %d", adapter.index)
 	}
-	account, _ := ledger.Account("acct")
+	account, _ := ledger.Account("ten", "acct")
 	if account.SpentMicros != 3 || account.ReservedMicros != 0 {
 		t.Fatalf("retry costs were not fully settled: %#v", account)
 	}
@@ -104,7 +106,7 @@ func TestGatewayRetriesInvalidStructuredOutputAtMostTwice(t *testing.T) {
 
 func TestGatewayBoundsResponsesAndChargesFailedProviderCalls(t *testing.T) {
 	ledger := NewBudgetLedger(func() time.Time { return time.Unix(0, 0) })
-	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "acct", LimitMicros: 10_000_000}); err != nil {
+	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "acct", TenantID: "ten", LimitMicros: 10_000_000}); err != nil {
 		t.Fatal(err)
 	}
 	adapter := &mockAdapter{responses: []NormalizedResponse{{Content: json.RawMessage(bytes.Repeat([]byte("x"), MaximumResponseBytes+1)), Usage: Usage{CostMicros: 7}}}}
@@ -116,7 +118,7 @@ func TestGatewayBoundsResponsesAndChargesFailedProviderCalls(t *testing.T) {
 	if _, err := gateway.Generate(context.Background(), request, GenerateOptions{Provider: "mock", AccountID: "acct", ReservationID: "large-res", MaxAttempts: 1}); !errors.Is(err, ErrOutputTooLarge) {
 		t.Fatalf("oversized response error = %v", err)
 	}
-	account, _ := ledger.Account("acct")
+	account, _ := ledger.Account("ten", "acct")
 	if account.SpentMicros != 7 {
 		t.Fatalf("oversized provider call was not charged: %#v", account)
 	}
@@ -129,9 +131,54 @@ func TestGatewayBoundsResponsesAndChargesFailedProviderCalls(t *testing.T) {
 	if _, err := gateway.Generate(context.Background(), request, GenerateOptions{Provider: "failing", AccountID: "acct", ReservationID: "failed-res", MaxAttempts: 1}); err == nil {
 		t.Fatal("provider failure was accepted")
 	}
-	account, _ = ledger.Account("acct")
-	if account.SpentMicros != 27 {
-		t.Fatalf("failed provider call was not conservatively charged: %#v", account)
+	account, _ = ledger.Account("ten", "acct")
+	reservation, found := ledger.Reservation("ten", "failed-res")
+	if account.SpentMicros != 7 || account.ReservedMicros != 20 || !found || reservation.State != ReservationReconcile {
+		t.Fatalf("unknown provider call was not retained for reconciliation: account=%#v reservation=%#v", account, reservation)
+	}
+}
+
+func TestGatewayProviderOutageUsesCircuitBreakerWithoutExhaustingBudget(t *testing.T) {
+	clock := &gatewayTestClock{now: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)}
+	ledger := NewBudgetLedger(clock.Now)
+	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "acct", TenantID: "ten", LimitMicros: 1_000}); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &outageAdapter{}
+	gateway := NewGatewayWithConfig(ledger, clock.Now, GatewayConfig{InitialProviderBackoff: time.Minute, MaximumProviderBackoff: 5 * time.Minute})
+	if err := gateway.Register("outage", "model", adapter, Pricing{InputMicrosPerToken: 1, OutputMicrosPerToken: 1}); err != nil {
+		t.Fatal(err)
+	}
+	request := NormalizedRequest{TenantID: "ten", ProjectID: "prj", AgentInstanceID: "agt", Role: "EXECUTOR", Model: "model", PromptBundleVersion: "p1", Messages: []Message{{Role: "user", Content: "hello"}}, MaxOutputTokens: 10, DataClassification: "INTERNAL"}
+	for minute := 0; minute < 30; minute++ {
+		request.RequestID = fmt.Sprintf("outage-%d", minute)
+		_, err := gateway.Generate(context.Background(), request, GenerateOptions{Provider: "outage", AccountID: "acct", ReservationID: fmt.Sprintf("reservation-%d", minute), MaxAttempts: 1})
+		if err == nil {
+			t.Fatalf("outage minute %d succeeded", minute)
+		}
+		clock.Advance(time.Minute)
+	}
+	account, _ := ledger.Account("ten", "acct")
+	if account.SpentMicros != 0 || account.ReservedMicros != 0 || adapter.Calls() > 9 {
+		t.Fatalf("outage exhausted budget or retried blindly: account=%#v calls=%d", account, adapter.Calls())
+	}
+	adapter.Recover()
+	var response NormalizedResponse
+	var err error
+	for probe := 0; probe < 6; probe++ {
+		request.RequestID = fmt.Sprintf("recovery-%d", probe)
+		response, err = gateway.Generate(context.Background(), request, GenerateOptions{Provider: "outage", AccountID: "acct", ReservationID: fmt.Sprintf("recovery-reservation-%d", probe), MaxAttempts: 1})
+		if err == nil {
+			break
+		}
+		clock.Advance(time.Minute)
+	}
+	if err != nil || string(response.Content) != `{"ok":true}` {
+		t.Fatalf("provider did not recover: response=%#v error=%v", response, err)
+	}
+	account, _ = ledger.Account("ten", "acct")
+	if account.SpentMicros != 1 || account.ReservedMicros != 0 {
+		t.Fatalf("recovered call did not settle exactly once: %#v", account)
 	}
 }
 
@@ -144,4 +191,50 @@ func TestCacheKeyIncludesTenantAndPolicyInputs(t *testing.T) {
 	if err != nil || one == two {
 		t.Fatalf("cache keys = %s, %s", one, two)
 	}
+}
+
+type outageAdapter struct {
+	mockAdapter
+	mu        sync.Mutex
+	available bool
+	calls     int
+}
+
+func (adapter *outageAdapter) Generate(context.Context, NormalizedRequest) (NormalizedResponse, error) {
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	adapter.calls++
+	if !adapter.available {
+		return NormalizedResponse{}, &ProviderFailure{Cause: errors.New("provider unavailable"), Retryable: true, OutcomeKnown: true}
+	}
+	return NormalizedResponse{Content: json.RawMessage(`{"ok":true}`), Usage: Usage{CostMicros: 1}}, nil
+}
+
+func (adapter *outageAdapter) Recover() {
+	adapter.mu.Lock()
+	adapter.available = true
+	adapter.mu.Unlock()
+}
+
+func (adapter *outageAdapter) Calls() int {
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	return adapter.calls
+}
+
+type gatewayTestClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (clock *gatewayTestClock) Now() time.Time {
+	clock.mu.Lock()
+	defer clock.mu.Unlock()
+	return clock.now
+}
+
+func (clock *gatewayTestClock) Advance(duration time.Duration) {
+	clock.mu.Lock()
+	clock.now = clock.now.Add(duration)
+	clock.mu.Unlock()
 }

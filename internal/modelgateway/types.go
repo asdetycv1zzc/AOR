@@ -3,6 +3,7 @@ package modelgateway
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 )
 
 type Message struct {
@@ -92,4 +93,27 @@ type TokenEstimate struct {
 type AdapterFactory struct {
 	Provider string
 	Adapter  ModelAdapter
+}
+
+// ProviderFailure classifies whether a failed adapter call reached the
+// provider and whether a later probe may recover. Unknown outcomes must retain
+// their budget reservation for reconciliation.
+type ProviderFailure struct {
+	Cause        error
+	Retryable    bool
+	OutcomeKnown bool
+}
+
+func (failure *ProviderFailure) Error() string {
+	if failure == nil || failure.Cause == nil {
+		return ErrProviderUnavailable.Error()
+	}
+	return fmt.Sprintf("provider failure: %v", failure.Cause)
+}
+
+func (failure *ProviderFailure) Unwrap() error {
+	if failure == nil {
+		return nil
+	}
+	return failure.Cause
 }

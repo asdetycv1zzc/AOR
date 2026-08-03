@@ -3,9 +3,11 @@ package modelgateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -17,11 +19,20 @@ const (
 )
 
 type Gateway struct {
-	adapters map[string]ModelAdapter
-	allowed  map[string]map[string]bool
-	pricing  map[string]Pricing
-	ledger   *BudgetLedger
-	clock    func() time.Time
+	mu                     sync.RWMutex
+	adapters               map[string]ModelAdapter
+	allowed                map[string]map[string]bool
+	pricing                map[string]Pricing
+	ledger                 BudgetLedgerBackend
+	clock                  func() time.Time
+	circuits               map[string]providerCircuit
+	initialProviderBackoff time.Duration
+	maximumProviderBackoff time.Duration
+}
+
+type providerCircuit struct {
+	failures int
+	retryAt  time.Time
 }
 
 type Pricing struct {
@@ -29,20 +40,37 @@ type Pricing struct {
 	OutputMicrosPerToken int64
 }
 
-func NewGateway(ledger *BudgetLedger, clock func() time.Time) *Gateway {
+type GatewayConfig struct {
+	InitialProviderBackoff time.Duration
+	MaximumProviderBackoff time.Duration
+}
+
+func NewGateway(ledger BudgetLedgerBackend, clock func() time.Time) *Gateway {
+	return NewGatewayWithConfig(ledger, clock, GatewayConfig{})
+}
+
+func NewGatewayWithConfig(ledger BudgetLedgerBackend, clock func() time.Time, config GatewayConfig) *Gateway {
 	if ledger == nil {
 		ledger = NewBudgetLedger(clock)
 	}
 	if clock == nil {
 		clock = time.Now
 	}
-	return &Gateway{adapters: make(map[string]ModelAdapter), allowed: make(map[string]map[string]bool), pricing: make(map[string]Pricing), ledger: ledger, clock: clock}
+	if config.InitialProviderBackoff <= 0 {
+		config.InitialProviderBackoff = time.Second
+	}
+	if config.MaximumProviderBackoff < config.InitialProviderBackoff {
+		config.MaximumProviderBackoff = 5 * time.Minute
+	}
+	return &Gateway{adapters: make(map[string]ModelAdapter), allowed: make(map[string]map[string]bool), pricing: make(map[string]Pricing), ledger: ledger, clock: clock, circuits: make(map[string]providerCircuit), initialProviderBackoff: config.InitialProviderBackoff, maximumProviderBackoff: config.MaximumProviderBackoff}
 }
 
 func (g *Gateway) Register(provider, model string, adapter ModelAdapter, pricing Pricing) error {
 	if provider == "" || model == "" || adapter == nil || pricing.InputMicrosPerToken < 0 || pricing.OutputMicrosPerToken < 0 {
 		return ErrInvalidRequest
 	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	if g.allowed[provider] == nil {
 		g.allowed[provider] = make(map[string]bool)
 	}
@@ -70,12 +98,16 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 		options.MaxAttempts = 3
 	}
 	key := options.Provider + "\x00" + request.Model
-	adapter := g.adapters[key]
-	if adapter == nil || !g.allowed[options.Provider][request.Model] {
+	adapter, pricing, allowed := g.provider(key, options.Provider, request.Model)
+	if adapter == nil || !allowed {
 		return NormalizedResponse{}, ErrProviderNotAllowed
+	}
+	if !g.providerReady(key, g.clock().UTC()) {
+		return NormalizedResponse{}, ErrProviderUnavailable
 	}
 	capabilities, err := adapter.Capabilities(ctx, request.Model)
 	if err != nil {
+		g.recordProviderFailure(key, err)
 		return NormalizedResponse{}, redactError(err)
 	}
 	if request.MaxOutputTokens > capabilities.MaxOutputTokens || request.MaxOutputTokens <= 0 {
@@ -83,9 +115,9 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 	}
 	estimate, err := adapter.CountTokens(ctx, request)
 	if err != nil {
+		g.recordProviderFailure(key, err)
 		return NormalizedResponse{}, redactError(err)
 	}
-	pricing := g.pricing[key]
 	inputCost, err := multiplyCost(estimate.InputTokens, pricing.InputMicrosPerToken)
 	if err != nil {
 		return NormalizedResponse{}, err
@@ -105,7 +137,7 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 		return NormalizedResponse{}, ErrInvalidRequest
 	}
 	reserved := worst * int64(options.MaxAttempts)
-	if _, err := g.ledger.Reserve(ctx, options.AccountID, options.ReservationID, request.RequestID, reserved); err != nil {
+	if _, err := g.ledger.Reserve(ctx, request.TenantID, options.AccountID, options.ReservationID, request.RequestID, reserved); err != nil {
 		return NormalizedResponse{}, err
 	}
 	var lastErr error
@@ -113,15 +145,23 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 	for attempt := 0; attempt < options.MaxAttempts; attempt++ {
 		response, generateErr := adapter.Generate(ctx, request)
 		if generateErr != nil {
-			incurred, err = addCost(incurred, worst)
-			if err != nil {
-				return NormalizedResponse{}, err
+			g.recordProviderFailure(key, generateErr)
+			var providerFailure *ProviderFailure
+			if errors.As(generateErr, &providerFailure) && providerFailure.OutcomeKnown {
+				if incurred == 0 {
+					err = g.ledger.Release(ctx, request.TenantID, options.ReservationID)
+				} else {
+					_, err = g.ledger.Settle(ctx, request.TenantID, options.ReservationID, incurred)
+				}
+			} else {
+				_, err = g.ledger.RequireReconciliation(ctx, request.TenantID, options.ReservationID)
 			}
-			if _, err := g.ledger.Reconcile(ctx, options.ReservationID, incurred); err != nil {
+			if err != nil {
 				return NormalizedResponse{}, err
 			}
 			return NormalizedResponse{}, redactError(generateErr)
 		}
+		g.providerSucceeded(key)
 		attemptCost := response.Usage.CostMicros
 		if attemptCost < 0 {
 			attemptCost = worst
@@ -141,13 +181,13 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 			continue
 		}
 		if len(response.Content) > MaximumResponseBytes {
-			if _, err := g.ledger.Settle(ctx, options.ReservationID, incurred); err != nil {
+			if _, err := g.ledger.Settle(ctx, request.TenantID, options.ReservationID, incurred); err != nil {
 				return NormalizedResponse{}, err
 			}
 			return NormalizedResponse{}, ErrOutputTooLarge
 		}
 		if containsCredentialLike(string(response.Content)) {
-			if _, err := g.ledger.Settle(ctx, options.ReservationID, incurred); err != nil {
+			if _, err := g.ledger.Settle(ctx, request.TenantID, options.ReservationID, incurred); err != nil {
 				return NormalizedResponse{}, err
 			}
 			return NormalizedResponse{}, ErrCredentialDetected
@@ -162,12 +202,12 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 		if response.Usage.ModelVersion == "" {
 			response.Usage.ModelVersion = response.ModelVersion
 		}
-		if _, settleErr := g.ledger.Settle(ctx, options.ReservationID, incurred); settleErr != nil {
+		if _, settleErr := g.ledger.Settle(ctx, request.TenantID, options.ReservationID, incurred); settleErr != nil {
 			return NormalizedResponse{}, settleErr
 		}
 		return response, nil
 	}
-	if _, err := g.ledger.Settle(ctx, options.ReservationID, incurred); err != nil {
+	if _, err := g.ledger.Settle(ctx, request.TenantID, options.ReservationID, incurred); err != nil {
 		return NormalizedResponse{}, err
 	}
 	if lastErr != nil {
@@ -237,5 +277,55 @@ func multiplyCost(units, rate int64) (int64, error) {
 }
 
 func (g *Gateway) String() string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	return fmt.Sprintf("model-gateway adapters=%d", len(g.adapters))
+}
+
+func (g *Gateway) provider(key, provider, model string) (ModelAdapter, Pricing, bool) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.adapters[key], g.pricing[key], g.allowed[provider][model]
+}
+
+func (g *Gateway) providerReady(key string, now time.Time) bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	circuit, found := g.circuits[key]
+	return !found || !now.Before(circuit.retryAt)
+}
+
+func (g *Gateway) recordProviderFailure(key string, err error) {
+	var failure *ProviderFailure
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !errors.As(err, &failure) || !failure.Retryable {
+		delete(g.circuits, key)
+		return
+	}
+	circuit := g.circuits[key]
+	circuit.failures++
+	delay := exponentialBackoff(circuit.failures, g.initialProviderBackoff, g.maximumProviderBackoff)
+	circuit.retryAt = g.clock().UTC().Add(delay)
+	g.circuits[key] = circuit
+}
+
+func (g *Gateway) providerSucceeded(key string) {
+	g.mu.Lock()
+	delete(g.circuits, key)
+	g.mu.Unlock()
+}
+
+func exponentialBackoff(failures int, initial, maximum time.Duration) time.Duration {
+	delay := initial
+	for attempt := 1; attempt < failures && delay < maximum; attempt++ {
+		if delay > maximum/2 {
+			return maximum
+		}
+		delay *= 2
+	}
+	if delay > maximum {
+		return maximum
+	}
+	return delay
 }
