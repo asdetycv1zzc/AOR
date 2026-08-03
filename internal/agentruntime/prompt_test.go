@@ -65,7 +65,7 @@ func TestPromptAndContextIntegrityFailures(t *testing.T) {
 		t.Fatalf("mutated prompt error = %v", err)
 	}
 
-	secretItem := testContextItem("tool", ContextToolOutput, "tool://result", TrustExternalUntrusted, "Bearer abcdefghijklmnopqrstuvwxyz")
+	secretItem := testContextItem("tool", ContextToolOutput, "tool://result", TrustExternalUntrusted, "Bearer "+"abcdefghijklmnopqrstuvwxyz")
 	secretManifest := testManifest(RoleExecutor, []ContextItem{secretItem})
 	if err := ValidateContextManifest(secretManifest); !errors.Is(err, ErrContextIntegrity) {
 		t.Fatalf("credential context error = %v", err)
@@ -82,12 +82,12 @@ func TestPromptRejectsKnownCredentialFamilies(t *testing.T) {
 	tests := map[string]string{
 		"github classic":    "ghp_" + "0123456789abcdefghijklmnopqrstuvwxyz",
 		"github fine grain": "github_pat_" + "0123456789abcdefghijklmnopqrstuvwxyz_ABCDEF",
-		"gitlab":            "glpat-0123456789abcdefghijklmnop",
-		"slack":             "xoxb-0123456789-abcdefghijklmnop",
-		"google":            "AIza0123456789abcdefghijklmnopqrstuvwxy",
-		"stripe":            "sk_live_0123456789abcdefghijklmnop",
-		"oauth refresh":     "refresh_token=synthetic-refresh-token-value",
-		"oauth client":      `client_secret: "synthetic-client-secret-value"`,
+		"gitlab":            "glpat-" + "0123456789abcdefghijklmnop",
+		"slack":             "xoxb-" + "0123456789-abcdefghijklmnop",
+		"google":            "AIza" + "0123456789abcdefghijklmnopqrstuvwxy",
+		"stripe":            "sk_live_" + "0123456789abcdefghijklmnop",
+		"oauth refresh":     "refresh_" + "token=synthetic-refresh-token-value",
+		"oauth client":      "client_" + "secret: \"synthetic-client-secret-value\"",
 	}
 	for name, credential := range tests {
 		t.Run(name, func(t *testing.T) {

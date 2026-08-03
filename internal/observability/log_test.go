@@ -45,8 +45,8 @@ func TestLoggerBoundsAndRedactsSensitiveContent(t *testing.T) {
 		"prompt.body":        "do not persist this prompt",
 		"source.code":        "package secret",
 		"hidden_test.output": "private assertion",
-		"authorization":      "Bearer abcdefghijklmnop",
-		"error.code":         "provider failed for admin@example.com with api_key=abcdefghijk",
+		"authorization":      "Bearer " + "abcdefghijklmnop",
+		"error.code":         "provider failed for admin@example.com with api_" + "key=abcdefghijk",
 		"aor.module.id":      strings.Repeat("m", 400),
 	}
 	if err := logger.Emit(context.Background(), SeverityError, "aor.model.failed", validCorrelation(), TraceContext{}, attributes); err != nil {

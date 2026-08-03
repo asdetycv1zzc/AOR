@@ -21,7 +21,7 @@ func (m *mockAdapter) CountTokens(context.Context, NormalizedRequest) (TokenEsti
 }
 func (m *mockAdapter) Generate(context.Context, NormalizedRequest) (NormalizedResponse, error) {
 	if m.index >= len(m.responses) {
-		return NormalizedResponse{}, errors.New("provider key sk-test-secret-1234567890")
+		return NormalizedResponse{}, errors.New("provider key sk-" + "test-secret-1234567890")
 	}
 	response := m.responses[m.index]
 	m.index++

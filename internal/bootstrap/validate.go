@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/akimisaka/aor/internal/credentials"
 	"gopkg.in/yaml.v3"
 )
 
@@ -25,15 +26,6 @@ var (
 	requirementBoldPattern  = regexp.MustCompile(`\*\*(AOR-[A-Z]+-[0-9]+)\*\*`)
 	requirementTablePattern = regexp.MustCompile(`^\|\s*(AOR-[A-Z]+-[0-9]+)\s*\|`)
 	requirementIDPattern    = regexp.MustCompile(`^AOR-[A-Z]+-[0-9]+$`)
-	secretPatterns          = []struct {
-		name string
-		re   *regexp.Regexp
-	}{
-		{name: "github_token", re: regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{36,}`)},
-		{name: "aws_access_key", re: regexp.MustCompile(`AKIA[0-9A-Z]{16}`)},
-		{name: "private_key", re: regexp.MustCompile(`-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----`)},
-		{name: "bearer_token", re: regexp.MustCompile(`(?i)authorization\s*:\s*bearer\s+[A-Za-z0-9._~-]{20,}`)},
-	}
 )
 
 type requirementCatalog struct {
@@ -333,9 +325,9 @@ func ScanSecrets(root string) []Finding {
 		if err != nil || bytes.IndexByte(content, 0) >= 0 {
 			return nil
 		}
-		for _, pattern := range secretPatterns {
-			if pattern.re.Match(content) {
-				findings = append(findings, Finding{Code: "SECRET_PATTERN", Path: relativePath(root, path), Message: pattern.name})
+		for _, pattern := range credentials.Patterns() {
+			if pattern.RE.Match(content) {
+				findings = append(findings, Finding{Code: "SECRET_PATTERN", Path: relativePath(root, path), Message: pattern.Name})
 			}
 		}
 		return nil

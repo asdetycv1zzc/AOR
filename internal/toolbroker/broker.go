@@ -9,13 +9,14 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
+
+	"github.com/akimisaka/aor/internal/credentials"
 )
 
 const maxOutputBytes = 1 << 20
@@ -251,19 +252,7 @@ func validateSchema(ref string, schemaBytes, value []byte) error {
 }
 
 func redact(value []byte) ([]byte, bool) {
-	text := string(value)
-	redacted := false
-	patterns := []*regexp.Regexp{
-		regexp.MustCompile(`(?i)\bsk-[a-z0-9_-]{16,}\b`),
-		regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`),
-		regexp.MustCompile(`(?i)bearer\s+[a-z0-9._-]{16,}`),
-	}
-	for _, pattern := range patterns {
-		if pattern.MatchString(text) {
-			text = pattern.ReplaceAllString(text, "[REDACTED]")
-			redacted = true
-		}
-	}
+	text, redacted := credentials.Redact(string(value), "[REDACTED]")
 	return []byte(text), redacted
 }
 

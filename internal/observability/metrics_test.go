@@ -57,7 +57,7 @@ func TestMetricRegistryBoundsValuesAndSeries(t *testing.T) {
 	if err := registry.Record(context.Background(), "bounded_metric", 1, map[string]string{"project": "one", "task": "x"}); !errors.Is(err, ErrInvalidMetric) {
 		t.Fatal("unexpected label was accepted")
 	}
-	if err := registry.Record(context.Background(), "bounded_metric", 1, map[string]string{"project": "api_key=abcdefghijk"}); !errors.Is(err, ErrInvalidMetric) {
+	if err := registry.Record(context.Background(), "bounded_metric", 1, map[string]string{"project": "api_" + "key=abcdefghijk"}); !errors.Is(err, ErrInvalidMetric) {
 		t.Fatal("credential-like metric label was accepted")
 	}
 }

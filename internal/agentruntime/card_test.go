@@ -55,7 +55,7 @@ func TestAgentCardRejectsInsecureEndpointCredentialAndRevokedKey(t *testing.T) {
 		t.Fatalf("insecure endpoint error = %v", err)
 	}
 	base.SupportedInterfaces[0].URL = "https://runtime.internal/a2a"
-	base.Description = "Bearer abcdefghijklmnopqrstuvwxyz"
+	base.Description = "Bearer " + "abcdefghijklmnopqrstuvwxyz"
 	if _, err := SignAgentCard(context.Background(), base, digestSigner{}, now); !errors.Is(err, ErrAgentCardInvalid) {
 		t.Fatalf("credential metadata error = %v", err)
 	}

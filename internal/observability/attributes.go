@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/akimisaka/aor/internal/credentials"
 )
 
 type Limits struct {
@@ -45,11 +47,7 @@ var (
 	emailPattern        = regexp.MustCompile(`(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}`)
 	ipv4Pattern         = regexp.MustCompile(`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`)
 	secretPatterns      = []*regexp.Regexp{
-		regexp.MustCompile(`(?i)bearer[ \t]+[A-Za-z0-9._~+/=-]{8,}`),
-		regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{8,}\b`),
-		regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`),
 		regexp.MustCompile(`(?i)(?:api[_-]?key|password|secret|refresh[_-]?token)[ \t]*[:=][ \t]*[^ ,;]+`),
-		regexp.MustCompile(`(?i)-----BEGIN[ A-Z]*PRIVATE KEY-----`),
 	}
 )
 
@@ -131,8 +129,7 @@ func containsBodyToken(key string) bool {
 }
 
 func redactValue(value string) (string, bool) {
-	redacted := value
-	changed := false
+	redacted, changed := credentials.Redact(value, "[REDACTED_SECRET]")
 	for _, pattern := range secretPatterns {
 		next := pattern.ReplaceAllString(redacted, "[REDACTED_SECRET]")
 		changed = changed || next != redacted
