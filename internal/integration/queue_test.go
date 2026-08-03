@@ -2,7 +2,11 @@ package integration
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -207,7 +211,7 @@ func TestRequestDigestBindsPolicyVersionTimeAndAuthorization(t *testing.T) {
 		t.Fatal(err)
 	}
 	cases := []Request{request, request, request, request}
-	cases[0].PolicyDigest = digest("different-policy")
+	cases[0].PolicyDigest = digest("odd")
 	cases[1].ExpectedVersion++
 	cases[2].CreatedAt = cases[2].CreatedAt.Add(time.Second)
 	cases[3].FencingToken++
@@ -291,21 +295,10 @@ func specRef(version int) contracts.SpecRef {
 }
 
 func commit(value byte) string {
-	return string(make([]byte, 0)) + repeatHex(value, 40)
-}
-
-func repeatHex(value byte, count int) string {
-	character := "0"
-	if value%2 == 1 {
-		character = "1"
-	}
-	result := ""
-	for index := 0; index < count; index++ {
-		result += character
-	}
-	return result
+	return strings.Repeat(strconv.FormatUint(uint64(value%16), 16), 40)
 }
 
 func digest(value string) string {
-	return "sha256:" + repeatHex(byte(len(value)), 64)
+	sum := sha256.Sum256([]byte(value))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
