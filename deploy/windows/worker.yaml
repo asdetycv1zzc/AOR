@@ -1,0 +1,12 @@
+apiVersion: aor.io/v1
+kind: AORWindowsWorker
+metadata:
+  name: aor-worker-windows
+spec:
+  platform: WINDOWS
+  isolationLevel: NONE
+  runtime: native-process
+  allowUntrustedProductionWorkloads: false
+  hiddenTests: false
+  networkIsolation: NONE
+  trackedProcessTermination: true

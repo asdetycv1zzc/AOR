@@ -1,0 +1,20 @@
+apiVersion: aor.io/v1
+kind: BackupPolicy
+metadata:
+  name: aor-production
+spec:
+  postgres:
+    mode: PITR
+    walArchive: true
+    retentionDays: 400
+  artifacts:
+    immutableManifest: true
+    retentionDays: 400
+  audit:
+    objectLock: COMPLIANCE
+    retentionDays: 400
+  restore:
+    rpoMinutes: 5
+    rtoMinutes: 60
+    verifyReferences: true
+    verifyHashes: true

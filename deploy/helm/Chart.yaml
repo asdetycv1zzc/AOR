@@ -1,0 +1,6 @@
+apiVersion: v2
+name: aor
+description: Agent Organization Runtime control plane
+type: application
+version: 2.0.0
+appVersion: 2.0.0

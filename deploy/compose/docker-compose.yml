@@ -1,0 +1,38 @@
+name: aor
+services:
+  postgres:
+    image: postgres:16.4@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: aor
+      POSTGRES_USER: aor
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    read_only: true
+    tmpfs: [/run, /tmp]
+    security_opt: [no-new-privileges:true]
+  aor-api:
+    image: ghcr.io/akimisaka/aor-api:2.0.0@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    depends_on: [postgres]
+    environment:
+      AOR_DATABASE_URL_FILE: /run/secrets/database_url
+      AOR_MODEL_KEY_REF: secret://model-gateway/provider
+    secrets: [database_url]
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+  aor-worker:
+    image: ghcr.io/akimisaka/aor-worker:2.0.0@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    depends_on: [aor-api]
+    environment:
+      AOR_SANDBOX_LINUX_LEVEL: CONTAINER
+      AOR_SANDBOX_WINDOWS_LEVEL: NONE
+      AOR_ALLOW_WINDOWS_UNTRUSTED: "false"
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password
+  database_url:
+    file: ./secrets/database_url

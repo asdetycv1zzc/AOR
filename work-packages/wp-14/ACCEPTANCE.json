@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "taskId": "WP-14",
+  "specVersion": "2.0.0",
+  "requirements": ["AOR-ACC-086", "AOR-ACC-088", "AOR-ACC-091", "AOR-ACC-092", "AOR-ACC-096"],
+  "criteria": [
+    {"id": "WP14-AC-001", "evidence": "internal/deployment/config_test.go", "required": true},
+    {"id": "WP14-AC-002", "evidence": "deploy/compose/docker-compose.yml", "required": true},
+    {"id": "WP14-AC-003", "evidence": "WP-15 preproduction deployment and restore report", "required": true, "environmentGate": true}
+  ]
+}

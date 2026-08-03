@@ -1,0 +1,26 @@
+replicaCount: 3
+image:
+  repository: ghcr.io/akimisaka/aor-api
+  tag: 2.0.0
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+securityContext:
+  runAsNonRoot: true
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilitiesDrop: [ALL]
+sandbox:
+  linuxLevel: CONTAINER
+  windowsLevel: NONE
+  allowWindowsUntrustedExecution: false
+  linuxNetworkMode: DENY_ALL
+audit:
+  retentionDays: 400
+  objectLockMode: COMPLIANCE
+  signerRef: secret://kms/aor-audit
+postgres:
+  highAvailability: true
+  pitr: true
+  walArchiveRef: secret://object-store/wal
+networkPolicy:
+  defaultDeny: true
+  allowControlPlane: true
