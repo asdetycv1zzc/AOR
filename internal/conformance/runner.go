@@ -4,9 +4,12 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -72,6 +75,8 @@ type Runner struct {
 	clock func() time.Time
 }
 
+var productionGroups = []string{"contracts", "state-machine", "idempotency", "a2a", "aop", "mcp", "authn", "authz", "budget", "tool-broker", "sandbox-linux", "sandbox-windows", "knowledge", "audit", "integration", "observability", "backup-restore", "chaos", "performance", "supply-chain", "full"}
+
 func NewRunner(clock func() time.Time) *Runner {
 	if clock == nil {
 		clock = time.Now
@@ -83,7 +88,7 @@ func (r *Runner) Run(ctx context.Context, request Request) (ReleaseEvidence, err
 	if err := contextErr(ctx); err != nil {
 		return ReleaseEvidence{}, err
 	}
-	if request.Root == "" || request.SpecVersion == "" || (request.Profile != "test" && request.Profile != "preproduction" && request.Profile != "production") {
+	if request.Root == "" || request.SpecVersion == "" || (request.Profile != "test" && request.Profile != "preproduction" && request.Profile != "production") || request.Profile == "production" && request.Target == "" {
 		return ReleaseEvidence{}, ErrInvalidRequest
 	}
 	root, err := filepath.Abs(request.Root)
@@ -91,13 +96,24 @@ func (r *Runner) Run(ctx context.Context, request Request) (ReleaseEvidence, err
 		return ReleaseEvidence{}, ErrInvalidRequest
 	}
 	if len(request.Groups) == 0 {
-		request.Groups = []string{"contracts", "state-machine", "idempotency", "security", "observability"}
+		if request.Profile == "production" {
+			request.Groups = append([]string(nil), productionGroups...)
+		} else {
+			request.Groups = []string{"contracts", "state-machine", "idempotency", "security", "observability"}
+		}
 	}
 	if err := validateGroups(request.Groups); err != nil {
 		return ReleaseEvidence{}, err
 	}
+	if request.Profile == "production" && !sameGroups(request.Groups, productionGroups) {
+		return ReleaseEvidence{}, ErrInvalidRequest
+	}
 	started := r.clock().UTC()
-	evidence := ReleaseEvidence{EvidenceVersion: "1.0", SpecVersion: request.SpecVersion, BuildDigest: buildDigest(root), StartedAt: started.Format(time.RFC3339), Environment: request.Profile, Target: request.Target, Results: []RequirementResult{}, Exceptions: []string{}}
+	build, err := buildDigest(root, request.OutputDir)
+	if err != nil {
+		return ReleaseEvidence{}, err
+	}
+	evidence := ReleaseEvidence{EvidenceVersion: "1.0", SpecVersion: request.SpecVersion, BuildDigest: build, StartedAt: started.Format(time.RFC3339), Environment: request.Profile, Target: request.Target, Results: []RequirementResult{}, Exceptions: []string{}}
 	hardFailure := false
 	for _, group := range request.Groups {
 		results, gateErr, environmentGate := runGroup(ctx, root, group)
@@ -141,6 +157,9 @@ func runGroup(ctx context.Context, root, group string) ([]RequirementResult, err
 	pass := func(id string, paths ...string) RequirementResult {
 		return RequirementResult{RequirementID: id, Status: "PASS", EvidenceURIs: paths, Tool: tool, ToolVersion: version}
 	}
+	inconclusive := func(id string, paths ...string) RequirementResult {
+		return RequirementResult{RequirementID: id, Status: "INCONCLUSIVE", EvidenceURIs: paths, Tool: tool, ToolVersion: version}
+	}
 	fail := func(id string, message string) (RequirementResult, error) {
 		return RequirementResult{RequirementID: id, Status: "FAIL", EvidenceURIs: []string{message}, Tool: tool, ToolVersion: version}, ErrGateFailed
 	}
@@ -158,13 +177,46 @@ func runGroup(ctx context.Context, root, group string) ([]RequirementResult, err
 		}
 		return []RequirementResult{pass("AOR-INV-001", "artifact://conformance/state-machine")}, nil, false
 	case "security", "authn", "authz", "tool-broker", "sandbox-linux", "sandbox-windows", "budget", "knowledge", "audit":
-		return []RequirementResult{pass("AOR-ACC-043", "artifact://conformance/security/"+group)}, nil, true
+		return []RequirementResult{inconclusive(environmentRequirement(group), "artifact://conformance/security/"+group)}, nil, true
 	case "observability":
-		return []RequirementResult{pass("AOR-ACC-078", "artifact://conformance/observability")}, nil, true
+		return []RequirementResult{inconclusive("AOR-ACC-078", "artifact://conformance/observability")}, nil, true
 	case "backup-restore", "chaos", "performance", "supply-chain", "integration", "full":
-		return []RequirementResult{pass("AOR-ACC-056", "artifact://conformance/"+group)}, nil, true
+		return []RequirementResult{inconclusive(environmentRequirement(group), "artifact://conformance/"+group)}, nil, true
 	default:
 		return nil, ErrInvalidRequest, false
+	}
+}
+
+func environmentRequirement(group string) string {
+	switch group {
+	case "authn":
+		return "AOR-ACC-041"
+	case "authz", "tool-broker":
+		return "AOR-ACC-042"
+	case "sandbox-linux":
+		return "AOR-ACC-054"
+	case "sandbox-windows":
+		return "AOR-ACC-055"
+	case "budget":
+		return "AOR-ACC-072"
+	case "knowledge":
+		return "AOR-ACC-012"
+	case "audit":
+		return "AOR-ACC-048"
+	case "integration":
+		return "AOR-ACC-019"
+	case "backup-restore":
+		return "AOR-ACC-036"
+	case "chaos":
+		return "AOR-ACC-056"
+	case "performance":
+		return "AOR-ACC-066"
+	case "supply-chain":
+		return "AOR-ACC-050"
+	case "full":
+		return "AOR-ACC-100"
+	default:
+		return "AOR-ACC-043"
 	}
 }
 
@@ -228,6 +280,9 @@ func Verify(ctx context.Context, evidence ReleaseEvidence, signer Signer) error 
 	if evidence.EvidenceDigest == "" {
 		return ErrInvalidRequest
 	}
+	if (evidence.Environment == "production" || evidence.Environment == "preproduction") && signer == nil || evidence.Signature != nil && signer == nil {
+		return ErrGateFailed
+	}
 	digest := evidence.EvidenceDigest
 	signature := evidence.Signature
 	evidence.EvidenceDigest = ""
@@ -248,9 +303,82 @@ func Verify(ctx context.Context, evidence ReleaseEvidence, signer Signer) error 
 	return nil
 }
 
-func buildDigest(root string) string {
-	sum := sha256.Sum256([]byte(root))
-	return "sha256:" + hex.EncodeToString(sum[:])
+func buildDigest(root, outputDirectory string) (string, error) {
+	excluded := ""
+	if outputDirectory != "" {
+		absolute, err := filepath.Abs(outputDirectory)
+		if err != nil {
+			return "", err
+		}
+		excluded = filepath.Clean(absolute)
+	}
+	paths := []string{}
+	err := filepath.WalkDir(root, func(name string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		clean := filepath.Clean(name)
+		if entry.IsDir() && (entry.Name() == ".git" || excluded != "" && clean == excluded) {
+			return filepath.SkipDir
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		relative, err := filepath.Rel(root, clean)
+		if err != nil || relative == "." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+			return ErrInvalidRequest
+		}
+		paths = append(paths, filepath.ToSlash(relative))
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	sort.Strings(paths)
+	digest := sha256.New()
+	for _, relative := range paths {
+		absolute := filepath.Join(root, filepath.FromSlash(relative))
+		info, err := os.Lstat(absolute)
+		if err != nil {
+			return "", err
+		}
+		writeDigestField(digest, []byte(relative))
+		writeDigestField(digest, []byte(info.Mode().String()))
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(absolute)
+			if err != nil {
+				return "", err
+			}
+			writeDigestField(digest, []byte(target))
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			return "", ErrInvalidRequest
+		}
+		file, err := os.Open(absolute)
+		if err != nil {
+			return "", err
+		}
+		var size [8]byte
+		binary.BigEndian.PutUint64(size[:], uint64(info.Size()))
+		_, _ = digest.Write(size[:])
+		_, copyErr := io.Copy(digest, file)
+		closeErr := file.Close()
+		if copyErr != nil {
+			return "", copyErr
+		}
+		if closeErr != nil {
+			return "", closeErr
+		}
+	}
+	return "sha256:" + hex.EncodeToString(digest.Sum(nil)), nil
+}
+
+func writeDigestField(destination io.Writer, value []byte) {
+	var size [8]byte
+	binary.BigEndian.PutUint64(size[:], uint64(len(value)))
+	_, _ = destination.Write(size[:])
+	_, _ = destination.Write(value)
 }
 
 func validateGroups(groups []string) error {
@@ -261,6 +389,22 @@ func validateGroups(groups []string) error {
 		}
 	}
 	return nil
+}
+
+func sameGroups(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	leftCopy := append([]string(nil), left...)
+	rightCopy := append([]string(nil), right...)
+	sort.Strings(leftCopy)
+	sort.Strings(rightCopy)
+	for index := range leftCopy {
+		if leftCopy[index] != rightCopy[index] || index > 0 && leftCopy[index] == leftCopy[index-1] {
+			return false
+		}
+	}
+	return true
 }
 
 func contextErr(ctx context.Context) error {
