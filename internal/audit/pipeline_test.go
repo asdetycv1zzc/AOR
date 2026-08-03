@@ -49,7 +49,7 @@ func TestPipelineRunsFixedOrderAndCreatesSignedEvidence(t *testing.T) {
 	if CheckOrder(pipeline.checks)[0] != "submission-schema" || result.Bundle.Checks[0].Ordinal != 1 {
 		t.Fatalf("fixed order not preserved: %#v", result.Bundle.Checks)
 	}
-	stored, found, err := store.Get(context.Background(), manifest.ProjectID, manifest.ModuleTaskID, manifest.Attempt)
+	stored, found, err := store.Get(context.Background(), manifest.ProjectID, manifest.ModuleTaskID, manifest.AttemptSeriesID, manifest.Attempt)
 	if err != nil || !found || stored.ManifestSHA256 != result.Bundle.ManifestSHA256 {
 		t.Fatalf("evidence storage failed: %v %#v", err, stored)
 	}

@@ -86,7 +86,7 @@ type Signer interface {
 
 type EvidenceStore interface {
 	Put(context.Context, contracts.EvidenceBundle) error
-	Get(context.Context, string, string, int) (contracts.EvidenceBundle, bool, error)
+	Get(context.Context, string, string, string, int) (contracts.EvidenceBundle, bool, error)
 }
 
 type MemoryEvidenceStore struct {
@@ -99,7 +99,7 @@ func NewMemoryEvidenceStore() *MemoryEvidenceStore {
 }
 
 func (s *MemoryEvidenceStore) Put(_ context.Context, bundle contracts.EvidenceBundle) error {
-	key := bundle.ProjectID + "\x00" + bundle.TaskID + "\x00" + fmt.Sprint(bundle.Attempt)
+	key := evidenceKey(bundle.ProjectID, bundle.TaskID, bundle.AttemptSeriesID, bundle.Attempt)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if previous, ok := s.items[key]; ok {
@@ -112,17 +112,25 @@ func (s *MemoryEvidenceStore) Put(_ context.Context, bundle contracts.EvidenceBu
 	return nil
 }
 
-func (s *MemoryEvidenceStore) Get(_ context.Context, projectID, taskID string, attempt int) (contracts.EvidenceBundle, bool, error) {
+func (s *MemoryEvidenceStore) Get(_ context.Context, projectID, taskID, attemptSeriesID string, attempt int) (contracts.EvidenceBundle, bool, error) {
 	s.mu.RLock()
-	bundle, ok := s.items[projectID+"\x00"+taskID+"\x00"+fmt.Sprint(attempt)]
+	bundle, ok := s.items[evidenceKey(projectID, taskID, attemptSeriesID, attempt)]
 	s.mu.RUnlock()
 	return cloneBundle(bundle), ok, nil
+}
+
+func evidenceKey(projectID, taskID, attemptSeriesID string, attempt int) string {
+	return projectID + "\x00" + taskID + "\x00" + attemptSeriesID + "\x00" + fmt.Sprint(attempt)
 }
 
 func cloneBundle(bundle contracts.EvidenceBundle) contracts.EvidenceBundle {
 	bundle.Checks = append([]contracts.EvidenceCheck(nil), bundle.Checks...)
 	bundle.Findings = append([]string(nil), bundle.Findings...)
 	bundle.Artifacts = append([]string(nil), bundle.Artifacts...)
+	if bundle.Signature != nil {
+		signature := *bundle.Signature
+		bundle.Signature = &signature
+	}
 	return bundle
 }
 
