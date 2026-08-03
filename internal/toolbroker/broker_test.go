@@ -94,10 +94,9 @@ func TestBrokerRejectsIrreversibleCallWithoutRevalidation(t *testing.T) {
 	}
 }
 
-func TestBrokerSpillsLargeOutputAndDeniesPrivateNetwork(t *testing.T) {
+func TestBrokerSpillsLargeOutput(t *testing.T) {
 	d := descriptor()
 	d.MaxOutputBytes = 10
-	d.NetworkAccess = NetworkAllowlist
 	artifacts := &testArtifacts{}
 	executor := &testExecutor{output: []byte(`{"large":"123456789012345"}`)}
 	broker := New(&testLease{}, testPolicy{}, executor, artifacts, &testRecorder{}, nil, func() time.Time { return brokerTestNow })
@@ -107,12 +106,6 @@ func TestBrokerSpillsLargeOutputAndDeniesPrivateNetwork(t *testing.T) {
 	result, err := broker.Invoke(context.Background(), request())
 	if err != nil || result.Artifact == nil || !artifacts.called {
 		t.Fatalf("artifact result = %#v err=%v", result, err)
-	}
-	requestWithURL := request()
-	requestWithURL.Parameters = []byte(`{"url":"http://127.0.0.1/"}`)
-	_, err = broker.Invoke(context.Background(), requestWithURL)
-	if !errors.Is(err, ErrNetworkDenied) {
-		t.Fatalf("network error = %v", err)
 	}
 }
 

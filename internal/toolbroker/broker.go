@@ -7,8 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
-	"net/url"
+	"net/netip"
 	"sort"
 	"strings"
 	"sync"
@@ -42,14 +41,25 @@ type Broker struct {
 	artifacts   ArtifactStore
 	recorder    InvocationRecorder
 	revalidate  func(context.Context, ToolRequest, ToolDescriptor) error
+	network     *NetworkBoundary
 	clock       func() time.Time
 }
 
 func New(lease LeaseChecker, policy PolicyEvaluator, executor ToolExecutor, artifacts ArtifactStore, recorder InvocationRecorder, revalidate func(context.Context, ToolRequest, ToolDescriptor) error, clock func() time.Time) *Broker {
+	return NewWithNetworkBoundary(lease, policy, executor, artifacts, recorder, revalidate, nil, clock)
+}
+
+// NewWithNetworkBoundary constructs a broker with an injectable network
+// boundary. Supplying a boundary is useful for deterministic DNS and dialer
+// tests; production callers should use New.
+func NewWithNetworkBoundary(lease LeaseChecker, policy PolicyEvaluator, executor ToolExecutor, artifacts ArtifactStore, recorder InvocationRecorder, revalidate func(context.Context, ToolRequest, ToolDescriptor) error, network *NetworkBoundary, clock func() time.Time) *Broker {
 	if clock == nil {
 		clock = time.Now
 	}
-	return &Broker{descriptors: make(map[string]ToolDescriptor), lease: lease, policy: policy, executor: executor, artifacts: artifacts, recorder: recorder, revalidate: revalidate, clock: clock}
+	if network == nil {
+		network = NewNetworkBoundary(nil, nil)
+	}
+	return &Broker{descriptors: make(map[string]ToolDescriptor), lease: lease, policy: policy, executor: executor, artifacts: artifacts, recorder: recorder, revalidate: revalidate, network: network, clock: clock}
 }
 
 func (b *Broker) Register(descriptor ToolDescriptor) error {
@@ -134,15 +144,23 @@ func (b *Broker) Invoke(ctx context.Context, request ToolRequest) (ToolResult, e
 			return ToolResult{}, fmt.Errorf("%w: %v", ErrPolicyDenied, err)
 		}
 	}
-	if descriptor.NetworkAccess != NetworkNone {
-		if err := ValidateDestinationFromParameters(request.Parameters); err != nil {
-			return ToolResult{}, err
-		}
-	}
 	if b.executor == nil {
 		return ToolResult{}, ErrPolicyDenied
 	}
-	output, err := b.executor.Execute(ctx, descriptor, append([]byte(nil), request.Parameters...))
+	var output []byte
+	if descriptor.NetworkAccess != NetworkNone {
+		networkExecutor, ok := b.executor.(NetworkToolExecutor)
+		if !ok {
+			return ToolResult{}, ErrNetworkDenied
+		}
+		client, networkErr := b.network.Client(ctx, request.Parameters, descriptor.AllowedNetworkTargets)
+		if networkErr != nil {
+			return ToolResult{}, networkErr
+		}
+		output, err = networkExecutor.ExecuteNetwork(ctx, descriptor, append([]byte(nil), request.Parameters...), client)
+	} else {
+		output, err = b.executor.Execute(ctx, descriptor, append([]byte(nil), request.Parameters...))
+	}
 	if err != nil {
 		return ToolResult{}, redactError(err)
 	}
@@ -204,6 +222,17 @@ func (d ToolDescriptor) Validate() error {
 	if d.SideEffect != SideEffectNone && d.SideEffect != SideEffectReversible && d.SideEffect != SideEffectIrreversible {
 		return ErrInvalidRequest
 	}
+	if d.NetworkAccess != NetworkNone && d.NetworkAccess != NetworkAllowlist {
+		return ErrInvalidRequest
+	}
+	if d.NetworkAccess == NetworkNone && len(d.AllowedNetworkTargets) != 0 || d.NetworkAccess == NetworkAllowlist && len(d.AllowedNetworkTargets) == 0 {
+		return ErrInvalidRequest
+	}
+	for _, target := range d.AllowedNetworkTargets {
+		if err := validateNetworkTarget(target); err != nil {
+			return ErrInvalidRequest
+		}
+	}
 	if descriptorWrites(d) {
 		for _, role := range d.AllowedRoles {
 			if isAuditorRole(role) {
@@ -233,6 +262,7 @@ func (b *Broker) leaseValidation(request ToolRequest, descriptor ToolDescriptor,
 
 func cloneDescriptor(value ToolDescriptor) ToolDescriptor {
 	value.AllowedRoles = append([]string(nil), value.AllowedRoles...)
+	value.AllowedNetworkTargets = append([]string(nil), value.AllowedNetworkTargets...)
 	value.InputSchema = append([]byte(nil), value.InputSchema...)
 	value.OutputSchema = append([]byte(nil), value.OutputSchema...)
 	return value
@@ -325,21 +355,11 @@ func redactError(err error) error {
 }
 
 func ValidateDestinationFromParameters(parameters []byte) error {
-	var value struct {
-		URL string `json:"url"`
-	}
-	if err := json.Unmarshal(parameters, &value); err != nil || value.URL == "" {
-		return nil
-	}
-	parsed, err := url.Parse(value.URL)
-	if err != nil || parsed.Hostname() == "" {
+	parsed, err := networkURLFromParameters(parameters)
+	if err != nil || forbiddenHostname(parsed.Hostname()) || ambiguousIPAddress(parsed.Hostname()) {
 		return ErrNetworkDenied
 	}
-	host := strings.ToLower(parsed.Hostname())
-	if host == "localhost" || host == "metadata.google.internal" || host == "169.254.169.254" {
-		return ErrNetworkDenied
-	}
-	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()) {
+	if address, parseErr := netip.ParseAddr(parsed.Hostname()); parseErr == nil && forbiddenAddress(address) {
 		return ErrNetworkDenied
 	}
 	return nil

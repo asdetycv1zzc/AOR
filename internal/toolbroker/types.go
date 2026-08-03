@@ -2,6 +2,7 @@ package toolbroker
 
 import (
 	"context"
+	"net/http"
 	"time"
 )
 
@@ -47,22 +48,25 @@ const (
 )
 
 type ToolDescriptor struct {
-	ToolID           string              `json:"toolId"`
-	Version          string              `json:"version"`
-	MCPServerID      string              `json:"mcpServerId"`
-	InputSchemaRef   string              `json:"inputSchemaRef"`
-	OutputSchemaRef  string              `json:"outputSchemaRef"`
-	InputSchema      []byte              `json:"-"`
-	OutputSchema     []byte              `json:"-"`
-	Risk             Risk                `json:"risk"`
-	SideEffect       SideEffect          `json:"sideEffect"`
-	NetworkAccess    NetworkAccess       `json:"networkAccess"`
-	FilesystemAccess FilesystemAccess    `json:"filesystemAccess"`
-	RequiresApproval ApprovalRequirement `json:"requiresApproval"`
-	AllowedRoles     []string            `json:"allowedRoles"`
-	RateLimit        string              `json:"rateLimit"`
-	TimeoutSeconds   int                 `json:"timeoutSeconds"`
-	MaxOutputBytes   int                 `json:"maxOutputBytes"`
+	ToolID          string        `json:"toolId"`
+	Version         string        `json:"version"`
+	MCPServerID     string        `json:"mcpServerId"`
+	InputSchemaRef  string        `json:"inputSchemaRef"`
+	OutputSchemaRef string        `json:"outputSchemaRef"`
+	InputSchema     []byte        `json:"-"`
+	OutputSchema    []byte        `json:"-"`
+	Risk            Risk          `json:"risk"`
+	SideEffect      SideEffect    `json:"sideEffect"`
+	NetworkAccess   NetworkAccess `json:"networkAccess"`
+	// AllowedNetworkTargets contains absolute origin URLs accepted by a network
+	// tool. Paths, query parameters, credentials, and wildcards are forbidden.
+	AllowedNetworkTargets []string            `json:"allowedNetworkTargets"`
+	FilesystemAccess      FilesystemAccess    `json:"filesystemAccess"`
+	RequiresApproval      ApprovalRequirement `json:"requiresApproval"`
+	AllowedRoles          []string            `json:"allowedRoles"`
+	RateLimit             string              `json:"rateLimit"`
+	TimeoutSeconds        int                 `json:"timeoutSeconds"`
+	MaxOutputBytes        int                 `json:"maxOutputBytes"`
 }
 
 type Principal struct {
@@ -148,6 +152,13 @@ type PolicyEvaluator interface {
 
 type ToolExecutor interface {
 	Execute(ctx context.Context, descriptor ToolDescriptor, parameters []byte) ([]byte, error)
+}
+
+// NetworkToolExecutor is the only executor contract accepted for a tool that
+// needs network access. The broker supplies an HTTP client whose resolver,
+// dialer, and redirect handling are bound to the approved destination.
+type NetworkToolExecutor interface {
+	ExecuteNetwork(ctx context.Context, descriptor ToolDescriptor, parameters []byte, client *http.Client) ([]byte, error)
 }
 
 type ArtifactStore interface {
