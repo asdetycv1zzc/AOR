@@ -961,9 +961,12 @@ requirements:
     status: planned
   - id: AOR-ACC-064
     title: Configuration rollout failure automatically rolls back within fifteen minutes
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/deployment/rollout.go
+      - deploy/configuration-reference.md
+    tests:
+      - internal/deployment/rollout_test.go
+    evidenceType: bounded-rollout+automatic-revert+deployment-drill-gate
     owner: reliability
     status: planned
   - id: AOR-ACC-065
