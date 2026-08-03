@@ -28,3 +28,32 @@ jobs:
         env:
           GOCACHE: ${{ github.workspace }}/.cache/go-build
         run: make verify
+
+  cross-platform:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - goos: linux
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+    steps:
+      - name: Check out source
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          persist-credentials: false
+      - name: Install pinned Go toolchain
+        uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Cross-compile tests
+        env:
+          GOOS: ${{ matrix.target.goos }}
+          GOARCH: ${{ matrix.target.goarch }}
+          CGO_ENABLED: 0
+          GOCACHE: ${{ github.workspace }}/.cache/go-build-${{ matrix.target.goos }}-${{ matrix.target.goarch }}
+        run: go test -exec=true ./...
