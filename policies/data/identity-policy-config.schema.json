@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aor.local/config/identity-policy.v1.schema.json",
+  "title": "AOR Identity and Policy Configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["environment", "oidc", "spiffe", "policy", "lease"],
+  "properties": {
+    "environment": {
+      "enum": ["development", "test", "preproduction", "production"]
+    },
+    "oidc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuers", "audience", "clockSkewSeconds"],
+      "properties": {
+        "issuers": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "format": "uri", "pattern": "^https://"}
+        },
+        "audience": {"type": "string", "minLength": 1, "maxLength": 256},
+        "clockSkewSeconds": {"type": "integer", "minimum": 0, "maximum": 300, "default": 30}
+      }
+    },
+    "spiffe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["trustDomain", "environment", "audience", "clockSkewSeconds"],
+      "properties": {
+        "trustDomain": {"type": "string", "pattern": "^[A-Za-z0-9.-]+$", "minLength": 1, "maxLength": 128},
+        "environment": {"type": "string", "pattern": "^[A-Za-z0-9._~-]+$", "minLength": 1, "maxLength": 128},
+        "audience": {"type": "string", "minLength": 1, "maxLength": 256},
+        "clockSkewSeconds": {"type": "integer", "minimum": 0, "maximum": 300, "default": 30}
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bundleUri", "bundleDigest", "maxWriteBytes"],
+      "properties": {
+        "bundleUri": {"type": "string", "minLength": 1},
+        "bundleDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "maxWriteBytes": {"type": "integer", "minimum": 1, "maximum": 1048576, "default": 1048576}
+      }
+    },
+    "lease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["defaultTtlSeconds", "maxTtlSeconds", "heartbeatIntervalSeconds", "signingKeyRef"],
+      "properties": {
+        "defaultTtlSeconds": {"type": "integer", "minimum": 30, "maximum": 900, "default": 300},
+        "maxTtlSeconds": {"type": "integer", "minimum": 30, "maximum": 900, "default": 900},
+        "heartbeatIntervalSeconds": {"type": "integer", "const": 30},
+        "signingKeyRef": {"type": "string", "pattern": "^secret://", "minLength": 10}
+      }
+    }
+  }
+}

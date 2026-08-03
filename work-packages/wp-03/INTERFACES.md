@@ -11,6 +11,8 @@
 
 - `authz.Engine.Evaluate(ctx, PolicyInput) (PolicyDecision, error)` returns `ALLOW`, `DENY`, or `APPROVAL_REQUIRED`.
 - `authz.Engine.Authorize` is an alias intended for side-effect call sites.
+- `authz.Engine.EvaluateLeaseGrant` returns a request-bound policy grant used by lease issuance and renewal.
+- `authz.ApprovalVerifier` verifies immutable approval signatures and revocation state; a supplied approval fails closed when no verifier is configured.
 - `PolicyInput` contains principal, tenant/project, task, action, resource, lease reference, approval, and execution context. All fields are explicit; no ambient request state is read.
 - `PolicyDecision` includes `Decision`, `PolicyVersion`, `Constraints`, `ReasonCodes`, and `RuleID`.
 
@@ -19,5 +21,6 @@
 - `authz.LeaseManager.Issue(ctx, LeaseRequest)`, `Renew(ctx, LeaseRenewalRequest)`, `Heartbeat(ctx, LeaseHeartbeatRequest)`, `Revoke(ctx, LeaseRevokeRequest)`, and `Validate(ctx, LeaseCheck)` implement the lease lifecycle.
 - `authz.LeaseStore` is the persistence seam. `MemoryLeaseStore` is deterministic and concurrency safe; a database implementation can preserve the same compare-and-fence semantics.
 - `CapabilityLease` is signed and includes principal, project/task, action/resource, parameter digest, policy version, budget account, nonce, expiry, heartbeat, and fencing token.
+- `policies/data/identity-policy-config.schema.json` rejects unknown identity/policy settings and keeps signing material behind `secret://` references.
 
 Times are UTC RFC3339 values at serialization boundaries. Inputs are never mutated. Callers must supply a trusted server time for security checks.

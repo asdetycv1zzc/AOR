@@ -10,11 +10,11 @@ Authentication adapters are the boundary between untrusted bearer/SVID material 
 
 ## Authorization
 
-`authz.Engine` performs structural validation before policy rules. The default rule set is deny-by-default and recognizes only documented action families. Executor repository writes must target a task-owned path; knowledge writes require a curator role and approval; policy and production actions require break-glass approval. Side effects require a current lease whose fields exactly match the request. Custom rules can narrow the default behavior but cannot turn a malformed request into an allow.
+`authz.Engine` performs structural validation before policy rules. The default rule set is deny-by-default and recognizes only documented action families. Executor repository writes must target a task-owned path; knowledge writes require a curator role and verified approval record; policy and production actions require break-glass approval with two distinct approvers. Side effects require a current lease whose fields exactly match the request. Custom rules can narrow the default behavior but cannot turn malformed or default-denied input into an allow.
 
 ## Lease lifecycle
 
-`LeaseManager` stores immutable-by-copy lease records in a thread-safe `MemoryLeaseStore` for deterministic tests. Issuance creates a nonce, expiry, heartbeat deadline, and fencing token. Renewal checks the current record and identity, re-evaluates the configured issuer authorizer when present, increments fencing, and replaces the signed record. Heartbeats update liveness without extending expiry. Revoke changes state and signs the tombstone. Validation verifies the signature, active state, expiry, heartbeat window, exact binding, and current fencing token.
+`LeaseManager` stores immutable-by-copy lease records in a thread-safe `MemoryLeaseStore` for deterministic tests. `EvaluateLeaseGrant` creates an allow decision bound to the exact principal, tenant, project/task versions, spec and parameter digests, action, resource, and budget account. Issuance and renewal require that bound grant. Renewal increments fencing and replaces the signed record. Heartbeats update liveness without extending expiry. Revoke changes state and signs the tombstone. Validation verifies the signature, active state, expiry, heartbeat window, exact binding, and current fencing token.
 
 ## Cryptography and canonicalization
 

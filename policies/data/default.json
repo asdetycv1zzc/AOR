@@ -1,0 +1,15 @@
+{
+  "aor": {
+    "policy": {
+      "version": "sha256:661a8986a4f8810263c2319b993a68b85c70f917925af462174cd21fdeddb991",
+      "defaultDecision": "DENY",
+      "maxWriteBytes": 1048576,
+      "leaseTTLSeconds": 300,
+      "maxLeaseTTLSeconds": 900,
+      "heartbeatIntervalSeconds": 30,
+      "productionUntrustedPlatform": "LINUX",
+      "productionUntrustedSandboxLevel": "CONTAINER",
+      "windowsSandboxLevel": "NONE"
+    }
+  }
+}
