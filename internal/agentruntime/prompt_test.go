@@ -78,6 +78,28 @@ func TestPromptAndContextIntegrityFailures(t *testing.T) {
 	}
 }
 
+func TestPromptRejectsKnownCredentialFamilies(t *testing.T) {
+	tests := map[string]string{
+		"github classic":    "ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+		"github fine grain": "github_pat_0123456789abcdefghijklmnopqrstuvwxyz_ABCDEF",
+		"gitlab":            "glpat-0123456789abcdefghijklmnop",
+		"slack":             "xoxb-0123456789-abcdefghijklmnop",
+		"google":            "AIza0123456789abcdefghijklmnopqrstuvwxy",
+		"stripe":            "sk_live_0123456789abcdefghijklmnop",
+		"oauth refresh":     "refresh_token=synthetic-refresh-token-value",
+		"oauth client":      `client_secret: "synthetic-client-secret-value"`,
+	}
+	for name, credential := range tests {
+		t.Run(name, func(t *testing.T) {
+			item := testContextItem("tool", ContextToolOutput, "tool://result", TrustExternalUntrusted, credential)
+			manifest := testManifest(RoleExecutor, []ContextItem{item})
+			if err := ValidateContextManifest(manifest); !errors.Is(err, ErrContextIntegrity) {
+				t.Fatalf("credential family accepted: %v", err)
+			}
+		})
+	}
+}
+
 func TestToolDefinitionDigestUsesCanonicalJSON(t *testing.T) {
 	compact := []modelgateway.ToolDefinition{{Name: "repo.read", Schema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}}}`)}}
 	spaced := []modelgateway.ToolDefinition{{Name: "repo.read", Schema: json.RawMessage(`{ "properties": { "path": { "type": "string" } }, "type": "object" }`)}}

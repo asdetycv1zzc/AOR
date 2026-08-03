@@ -17,6 +17,13 @@ var credentialPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\bsk-[a-z0-9_-]{16,}\b`),
 	regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`),
 	regexp.MustCompile(`(?i)bearer\s+[a-z0-9._-]{16,}`),
+	regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{20,}\b`),
+	regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{20,}\b`),
+	regexp.MustCompile(`\bglpat-[A-Za-z0-9_-]{20,}\b`),
+	regexp.MustCompile(`\bxox[baprs]-[A-Za-z0-9-]{10,}\b`),
+	regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}\b`),
+	regexp.MustCompile(`\bsk_live_[0-9A-Za-z]{16,}\b`),
+	regexp.MustCompile(`(?i)\b(?:refresh_token|client_secret|access_token|api[_-]?key)\b\s*[:=]\s*["']?[a-z0-9._~+/-]{12,}`),
 	regexp.MustCompile(`-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----`),
 }
 
