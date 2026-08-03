@@ -19,7 +19,7 @@ type testLease struct {
 
 func (l *testLease) Validate(_ context.Context, validation LeaseValidation) error {
 	l.validations = append(l.validations, validation)
-	if validation.Lease.ID == "" || validation.Lease.FencingToken < 1 || validation.Principal.ID == "" || validation.Principal.Type == "" || validation.Principal.Role == "" || validation.TenantID == "" || validation.ProjectID == "" || validation.TaskID == "" || validation.ToolID == "" || validation.ToolVersion == "" || validation.MCPServerID == "" || validation.Action != "tool.invoke" || validation.Resource == "" || validation.ParameterSHA256 == "" || validation.PolicyVersion == "" || validation.BudgetToken == "" || validation.At.IsZero() {
+	if validation.Lease.ID == "" || validation.Lease.FencingToken < 1 || validation.Principal.ID == "" || validation.Principal.Type == "" || validation.Principal.Role == "" || validation.TenantID == "" || validation.ProjectID == "" || validation.TaskID == "" || validation.ToolID == "" || validation.ToolVersion == "" || validation.MCPServerID == "" || validation.Action != "tool.invoke" || validation.Resource == "" || validation.ParameterSHA256 == "" || validation.PolicyVersion == "" || validation.BudgetAccountID == "" || validation.At.IsZero() {
 		return ErrLeaseInvalid
 	}
 	if l.expectedDigest != "" && validation.ParameterSHA256 != l.expectedDigest || l.failAt > 0 && len(l.validations) >= l.failAt {
@@ -60,7 +60,7 @@ func descriptor() ToolDescriptor {
 }
 
 func request() ToolRequest {
-	return ToolRequest{RequestID: "req", TenantID: "ten", ProjectID: "prj", TaskID: "task", Principal: Principal{ID: "agt", Type: "AGENT_INSTANCE", Role: "EXECUTOR"}, Lease: Lease{ID: "lease", ExpiresAt: brokerTestNow.Add(time.Hour).Format(time.RFC3339), FencingToken: 1}, ToolID: "repo.read", Version: "1.0.0", Parameters: []byte(`{}`), PolicyVersion: "policy-1", BudgetToken: "budget-1"}
+	return ToolRequest{RequestID: "req", TenantID: "ten", ProjectID: "prj", TaskID: "task", Principal: Principal{ID: "agt", Type: "AGENT_INSTANCE", Role: "EXECUTOR"}, Lease: Lease{ID: "lease", ExpiresAt: brokerTestNow.Add(time.Hour).Format(time.RFC3339), FencingToken: 1}, ToolID: "repo.read", Version: "1.0.0", Parameters: []byte(`{}`), PolicyVersion: "policy-1", BudgetAccountID: "budget-1"}
 }
 
 func TestBrokerStableListAndInvocation(t *testing.T) {

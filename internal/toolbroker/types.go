@@ -84,18 +84,18 @@ type Approval struct {
 }
 
 type ToolRequest struct {
-	RequestID     string
-	TenantID      string
-	ProjectID     string
-	TaskID        string
-	Principal     Principal
-	Lease         Lease
-	Approval      *Approval
-	ToolID        string
-	Version       string
-	Parameters    []byte
-	PolicyVersion string
-	BudgetToken   string
+	RequestID       string
+	TenantID        string
+	ProjectID       string
+	TaskID          string
+	Principal       Principal
+	Lease           Lease
+	Approval        *Approval
+	ToolID          string
+	Version         string
+	Parameters      []byte
+	PolicyVersion   string
+	BudgetAccountID string
 }
 
 type ArtifactRef struct {
@@ -131,7 +131,7 @@ type LeaseValidation struct {
 	Resource        string
 	ParameterSHA256 string
 	PolicyVersion   string
-	BudgetToken     string
+	BudgetAccountID string
 	ApprovalID      string
 	At              time.Time
 }

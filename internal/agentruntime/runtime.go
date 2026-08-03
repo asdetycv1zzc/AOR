@@ -309,10 +309,10 @@ func (r *Runtime) InvokeTool(ctx context.Context, runID string, call ToolCall) (
 	}
 	request := toolbroker.ToolRequest{
 		RequestID: call.RequestID, TenantID: declaration.TenantID, ProjectID: declaration.ProjectID, TaskID: declaration.TaskID,
-		Principal: toolbroker.Principal{ID: declaration.AgentInstanceID, Type: "AGENT", Role: string(declaration.Role)},
+		Principal: toolbroker.Principal{ID: declaration.AgentInstanceID, Type: "AGENT_INSTANCE", Role: string(declaration.Role)},
 		Lease:     toolbroker.Lease{ID: lease.LeaseID, ExpiresAt: lease.ExpiresAt.UTC().Format(time.RFC3339Nano), FencingToken: lease.FencingToken}, Approval: cloneApproval(call.Approval),
 		ToolID: call.ToolID, Version: call.Version, Parameters: append([]byte(nil), call.Parameters...),
-		PolicyVersion: lease.PolicyVersion, BudgetToken: call.BudgetToken,
+		PolicyVersion: lease.PolicyVersion, BudgetAccountID: lease.BudgetAccountID,
 	}
 	result, callErr := r.broker.Invoke(opCtx, request)
 	if callErr != nil {

@@ -83,7 +83,7 @@ func (b *Broker) List() []ToolDescriptor {
 }
 
 func (b *Broker) Invoke(ctx context.Context, request ToolRequest) (ToolResult, error) {
-	if request.RequestID == "" || request.TenantID == "" || request.ProjectID == "" || request.TaskID == "" || request.Principal.ID == "" || request.Principal.Type == "" || request.Principal.Role == "" || request.ToolID == "" || request.Version == "" || request.PolicyVersion == "" || request.BudgetToken == "" || !json.Valid(request.Parameters) {
+	if request.RequestID == "" || request.TenantID == "" || request.ProjectID == "" || request.TaskID == "" || request.Principal.ID == "" || request.Principal.Type == "" || request.Principal.Role == "" || request.ToolID == "" || request.Version == "" || request.PolicyVersion == "" || request.BudgetAccountID == "" || !json.Valid(request.Parameters) {
 		return ToolResult{}, ErrInvalidRequest
 	}
 	descriptor, found := b.descriptor(request.ToolID, request.Version)
@@ -227,8 +227,8 @@ func (b *Broker) leaseValidation(request ToolRequest, descriptor ToolDescriptor,
 	if request.Approval != nil {
 		approvalID = request.Approval.ID
 	}
-	resource := "tool://" + descriptor.MCPServerID + "/" + descriptor.ToolID + "@" + descriptor.Version
-	return LeaseValidation{Lease: request.Lease, Principal: request.Principal, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, ToolID: descriptor.ToolID, ToolVersion: descriptor.Version, MCPServerID: descriptor.MCPServerID, Action: "tool.invoke", Resource: resource, ParameterSHA256: parameterDigest, PolicyVersion: request.PolicyVersion, BudgetToken: request.BudgetToken, ApprovalID: approvalID, At: now}, nil
+	resource := authorizationResourceID(descriptor.MCPServerID, descriptor.ToolID, descriptor.Version)
+	return LeaseValidation{Lease: request.Lease, Principal: request.Principal, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, ToolID: descriptor.ToolID, ToolVersion: descriptor.Version, MCPServerID: descriptor.MCPServerID, Action: "tool.invoke", Resource: resource, ParameterSHA256: parameterDigest, PolicyVersion: request.PolicyVersion, BudgetAccountID: request.BudgetAccountID, ApprovalID: approvalID, At: now}, nil
 }
 
 func cloneDescriptor(value ToolDescriptor) ToolDescriptor {

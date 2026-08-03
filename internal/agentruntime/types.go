@@ -228,12 +228,11 @@ type ModelCall struct {
 }
 
 type ToolCall struct {
-	RequestID   string
-	ToolID      string
-	Version     string
-	Parameters  json.RawMessage
-	Approval    *toolbroker.Approval
-	BudgetToken string
+	RequestID  string
+	ToolID     string
+	Version    string
+	Parameters json.RawMessage
+	Approval   *toolbroker.Approval
 }
 
 type AgentOutput struct {
