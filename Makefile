@@ -1,9 +1,14 @@
-.PHONY: build test lint schema cross-language sdk backup-restore supply-chain repository-check secret-scan license-scan state-machine verify
+.PHONY: build test lint schema cross-language sdk backup-restore supply-chain repository-check secret-scan license-scan state-machine verify compose-check compose-check-secrets compose-pull compose-deps-up compose-aor-up compose-up compose-ps
 
 GOCACHE ?= $(CURDIR)/.cache/go-build
 GOMODCACHE ?= $(CURDIR)/.cache/go-mod
 export GOCACHE GOMODCACHE
 export GOTOOLCHAIN = local
+
+COMPOSE = docker compose --parallel 1 -f deploy/compose/docker-compose.yml
+COMPOSE_DEPENDENCIES = postgres temporal temporal-ui nats minio opa
+COMPOSE_INITIALIZERS = postgres-migrate temporal-init minio-init
+COMPOSE_AOR = aor-api aor-model-gateway aor-tool-broker aor-worker
 
 build:
 	go build ./...
@@ -47,3 +52,35 @@ state-machine:
 	go run ./cmd/aor-conformance state-machine
 
 verify: build lint test schema cross-language sdk backup-restore supply-chain repository-check secret-scan license-scan state-machine
+
+compose-check-secrets:
+	test -s deploy/compose/secrets/postgres_password
+	test -s deploy/compose/secrets/minio_root_user
+	test -s deploy/compose/secrets/minio_root_password
+
+compose-check:
+	$(COMPOSE) config --quiet
+
+compose-pull: compose-check-secrets compose-check
+	$(COMPOSE) pull $(COMPOSE_DEPENDENCIES) $(COMPOSE_INITIALIZERS)
+
+compose-deps-up: compose-check-secrets compose-check
+	$(COMPOSE) up -d --wait --wait-timeout 240 $(COMPOSE_DEPENDENCIES)
+	$(COMPOSE) up -d postgres-migrate
+	$(COMPOSE) wait postgres-migrate
+	$(COMPOSE) up -d temporal-init
+	$(COMPOSE) wait temporal-init
+	$(COMPOSE) up -d minio-init
+	$(COMPOSE) wait minio-init
+
+compose-aor-up: compose-deps-up
+	$(COMPOSE) --profile aor build aor-api
+	$(COMPOSE) --profile aor build aor-model-gateway
+	$(COMPOSE) --profile aor build aor-tool-broker
+	$(COMPOSE) --profile aor build aor-worker
+	$(COMPOSE) --profile aor up -d --no-build --no-deps --wait --wait-timeout 240 $(COMPOSE_AOR)
+
+compose-up: compose-pull compose-aor-up
+
+compose-ps:
+	$(COMPOSE) --profile aor ps --all

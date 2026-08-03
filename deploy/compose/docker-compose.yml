@@ -1,38 +1,361 @@
 name: aor
+
+x-aor-common: &aor-common
+  profiles: [aor]
+  restart: unless-stopped
+  read_only: true
+  tmpfs: [/tmp]
+  security_opt: [no-new-privileges:true]
+  networks: [aor]
+  command: [serve]
+  healthcheck:
+    test: [CMD, /usr/local/bin/aor, healthcheck]
+    interval: 5s
+    timeout: 3s
+    retries: 12
+    start_period: 5s
+
 services:
   postgres:
-    image: postgres:16.4@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    image: postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
     restart: unless-stopped
     environment:
       POSTGRES_DB: aor
       POSTGRES_USER: aor
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
     secrets: [postgres_password]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - 127.0.0.1:5432:5432
     read_only: true
     tmpfs: [/run, /tmp]
     security_opt: [no-new-privileges:true]
-  aor-api:
-    image: ghcr.io/akimisaka/aor-api:2.0.0@sha256:0000000000000000000000000000000000000000000000000000000000000000
-    depends_on: [postgres]
-    environment:
-      AOR_DATABASE_URL_FILE: /run/secrets/database_url
-      AOR_MODEL_KEY_REF: secret://model-gateway/provider
-    secrets: [database_url]
+    networks: [aor]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U aor -d aor]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    stop_grace_period: 30s
+
+  postgres-migrate:
+    image: postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - |
+        export PGPASSWORD="$$(cat /run/secrets/postgres_password)"
+        installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT to_regtype('aor_sha256') IS NOT NULL")"
+        if [ "$$installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000001_core.up.sql
+        fi
+    secrets: [postgres_password]
+    volumes:
+      - ../../migrations/postgres/000001_core.up.sql:/migrations/000001_core.up.sql:ro
     read_only: true
     tmpfs: [/tmp]
     security_opt: [no-new-privileges:true]
-  aor-worker:
-    image: ghcr.io/akimisaka/aor-worker:2.0.0@sha256:0000000000000000000000000000000000000000000000000000000000000000
-    depends_on: [aor-api]
+    networks: [aor]
+
+  temporal:
+    image: temporalio/auto-setup:1.29.1@sha256:5b3502a3b685f9eff1b925af90c57c9e3dbeccbef367cc28a2a9712c63379312
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: aor
+      POSTGRES_SEEDS: postgres
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CLI_ADDRESS: temporal:7233
+    entrypoint: [/bin/sh, -ec]
+    user: "0:0"
+    command:
+      - |
+        export POSTGRES_PWD="$$(cat /run/secrets/postgres_password)"
+        export HOME=/home/temporal
+        exec /bin/su -p -s /bin/sh temporal -c 'exec /etc/temporal/entrypoint.sh autosetup'
+    secrets: [postgres_password]
+    volumes:
+      - ./temporal-dynamicconfig.yaml:/etc/temporal/config/dynamicconfig/development-sql.yaml:ro
+    ports:
+      - 127.0.0.1:7233:7233
+    security_opt: [no-new-privileges:true]
+    networks: [aor]
+    healthcheck:
+      test: [CMD-SHELL, 'temporal operator cluster health --address "$${TEMPORAL_ADDRESS}"']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    stop_grace_period: 30s
+
+  temporal-init:
+    image: temporalio/auto-setup:1.29.1@sha256:5b3502a3b685f9eff1b925af90c57c9e3dbeccbef367cc28a2a9712c63379312
+    restart: "no"
+    depends_on:
+      temporal:
+        condition: service_healthy
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - |
+        temporal operator namespace describe --namespace aor --address temporal:7233 >/dev/null 2>&1 ||
+          temporal operator namespace create --namespace aor --retention 72h --address temporal:7233
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    networks: [aor]
+
+  temporal-ui:
+    image: temporalio/ui:2.34.0@sha256:cb17ea423d76a8a19a269d0bcd81fc12eee1f6365acd2a56b590dafb35696a95
+    restart: unless-stopped
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://127.0.0.1:8090
+    ports:
+      - 127.0.0.1:8080:8080
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    networks: [aor]
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:8080]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  nats:
+    image: nats:2.11.8-alpine@sha256:71092f77d707a4a81b12aca5096d6b2d2e07ad16aa57c84066940a17af74f61a
+    restart: unless-stopped
+    command: [--jetstream, --store_dir=/data, --http_port=8222]
+    volumes:
+      - nats-data:/data
+    ports:
+      - 127.0.0.1:4222:4222
+      - 127.0.0.1:8222:8222
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    networks: [aor]
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, "http://127.0.0.1:8222/healthz?js-enabled-only=true"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    restart: unless-stopped
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - |
+        export MINIO_ROOT_USER="$$(cat /run/secrets/minio_root_user)"
+        export MINIO_ROOT_PASSWORD="$$(cat /run/secrets/minio_root_password)"
+        exec /usr/bin/docker-entrypoint.sh minio server /data --console-address :9001
+    secrets: [minio_root_user, minio_root_password]
+    volumes:
+      - minio-data:/data
+    ports:
+      - 127.0.0.1:9000:9000
+      - 127.0.0.1:9001:9001
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    networks: [aor]
+    healthcheck:
+      test: [CMD, curl, -f, http://127.0.0.1:9000/minio/health/ready]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  minio-init:
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - |
+        access_key="$$(cat /run/secrets/minio_root_user)"
+        secret_key="$$(cat /run/secrets/minio_root_password)"
+        export MC_HOST_aor="http://$$access_key:$$secret_key@minio:9000"
+        mc mb --ignore-existing aor/aor-artifacts
+    secrets: [minio_root_user, minio_root_password]
+    read_only: true
+    tmpfs: [/tmp, /root/.mc]
+    security_opt: [no-new-privileges:true]
+    networks: [aor]
+
+  opa:
+    image: openpolicyagent/opa:1.18.2-static@sha256:57f7d06808fff6de3ea1d698e6430990973ca1370be0e54975f0083d615521da
+    restart: unless-stopped
+    command: [run, --server, --addr=0.0.0.0:8181, --log-format=json, /policies/aor_authz.rego, /policies/data.json]
+    volumes:
+      - ../../policies/rego/aor_authz.rego:/policies/aor_authz.rego:ro
+      - ../../policies/data/default.json:/policies/data.json:ro
+    ports:
+      - 127.0.0.1:8181:8181
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    networks: [aor]
+    healthcheck:
+      test: [CMD, /opa, eval, --fail, --format, discard, 'http.send({"method":"get","url":"http://127.0.0.1:8181/health"}).status_code == 200']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  aor-api:
+    <<: *aor-common
+    image: aor/aor-server:0.1.0-test
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+      network: host
+      args:
+        AOR_COMPONENT: aor-server
+    depends_on:
+      postgres:
+        condition: service_healthy
+      postgres-migrate:
+        condition: service_completed_successfully
+      temporal:
+        condition: service_healthy
+      temporal-init:
+        condition: service_completed_successfully
+      nats:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      opa:
+        condition: service_healthy
+    environment:
+      AOR_LISTEN_ADDR: :8080
+      AOR_REQUIRED_ENDPOINTS: postgres:5432,temporal:7233,nats:4222,minio:9000,opa:8181
+      AOR_DATABASE_HOST: postgres
+      AOR_DATABASE_PORT: "5432"
+      AOR_DATABASE_NAME: aor
+      AOR_DATABASE_USER: aor
+      AOR_TEMPORAL_ADDRESS: temporal:7233
+      AOR_TEMPORAL_NAMESPACE: aor
+      AOR_NATS_URL: nats://nats:4222
+      AOR_S3_ENDPOINT: http://minio:9000
+      AOR_S3_BUCKET: aor-artifacts
+      AOR_OPA_URL: http://opa:8181
+    ports:
+      - 127.0.0.1:8090:8080
+
+  aor-model-gateway:
+    <<: *aor-common
+    image: aor/aor-model-gateway:0.1.0-test
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+      network: host
+      args:
+        AOR_COMPONENT: aor-model-gateway
+    depends_on:
+      postgres:
+        condition: service_healthy
+      postgres-migrate:
+        condition: service_completed_successfully
+      nats:
+        condition: service_healthy
+    environment:
+      AOR_LISTEN_ADDR: :8080
+      AOR_REQUIRED_ENDPOINTS: postgres:5432,nats:4222
+      AOR_DATABASE_HOST: postgres
+      AOR_DATABASE_PORT: "5432"
+      AOR_DATABASE_NAME: aor
+      AOR_DATABASE_USER: aor
+      AOR_NATS_URL: nats://nats:4222
+      AOR_MODEL_KEY_REF: secret://model-gateway/provider
+    ports:
+      - 127.0.0.1:8091:8080
+
+  aor-tool-broker:
+    <<: *aor-common
+    image: aor/aor-tool-broker:0.1.0-test
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+      network: host
+      args:
+        AOR_COMPONENT: aor-tool-broker
+    depends_on:
+      nats:
+        condition: service_healthy
+      opa:
+        condition: service_healthy
+    environment:
+      AOR_LISTEN_ADDR: :8080
+      AOR_REQUIRED_ENDPOINTS: nats:4222,opa:8181
+      AOR_NATS_URL: nats://nats:4222
+      AOR_OPA_URL: http://opa:8181
+    ports:
+      - 127.0.0.1:8092:8080
+
+  aor-worker:
+    <<: *aor-common
+    image: aor/aor-worker:0.1.0-test
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+      network: host
+      args:
+        AOR_COMPONENT: aor-worker
+    depends_on:
+      aor-api:
+        condition: service_healthy
+      aor-model-gateway:
+        condition: service_healthy
+      aor-tool-broker:
+        condition: service_healthy
+    environment:
+      AOR_LISTEN_ADDR: :8080
+      AOR_REQUIRED_ENDPOINTS: aor-api:8080,aor-model-gateway:8080,aor-tool-broker:8080,temporal:7233,nats:4222,minio:9000,opa:8181
+      AOR_DATABASE_HOST: postgres
+      AOR_DATABASE_PORT: "5432"
+      AOR_DATABASE_NAME: aor
+      AOR_DATABASE_USER: aor
+      AOR_TEMPORAL_ADDRESS: temporal:7233
+      AOR_TEMPORAL_NAMESPACE: aor
+      AOR_NATS_URL: nats://nats:4222
       AOR_SANDBOX_LINUX_LEVEL: CONTAINER
       AOR_SANDBOX_WINDOWS_LEVEL: NONE
       AOR_ALLOW_WINDOWS_UNTRUSTED: "false"
-    read_only: true
-    tmpfs: [/tmp]
-    security_opt: [no-new-privileges:true]
+    ports:
+      - 127.0.0.1:8093:8080
+
+networks:
+  aor:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  nats-data:
+  minio-data:
+
 secrets:
   postgres_password:
     file: ./secrets/postgres_password
-  database_url:
-    file: ./secrets/database_url
+  minio_root_user:
+    file: ./secrets/minio_root_user
+  minio_root_password:
+    file: ./secrets/minio_root_password

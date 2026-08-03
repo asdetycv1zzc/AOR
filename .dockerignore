@@ -1,0 +1,11 @@
+.git
+.cache
+bin
+coverage
+deploy/compose/secrets
+dist
+node_modules
+release-evidence
+sdk
+*.out
+*.test
