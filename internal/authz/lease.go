@@ -329,10 +329,7 @@ func NewLeaseManager(config LeaseManagerConfig) (*LeaseManager, error) {
 	return &LeaseManager{store: store, signer: signer, clock: config.Clock, defaultTTL: config.DefaultTTL, maxTTL: config.MaxTTL, heartbeatInterval: config.HeartbeatInterval}, nil
 }
 
-func (m *LeaseManager) now(value time.Time) time.Time {
-	if !value.IsZero() {
-		return value.UTC()
-	}
+func (m *LeaseManager) now() time.Time {
 	if m != nil && m.clock != nil {
 		return m.clock().UTC()
 	}
@@ -370,7 +367,7 @@ func (m *LeaseManager) Issue(ctx context.Context, request LeaseRequest) (Capabil
 	if !sideEffectLeaseAction(request.Action) {
 		return CapabilityLease{}, aorerrors.New(aorerrors.CodePolicyDenied, "", map[string]any{"scope": "action"})
 	}
-	now := m.now(request.Now)
+	now := m.now()
 	binding := DecisionBinding{PrincipalID: request.Principal.ID, TenantID: request.TenantID, ProjectID: request.ProjectID, ProjectVersion: request.ProjectVersion, TaskID: request.TaskID, TaskVersion: request.TaskVersion, SpecDigest: request.SpecDigest, Role: request.Role, Action: request.Action, Resource: cloneResource(request.Resource), ParameterDigest: request.ParameterDigest, BudgetAccountID: request.BudgetAccountID}
 	if err := validateLeaseGrant(request.Grant, request.PolicyVersion, binding, now); err != nil {
 		return CapabilityLease{}, err
@@ -434,7 +431,7 @@ func (m *LeaseManager) Renew(ctx context.Context, request LeaseRenewalRequest) (
 	if err := ctx.Err(); err != nil {
 		return CapabilityLease{}, aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", err, nil)
 	}
-	now := m.now(request.Now)
+	now := m.now()
 	current, found, err := m.store.Get(ctx, request.LeaseID)
 	if err != nil {
 		return CapabilityLease{}, err
@@ -504,7 +501,7 @@ func (m *LeaseManager) Heartbeat(ctx context.Context, request LeaseHeartbeatRequ
 	if err := ctx.Err(); err != nil {
 		return CapabilityLease{}, aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", err, nil)
 	}
-	now := m.now(request.Now)
+	now := m.now()
 	current, found, err := m.store.Get(ctx, request.LeaseID)
 	if err != nil {
 		return CapabilityLease{}, err
@@ -552,7 +549,7 @@ func (m *LeaseManager) Revoke(ctx context.Context, request LeaseRevokeRequest) e
 	if request.Reason == "" || len(request.Reason) > 256 || strings.ContainsAny(request.Reason, "\r\n\x00") {
 		return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "revoke reason"})
 	}
-	now := m.now(request.Now)
+	now := m.now()
 	current, found, err := m.store.Get(ctx, request.LeaseID)
 	if err != nil {
 		return err
@@ -593,7 +590,7 @@ func (m *LeaseManager) Validate(ctx context.Context, check LeaseCheck) (Capabili
 	if err := ctx.Err(); err != nil {
 		return CapabilityLease{}, aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", err, nil)
 	}
-	now := m.now(check.At)
+	now := m.now()
 	current, found, err := m.store.Get(ctx, check.LeaseID)
 	if err != nil {
 		return CapabilityLease{}, err
@@ -625,7 +622,7 @@ func (m *LeaseManager) Validate(ctx context.Context, check LeaseCheck) (Capabili
 // ValidateActive checks only the signed lifecycle state. It must not be used
 // as authorization for a side effect; Validate performs the exact binding
 // checks required at commit time.
-func (m *LeaseManager) ValidateActive(ctx context.Context, leaseID string, at time.Time) (CapabilityLease, error) {
+func (m *LeaseManager) ValidateActive(ctx context.Context, leaseID string, _ time.Time) (CapabilityLease, error) {
 	if m == nil || m.store == nil {
 		return CapabilityLease{}, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", nil)
 	}
@@ -642,7 +639,7 @@ func (m *LeaseManager) ValidateActive(ctx context.Context, leaseID string, at ti
 	if err := m.verify(current); err != nil {
 		return CapabilityLease{}, err
 	}
-	now := m.now(at)
+	now := m.now()
 	if current.State != LeaseActive || current.IsExpired(now) {
 		return CapabilityLease{}, aorerrors.New(aorerrors.CodeLeaseExpired, "", nil)
 	}

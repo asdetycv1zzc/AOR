@@ -68,17 +68,34 @@ func issueForInput(t *testing.T, manager *LeaseManager, engine *Engine, input Po
 	if err != nil || grant.Decision != DecisionAllow {
 		t.Fatalf("grant denied: decision=%#v err=%v", grant, err)
 	}
-	lease, err := manager.Issue(context.Background(), LeaseRequest{
-		Principal: input.Principal, TenantID: input.Project.TenantID, ProjectID: input.Project.ID, ProjectVersion: input.Project.StateVersion,
-		TaskID: input.Task.ID, TaskVersion: input.Task.StateVersion, SpecDigest: input.Task.SpecDigest, Role: input.Principal.Role,
-		Action: input.Action, Resource: input.Resource, ParameterDigest: input.ParameterDigest, Capabilities: []string{input.Action},
-		PolicyVersion: testPolicyVersion, BudgetAccountID: input.Budget.AccountID, Grant: grant, Now: now,
-	})
+	request := leaseRequestForInput(input, grant)
+	request.Now = now
+	lease, err := manager.Issue(context.Background(), request)
 	if err != nil {
 		t.Fatalf("issue lease: %v", err)
 	}
 	input.Lease = leaseReferencePointer(lease)
 	return lease, input
+}
+
+func leaseRequestForInput(input PolicyInput, grant PolicyDecision) LeaseRequest {
+	return LeaseRequest{
+		Principal: input.Principal, TenantID: input.Project.TenantID, ProjectID: input.Project.ID, ProjectVersion: input.Project.StateVersion,
+		TaskID: input.Task.ID, TaskVersion: input.Task.StateVersion, SpecDigest: input.Task.SpecDigest, Role: input.Principal.Role,
+		Action: input.Action, Resource: input.Resource, ParameterDigest: input.ParameterDigest, Capabilities: []string{input.Action},
+		PolicyVersion: testPolicyVersion, BudgetAccountID: input.Budget.AccountID, Grant: grant,
+	}
+}
+
+func leaseCheckFor(lease CapabilityLease, at time.Time) LeaseCheck {
+	return LeaseCheck{
+		LeaseID: lease.ID, AgentInstanceID: lease.AgentInstanceID, PrincipalID: lease.PrincipalID, PrincipalType: lease.PrincipalType,
+		TenantID: lease.TenantID, ProjectID: lease.ProjectID, ProjectVersion: lease.ProjectVersion,
+		TaskID: lease.TaskID, TaskVersion: lease.TaskVersion, SpecDigest: lease.SpecDigest, Role: lease.Role,
+		Action: lease.Action, Resource: lease.Resource, ParameterDigest: lease.ParameterDigest,
+		PolicyVersion: lease.PolicyVersion, BudgetAccountID: lease.BudgetAccountID, Capability: lease.Action,
+		FencingToken: lease.FencingToken, At: at,
+	}
 }
 
 func leaseReferencePointer(lease CapabilityLease) *LeaseReference {
@@ -181,6 +198,190 @@ func TestLeaseExpiresAfterMissedHeartbeats(t *testing.T) {
 	now = now.Add(3 * time.Duration(lease.HeartbeatIntervalSeconds) * time.Second)
 	_, err := manager.ValidateActive(context.Background(), lease.ID, now)
 	assertAuthzErrorCode(t, err, aorerrors.CodeLeaseExpired)
+}
+
+func TestLeaseIssueUsesTrustedTime(t *testing.T) {
+	trustedNow := authzTestNow
+	for _, test := range []struct {
+		name   string
+		forged time.Time
+	}{
+		{name: "past", forged: trustedNow.Add(-time.Minute)},
+		{name: "future", forged: trustedNow.Add(time.Minute)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			manager, _ := testManager(t, func() time.Time { return trustedNow })
+			engine := testEngine(manager, func() time.Time { return trustedNow })
+			input := testInput()
+			grant, err := engine.EvaluateLeaseGrant(context.Background(), input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := leaseRequestForInput(input, grant)
+			request.TTL = time.Minute
+			request.HeartbeatInterval = 10 * time.Second
+			request.Now = test.forged
+			lease, err := manager.Issue(context.Background(), request)
+			if err != nil {
+				t.Fatalf("issue with forged caller time: %v", err)
+			}
+			if !lease.IssuedAt.Equal(trustedNow) || !lease.LastHeartbeatAt.Equal(trustedNow) || !lease.ExpiresAt.Equal(trustedNow.Add(time.Minute)) {
+				t.Fatalf("lease used caller time: issued=%s heartbeat=%s expires=%s", lease.IssuedAt, lease.LastHeartbeatAt, lease.ExpiresAt)
+			}
+		})
+	}
+}
+
+func TestLeaseRenewUsesTrustedTime(t *testing.T) {
+	t.Run("future cannot extend", func(t *testing.T) {
+		trustedNow := authzTestNow
+		manager, _ := testManager(t, func() time.Time { return trustedNow })
+		engine := testEngine(manager, func() time.Time { return trustedNow })
+		lease, _ := issueForInput(t, manager, engine, testInput(), trustedNow)
+		trustedNow = trustedNow.Add(10 * time.Second)
+		grant, err := engine.EvaluateLeaseGrant(context.Background(), testInput())
+		if err != nil {
+			t.Fatal(err)
+		}
+		renewed, err := manager.Renew(context.Background(), LeaseRenewalRequest{
+			LeaseID: lease.ID, FencingToken: lease.FencingToken, PrincipalID: lease.PrincipalID,
+			PrincipalType: lease.PrincipalType, Role: lease.Role, PolicyVersion: lease.PolicyVersion,
+			TTL: 3 * time.Minute, Grant: grant, Now: trustedNow.Add(time.Minute),
+		})
+		if err != nil {
+			t.Fatalf("renew with forged future time: %v", err)
+		}
+		if !renewed.LastHeartbeatAt.Equal(trustedNow) || !renewed.ExpiresAt.Equal(trustedNow.Add(3*time.Minute)) {
+			t.Fatalf("renewal used caller time: heartbeat=%s expires=%s", renewed.LastHeartbeatAt, renewed.ExpiresAt)
+		}
+	})
+
+	t.Run("past cannot revive", func(t *testing.T) {
+		trustedNow := authzTestNow
+		manager, _ := testManager(t, func() time.Time { return trustedNow })
+		engine := testEngine(manager, func() time.Time { return trustedNow })
+		lease, _ := issueForInput(t, manager, engine, testInput(), trustedNow)
+		trustedNow = trustedNow.Add(90 * time.Second)
+		grant, err := engine.EvaluateLeaseGrant(context.Background(), testInput())
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = manager.Renew(context.Background(), LeaseRenewalRequest{
+			LeaseID: lease.ID, FencingToken: lease.FencingToken, PrincipalID: lease.PrincipalID,
+			PrincipalType: lease.PrincipalType, Role: lease.Role, PolicyVersion: lease.PolicyVersion,
+			Grant: grant, Now: authzTestNow.Add(10 * time.Second),
+		})
+		assertAuthzErrorCode(t, err, aorerrors.CodeLeaseExpired)
+	})
+}
+
+func TestLeaseHeartbeatUsesTrustedTime(t *testing.T) {
+	t.Run("future cannot extend", func(t *testing.T) {
+		trustedNow := authzTestNow
+		manager, _ := testManager(t, func() time.Time { return trustedNow })
+		engine := testEngine(manager, func() time.Time { return trustedNow })
+		lease, _ := issueForInput(t, manager, engine, testInput(), trustedNow)
+		trustedNow = trustedNow.Add(10 * time.Second)
+		updated, err := manager.Heartbeat(context.Background(), LeaseHeartbeatRequest{
+			LeaseID: lease.ID, PrincipalID: lease.PrincipalID, FencingToken: lease.FencingToken,
+			Now: trustedNow.Add(4 * time.Minute),
+		})
+		if err != nil {
+			t.Fatalf("heartbeat with forged future time: %v", err)
+		}
+		if !updated.LastHeartbeatAt.Equal(trustedNow) {
+			t.Fatalf("heartbeat used caller time: %s", updated.LastHeartbeatAt)
+		}
+	})
+
+	t.Run("past cannot revive", func(t *testing.T) {
+		trustedNow := authzTestNow
+		manager, _ := testManager(t, func() time.Time { return trustedNow })
+		engine := testEngine(manager, func() time.Time { return trustedNow })
+		lease, _ := issueForInput(t, manager, engine, testInput(), trustedNow)
+		trustedNow = trustedNow.Add(90 * time.Second)
+		_, err := manager.Heartbeat(context.Background(), LeaseHeartbeatRequest{
+			LeaseID: lease.ID, PrincipalID: lease.PrincipalID, FencingToken: lease.FencingToken,
+			Now: authzTestNow.Add(10 * time.Second),
+		})
+		assertAuthzErrorCode(t, err, aorerrors.CodeLeaseExpired)
+	})
+}
+
+func TestLeaseRevokeUsesTrustedTime(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		forged time.Time
+	}{
+		{name: "past", forged: authzTestNow.Add(-time.Hour)},
+		{name: "future", forged: authzTestNow.Add(time.Hour)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			trustedNow := authzTestNow
+			manager, _ := testManager(t, func() time.Time { return trustedNow })
+			engine := testEngine(manager, func() time.Time { return trustedNow })
+			lease, _ := issueForInput(t, manager, engine, testInput(), trustedNow)
+			trustedNow = trustedNow.Add(20 * time.Second)
+			if err := manager.Revoke(context.Background(), LeaseRevokeRequest{LeaseID: lease.ID, Actor: testPrincipal(), Reason: "trusted-time test", Now: test.forged}); err != nil {
+				t.Fatal(err)
+			}
+			revoked, found, err := manager.Get(context.Background(), lease.ID)
+			if err != nil || !found || revoked.RevokedAt == nil {
+				t.Fatalf("load revoked lease: found=%v lease=%#v err=%v", found, revoked, err)
+			}
+			if !revoked.RevokedAt.Equal(trustedNow) {
+				t.Fatalf("revocation used caller time: %s", *revoked.RevokedAt)
+			}
+		})
+	}
+}
+
+func TestLeaseValidateUsesTrustedTime(t *testing.T) {
+	t.Run("future cannot expire", func(t *testing.T) {
+		trustedNow := authzTestNow
+		manager, _ := testManager(t, func() time.Time { return trustedNow })
+		engine := testEngine(manager, func() time.Time { return trustedNow })
+		lease, _ := issueForInput(t, manager, engine, testInput(), trustedNow)
+		trustedNow = trustedNow.Add(10 * time.Second)
+		validated, err := manager.Validate(context.Background(), leaseCheckFor(lease, trustedNow.Add(24*time.Hour)))
+		if err != nil || validated.State != LeaseActive {
+			t.Fatalf("forged future expired active lease: lease=%#v err=%v", validated, err)
+		}
+	})
+
+	t.Run("past cannot bypass expiry", func(t *testing.T) {
+		trustedNow := authzTestNow
+		manager, _ := testManager(t, func() time.Time { return trustedNow })
+		engine := testEngine(manager, func() time.Time { return trustedNow })
+		lease, _ := issueForInput(t, manager, engine, testInput(), trustedNow)
+		trustedNow = trustedNow.Add(90 * time.Second)
+		_, err := manager.Validate(context.Background(), leaseCheckFor(lease, authzTestNow.Add(10*time.Second)))
+		assertAuthzErrorCode(t, err, aorerrors.CodeLeaseExpired)
+	})
+}
+
+func TestLeaseValidateActiveUsesTrustedTime(t *testing.T) {
+	t.Run("future cannot expire", func(t *testing.T) {
+		trustedNow := authzTestNow
+		manager, _ := testManager(t, func() time.Time { return trustedNow })
+		engine := testEngine(manager, func() time.Time { return trustedNow })
+		lease, _ := issueForInput(t, manager, engine, testInput(), trustedNow)
+		trustedNow = trustedNow.Add(10 * time.Second)
+		validated, err := manager.ValidateActive(context.Background(), lease.ID, trustedNow.Add(24*time.Hour))
+		if err != nil || validated.State != LeaseActive {
+			t.Fatalf("forged future expired active lease: lease=%#v err=%v", validated, err)
+		}
+	})
+
+	t.Run("past cannot bypass expiry", func(t *testing.T) {
+		trustedNow := authzTestNow
+		manager, _ := testManager(t, func() time.Time { return trustedNow })
+		engine := testEngine(manager, func() time.Time { return trustedNow })
+		lease, _ := issueForInput(t, manager, engine, testInput(), trustedNow)
+		trustedNow = trustedNow.Add(90 * time.Second)
+		_, err := manager.ValidateActive(context.Background(), lease.ID, authzTestNow.Add(10*time.Second))
+		assertAuthzErrorCode(t, err, aorerrors.CodeLeaseExpired)
+	})
 }
 
 func TestConcurrentRenewalHasOneFencingWinner(t *testing.T) {
