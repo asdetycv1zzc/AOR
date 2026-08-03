@@ -18,8 +18,9 @@ import (
 type Clock func() time.Time
 
 type Service struct {
-	store eventing.Store
-	clock Clock
+	store    eventing.Store
+	clock    Clock
+	boundary CommitBoundary
 }
 
 type ProjectRequest struct {
@@ -29,6 +30,7 @@ type ProjectRequest struct {
 	IdempotencyKey  string
 	ExpectedVersion int64
 	Command         state.ProjectCommand
+	Authorization   CommitAuthorization
 }
 
 type ProjectOutcome struct {
@@ -45,6 +47,7 @@ type TaskRequest struct {
 	IdempotencyKey  string
 	ExpectedVersion int64
 	Command         state.TaskCommand
+	Authorization   CommitAuthorization
 }
 
 type TaskOutcome struct {
@@ -54,7 +57,14 @@ type TaskOutcome struct {
 }
 
 func New(store eventing.Store, clock Clock) *Service {
-	return &Service{store: store, clock: clock}
+	return &Service{store: store, clock: clock, boundary: unavailableBoundary{}}
+}
+
+func NewWithBoundary(store eventing.Store, clock Clock, boundary CommitBoundary) *Service {
+	if boundary == nil {
+		boundary = unavailableBoundary{}
+	}
+	return &Service{store: store, clock: clock, boundary: boundary}
 }
 
 func (s *Service) HandleProject(ctx context.Context, request ProjectRequest) (ProjectOutcome, error) {
@@ -135,6 +145,9 @@ func (s *Service) HandleProject(ctx context.Context, request ProjectRequest) (Pr
 			updates = append(updates, taskUpdate)
 			events = append(events, taskDomainEvent)
 		}
+	}
+	if err := s.validateProjectCommit(ctx, request, current, command, digest); err != nil {
+		return ProjectOutcome{}, err
 	}
 	transactionResult, err := s.store.Execute(ctx, eventing.TransactionRequest{
 		TenantID: request.TenantID, PrincipalID: request.PrincipalID, IdempotencyKey: request.IdempotencyKey, RequestSHA256: digest,
@@ -280,6 +293,9 @@ func (s *Service) HandleTask(ctx context.Context, request TaskRequest) (TaskOutc
 			updates = append(updates, dependentUpdate)
 			events = append(events, dependentEvent)
 		}
+	}
+	if err := s.validateTaskCommit(ctx, request, project, current, command, digest); err != nil {
+		return TaskOutcome{}, err
 	}
 	transactionResult, err := s.store.Execute(ctx, eventing.TransactionRequest{
 		TenantID: request.TenantID, PrincipalID: request.PrincipalID, IdempotencyKey: request.IdempotencyKey, RequestSHA256: digest,

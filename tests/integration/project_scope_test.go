@@ -14,7 +14,7 @@ import (
 
 func TestTaskCommandCannotCrossProjectBoundary(t *testing.T) {
 	store := eventing.NewMemoryStore()
-	service := orchestrator.New(store, replayClock)
+	service := newIntegrationOrchestrator(store)
 	ctx := context.Background()
 	prepareProject(t, ctx, service, "prj_1", "one")
 	prepareProject(t, ctx, service, "prj_2", "two")

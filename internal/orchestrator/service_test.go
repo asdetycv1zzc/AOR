@@ -12,9 +12,34 @@ import (
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
 )
 
-func TestServiceIsSoleIdempotentProjectStateWriter(t *testing.T) {
+type testCommitBoundary struct{}
+
+func (testCommitBoundary) Validate(_ context.Context, validation CommitValidation) error {
+	if validation.TenantID == "" || validation.ProjectID == "" || validation.PrincipalID == "" || validation.Action == "" || validation.ParameterDigest == "" || validation.CommitAt.IsZero() {
+		return ErrCommitBoundary
+	}
+	return nil
+}
+
+func newTestService(store eventing.Store) *Service {
+	return NewWithBoundary(store, fixedClock, testCommitBoundary{})
+}
+
+func TestServiceWithoutCommitBoundaryFailsClosed(t *testing.T) {
 	store := eventing.NewMemoryStore()
 	service := New(store, fixedClock)
+	_, err := service.HandleProject(context.Background(), ProjectRequest{TenantID: "tenant_1", ProjectID: "prj_1", PrincipalID: "usr_1", IdempotencyKey: "create", ExpectedVersion: 0, Command: state.ProjectCommand{Type: state.ProjectCommandCreate, GoalAgentCount: 1}})
+	if !errors.Is(err, ErrCommitBoundary) {
+		t.Fatalf("missing commit boundary error = %v", err)
+	}
+	if _, found, loadErr := store.Load(context.Background(), "tenant_1", "project", "prj_1"); loadErr != nil || found {
+		t.Fatalf("rejected command mutated state: found=%t error=%v", found, loadErr)
+	}
+}
+
+func TestServiceIsSoleIdempotentProjectStateWriter(t *testing.T) {
+	store := eventing.NewMemoryStore()
+	service := newTestService(store)
 	request := ProjectRequest{
 		TenantID: "tenant_1", ProjectID: "prj_1", PrincipalID: "usr_1", IdempotencyKey: "idem_create", ExpectedVersion: 0,
 		Command: state.ProjectCommand{Type: state.ProjectCommandCreate, GoalAgentCount: 2},
@@ -35,7 +60,7 @@ func TestServiceIsSoleIdempotentProjectStateWriter(t *testing.T) {
 
 func TestServiceRejectsChangedIdempotentRequestAndStaleVersion(t *testing.T) {
 	store := eventing.NewMemoryStore()
-	service := New(store, fixedClock)
+	service := newTestService(store)
 	request := ProjectRequest{TenantID: "tenant_1", ProjectID: "prj_1", PrincipalID: "usr_1", IdempotencyKey: "idem_create", ExpectedVersion: 0, Command: state.ProjectCommand{Type: state.ProjectCommandCreate, GoalAgentCount: 2}}
 	if _, err := service.HandleProject(context.Background(), request); err != nil {
 		t.Fatal(err)
@@ -59,7 +84,7 @@ func TestServiceRejectsChangedIdempotentRequestAndStaleVersion(t *testing.T) {
 
 func TestTaskCommandRequiresApprovedGoalAndPublishedPlan(t *testing.T) {
 	store := eventing.NewMemoryStore()
-	service := New(store, fixedClock)
+	service := newTestService(store)
 	_, err := service.HandleTask(context.Background(), TaskRequest{
 		TenantID: "tenant_1", ProjectID: "prj_1", TaskID: "task_1", PrincipalID: "svc_plan", IdempotencyKey: "define", ExpectedVersion: 0,
 		Command: state.TaskCommand{Type: state.TaskCommandDefine, ModuleSpecRef: validRef(), AttemptSeriesID: "series_1"},

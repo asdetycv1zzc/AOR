@@ -13,7 +13,7 @@ import (
 
 func TestPublishPlanCommitsProjectAndTasksAtomically(t *testing.T) {
 	store := eventing.NewMemoryStore()
-	service := New(store, fixedClock)
+	service := newTestService(store)
 	setupPlanningProject(t, service)
 	request := validPublishPlanRequest()
 	for attempt := 0; attempt < 100; attempt++ {
@@ -37,7 +37,7 @@ func TestPublishPlanCommitsProjectAndTasksAtomically(t *testing.T) {
 
 func TestPublishPlanFailureLeavesNoPartialTasks(t *testing.T) {
 	store := eventing.NewMemoryStore()
-	service := New(store, fixedClock)
+	service := newTestService(store)
 	setupPlanningProject(t, service)
 	store.FailNext(eventing.FailureBeforeCommit)
 	if _, err := service.PublishPlan(context.Background(), validPublishPlanRequest()); !errors.Is(err, eventing.ErrInjectedFailure) {
@@ -60,7 +60,7 @@ func TestPublishPlanFailureLeavesNoPartialTasks(t *testing.T) {
 
 func TestPublishPlanRejectsChangedIdempotentBundle(t *testing.T) {
 	store := eventing.NewMemoryStore()
-	service := New(store, fixedClock)
+	service := newTestService(store)
 	setupPlanningProject(t, service)
 	request := validPublishPlanRequest()
 	if _, err := service.PublishPlan(context.Background(), request); err != nil {

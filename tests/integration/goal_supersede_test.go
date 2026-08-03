@@ -13,7 +13,7 @@ import (
 
 func TestGoalSupersedeChangesOnlyImpactedTasks(t *testing.T) {
 	store := eventing.NewMemoryStore()
-	service := orchestrator.New(store, replayClock)
+	service := newIntegrationOrchestrator(store)
 	ctx := context.Background()
 	prepareExecutingProject(t, ctx, service)
 	ref := contracts.SpecRef{Version: 1, SHA256: replayDigest()}

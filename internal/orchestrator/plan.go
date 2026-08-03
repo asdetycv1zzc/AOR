@@ -30,6 +30,7 @@ type PublishPlanRequest struct {
 	PlanRef                contracts.SpecRef
 	DAG                    map[string][]string
 	Tasks                  []PlanTaskDefinition
+	Authorization          CommitAuthorization
 }
 
 type PublishPlanOutcome struct {
@@ -130,6 +131,9 @@ func (s *Service) PublishPlan(ctx context.Context, request PublishPlanRequest) (
 		Tasks   []state.ModuleTask `json:"tasks"`
 	}{Project: projectEvent.Projection, Tasks: tasks})
 	if err != nil {
+		return PublishPlanOutcome{}, err
+	}
+	if err := s.validatePlanCommit(ctx, request, project, digest, at); err != nil {
 		return PublishPlanOutcome{}, err
 	}
 	transaction, err := s.store.Execute(ctx, eventing.TransactionRequest{

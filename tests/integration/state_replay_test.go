@@ -14,7 +14,7 @@ import (
 
 func TestOutOfOrderReplayMatchesOnlineProjectProjection(t *testing.T) {
 	store := eventing.NewMemoryStore()
-	service := orchestrator.New(store, replayClock)
+	service := newIntegrationOrchestrator(store)
 	ctx := context.Background()
 	create, err := service.HandleProject(ctx, orchestrator.ProjectRequest{TenantID: "tenant_1", ProjectID: "prj_1", PrincipalID: "usr_1", IdempotencyKey: "create", ExpectedVersion: 0, Command: state.ProjectCommand{Type: state.ProjectCommandCreate, GoalAgentCount: 2}})
 	if err != nil {
