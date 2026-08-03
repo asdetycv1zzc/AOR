@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "taskId": "WP-04",
+  "specVersion": "2.0.0",
+  "requirements": ["AOR-INV-010", "AOR-INV-011", "AOR-ACC-016", "AOR-ACC-041", "AOR-ACC-072"],
+  "criteria": [
+    {"id": "WP04-AC-001", "evidence": "budget ledger tests", "required": true},
+    {"id": "WP04-AC-002", "evidence": "adapter contract tests", "required": true},
+    {"id": "WP04-AC-003", "evidence": "privacy cache and redaction tests", "required": true}
+  ]
+}
