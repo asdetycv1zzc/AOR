@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "taskId": "WP-10",
+  "specVersion": "2.0.0",
+  "requirements": ["AOR-INV-006", "AOR-INV-007", "AOR-ACC-008", "AOR-ACC-009", "AOR-ACC-010"],
+  "criteria": [
+    {"id": "WP10-AC-001", "evidence": "internal/audit/pipeline_test.go", "required": true},
+    {"id": "WP10-AC-002", "evidence": "internal/audit/pipeline.go", "required": true},
+    {"id": "WP10-AC-003", "evidence": "WP-15 hidden-test container and evidence signing report", "required": true, "environmentGate": true}
+  ]
+}
