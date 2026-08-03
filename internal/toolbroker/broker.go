@@ -17,6 +17,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/akimisaka/aor/internal/credentials"
+	"github.com/akimisaka/aor/pkg/canonicaljson"
 )
 
 const maxOutputBytes = 1 << 20
@@ -82,7 +83,7 @@ func (b *Broker) List() []ToolDescriptor {
 }
 
 func (b *Broker) Invoke(ctx context.Context, request ToolRequest) (ToolResult, error) {
-	if request.RequestID == "" || request.TenantID == "" || request.ProjectID == "" || request.Principal.ID == "" || request.Principal.Role == "" || request.ToolID == "" || request.Version == "" || !json.Valid(request.Parameters) {
+	if request.RequestID == "" || request.TenantID == "" || request.ProjectID == "" || request.TaskID == "" || request.Principal.ID == "" || request.Principal.Type == "" || request.Principal.Role == "" || request.ToolID == "" || request.Version == "" || request.PolicyVersion == "" || request.BudgetToken == "" || !json.Valid(request.Parameters) {
 		return ToolResult{}, ErrInvalidRequest
 	}
 	descriptor, found := b.descriptor(request.ToolID, request.Version)
@@ -92,10 +93,17 @@ func (b *Broker) Invoke(ctx context.Context, request ToolRequest) (ToolResult, e
 	if !containsRole(descriptor.AllowedRoles, request.Principal.Role) {
 		return ToolResult{}, ErrPolicyDenied
 	}
+	if isAuditorRole(request.Principal.Role) && descriptorWrites(descriptor) {
+		return ToolResult{}, ErrPolicyDenied
+	}
 	if b.lease == nil {
 		return ToolResult{}, ErrLeaseInvalid
 	}
-	if err := b.lease.Validate(ctx, request.Lease, request.Principal, request.TenantID, request.ProjectID, request.TaskID); err != nil {
+	validation, err := b.leaseValidation(request, descriptor, b.clock().UTC())
+	if err != nil {
+		return ToolResult{}, err
+	}
+	if err := b.lease.Validate(ctx, validation); err != nil {
 		return ToolResult{}, fmt.Errorf("%w: %v", ErrLeaseInvalid, err)
 	}
 	if descriptor.RequiresApproval == ApprovalAlways && !validApproval(request.Approval, b.clock()) {
@@ -105,7 +113,7 @@ func (b *Broker) Invoke(ctx context.Context, request ToolRequest) (ToolResult, e
 		return ToolResult{}, ErrPolicyDenied
 	}
 	decision, err := b.policy.Evaluate(ctx, descriptor, request)
-	if err != nil || !decision.Allow {
+	if err != nil || !decision.Allow || decision.PolicyVersion != request.PolicyVersion {
 		if err != nil {
 			return ToolResult{}, fmt.Errorf("%w: %v", ErrPolicyDenied, err)
 		}
@@ -114,9 +122,13 @@ func (b *Broker) Invoke(ctx context.Context, request ToolRequest) (ToolResult, e
 	if err := validateSchema(descriptor.InputSchemaRef, descriptor.InputSchema, request.Parameters); err != nil {
 		return ToolResult{}, err
 	}
-	if descriptor.SideEffect == SideEffectIrreversible {
+	if descriptor.SideEffect != SideEffectNone {
 		if b.revalidate == nil {
 			return ToolResult{}, ErrPolicyDenied
+		}
+		validation, err = b.leaseValidation(request, descriptor, b.clock().UTC())
+		if err != nil || b.lease.Validate(ctx, validation) != nil {
+			return ToolResult{}, ErrLeaseInvalid
 		}
 		if err := b.revalidate(ctx, request, descriptor); err != nil {
 			return ToolResult{}, fmt.Errorf("%w: %v", ErrPolicyDenied, err)
@@ -192,7 +204,31 @@ func (d ToolDescriptor) Validate() error {
 	if d.SideEffect != SideEffectNone && d.SideEffect != SideEffectReversible && d.SideEffect != SideEffectIrreversible {
 		return ErrInvalidRequest
 	}
+	if descriptorWrites(d) {
+		for _, role := range d.AllowedRoles {
+			if isAuditorRole(role) {
+				return ErrInvalidRequest
+			}
+		}
+	}
 	return nil
+}
+
+func (b *Broker) leaseValidation(request ToolRequest, descriptor ToolDescriptor, now time.Time) (LeaseValidation, error) {
+	expires, err := time.Parse(time.RFC3339, request.Lease.ExpiresAt)
+	if err != nil || request.Lease.ID == "" || request.Lease.FencingToken < 1 || now.IsZero() || !now.Before(expires) {
+		return LeaseValidation{}, ErrLeaseInvalid
+	}
+	parameterDigest, err := canonicaljson.Digest(request.Parameters)
+	if err != nil {
+		return LeaseValidation{}, ErrInvalidRequest
+	}
+	approvalID := ""
+	if request.Approval != nil {
+		approvalID = request.Approval.ID
+	}
+	resource := "tool://" + descriptor.MCPServerID + "/" + descriptor.ToolID + "@" + descriptor.Version
+	return LeaseValidation{Lease: request.Lease, Principal: request.Principal, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, ToolID: descriptor.ToolID, ToolVersion: descriptor.Version, MCPServerID: descriptor.MCPServerID, Action: "tool.invoke", Resource: resource, ParameterSHA256: parameterDigest, PolicyVersion: request.PolicyVersion, BudgetToken: request.BudgetToken, ApprovalID: approvalID, At: now}, nil
 }
 
 func cloneDescriptor(value ToolDescriptor) ToolDescriptor {
@@ -205,6 +241,30 @@ func cloneDescriptor(value ToolDescriptor) ToolDescriptor {
 func containsRole(roles []string, role string) bool {
 	for _, value := range roles {
 		if value == role {
+			return true
+		}
+	}
+	return false
+}
+
+func isAuditorRole(role string) bool {
+	switch strings.ToUpper(role) {
+	case "AUDITOR", "MODULE_AUDITOR", "GLOBAL_AUDITOR":
+		return true
+	default:
+		return false
+	}
+}
+
+func descriptorWrites(descriptor ToolDescriptor) bool {
+	if descriptor.SideEffect != SideEffectNone || descriptor.FilesystemAccess == FilesystemScopedWrite {
+		return true
+	}
+	for _, segment := range strings.FieldsFunc(strings.ToLower(descriptor.ToolID), func(character rune) bool {
+		return character == '.' || character == ':' || character == '/' || character == '-' || character == '_'
+	}) {
+		switch segment {
+		case "apply", "commit", "create", "delete", "merge", "mutate", "patch", "publish", "put", "remove", "update", "write":
 			return true
 		}
 	}

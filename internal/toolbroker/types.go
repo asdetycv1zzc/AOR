@@ -1,6 +1,9 @@
 package toolbroker
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type Risk string
 
@@ -112,7 +115,25 @@ type ToolResult struct {
 }
 
 type LeaseChecker interface {
-	Validate(ctx context.Context, lease Lease, principal Principal, tenantID, projectID, taskID string) error
+	Validate(context.Context, LeaseValidation) error
+}
+
+type LeaseValidation struct {
+	Lease           Lease
+	Principal       Principal
+	TenantID        string
+	ProjectID       string
+	TaskID          string
+	ToolID          string
+	ToolVersion     string
+	MCPServerID     string
+	Action          string
+	Resource        string
+	ParameterSHA256 string
+	PolicyVersion   string
+	BudgetToken     string
+	ApprovalID      string
+	At              time.Time
 }
 
 type PolicyDecision struct {
