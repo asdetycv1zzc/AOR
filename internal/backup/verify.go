@@ -151,8 +151,9 @@ func validateSnapshot(snapshot Snapshot) error {
 			return ErrDanglingReference
 		}
 	}
+	audits := make(map[string]struct{}, len(snapshot.Audits))
 	for _, audit := range snapshot.Audits {
-		if audit.TenantID == "" || audit.ProjectID == "" || audit.ID == "" || !has(projects, audit.TenantID, audit.ProjectID) || audit.TaskID != "" && !has(tasks, audit.TenantID, audit.ProjectID, audit.TaskID) {
+		if audit.TenantID == "" || audit.ProjectID == "" || audit.ID == "" || !has(projects, audit.TenantID, audit.ProjectID) || audit.TaskID != "" && !has(tasks, audit.TenantID, audit.ProjectID, audit.TaskID) || !addUnique(audits, recordKey(audit.TenantID, audit.ProjectID, audit.ID)) {
 			return ErrDanglingReference
 		}
 		seen := make(map[string]struct{}, len(audit.ArtifactIDs))

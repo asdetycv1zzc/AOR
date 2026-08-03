@@ -44,6 +44,15 @@ func TestVerifyChecksEveryArtifactAndProducesStableDigest(t *testing.T) {
 	}
 }
 
+func TestVerifyRejectsDuplicateAuditRecords(t *testing.T) {
+	snapshot := validSnapshot()
+	snapshot.Audits = append(snapshot.Audits, snapshot.Audits[0])
+	_, err := Verify(context.Background(), snapshot, artifactVerifier(func(context.Context, ArtifactRecord) error { return nil }))
+	if !errors.Is(err, ErrDanglingReference) {
+		t.Fatalf("duplicate audit result = %v", err)
+	}
+}
+
 func validSnapshot() Snapshot {
 	return Snapshot{
 		Version:   1,
