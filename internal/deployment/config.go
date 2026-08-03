@@ -20,6 +20,86 @@ type Profile struct {
 	BackupEnabled      bool
 }
 
+type ConfigurationEntry struct {
+	Path            string          `json:"path"`
+	Default         json.RawMessage `json:"default"`
+	Constraints     string          `json:"constraints"`
+	Sensitive       *bool           `json:"sensitive"`
+	ReloadMode      string          `json:"reloadMode"`
+	RestartRequired *bool           `json:"restartRequired"`
+}
+
+func ValidateConfigurationCatalog(schemaInput, catalogInput []byte) error {
+	var schema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(schemaInput, &schema); err != nil || len(schema.Properties) == 0 {
+		return ErrInvalidDeployment
+	}
+	var catalog struct {
+		CatalogVersion int                  `json:"catalogVersion"`
+		Entries        []ConfigurationEntry `json:"entries"`
+	}
+	if err := json.Unmarshal(catalogInput, &catalog); err != nil || catalog.CatalogVersion != 1 || len(catalog.Entries) == 0 {
+		return ErrInvalidDeployment
+	}
+	leaves := make(map[string]struct{})
+	for name, property := range schema.Properties {
+		if err := collectConfigurationLeaves(name, property, leaves); err != nil {
+			return err
+		}
+	}
+	seen := make(map[string]struct{}, len(catalog.Entries))
+	for _, entry := range catalog.Entries {
+		if _, expected := leaves[entry.Path]; !expected || entry.Path == "" || len(entry.Default) == 0 || !json.Valid(entry.Default) || entry.Constraints == "" || entry.Sensitive == nil || entry.RestartRequired == nil {
+			return ErrInvalidDeployment
+		}
+		if _, duplicate := seen[entry.Path]; duplicate {
+			return ErrInvalidDeployment
+		}
+		switch entry.ReloadMode {
+		case "HOT_RELOAD_AUDITED":
+			if *entry.RestartRequired {
+				return ErrInvalidDeployment
+			}
+		case "STATIC_RESTART":
+			if !*entry.RestartRequired {
+				return ErrInvalidDeployment
+			}
+		case "IMMUTABLE":
+			if *entry.RestartRequired {
+				return ErrInvalidDeployment
+			}
+		default:
+			return ErrInvalidDeployment
+		}
+		seen[entry.Path] = struct{}{}
+	}
+	if len(seen) != len(leaves) {
+		return ErrInvalidDeployment
+	}
+	return nil
+}
+
+func collectConfigurationLeaves(prefix string, input json.RawMessage, leaves map[string]struct{}) error {
+	var property struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(input, &property); err != nil {
+		return ErrInvalidDeployment
+	}
+	if len(property.Properties) == 0 {
+		leaves[prefix] = struct{}{}
+		return nil
+	}
+	for name, child := range property.Properties {
+		if err := collectConfigurationLeaves(prefix+"."+name, child, leaves); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func ValidateCompose(input []byte) error {
 	var document struct {
 		Services map[string]struct {
