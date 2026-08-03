@@ -70,19 +70,20 @@ type WorkspaceRequest struct {
 }
 
 type Workspace struct {
-	ID              string
-	TenantID        string
-	ProjectID       string
-	TaskID          string
-	Attempt         int
-	AttemptSeriesID string
-	Path            string
-	Branch          string
-	BaseCommit      string
-	AllowedPaths    []string
-	ForbiddenPaths  []string
-	ModuleSpecRef   contracts.SpecRef
-	AgentIdentity   contracts.AgentIdentity
+	ID                 string
+	TenantID           string
+	ProjectID          string
+	TaskID             string
+	Attempt            int
+	AttemptSeriesID    string
+	Path               string
+	Branch             string
+	BaseCommit         string
+	AllowedPaths       []string
+	ForbiddenPaths     []string
+	AcceptanceCriteria []string
+	ModuleSpecRef      contracts.SpecRef
+	AgentIdentity      contracts.AgentIdentity
 }
 
 type WriteRequest struct {

@@ -23,7 +23,10 @@ import (
 	"github.com/akimisaka/aor/pkg/contracts"
 )
 
-var safeIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`)
+var (
+	safeIDPattern         = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`)
+	artifactDigestPattern = regexp.MustCompile(`^artifact://sha256/[0-9a-f]{64}$`)
+)
 
 type Service struct {
 	root       string
@@ -37,7 +40,7 @@ type Service struct {
 }
 
 func NewService(root string, leases LeaseValidator, store SubmissionStore, signer Signer, clock func() time.Time) (*Service, error) {
-	if root == "" {
+	if root == "" || leases == nil || signer == nil {
 		return nil, ErrInvalidRequest
 	}
 	absolute, err := filepath.Abs(root)
@@ -106,7 +109,7 @@ func (s *Service) CreateWorkspace(ctx context.Context, request WorkspaceRequest)
 	if _, err := git(ctx, directory, "rev-parse", "--verify", request.BaseCommit+"^{commit}"); err != nil {
 		return Workspace{}, ErrInitialCommitNeeded
 	}
-	workspace := Workspace{ID: id, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, Attempt: request.Attempt, AttemptSeriesID: request.AttemptSeriesID, Path: directory, Branch: workspaceBranch(request), BaseCommit: request.BaseCommit, AllowedPaths: append([]string(nil), request.ModuleSpec.AllowedPaths...), ForbiddenPaths: append([]string(nil), request.ModuleSpec.ForbiddenPaths...), ModuleSpecRef: moduleSpecRef, AgentIdentity: request.AgentIdentity}
+	workspace := Workspace{ID: id, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, Attempt: request.Attempt, AttemptSeriesID: request.AttemptSeriesID, Path: directory, Branch: workspaceBranch(request), BaseCommit: request.BaseCommit, AllowedPaths: append([]string(nil), request.ModuleSpec.AllowedPaths...), ForbiddenPaths: append([]string(nil), request.ModuleSpec.ForbiddenPaths...), AcceptanceCriteria: append([]string(nil), request.ModuleSpec.AcceptanceCriteria...), ModuleSpecRef: moduleSpecRef, AgentIdentity: request.AgentIdentity}
 	if err := checkoutCommit(ctx, workspace, request.BaseCommit); err != nil {
 		return Workspace{}, err
 	}
@@ -239,6 +242,9 @@ func (s *Service) Submit(ctx context.Context, request SubmissionRequest) (Submis
 	if request.Attempt != workspace.Attempt || request.Attempt < 1 || request.Attempt > 3 || !safeCommitMetadata(request.IdempotencyKey) {
 		return Submission{}, ErrInvalidRequest
 	}
+	if !validSubmissionMetadata(workspace, request) {
+		return Submission{}, ErrInvalidRequest
+	}
 	if request.CreatedAt.IsZero() {
 		request.CreatedAt = s.clock().UTC()
 	}
@@ -272,15 +278,16 @@ func (s *Service) Submit(ctx context.Context, request SubmissionRequest) (Submis
 	if err := fillManifestDigest(&manifest); err != nil {
 		return Submission{}, err
 	}
-	if s.signer != nil {
-		payload, digestErr := manifestPayload(manifest)
-		if digestErr != nil {
-			return Submission{}, digestErr
-		}
-		manifest.Signature, err = s.signer.Sign(ctx, payload)
-		if err != nil {
-			return Submission{}, err
-		}
+	payload, digestErr := manifestPayload(manifest)
+	if digestErr != nil {
+		return Submission{}, digestErr
+	}
+	manifest.Signature, err = s.signer.Sign(ctx, payload)
+	if err != nil || !validServiceSignature(manifest.Signature) {
+		return Submission{}, ErrInvalidRequest
+	}
+	if err := s.signer.Verify(ctx, payload, manifest.Signature); err != nil {
+		return Submission{}, ErrInvalidRequest
 	}
 	if err := manifest.Validate(); err != nil {
 		return Submission{}, err
@@ -634,6 +641,45 @@ func safeCommitMetadata(value string) bool {
 	return value != "" && len(value) <= 256 && !strings.ContainsAny(value, "\r\n\x00")
 }
 
+func validSubmissionMetadata(workspace Workspace, request SubmissionRequest) bool {
+	if len(request.ClaimedCriteria) > 256 || len(request.LocalTestEvidenceRefs) > 256 {
+		return false
+	}
+	allowedCriteria := make(map[string]struct{}, len(workspace.AcceptanceCriteria))
+	for _, criterion := range workspace.AcceptanceCriteria {
+		allowedCriteria[criterion] = struct{}{}
+	}
+	seenCriteria := make(map[string]struct{}, len(request.ClaimedCriteria))
+	for _, criterion := range request.ClaimedCriteria {
+		if criterion == "" || len(criterion) > 1024 {
+			return false
+		}
+		if _, allowed := allowedCriteria[criterion]; !allowed {
+			return false
+		}
+		if _, duplicate := seenCriteria[criterion]; duplicate {
+			return false
+		}
+		seenCriteria[criterion] = struct{}{}
+	}
+	seenEvidence := make(map[string]struct{}, len(request.LocalTestEvidenceRefs))
+	for _, reference := range request.LocalTestEvidenceRefs {
+		if !artifactDigestPattern.MatchString(reference) {
+			return false
+		}
+		if _, duplicate := seenEvidence[reference]; duplicate {
+			return false
+		}
+		seenEvidence[reference] = struct{}{}
+	}
+	return true
+}
+
+func validServiceSignature(signature *contracts.Signature) bool {
+	return signature != nil && signature.Type != "" && len(signature.Type) <= 128 &&
+		signature.KID != "" && len(signature.KID) <= 256 && signature.JWS != "" && len(signature.JWS) <= 16<<10
+}
+
 func cleanID(value string) string {
 	return strings.NewReplacer("/", "_", "\\", "_", "..", "_").Replace(value)
 }
@@ -676,6 +722,7 @@ func contextErr(ctx context.Context) error {
 func cloneWorkspace(value Workspace) Workspace {
 	value.AllowedPaths = append([]string(nil), value.AllowedPaths...)
 	value.ForbiddenPaths = append([]string(nil), value.ForbiddenPaths...)
+	value.AcceptanceCriteria = append([]string(nil), value.AcceptanceCriteria...)
 	return value
 }
 

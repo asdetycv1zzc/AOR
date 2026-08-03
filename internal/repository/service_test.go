@@ -14,9 +14,22 @@ import (
 
 type testLeaseValidator struct{}
 
+type testSubmissionSigner struct{}
+
 func (testLeaseValidator) Validate(_ context.Context, validation LeaseValidation) error {
 	if validation.Proof.ID == "" || validation.Proof.FencingToken < 1 || validation.TenantID == "" || validation.ProjectID == "" || validation.TaskID == "" || validation.AttemptSeriesID == "" || validation.ModuleSpecRef.Validate() != nil || validation.AgentInstanceID == "" || validation.Role != "EXECUTOR" || validation.Action == "" || validation.ResourcePath == "" || !strings.HasPrefix(validation.ParameterDigest, "sha256:") {
 		return ErrLeaseStale
+	}
+	return nil
+}
+
+func (testSubmissionSigner) Sign(_ context.Context, payload []byte) (*contracts.Signature, error) {
+	return &contracts.Signature{Type: "TEST-SHA256", KID: "repository-test", JWS: DigestBytes(payload)}, nil
+}
+
+func (testSubmissionSigner) Verify(_ context.Context, payload []byte, signature *contracts.Signature) error {
+	if signature == nil || signature.Type != "TEST-SHA256" || signature.KID != "repository-test" || signature.JWS != DigestBytes(payload) {
+		return ErrInvalidRequest
 	}
 	return nil
 }
@@ -37,7 +50,7 @@ func TestServiceEnforcesOwnedPathsAndCreatesImmutableSubmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service, err := NewService(t.TempDir(), testLeaseValidator{}, nil, nil, nil)
+	service, err := NewService(t.TempDir(), testLeaseValidator{}, nil, testSubmissionSigner{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,18 +66,25 @@ func TestServiceEnforcesOwnedPathsAndCreatesImmutableSubmission(t *testing.T) {
 	if err := service.WriteFile(context.Background(), WriteRequest{WorkspaceID: workspace.ID, Path: "secret.txt", Content: []byte("denied"), Lease: lease}); err != ErrPathDenied {
 		t.Fatalf("unowned write error = %v", err)
 	}
-	submission, err := service.Submit(context.Background(), SubmissionRequest{WorkspaceID: workspace.ID, Attempt: 1, ClaimedCriteria: []string{"criterion-1"}, IdempotencyKey: "submit-1", Lease: lease})
+	if _, err := service.Submit(context.Background(), SubmissionRequest{WorkspaceID: workspace.ID, Attempt: 1, ClaimedCriteria: []string{"unknown-criterion"}, IdempotencyKey: "invalid-criterion", Lease: lease}); err != ErrInvalidRequest {
+		t.Fatalf("unknown criterion error = %v", err)
+	}
+	if _, err := service.Submit(context.Background(), SubmissionRequest{WorkspaceID: workspace.ID, Attempt: 1, ClaimedCriteria: []string{"criterion-1"}, LocalTestEvidenceRefs: []string{"file://local/test.log"}, IdempotencyKey: "invalid-evidence", Lease: lease}); err != ErrInvalidRequest {
+		t.Fatalf("mutable evidence reference error = %v", err)
+	}
+	evidenceRef := "artifact://sha256/1111111111111111111111111111111111111111111111111111111111111111"
+	submission, err := service.Submit(context.Background(), SubmissionRequest{WorkspaceID: workspace.ID, Attempt: 1, ClaimedCriteria: []string{"criterion-1"}, LocalTestEvidenceRefs: []string{evidenceRef}, IdempotencyKey: "submit-1", Lease: lease})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if submission.Manifest.BaseCommit != strings.TrimSpace(base) || submission.Manifest.HeadCommit == submission.Manifest.BaseCommit || len(submission.Manifest.CreatedFiles) != 1 {
+	if submission.Manifest.BaseCommit != strings.TrimSpace(base) || submission.Manifest.HeadCommit == submission.Manifest.BaseCommit || len(submission.Manifest.CreatedFiles) != 1 || submission.Manifest.Signature == nil {
 		t.Fatalf("unexpected manifest: %#v", submission.Manifest)
 	}
-	replay, err := service.Submit(context.Background(), SubmissionRequest{WorkspaceID: workspace.ID, Attempt: 1, ClaimedCriteria: []string{"criterion-1"}, IdempotencyKey: "submit-1", Lease: lease})
+	replay, err := service.Submit(context.Background(), SubmissionRequest{WorkspaceID: workspace.ID, Attempt: 1, ClaimedCriteria: []string{"criterion-1"}, LocalTestEvidenceRefs: []string{evidenceRef}, IdempotencyKey: "submit-1", Lease: lease})
 	if err != nil || replay.Manifest.SHA256 != submission.Manifest.SHA256 {
 		t.Fatalf("submission replay changed immutable result: %v %#v", err, replay.Manifest)
 	}
-	if _, err := service.Submit(context.Background(), SubmissionRequest{WorkspaceID: workspace.ID, Attempt: 1, ClaimedCriteria: []string{"changed"}, IdempotencyKey: "submit-1", Lease: lease}); err != ErrSubmissionConflict {
+	if _, err := service.Submit(context.Background(), SubmissionRequest{WorkspaceID: workspace.ID, Attempt: 1, ClaimedCriteria: []string{"criterion-1"}, LocalTestEvidenceRefs: []string{"artifact://sha256/2222222222222222222222222222222222222222222222222222222222222222"}, IdempotencyKey: "submit-1", Lease: lease}); err != ErrSubmissionConflict {
 		t.Fatalf("changed idempotent submission error = %v", err)
 	}
 	if workspace.Branch != "agent/project-1/task-1/attempt-1" {
@@ -89,7 +109,7 @@ func TestServiceRejectsStaleLeaseAndSymlinkEscape(t *testing.T) {
 		t.Fatal(err)
 	}
 	base, _ := runGit(source, "rev-parse", "HEAD")
-	service, _ := NewService(t.TempDir(), testLeaseValidator{}, nil, nil, nil)
+	service, _ := NewService(t.TempDir(), testLeaseValidator{}, nil, testSubmissionSigner{}, nil)
 	lease := LeaseProof{ID: "lease-1", FencingToken: 1, ExpiresAt: time.Now().Add(time.Hour)}
 	workspace, err := service.CreateWorkspace(context.Background(), WorkspaceRequest{RepositoryPath: source, TenantID: "tenant-1", ProjectID: "project-1", TaskID: "task-1", Attempt: 1, AttemptSeriesID: "series-1", BaseCommit: strings.TrimSpace(base), ModuleSpec: testModule(), AgentIdentity: contracts.AgentIdentity{AgentInstanceID: "agent-1", Role: "EXECUTOR", LeaseID: lease.ID}, Lease: lease})
 	if err != nil {
@@ -141,8 +161,17 @@ func TestSubmissionStoreSeparatesAttemptSeriesAndReturnsDeepCopies(t *testing.T)
 	}
 }
 
+func TestNewServiceRequiresLeaseValidationAndSigning(t *testing.T) {
+	if _, err := NewService(t.TempDir(), nil, nil, testSubmissionSigner{}, nil); err != ErrInvalidRequest {
+		t.Fatalf("missing lease validator error = %v", err)
+	}
+	if _, err := NewService(t.TempDir(), testLeaseValidator{}, nil, nil, nil); err != ErrInvalidRequest {
+		t.Fatalf("missing signer error = %v", err)
+	}
+}
+
 func testModule() contracts.ModuleSpec {
-	return contracts.ModuleSpec{ModuleSpecVersion: 1, PlanVersion: 1, ModuleID: "module-1", ProjectID: "project-1", Name: "Owned", ExecutionPlatform: contracts.PlatformLinux, SandboxLevel: contracts.IsolationContainer, NetworkPolicy: contracts.NetworkPolicy{Mode: contracts.NetworkDenyAll}, WorkloadProfile: contracts.WorkloadProfile{Trust: contracts.WorkloadTrusted}, AllowedPaths: []string{"owned/..."}, ForbiddenPaths: []string{".git/..."}, SHA256: "sha256:0000000000000000000000000000000000000000000000000000000000000000"}
+	return contracts.ModuleSpec{ModuleSpecVersion: 1, PlanVersion: 1, ModuleID: "module-1", ProjectID: "project-1", Name: "Owned", ExecutionPlatform: contracts.PlatformLinux, SandboxLevel: contracts.IsolationContainer, NetworkPolicy: contracts.NetworkPolicy{Mode: contracts.NetworkDenyAll}, WorkloadProfile: contracts.WorkloadProfile{Trust: contracts.WorkloadTrusted}, AllowedPaths: []string{"owned/..."}, ForbiddenPaths: []string{".git/..."}, AcceptanceCriteria: []string{"criterion-1"}, SHA256: "sha256:0000000000000000000000000000000000000000000000000000000000000000"}
 }
 
 func runGit(directory string, args ...string) (string, error) {
