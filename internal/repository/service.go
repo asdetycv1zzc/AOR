@@ -47,7 +47,10 @@ func NewService(root string, leases LeaseValidator, store SubmissionStore, signe
 	if err != nil {
 		return nil, ErrInvalidRequest
 	}
-	if info, statErr := os.Stat(absolute); statErr == nil && !info.IsDir() {
+	if err := os.MkdirAll(absolute, 0o700); err != nil {
+		return nil, ErrInvalidRequest
+	}
+	if info, statErr := os.Lstat(absolute); statErr != nil || !info.IsDir() || unsafePathInfo(info) {
 		return nil, ErrInvalidRequest
 	}
 	if store == nil {
@@ -146,7 +149,7 @@ func (s *Service) WriteFile(ctx context.Context, request WriteRequest) error {
 	if err := rejectSymlinkTree(workspace.Path, target); err != nil {
 		return err
 	}
-	if info, statErr := os.Lstat(target); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+	if info, statErr := os.Lstat(target); statErr == nil && unsafePathInfo(info) {
 		return ErrPathDenied
 	}
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
@@ -157,7 +160,7 @@ func (s *Service) WriteFile(ctx context.Context, request WriteRequest) error {
 		return err
 	}
 	defer file.Close()
-	if unsafeFile, statErr := file.Stat(); statErr != nil || hasMultipleLinks(unsafeFile) {
+	if unsafeOpenedFile(file) {
 		return ErrPathDenied
 	}
 	if err := file.Truncate(0); err != nil {
@@ -218,8 +221,7 @@ func (s *Service) ReadFile(ctx context.Context, workspaceID, name string) ([]byt
 		return nil, err
 	}
 	defer file.Close()
-	info, err := file.Stat()
-	if err != nil || hasMultipleLinks(info) {
+	if unsafeOpenedFile(file) {
 		return nil, ErrPathDenied
 	}
 	content, err := io.ReadAll(io.LimitReader(file, (4<<20)+1))
@@ -430,11 +432,11 @@ func gitFrom(ctx context.Context, directory string, args ...string) (string, err
 
 func ownedPath(workspace Workspace, candidate string) (string, error) {
 	relative, ok := cleanRelative(candidate)
-	if !ok || relative == ".git" || strings.HasPrefix(relative, ".git/") {
+	if !ok || strings.EqualFold(relative, ".git") || len(relative) > len(".git/") && strings.EqualFold(relative[:len(".git/")], ".git/") {
 		return "", ErrPathDenied
 	}
 	for _, forbidden := range workspace.ForbiddenPaths {
-		if matchesPath(forbidden, relative) {
+		if matchesPath(forbidden, relative) || matchesPath(strings.ToLower(forbidden), strings.ToLower(relative)) {
 			return "", ErrPathDenied
 		}
 	}
@@ -501,6 +503,15 @@ func rejectSymlinkTree(root, target string) error {
 		if segment == "" || segment == "." {
 			continue
 		}
+		entries, readErr := os.ReadDir(current)
+		if readErr != nil {
+			return readErr
+		}
+		for _, entry := range entries {
+			if entry.Name() != segment && strings.EqualFold(entry.Name(), segment) {
+				return ErrPathDenied
+			}
+		}
 		current = filepath.Join(current, segment)
 		info, statErr := os.Lstat(current)
 		if statErr != nil {
@@ -509,7 +520,7 @@ func rejectSymlinkTree(root, target string) error {
 			}
 			return statErr
 		}
-		if info.Mode()&os.ModeSymlink != 0 {
+		if unsafePathInfo(info) {
 			return ErrPathDenied
 		}
 	}

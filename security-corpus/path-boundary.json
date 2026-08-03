@@ -3,6 +3,11 @@
   "cases": [
     {"id": "path-001", "input": "../outside", "expected": "DENY"},
     {"id": "path-002", "input": ".git/config", "expected": "DENY"},
-    {"id": "path-003", "input": "owned/file.go", "expected": "ALLOW_IF_OWNED"}
+    {"id": "path-003", "input": "owned/file.go", "expected": "ALLOW_IF_OWNED"},
+    {"id": "path-004", "input": ".GIT/config", "expected": "DENY"},
+    {"id": "path-005", "input": "owned/caf\u00e9.go", "expected": "DENY"},
+    {"id": "path-006", "input": "owned/cafe\u0301.go", "expected": "DENY"},
+    {"id": "path-007", "input": "junction-or-reparse-point", "expected": "DENY"},
+    {"id": "path-008", "input": "hard-link", "expected": "DENY"}
   ]
 }

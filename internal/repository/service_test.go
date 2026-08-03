@@ -138,6 +138,24 @@ func TestServiceRejectsStaleLeaseAndSymlinkEscape(t *testing.T) {
 			t.Fatalf("hard-link target changed: %q error=%v", content, readErr)
 		}
 	}
+	caseAlias := filepath.Join(workspace.Path, "OWNED")
+	if err := os.Mkdir(caseAlias, 0o700); err == nil {
+		if err := service.WriteFile(context.Background(), WriteRequest{WorkspaceID: workspace.ID, Path: "owned/case.txt", Content: []byte("denied"), Lease: lease}); err != ErrPathDenied {
+			t.Fatalf("case-folded alias error = %v", err)
+		}
+	}
+}
+
+func TestOwnedPathRejectsTraversalCaseFoldAndUnicodeAmbiguity(t *testing.T) {
+	workspace := Workspace{AllowedPaths: []string{"owned/..."}, ForbiddenPaths: []string{"owned/Secret/..."}}
+	for _, candidate := range []string{"../outside", ".GIT/config", "owned/secret/value", "owned/caf\u00e9.txt", "owned/cafe\u0301.txt"} {
+		if _, err := ownedPath(workspace, candidate); err != ErrPathDenied {
+			t.Fatalf("path %q error = %v", candidate, err)
+		}
+	}
+	if path, err := ownedPath(workspace, "owned/safe.txt"); err != nil || path != "owned/safe.txt" {
+		t.Fatalf("safe path = %q, error = %v", path, err)
+	}
 }
 
 func TestSubmissionStoreSeparatesAttemptSeriesAndReturnsDeepCopies(t *testing.T) {

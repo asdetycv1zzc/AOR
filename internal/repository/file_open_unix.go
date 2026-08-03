@@ -24,7 +24,15 @@ func openReadFileNoFollow(name string) (*os.File, error) {
 	return os.NewFile(uintptr(descriptor), name), nil
 }
 
-func hasMultipleLinks(info fs.FileInfo) bool {
+func unsafeOpenedFile(file *os.File) bool {
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return true
+	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	return !ok || stat.Nlink != 1
+}
+
+func unsafePathInfo(info fs.FileInfo) bool {
+	return info == nil || info.Mode()&os.ModeSymlink != 0
 }
