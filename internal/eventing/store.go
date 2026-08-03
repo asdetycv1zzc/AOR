@@ -94,3 +94,9 @@ type Store interface {
 	Lookup(ctx context.Context, tenantID, principalID, idempotencyKey, requestSHA256 string) (TransactionResult, bool, error)
 	Execute(ctx context.Context, request TransactionRequest) (TransactionResult, error)
 }
+
+// EventLog exposes the immutable event history needed to rebuild projections.
+// Events are returned in deterministic aggregate/version order.
+type EventLog interface {
+	ListEvents(ctx context.Context, tenantID string) ([]DomainEvent, error)
+}

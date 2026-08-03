@@ -6,7 +6,7 @@
       "version": 1,
       "mode": "EXPAND",
       "file": "000001_core.up.sql",
-      "sha256": "sha256:83ce842cfe34fa3ac7cbcc19db11b7fad3e4656b4162293b00fc15c8bedbd110",
+      "sha256": "sha256:cb22704d0bdabc635b8b86a7557b40f56c7dfba833cffd1319571f32ef128e28",
       "destructive": false
     }
   ]

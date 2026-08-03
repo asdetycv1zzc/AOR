@@ -18,12 +18,14 @@ func TestCoreMigrationContainsAtomicityAndIsolationConstraints(t *testing.T) {
 	}
 	sql := string(content)
 	required := []string{
-		"BEGIN;", "COMMIT;", "CREATE TABLE domain_events", "CREATE TABLE aggregate_projections", "CREATE TABLE command_results", "CREATE TABLE outbox", "CREATE TABLE inbox",
+		"BEGIN;", "COMMIT;", "CREATE TABLE domain_events", "CREATE TABLE aggregate_projections", "CREATE TABLE command_results", "CREATE TABLE outbox", "CREATE TABLE inbox", "CREATE TABLE budget_accounts", "CREATE TABLE budget_reservations",
 		"PRIMARY KEY (tenant_id, principal_id, idempotency_key)", "UNIQUE (tenant_id, aggregate_type, aggregate_id, aggregate_version)", "UNIQUE (tenant_id, attempt_series_id, attempt)",
 		"CREATE TRIGGER domain_events_immutable", "ENABLE ROW LEVEL SECURITY", "FORCE ROW LEVEL SECURITY", "aor_current_tenant()", "AUTHORIZE_NEW_ATTEMPT_SERIES",
 		"FOREIGN KEY (tenant_id, project_id) REFERENCES projects(tenant_id, id)",
 		"FOREIGN KEY (tenant_id, module_task_id) REFERENCES module_tasks(tenant_id, id)",
 		"FOREIGN KEY (tenant_id, event_id) REFERENCES domain_events(tenant_id, event_id)",
+		"UNIQUE (tenant_id, request_id, account_id)", "state IN ('RESERVED', 'SETTLED', 'RELEASED', 'RECONCILE')",
+		"ALTER TABLE budget_accounts FORCE ROW LEVEL SECURITY", "ALTER TABLE budget_reservations FORCE ROW LEVEL SECURITY",
 	}
 	for _, value := range required {
 		if !strings.Contains(sql, value) {

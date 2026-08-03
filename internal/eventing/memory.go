@@ -131,6 +131,37 @@ func (s *MemoryStore) Stats() StoreStats {
 	return StoreStats{Projections: len(s.projections), Events: len(s.events), Outbox: len(s.outbox), CommandResults: len(s.commands), Approvals: len(s.approvals)}
 }
 
+func (s *MemoryStore) ListEvents(ctx context.Context, tenantID string) ([]DomainEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if tenantID == "" {
+		return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "event log tenant"})
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	events := make([]DomainEvent, 0, len(s.events))
+	for _, event := range s.events {
+		if event.TenantID == tenantID {
+			events = append(events, cloneEvent(event))
+		}
+	}
+	sort.Slice(events, func(left, right int) bool {
+		if events[left].AggregateType != events[right].AggregateType {
+			return events[left].AggregateType < events[right].AggregateType
+		}
+		if events[left].AggregateID != events[right].AggregateID {
+			return events[left].AggregateID < events[right].AggregateID
+		}
+		if events[left].AggregateVersion != events[right].AggregateVersion {
+			return events[left].AggregateVersion < events[right].AggregateVersion
+		}
+		return events[left].EventID < events[right].EventID
+	})
+	return events, nil
+}
+
 func (s *MemoryStore) ClaimOutbox(ctx context.Context, tenantID string, now time.Time, limit int, lease time.Duration) ([]OutboxClaim, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -335,3 +366,4 @@ func cloneJSON(value json.RawMessage) json.RawMessage {
 }
 
 var _ OutboxStore = (*MemoryStore)(nil)
+var _ EventLog = (*MemoryStore)(nil)

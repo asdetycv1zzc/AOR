@@ -67,6 +67,49 @@ func (s *PostgresStore) Lookup(ctx context.Context, tenantID, principalID, idemp
 	return result, true, nil
 }
 
+func (s *PostgresStore) ListEvents(ctx context.Context, tenantID string) ([]DomainEvent, error) {
+	if tenantID == "" {
+		return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "event log tenant"})
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := setTenant(ctx, tx, tenantID); err != nil {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, `
+SELECT event_id::text, tenant_id::text, project_id::text, aggregate_type, aggregate_id,
+       aggregate_version, event_type, payload_jsonb, payload_sha256, metadata_jsonb, created_at
+FROM domain_events
+WHERE tenant_id = $1::uuid
+ORDER BY aggregate_type, aggregate_id, aggregate_version, event_id`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	events := make([]DomainEvent, 0)
+	for rows.Next() {
+		event, scanErr := scanEvent(rows)
+		if scanErr != nil {
+			_ = rows.Close()
+			return nil, scanErr
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
 func (s *PostgresStore) Execute(ctx context.Context, request TransactionRequest) (TransactionResult, error) {
 	if err := validateTransaction(request); err != nil {
 		return TransactionResult{}, err
@@ -416,14 +459,22 @@ WHERE tenant_id = $1::uuid AND principal_id = $2 AND idempotency_key = $3`, tena
 }
 
 func loadEvent(ctx context.Context, tx *sql.Tx, tenantID, eventID string) (DomainEvent, error) {
+	row := tx.QueryRowContext(ctx, `
+SELECT event_id::text, tenant_id::text, project_id::text, aggregate_type, aggregate_id, aggregate_version, event_type, payload_jsonb, payload_sha256, metadata_jsonb, created_at
+FROM domain_events
+WHERE tenant_id = $1::uuid AND event_id = $2::uuid`, tenantID, eventID)
+	return scanEvent(row)
+}
+
+type eventScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanEvent(scanner eventScanner) (DomainEvent, error) {
 	var event DomainEvent
 	var payload []byte
 	var metadata []byte
-	err := tx.QueryRowContext(ctx, `
-SELECT event_id::text, tenant_id::text, project_id::text, aggregate_type, aggregate_id, aggregate_version, event_type, payload_jsonb, payload_sha256, metadata_jsonb, created_at
-FROM domain_events
-WHERE tenant_id = $1::uuid AND event_id = $2::uuid`, tenantID, eventID).
-		Scan(&event.EventID, &event.TenantID, &event.ProjectID, &event.AggregateType, &event.AggregateID, &event.AggregateVersion, &event.Type, &payload, &event.PayloadSHA256, &metadata, &event.OccurredAt)
+	err := scanner.Scan(&event.EventID, &event.TenantID, &event.ProjectID, &event.AggregateType, &event.AggregateID, &event.AggregateVersion, &event.Type, &payload, &event.PayloadSHA256, &metadata, &event.OccurredAt)
 	if err != nil {
 		return DomainEvent{}, err
 	}
@@ -463,3 +514,4 @@ func cloneEvents(events []DomainEvent) []DomainEvent {
 
 var _ Store = (*PostgresStore)(nil)
 var _ OutboxStore = (*PostgresStore)(nil)
+var _ EventLog = (*PostgresStore)(nil)

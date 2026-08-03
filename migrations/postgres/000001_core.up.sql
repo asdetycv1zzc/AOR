@@ -258,6 +258,44 @@ CREATE TABLE audit_findings (
   FOREIGN KEY (tenant_id, audit_run_id) REFERENCES audit_runs(tenant_id, id) ON DELETE RESTRICT
 );
 
+CREATE TABLE budget_accounts (
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
+  id text NOT NULL,
+  scope_type text NOT NULL CHECK (scope_type IN ('PROJECT', 'ROLE', 'TASK', 'AGENT', 'PROVIDER', 'MODEL', 'KEY_POOL', 'DAILY')),
+  scope_id text NOT NULL,
+  currency text NOT NULL CHECK (currency ~ '^[A-Z]{3}$'),
+  hard_limit_micros bigint NOT NULL CHECK (hard_limit_micros >= 0),
+  soft_limit_micros bigint NOT NULL CHECK (soft_limit_micros BETWEEN 0 AND hard_limit_micros),
+  spent_micros bigint NOT NULL DEFAULT 0 CHECK (spent_micros >= 0),
+  reserved_micros bigint NOT NULL DEFAULT 0 CHECK (reserved_micros >= 0),
+  period_start timestamptz NOT NULL,
+  period_end timestamptz,
+  version bigint NOT NULL DEFAULT 1 CHECK (version >= 1),
+  PRIMARY KEY (tenant_id, id),
+  CHECK (spent_micros <= hard_limit_micros),
+  CHECK (reserved_micros <= hard_limit_micros - spent_micros),
+  CHECK (period_end IS NULL OR period_end > period_start)
+);
+
+CREATE TABLE budget_reservations (
+  tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
+  id text NOT NULL,
+  account_id text NOT NULL,
+  request_id text NOT NULL,
+  estimated_micros bigint NOT NULL CHECK (estimated_micros >= 0),
+  actual_micros bigint CHECK (actual_micros IS NULL OR actual_micros >= 0),
+  state text NOT NULL CHECK (state IN ('RESERVED', 'SETTLED', 'RELEASED', 'RECONCILE')),
+  expires_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL,
+  updated_at timestamptz NOT NULL,
+  PRIMARY KEY (tenant_id, id),
+  UNIQUE (tenant_id, request_id, account_id),
+  FOREIGN KEY (tenant_id, account_id) REFERENCES budget_accounts(tenant_id, id) ON DELETE RESTRICT,
+  CHECK ((state = 'SETTLED') = (actual_micros IS NOT NULL)),
+  CHECK (expires_at > created_at),
+  CHECK (updated_at >= created_at)
+);
+
 CREATE TABLE user_decisions (
   id uuid PRIMARY KEY,
   tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
@@ -385,6 +423,8 @@ ALTER TABLE integration_tasks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE submissions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_runs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_findings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE budget_accounts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE budget_reservations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_decisions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE aggregate_projections ENABLE ROW LEVEL SECURITY;
 ALTER TABLE domain_events ENABLE ROW LEVEL SECURITY;
@@ -405,6 +445,8 @@ ALTER TABLE integration_tasks FORCE ROW LEVEL SECURITY;
 ALTER TABLE submissions FORCE ROW LEVEL SECURITY;
 ALTER TABLE audit_runs FORCE ROW LEVEL SECURITY;
 ALTER TABLE audit_findings FORCE ROW LEVEL SECURITY;
+ALTER TABLE budget_accounts FORCE ROW LEVEL SECURITY;
+ALTER TABLE budget_reservations FORCE ROW LEVEL SECURITY;
 ALTER TABLE user_decisions FORCE ROW LEVEL SECURITY;
 ALTER TABLE aggregate_projections FORCE ROW LEVEL SECURITY;
 ALTER TABLE domain_events FORCE ROW LEVEL SECURITY;
@@ -430,6 +472,8 @@ CREATE POLICY integration_tasks_tenant_policy ON integration_tasks USING (tenant
 CREATE POLICY submissions_tenant_policy ON submissions USING (tenant_id = aor_current_tenant()) WITH CHECK (tenant_id = aor_current_tenant());
 CREATE POLICY audit_runs_tenant_policy ON audit_runs USING (tenant_id = aor_current_tenant()) WITH CHECK (tenant_id = aor_current_tenant());
 CREATE POLICY audit_findings_tenant_policy ON audit_findings USING (tenant_id = aor_current_tenant()) WITH CHECK (tenant_id = aor_current_tenant());
+CREATE POLICY budget_accounts_tenant_policy ON budget_accounts USING (tenant_id = aor_current_tenant()) WITH CHECK (tenant_id = aor_current_tenant());
+CREATE POLICY budget_reservations_tenant_policy ON budget_reservations USING (tenant_id = aor_current_tenant()) WITH CHECK (tenant_id = aor_current_tenant());
 CREATE POLICY user_decisions_tenant_policy ON user_decisions USING (tenant_id = aor_current_tenant()) WITH CHECK (tenant_id = aor_current_tenant());
 CREATE POLICY aggregate_projections_tenant_policy ON aggregate_projections USING (tenant_id = aor_current_tenant()) WITH CHECK (tenant_id = aor_current_tenant());
 CREATE POLICY domain_events_tenant_policy ON domain_events USING (tenant_id = aor_current_tenant()) WITH CHECK (tenant_id = aor_current_tenant());

@@ -132,6 +132,17 @@ func (p *Projector) Snapshot(tenantID, aggregateType, aggregateID string) (Snaps
 	return Snapshot{Version: current.version, State: cloneJSON(current.state)}, true
 }
 
+func (p *Projector) ensureComplete() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for key, current := range p.streams {
+		if len(current.pending) != 0 {
+			return fmt.Errorf("incomplete event stream %q after version %d", key, current.version)
+		}
+	}
+	return nil
+}
+
 func validateEvent(event eventing.DomainEvent) (eventFingerprint, error) {
 	if event.EventID == "" || event.TenantID == "" || event.ProjectID == "" || event.AggregateType == "" || event.AggregateID == "" || event.AggregateVersion < 1 || event.Type == "" || len(event.Payload) == 0 {
 		return eventFingerprint{}, aorerrors.New(aorerrors.CodeInvalidArgument, event.CorrelationID, map[string]any{"scope": "projection event"})

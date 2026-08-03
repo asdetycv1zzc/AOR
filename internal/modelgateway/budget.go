@@ -2,9 +2,12 @@ package modelgateway
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 )
+
+const defaultReservationTTL = 24 * time.Hour
 
 type BudgetAccount struct {
 	ID             string
@@ -17,7 +20,7 @@ type BudgetAccount struct {
 type ReservationState string
 
 const (
-	ReservationOpen      ReservationState = "OPEN"
+	ReservationOpen      ReservationState = "RESERVED"
 	ReservationSettled   ReservationState = "SETTLED"
 	ReservationReleased  ReservationState = "RELEASED"
 	ReservationReconcile ReservationState = "RECONCILE"
@@ -32,6 +35,7 @@ type Reservation struct {
 	SettledMicros  int64
 	State          ReservationState
 	CreatedAt      time.Time
+	ExpiresAt      time.Time
 }
 
 type BudgetLedgerBackend interface {
@@ -43,17 +47,18 @@ type BudgetLedgerBackend interface {
 }
 
 type BudgetLedger struct {
-	mu           sync.Mutex
-	accounts     map[string]BudgetAccount
-	reservations map[string]Reservation
-	clock        func() time.Time
+	mu             sync.Mutex
+	accounts       map[string]BudgetAccount
+	reservations   map[string]Reservation
+	clock          func() time.Time
+	reservationTTL time.Duration
 }
 
 func NewBudgetLedger(clock func() time.Time) *BudgetLedger {
 	if clock == nil {
 		clock = time.Now
 	}
-	return &BudgetLedger{accounts: make(map[string]BudgetAccount), reservations: make(map[string]Reservation), clock: clock}
+	return &BudgetLedger{accounts: make(map[string]BudgetAccount), reservations: make(map[string]Reservation), clock: clock, reservationTTL: defaultReservationTTL}
 }
 
 func (l *BudgetLedger) CreateAccount(ctx context.Context, account BudgetAccount) error {
@@ -84,6 +89,11 @@ func (l *BudgetLedger) Reserve(ctx context.Context, tenantID, accountID, reserva
 	defer l.mu.Unlock()
 	reservationKey := budgetKey(tenantID, reservationID)
 	if existing, exists := l.reservations[reservationKey]; exists {
+		if existing.State == ReservationOpen && !l.clock().UTC().Before(existing.ExpiresAt) {
+			existing.State = ReservationReconcile
+			l.reservations[reservationKey] = existing
+			return Reservation{}, ErrReconciliationRequired
+		}
 		if existing.AccountID == accountID && existing.RequestID == requestID && existing.ReservedMicros == amountMicros && existing.State == ReservationOpen {
 			return existing, nil
 		}
@@ -99,7 +109,8 @@ func (l *BudgetLedger) Reserve(ctx context.Context, tenantID, accountID, reserva
 	}
 	account.ReservedMicros += amountMicros
 	l.accounts[accountKey] = account
-	reservation := Reservation{ID: reservationID, TenantID: tenantID, AccountID: accountID, RequestID: requestID, ReservedMicros: amountMicros, State: ReservationOpen, CreatedAt: l.clock().UTC()}
+	createdAt := l.clock().UTC()
+	reservation := Reservation{ID: reservationID, TenantID: tenantID, AccountID: accountID, RequestID: requestID, ReservedMicros: amountMicros, State: ReservationOpen, CreatedAt: createdAt, ExpiresAt: createdAt.Add(l.reservationTTL)}
 	l.reservations[reservationKey] = reservation
 	return reservation, nil
 }
@@ -247,6 +258,38 @@ func (l *BudgetLedger) Reservation(tenantID, id string) (Reservation, bool) {
 	defer l.mu.Unlock()
 	reservation, found := l.reservations[budgetKey(tenantID, id)]
 	return reservation, found
+}
+
+func (l *BudgetLedger) ExpireReservations(ctx context.Context, tenantID string, limit int) ([]Reservation, error) {
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
+	if tenantID == "" || limit <= 0 {
+		return nil, ErrInvalidRequest
+	}
+	now := l.clock().UTC()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	candidates := make([]Reservation, 0)
+	for _, reservation := range l.reservations {
+		if reservation.TenantID == tenantID && reservation.State == ReservationOpen && !now.Before(reservation.ExpiresAt) {
+			candidates = append(candidates, reservation)
+		}
+	}
+	sort.Slice(candidates, func(left, right int) bool {
+		if candidates[left].ExpiresAt.Equal(candidates[right].ExpiresAt) {
+			return candidates[left].ID < candidates[right].ID
+		}
+		return candidates[left].ExpiresAt.Before(candidates[right].ExpiresAt)
+	})
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	for index := range candidates {
+		candidates[index].State = ReservationReconcile
+		l.reservations[budgetKey(tenantID, candidates[index].ID)] = candidates[index]
+	}
+	return candidates, nil
 }
 
 func budgetKey(tenantID, id string) string {
