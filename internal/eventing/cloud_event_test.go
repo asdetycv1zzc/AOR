@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/akimisaka/aor/pkg/canonicaljson"
 )
 
 func TestExternalizeRequiresTraceAndScopedReasons(t *testing.T) {
@@ -37,5 +39,7 @@ func TestExternalizeDerivesTaskSubjectAndRejectsMismatch(t *testing.T) {
 }
 
 func externalEvent(aggregateType, eventType, payload string) DomainEvent {
-	return DomainEvent{EventID: "evt_1", TenantID: "tenant-1", ProjectID: "project-1", AggregateType: aggregateType, AggregateID: "task-1", AggregateVersion: 1, Type: eventType, Payload: json.RawMessage(payload), OccurredAt: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)}
+	payloadValue := json.RawMessage(payload)
+	digest, _ := canonicaljson.Digest(payloadValue)
+	return DomainEvent{EventID: "evt_1", TenantID: "tenant-1", ProjectID: "project-1", AggregateType: aggregateType, AggregateID: "task-1", AggregateVersion: 1, Type: eventType, Payload: payloadValue, PayloadSHA256: digest, OccurredAt: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)}
 }

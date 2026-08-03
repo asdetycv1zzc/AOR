@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/akimisaka/aor/pkg/canonicaljson"
 	"github.com/akimisaka/aor/pkg/cloudevents"
 )
 
@@ -29,6 +30,13 @@ func Externalize(event DomainEvent, options CloudEventOptions) (cloudevents.Even
 	}
 	if options.Source == "" || options.Traceparent == "" {
 		return cloudevents.Event{}, ErrExternalCorrelation
+	}
+	if event.PayloadSHA256 == "" {
+		return cloudevents.Event{}, ErrExternalCorrelation
+	}
+	payloadDigest, err := canonicaljson.Digest(event.Payload)
+	if err != nil || payloadDigest != event.PayloadSHA256 {
+		return cloudevents.Event{}, fmt.Errorf("%w: payload digest mismatch", ErrExternalCorrelation)
 	}
 	if err := options.validate(); err != nil {
 		return cloudevents.Event{}, err
