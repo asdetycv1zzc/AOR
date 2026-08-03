@@ -63,7 +63,7 @@ func main() {
 			findings = append(findings, bootstrap.Finding{Code: "CATALOG_READ_ERROR", Path: "conformance/requirements.yaml", Message: catalogErr.Error()})
 		}
 		if specErr == nil && catalogErr == nil {
-			findings = append(findings, bootstrap.ValidateRequirementCatalog(spec, catalog)...)
+			findings = append(findings, bootstrap.ValidateRequirementCatalogAt(root, spec, catalog)...)
 		}
 	case "secrets":
 		findings = bootstrap.ScanSecrets(root)

@@ -6,13 +6,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"go/format"
+	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 const maxScannedFileBytes = 2 << 20
@@ -20,7 +24,7 @@ const maxScannedFileBytes = 2 << 20
 var (
 	requirementBoldPattern  = regexp.MustCompile(`\*\*(AOR-[A-Z]+-[0-9]+)\*\*`)
 	requirementTablePattern = regexp.MustCompile(`^\|\s*(AOR-[A-Z]+-[0-9]+)\s*\|`)
-	catalogIDPattern        = regexp.MustCompile(`^\s*-\s+id:\s*(AOR-[A-Z]+-[0-9]+)\s*$`)
+	requirementIDPattern    = regexp.MustCompile(`^AOR-[A-Z]+-[0-9]+$`)
 	secretPatterns          = []struct {
 		name string
 		re   *regexp.Regexp
@@ -31,6 +35,29 @@ var (
 		{name: "bearer_token", re: regexp.MustCompile(`(?i)authorization\s*:\s*bearer\s+[A-Za-z0-9._~-]{20,}`)},
 	}
 )
+
+type requirementCatalog struct {
+	CatalogVersion int                    `yaml:"catalogVersion"`
+	Spec           requirementCatalogSpec `yaml:"spec"`
+	Requirements   []catalogRequirement   `yaml:"requirements"`
+}
+
+type requirementCatalogSpec struct {
+	Name               string `yaml:"name"`
+	Version            string `yaml:"version"`
+	BaselineDate       string `yaml:"baselineDate"`
+	ConflictResolution string `yaml:"conflictResolution"`
+}
+
+type catalogRequirement struct {
+	ID             string   `yaml:"id"`
+	Title          string   `yaml:"title"`
+	Implementation []string `yaml:"implementation"`
+	Tests          []string `yaml:"tests"`
+	EvidenceType   string   `yaml:"evidenceType"`
+	Owner          string   `yaml:"owner"`
+	Status         string   `yaml:"status"`
+}
 
 // Finding is a deterministic repository validation result.
 type Finding struct {
@@ -60,32 +87,121 @@ func DiscoverRequirementIDs(spec []byte) []string {
 	return ids
 }
 
-// ValidateRequirementCatalog verifies that every explicit SPEC requirement has one catalog entry.
+// ValidateRequirementCatalog validates catalog structure and SPEC coverage without filesystem checks.
 func ValidateRequirementCatalog(spec, catalog []byte) []Finding {
-	known := make(map[string]struct{})
+	return validateRequirementCatalog("", spec, catalog)
+}
+
+// ValidateRequirementCatalogAt also verifies evidence paths against the repository root.
+func ValidateRequirementCatalogAt(root string, spec, catalog []byte) []Finding {
+	return validateRequirementCatalog(root, spec, catalog)
+}
+
+func validateRequirementCatalog(root string, spec, catalog []byte) []Finding {
 	var findings []Finding
-	scanner := bufio.NewScanner(bytes.NewReader(catalog))
-	for scanner.Scan() {
-		match := catalogIDPattern.FindStringSubmatch(scanner.Text())
-		if len(match) == 0 {
-			continue
-		}
-		if _, exists := known[match[1]]; exists {
-			findings = append(findings, Finding{Code: "REQUIREMENT_DUPLICATE", Path: "conformance/requirements.yaml", Message: match[1]})
-			continue
-		}
-		known[match[1]] = struct{}{}
+	if len(catalog) == 0 || len(catalog) > maxScannedFileBytes {
+		return []Finding{{Code: "CATALOG_INVALID", Path: "conformance/requirements.yaml", Message: "catalog is empty or exceeds the size limit"}}
 	}
-	if err := scanner.Err(); err != nil {
-		findings = append(findings, Finding{Code: "CATALOG_READ_ERROR", Path: "conformance/requirements.yaml", Message: err.Error()})
-		return findings
+	decoder := yaml.NewDecoder(bytes.NewReader(catalog))
+	decoder.KnownFields(true)
+	var parsed requirementCatalog
+	if err := decoder.Decode(&parsed); err != nil {
+		return []Finding{{Code: "CATALOG_INVALID", Path: "conformance/requirements.yaml", Message: err.Error()}}
 	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			err = fmt.Errorf("multiple YAML documents are not allowed")
+		}
+		return []Finding{{Code: "CATALOG_INVALID", Path: "conformance/requirements.yaml", Message: err.Error()}}
+	}
+	if parsed.CatalogVersion != 1 || strings.TrimSpace(parsed.Spec.Name) == "" || strings.TrimSpace(parsed.Spec.Version) == "" || strings.TrimSpace(parsed.Spec.BaselineDate) == "" || strings.TrimSpace(parsed.Spec.ConflictResolution) == "" {
+		findings = append(findings, Finding{Code: "CATALOG_METADATA_INVALID", Path: "conformance/requirements.yaml", Message: "catalog version and complete SPEC metadata are required"})
+	}
+
+	expected := make(map[string]struct{})
 	for _, id := range DiscoverRequirementIDs(spec) {
+		expected[id] = struct{}{}
+	}
+	known := make(map[string]struct{}, len(parsed.Requirements))
+	for _, requirement := range parsed.Requirements {
+		if !requirementIDPattern.MatchString(requirement.ID) {
+			findings = append(findings, Finding{Code: "REQUIREMENT_ID_INVALID", Path: "conformance/requirements.yaml", Message: requirement.ID})
+			continue
+		}
+		if _, exists := known[requirement.ID]; exists {
+			findings = append(findings, Finding{Code: "REQUIREMENT_DUPLICATE", Path: "conformance/requirements.yaml", Message: requirement.ID})
+			continue
+		}
+		known[requirement.ID] = struct{}{}
+		if _, exists := expected[requirement.ID]; !exists {
+			findings = append(findings, Finding{Code: "REQUIREMENT_UNEXPECTED", Path: "conformance/requirements.yaml", Message: requirement.ID})
+		}
+		if strings.TrimSpace(requirement.Title) == "" {
+			findings = append(findings, Finding{Code: "REQUIREMENT_TITLE_MISSING", Path: "conformance/requirements.yaml", Message: requirement.ID})
+		}
+		if strings.TrimSpace(requirement.Owner) == "" {
+			findings = append(findings, Finding{Code: "REQUIREMENT_OWNER_MISSING", Path: "conformance/requirements.yaml", Message: requirement.ID})
+		}
+		if requirement.Status != "planned" && requirement.Status != "implemented" {
+			findings = append(findings, Finding{Code: "REQUIREMENT_STATUS_INVALID", Path: "conformance/requirements.yaml", Message: requirement.ID + ": " + requirement.Status})
+			continue
+		}
+		if requirement.Status != "implemented" {
+			continue
+		}
+		if len(requirement.Implementation) == 0 {
+			findings = append(findings, Finding{Code: "REQUIREMENT_IMPLEMENTATION_MISSING", Path: "conformance/requirements.yaml", Message: requirement.ID})
+		}
+		if len(requirement.Tests) == 0 {
+			findings = append(findings, Finding{Code: "REQUIREMENT_TESTS_MISSING", Path: "conformance/requirements.yaml", Message: requirement.ID})
+		}
+		if strings.TrimSpace(requirement.EvidenceType) == "" || requirement.EvidenceType == "pending" {
+			findings = append(findings, Finding{Code: "REQUIREMENT_EVIDENCE_MISSING", Path: "conformance/requirements.yaml", Message: requirement.ID})
+		}
+		if root != "" {
+			for _, reference := range append(append([]string(nil), requirement.Implementation...), requirement.Tests...) {
+				if finding := validateCatalogPath(root, requirement.ID, reference); finding != nil {
+					findings = append(findings, *finding)
+				}
+			}
+		}
+	}
+	for id := range expected {
 		if _, exists := known[id]; !exists {
 			findings = append(findings, Finding{Code: "REQUIREMENT_MISSING", Path: "conformance/requirements.yaml", Message: id})
 		}
 	}
 	return sortedFindings(findings)
+}
+
+func validateCatalogPath(root, requirementID, reference string) *Finding {
+	trimmed := strings.TrimSuffix(reference, "/")
+	if trimmed == "" || strings.Contains(reference, "\\") || strings.ContainsRune(reference, 0) || path.IsAbs(reference) || path.Clean(reference) != trimmed || trimmed == "." || strings.HasPrefix(trimmed, "../") {
+		return &Finding{Code: "REQUIREMENT_PATH_INVALID", Path: "conformance/requirements.yaml", Message: requirementID + ": " + reference}
+	}
+	absoluteRoot, err := filepath.Abs(root)
+	if err != nil {
+		return &Finding{Code: "REQUIREMENT_PATH_INVALID", Path: reference, Message: requirementID}
+	}
+	target := filepath.Join(absoluteRoot, filepath.FromSlash(trimmed))
+	if !pathWithinRoot(absoluteRoot, target) {
+		return &Finding{Code: "REQUIREMENT_PATH_INVALID", Path: "conformance/requirements.yaml", Message: requirementID + ": " + reference}
+	}
+	if _, err := os.Stat(target); err != nil {
+		return &Finding{Code: "REQUIREMENT_PATH_MISSING", Path: reference, Message: requirementID}
+	}
+	resolvedRoot, rootErr := filepath.EvalSymlinks(absoluteRoot)
+	resolvedTarget, targetErr := filepath.EvalSymlinks(target)
+	if rootErr != nil || targetErr != nil || !pathWithinRoot(resolvedRoot, resolvedTarget) {
+		return &Finding{Code: "REQUIREMENT_PATH_INVALID", Path: reference, Message: requirementID + ": path escapes repository root"}
+	}
+	return nil
+}
+
+func pathWithinRoot(root, target string) bool {
+	relative, err := filepath.Rel(root, target)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(os.PathSeparator))
 }
 
 // RequiredPaths is the Phase 0 repository contract.

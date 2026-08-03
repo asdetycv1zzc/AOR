@@ -23,10 +23,55 @@ func TestDiscoverRequirementIDs(t *testing.T) {
 
 func TestValidateRequirementCatalog(t *testing.T) {
 	spec := []byte("- **AOR-INV-001**: one\n- **AOR-INV-002**: two\n")
-	catalog := []byte("requirements:\n  - id: AOR-INV-001\n    status: planned\n")
+	catalog := []byte("catalogVersion: 1\nspec:\n  name: test\n  version: 1.0.0\n  baselineDate: 2030-01-01\n  conflictResolution: adr/test.md\nrequirements:\n  - id: AOR-INV-001\n    title: one\n    implementation: []\n    tests: []\n    evidenceType: pending\n    owner: test\n    status: planned\n")
 	findings := ValidateRequirementCatalog(spec, catalog)
 	if !hasFinding(findings, "REQUIREMENT_MISSING") {
 		t.Fatalf("expected missing requirement finding, got %#v", findings)
+	}
+}
+
+func TestValidateRequirementCatalogAtRequiresRealImplementedEvidence(t *testing.T) {
+	root := t.TempDir()
+	spec := []byte("- **AOR-INV-001**: one\n")
+	catalog := []byte("catalogVersion: 1\nspec:\n  name: test\n  version: 1.0.0\n  baselineDate: 2030-01-01\n  conflictResolution: adr/test.md\nrequirements:\n  - id: AOR-INV-001\n    title: one\n    implementation:\n      - internal/feature.go\n    tests:\n      - internal/feature_test.go\n    evidenceType: go-test\n    owner: test\n    status: implemented\n")
+	findings := ValidateRequirementCatalogAt(root, spec, catalog)
+	if !hasFinding(findings, "REQUIREMENT_PATH_MISSING") {
+		t.Fatalf("expected missing evidence path, got %#v", findings)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "internal"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"feature.go", "feature_test.go"} {
+		if err := os.WriteFile(filepath.Join(root, "internal", name), []byte("package internal\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if findings := ValidateRequirementCatalogAt(root, spec, catalog); len(findings) != 0 {
+		t.Fatalf("valid implemented evidence rejected: %#v", findings)
+	}
+}
+
+func TestValidateRequirementCatalogRejectsFalseImplementationClaims(t *testing.T) {
+	root := t.TempDir()
+	spec := []byte("- **AOR-INV-001**: one\n")
+	catalog := []byte("catalogVersion: 1\nspec:\n  name: test\n  version: 1.0.0\n  baselineDate: 2030-01-01\n  conflictResolution: adr/test.md\nrequirements:\n  - id: AOR-INV-001\n    title: one\n    implementation:\n      - ../outside.go\n    tests: []\n    evidenceType: pending\n    owner: test\n    status: implemented\n")
+	findings := ValidateRequirementCatalogAt(root, spec, catalog)
+	for _, code := range []string{"REQUIREMENT_PATH_INVALID", "REQUIREMENT_TESTS_MISSING", "REQUIREMENT_EVIDENCE_MISSING"} {
+		if !hasFinding(findings, code) {
+			t.Fatalf("expected %s, got %#v", code, findings)
+		}
+	}
+}
+
+func TestValidateRequirementCatalogRejectsUnknownFieldsAndStatuses(t *testing.T) {
+	spec := []byte("- **AOR-INV-001**: one\n")
+	unknown := []byte("catalogVersion: 1\nspec:\n  name: test\n  version: 1.0.0\n  baselineDate: 2030-01-01\n  conflictResolution: adr/test.md\nrequirements:\n  - id: AOR-INV-001\n    title: one\n    implementation: []\n    tests: []\n    evidenceType: pending\n    owner: test\n    status: planned\n    typoField: true\n")
+	if findings := ValidateRequirementCatalog(spec, unknown); !hasFinding(findings, "CATALOG_INVALID") {
+		t.Fatalf("unknown field accepted: %#v", findings)
+	}
+	invalidStatus := []byte("catalogVersion: 1\nspec:\n  name: test\n  version: 1.0.0\n  baselineDate: 2030-01-01\n  conflictResolution: adr/test.md\nrequirements:\n  - id: AOR-INV-001\n    title: one\n    implementation: []\n    tests: []\n    evidenceType: pending\n    owner: test\n    status: complete\n")
+	if findings := ValidateRequirementCatalog(spec, invalidStatus); !hasFinding(findings, "REQUIREMENT_STATUS_INVALID") {
+		t.Fatalf("unknown status accepted: %#v", findings)
 	}
 }
 
