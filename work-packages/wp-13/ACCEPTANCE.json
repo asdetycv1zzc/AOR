@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "taskId": "WP-13",
+  "specVersion": "2.0.0",
+  "requirements": ["AOR-INV-010", "AOR-ACC-077", "AOR-ACC-078", "AOR-ACC-079", "AOR-ACC-080", "AOR-ACC-081", "AOR-ACC-082", "AOR-ACC-083", "AOR-ACC-084", "AOR-ACC-085"],
+  "criteria": [
+    {"id": "WP13-AC-001", "evidence": "internal/observability/log_test.go", "required": true},
+    {"id": "WP13-AC-002", "evidence": "internal/observability/trace_test.go", "required": true},
+    {"id": "WP13-AC-003", "evidence": "internal/observability/metrics_test.go", "required": true},
+    {"id": "WP13-AC-004", "evidence": "internal/observability/audit_test.go", "required": true},
+    {"id": "WP13-AC-005", "evidence": "internal/observability/config_test.go", "required": true},
+    {"id": "WP13-AC-006", "evidence": "WP-15 preproduction alert-drill and WORM enforcement report", "required": true, "environmentGate": true}
+  ]
+}

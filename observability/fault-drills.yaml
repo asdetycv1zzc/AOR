@@ -1,0 +1,19 @@
+apiVersion: observability.aor.dev/v1
+kind: AlertDrillPlan
+minimumFrequency: quarterly
+scenarios:
+  - {id: control-plane-unavailable, alert: AORControlPlaneAvailability, inject: reject-health-requests, expectedWithin: 15m}
+  - {id: control-plane-errors, alert: AORControlPlaneErrorRate, inject: return-controlled-5xx, expectedWithin: 10m}
+  - {id: event-bus-unavailable, alert: AOROutboxBacklog, inject: pause-event-publisher, expectedWithin: 10m}
+  - {id: workflow-stuck, alert: AORWorkflowStuck, inject: pause-workflow-heartbeat, expectedWithin: 15m}
+  - {id: agent-saturation, alert: AORAgentConcurrencySaturated, inject: occupy-all-role-slots, expectedWithin: 20m}
+  - {id: budget-growth, alert: AORBudgetGrowthAnomaly, inject: emit-synthetic-cost-counter, expectedWithin: 10m}
+  - {id: third-attempt-failure, alert: AORThirdAttemptFailure, inject: fail-module-third-attempt, expectedWithin: 5m}
+  - {id: critical-security-event, alert: AORHighCriticalSecurityEvent, inject: emit-signed-security-canary, expectedWithin: 5m}
+  - {id: artifact-hash-mismatch, alert: AORArtifactHashMismatch, inject: submit-invalid-artifact-digest, expectedWithin: 5m}
+  - {id: database-replication-failure, alert: AORDatabaseReplicationFailure, inject: pause-replica-apply, expectedWithin: 10m}
+  - {id: backup-failure, alert: AORBackupFailure, inject: fail-canary-backup, expectedWithin: 15m}
+  - {id: sandbox-lifecycle-failure, alert: AORSandboxLifecycleFailure, inject: reject-sandbox-create, expectedWithin: 5m}
+evidence:
+  requiredFields: [environment, startedAt, endedAt, alert, firedAt, notificationReceivedAt, operator, result, artifactSha256]
+  retentionDays: 400

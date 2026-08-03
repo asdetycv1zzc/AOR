@@ -1,0 +1,75 @@
+groups:
+  - name: aor-slo-recording
+    interval: 30s
+    rules:
+      - record: aor:slo:control_plane_availability:ratio5m
+        expr: sum(rate(aor_api_request_duration_seconds_count{status!~"5.."}[5m])) / clamp_min(sum(rate(aor_api_request_duration_seconds_count[5m])), 1)
+      - record: aor:slo:api_duration:p95_5m
+        expr: histogram_quantile(0.95, sum by (le) (rate(aor_api_request_duration_seconds_bucket[5m])))
+      - record: aor:slo:agent_dispatch:p95_5m
+        expr: histogram_quantile(0.95, sum by (le) (rate(aor_agent_dispatch_duration_seconds_bucket[5m])))
+      - record: aor:slo:audit_failure:ratio15m
+        expr: sum(rate(aor_audit_runs_total{verdict!="PASS"}[15m])) / clamp_min(sum(rate(aor_audit_runs_total[15m])), 1)
+      - record: aor:slo:tool_denial:ratio15m
+        expr: sum(rate(aor_tool_invocations_total{decision="DENY"}[15m])) / clamp_min(sum(rate(aor_tool_invocations_total[15m])), 1)
+      - record: aor:slo:cache_hit:ratio15m
+        expr: sum(rate(aor_cache_requests_total{result="HIT"}[15m])) / clamp_min(sum(rate(aor_cache_requests_total[15m])), 1)
+
+  - name: aor-required-alerts
+    interval: 30s
+    rules:
+      - alert: AORControlPlaneAvailability
+        expr: aor:slo:control_plane_availability:ratio5m < 0.999
+        for: 10m
+        labels: {severity: critical}
+        annotations: {runbook: control-plane-availability, drill: control-plane-unavailable}
+      - alert: AORControlPlaneErrorRate
+        expr: (1 - aor:slo:control_plane_availability:ratio5m) > 0.01
+        for: 5m
+        labels: {severity: high}
+        annotations: {runbook: control-plane-errors, drill: control-plane-errors}
+      - alert: AOROutboxBacklog
+        expr: aor_event_outbox_lag_seconds > 5
+        for: 5m
+        labels: {severity: high}
+        annotations: {runbook: outbox-backlog, drill: event-bus-unavailable}
+      - alert: AORWorkflowStuck
+        expr: aor_workflow_stuck > 0
+        for: 10m
+        labels: {severity: high}
+        annotations: {runbook: workflow-stuck, drill: workflow-stuck}
+      - alert: AORAgentConcurrencySaturated
+        expr: sum by (role) (aor_active_agents) >= sum by (role) (aor_agent_concurrency_limit)
+        for: 15m
+        labels: {severity: warning}
+        annotations: {runbook: agent-saturation, drill: agent-saturation}
+      - alert: AORBudgetGrowthAnomaly
+        expr: sum(rate(aor_model_cost_minor_total[15m])) > 100000
+        for: 5m
+        labels: {severity: high}
+        annotations: {runbook: budget-growth, drill: budget-growth}
+      - alert: AORThirdAttemptFailure
+        expr: increase(aor_modules_blocked_total{reason="THIRD_ATTEMPT_FAILED"}[5m]) > 0
+        labels: {severity: high}
+        annotations: {runbook: third-attempt-failure, drill: third-attempt-failure}
+      - alert: AORHighCriticalSecurityEvent
+        expr: increase(aor_security_events_total{severity=~"HIGH|CRITICAL"}[5m]) > 0
+        labels: {severity: critical}
+        annotations: {runbook: security-event, drill: critical-security-event}
+      - alert: AORArtifactHashMismatch
+        expr: increase(aor_security_events_total{event="ARTIFACT_HASH_MISMATCH"}[5m]) > 0
+        labels: {severity: critical}
+        annotations: {runbook: artifact-integrity, drill: artifact-hash-mismatch}
+      - alert: AORDatabaseReplicationFailure
+        expr: pg_replication_lag_seconds > 60
+        for: 5m
+        labels: {severity: critical}
+        annotations: {runbook: database-replication, drill: database-replication-failure}
+      - alert: AORBackupFailure
+        expr: increase(aor_backup_runs_total{status="FAILED"}[15m]) > 0
+        labels: {severity: critical}
+        annotations: {runbook: backup-restore, drill: backup-failure}
+      - alert: AORSandboxLifecycleFailure
+        expr: increase(aor_sandbox_operations_total{operation=~"CREATE|DESTROY",status="FAILED"}[5m]) > 0
+        labels: {severity: high}
+        annotations: {runbook: sandbox-lifecycle, drill: sandbox-lifecycle-failure}

@@ -1,0 +1,87 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Control plane availability",
+      "type": "timeseries",
+      "targets": [{"expr": "aor:slo:control_plane_availability:ratio5m", "legendFormat": "availability", "refId": "A"}]
+    },
+    {
+      "id": 2,
+      "title": "API and dispatch p95",
+      "type": "timeseries",
+      "targets": [
+        {"expr": "aor:slo:api_duration:p95_5m", "legendFormat": "api", "refId": "A"},
+        {"expr": "aor:slo:agent_dispatch:p95_5m", "legendFormat": "dispatch", "refId": "B"}
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Cost anomaly drill-down",
+      "description": "Structured application-log query keeps high-cardinality project and task dimensions out of metrics.",
+      "type": "logs",
+      "datasource": {"type": "loki", "uid": "${loki}"},
+      "targets": [{
+        "expr": "{service_name=~\"aor-.+\"} | json | event_name=\"aor.model.cost\" | correlation_project_id=~\"$project\" | attributes_aor_agent_role=~\"$role\" | attributes_gen_ai_response_model=~\"$model\" | correlation_task_id=~\"$task\" | attributes_aor_attempt=~\"$attempt\"",
+        "refId": "A"
+      }]
+    },
+    {
+      "id": 4,
+      "title": "Audit failures, rework and user takeover",
+      "type": "timeseries",
+      "targets": [
+        {"expr": "aor:slo:audit_failure:ratio15m", "legendFormat": "audit failure ratio", "refId": "A"},
+        {"expr": "sum(rate(aor_module_rework_total[15m]))", "legendFormat": "rework", "refId": "B"},
+        {"expr": "sum(rate(aor_user_takeovers_total[15m]))", "legendFormat": "takeover", "refId": "C"}
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Cache hit and tool denial",
+      "type": "timeseries",
+      "targets": [
+        {"expr": "aor:slo:cache_hit:ratio15m", "legendFormat": "cache hit ratio", "refId": "A"},
+        {"expr": "aor:slo:tool_denial:ratio15m", "legendFormat": "tool denial ratio", "refId": "B"}
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Outbox and projection staleness",
+      "type": "timeseries",
+      "targets": [
+        {"expr": "aor_event_outbox_lag_seconds", "legendFormat": "outbox", "refId": "A"},
+        {"expr": "aor_state_projection_staleness_seconds", "legendFormat": "projection", "refId": "B"}
+      ]
+    },
+    {
+      "id": 7,
+      "title": "End-to-end trace",
+      "description": "TraceQL query returns the user-to-model-to-tool-to-repository-to-audit span tree.",
+      "type": "traces",
+      "datasource": {"type": "tempo", "uid": "${tempo}"},
+      "targets": [{"queryType": "traceql", "query": "{ trace:id = \"$trace_id\" }", "refId": "A"}]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["aor", "slo", "production"],
+  "templating": {
+    "list": [
+      {"name": "loki", "type": "datasource", "query": "loki"},
+      {"name": "tempo", "type": "datasource", "query": "tempo"},
+      {"name": "trace_id", "type": "textbox", "current": {"text": "", "value": ""}},
+      {"name": "project", "type": "textbox", "current": {"text": ".*", "value": ".*"}},
+      {"name": "role", "type": "textbox", "current": {"text": ".*", "value": ".*"}},
+      {"name": "model", "type": "textbox", "current": {"text": ".*", "value": ".*"}},
+      {"name": "task", "type": "textbox", "current": {"text": ".*", "value": ".*"}},
+      {"name": "attempt", "type": "textbox", "current": {"text": ".*", "value": ".*"}}
+    ]
+  },
+  "time": {"from": "now-6h", "to": "now"},
+  "title": "AOR Production Observability",
+  "uid": "aor-production",
+  "version": 1
+}

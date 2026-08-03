@@ -1,0 +1,21 @@
+apiVersion: observability.aor.dev/v1
+kind: ImmutableAuditStoragePolicy
+metadata:
+  name: aor-security-audit
+spec:
+  destinationClass: audit-only
+  applicationLogDestinationClass: application-only
+  appendOnly: true
+  objectLock:
+    enabled: true
+    mode: COMPLIANCE
+    retentionDays: 400
+  versioning: true
+  trustedTimeRequired: true
+  hashChainRequired: true
+  signatureRequired: true
+  denyDeleteBeforeRetention: true
+  readAccessAudited: true
+  encryption:
+    atRest: true
+    keyReferenceRequired: true
