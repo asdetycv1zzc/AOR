@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "taskId": "WP-11",
+  "specVersion": "2.0.0",
+  "requirements": ["AOR-ACC-012", "AOR-ACC-013", "AOR-ACC-014", "AOR-ACC-015", "ADR-0015"],
+  "criteria": [
+    {"id": "WP11-AC-001", "evidence": "focused immutable reference and pagination tests", "required": true},
+    {"id": "WP11-AC-002", "evidence": "project isolation and pinned inheritance tests", "required": true},
+    {"id": "WP11-AC-003", "evidence": "Curator authorization and WP-03 lease integration tests", "required": true},
+    {"id": "WP11-AC-004", "evidence": "path, symlink, tamper, conflict, and trust tests", "required": true},
+    {"id": "WP11-AC-005", "evidence": "focused race and vet checks", "required": true}
+  ],
+  "productionEvidencePending": [
+    "native Windows reparse adversarial suite",
+    "multi-process writer coordination",
+    "signed KnowledgeUpdated event",
+    "backup, restore, retention, and deployed permission drills",
+    "large-corpus performance qualification"
+  ]
+}
