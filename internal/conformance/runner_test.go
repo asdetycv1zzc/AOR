@@ -35,3 +35,14 @@ func TestRunnerRejectsUnknownGroupAndWritesAtomically(t *testing.T) {
 		t.Fatalf("unknown group error = %v", err)
 	}
 }
+
+func TestTestProfileRecordsExternalExceptionsWithoutBlockingLocalEvidence(t *testing.T) {
+	runner := NewRunner(nil)
+	evidence, err := runner.Run(context.Background(), Request{Root: "../..", Profile: "test", SpecVersion: "2.0.0", Groups: []string{"security"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evidence.Exceptions) == 0 {
+		t.Fatal("test profile did not record the skipped environment gate")
+	}
+}

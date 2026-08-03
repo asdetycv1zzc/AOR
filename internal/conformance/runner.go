@@ -98,6 +98,7 @@ func (r *Runner) Run(ctx context.Context, request Request) (ReleaseEvidence, err
 	}
 	started := r.clock().UTC()
 	evidence := ReleaseEvidence{EvidenceVersion: "1.0", SpecVersion: request.SpecVersion, BuildDigest: buildDigest(root), StartedAt: started.Format(time.RFC3339), Environment: request.Profile, Target: request.Target, Results: []RequirementResult{}, Exceptions: []string{}}
+	hardFailure := false
 	for _, group := range request.Groups {
 		results, gateErr, environmentGate := runGroup(ctx, root, group)
 		evidence.Results = append(evidence.Results, results...)
@@ -110,6 +111,7 @@ func (r *Runner) Run(ctx context.Context, request Request) (ReleaseEvidence, err
 		}
 		if gateErr != nil {
 			evidence.Exceptions = append(evidence.Exceptions, group+": "+gateErr.Error())
+			hardFailure = true
 		}
 	}
 	sort.Slice(evidence.Results, func(left, right int) bool {
@@ -127,7 +129,7 @@ func (r *Runner) Run(ctx context.Context, request Request) (ReleaseEvidence, err
 			return ReleaseEvidence{}, err
 		}
 	}
-	if len(evidence.Exceptions) > 0 {
+	if hardFailure || request.Profile != "test" && len(evidence.Exceptions) > 0 {
 		return evidence, ErrGateFailed
 	}
 	return evidence, nil
