@@ -448,6 +448,8 @@ services:
       AOR_MODEL_GATEWAY_OAUTH_CLIENT_SECRET_REF: secret://aor_server_oauth_client_secret
       AOR_MODEL_GATEWAY_OAUTH_SCOPES: audience:server:client_id:aor-control-plane
       AOR_MODEL_GATEWAY_OAUTH_AUDIENCE: aor-control-plane
+      AOR_GOAL_PLAN_ROUTES_JSON: >-
+        {"GOAL_PROPOSER":{"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-4o-mini}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3},"GOAL_CHALLENGER":{"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-4o-mini}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3},"PLAN_SUPERVISOR":{"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-4o-mini}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3},"MODULE_PLANNER":{"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-4o-mini}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3}}
     secrets: [postgres_app_password, lease_signing_key, minio_root_user, minio_root_password, aor_server_oauth_client_secret]
     volumes:
       - "${AOR_KNOWLEDGE_HOST_PATH:-../../knowledge}:/var/lib/aor/knowledge:ro"
@@ -492,7 +494,7 @@ services:
       AOR_MODEL_REPLAY_KEY_ID: compose-model-replay-v1
       AOR_MODEL_REPLAY_TTL_HOURS: "24"
       AOR_MODEL_PROVIDERS_JSON: >-
-        [{"id":"openai-primary","provider":"openai","baseUrl":"${AOR_OPENAI_BASE_URL:-https://api.openai.com/v1}","apiKeyRef":"secret://model_provider_openai_key","models":["${AOR_OPENAI_MODEL:-gpt-4o-mini}"],"inputMicrosPerToken":1,"outputMicrosPerToken":4},{"id":"deepseek-audit","provider":"deepseek","baseUrl":"${AOR_DEEPSEEK_BASE_URL:-https://api.deepseek.com/v1}","apiKeyRef":"secret://model_provider_deepseek_key","models":["${AOR_DEEPSEEK_MODEL:-deepseek-chat}"],"inputMicrosPerToken":1,"outputMicrosPerToken":4}]
+        [{"id":"openai-primary","provider":"openai","baseUrl":"${AOR_OPENAI_BASE_URL:-https://api.openai.com/v1}","apiKeyRef":"secret://model_provider_openai_key","models":["${AOR_OPENAI_MODEL:-gpt-4o-mini}"],"inputMicrosPerToken":1,"outputMicrosPerToken":4,"supportsStreaming":true,"supportsToolCalls":true,"supportsJsonSchema":true,"supportsSeed":false,"supportsPromptCaching":false,"maxInputTokens":32768,"maxOutputTokens":4096,"dataResidency":["provider-defined"],"retentionPolicy":"provider-defined","modalities":["text"]},{"id":"deepseek-audit","provider":"deepseek","baseUrl":"${AOR_DEEPSEEK_BASE_URL:-https://api.deepseek.com/v1}","apiKeyRef":"secret://model_provider_deepseek_key","models":["${AOR_DEEPSEEK_MODEL:-deepseek-chat}"],"inputMicrosPerToken":1,"outputMicrosPerToken":4}]
     secrets: [postgres_app_password, model_replay_key, model_provider_openai_key, model_provider_deepseek_key]
     ports:
       - 127.0.0.1:8091:8080

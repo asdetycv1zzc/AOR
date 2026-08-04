@@ -22,6 +22,7 @@ func TestDeploymentProfilesFailClosed(t *testing.T) {
 		"provider\":\"deepseek", "ghcr.io/dexidp/dex:master-alpine@sha256:",
 		"AOR_OIDC_JWKS_URL: http://identity:5556/dex/keys", "AOR_OIDC_DEFAULT_ROLE: USER",
 		"AOR_MODEL_GATEWAY_OAUTH_CLIENT_SECRET_REF: secret://aor_server_oauth_client_secret", "AOR_OIDC_SERVICE_SUBJECTS_JSON",
+		"AOR_GOAL_PLAN_ROUTES_JSON", "supportsJsonSchema\":true",
 		"AOR_OPA_URL: http://opa:8181",
 		"aor-sandbox-runtime:", "aor-sandbox-preflight:", "target: worker-runtime",
 		"AOR_SANDBOX_ENGINE_ENDPOINT: unix:///run/aor-sandbox/engine.sock", "apparmor=aor-sandbox",

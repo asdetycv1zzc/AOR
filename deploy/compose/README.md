@@ -32,6 +32,8 @@ Expose the dedicated engine socket to Compose with the numeric owner and socket 
 export AOR_SANDBOX_ENGINE_SOCKET="${XDG_RUNTIME_DIR}/docker.sock"
 export AOR_SANDBOX_ENGINE_UID="$(id -u)"
 export AOR_SANDBOX_ENGINE_GID="$(stat -c %g "${AOR_SANDBOX_ENGINE_SOCKET}")"
+export AOR_SANDBOX_SHARED_ROOT="$(pwd)/.cache/sandbox-data"
+mkdir -p "${AOR_SANDBOX_SHARED_ROOT}"
 ```
 
 `compose-check` fails immediately when these values are absent. `compose-deps-up` then runs `sandbox-preflight.sh`, which validates the engine before pulling the immutable runtime image into it, then creates and executes a disposable probe container using a non-root identity, read-only root filesystem, cgroups v2 limits, capability drop, `network=none`, built-in seccomp, and the `aor-sandbox` mandatory policy. Missing or downgraded host capabilities produce a specific error and prevent any AOR process from starting. The worker's access to the engine socket is a controller channel; that socket is never mounted into an Executor or Auditor container.
@@ -61,7 +63,7 @@ chmod 0444 deploy/compose/secrets/*
 
 The local Compose engine exposes file-backed secrets as read-only bind mounts, so the source files use mode `0444` for the containers' distinct non-root UIDs; the containing `secrets/` directory remains mode `0700` and prevents other host users from traversing to them. The secret values are not committed or placed in AOR container environment variables. PostgreSQL migrations use the admin-only `postgres_password` to apply schema changes and configure the least-privilege `aor_app` runtime role; API, Model Gateway, Tool Broker, and worker use `secret://postgres_app_password`. AOR refers to mounted files only through `secret://` references. API, Tool Broker, and worker use the MinIO root access and secret files for local S3 access; the Model Gateway uses one mounted file for each provider family and the independent `model_replay_key` to encrypt bounded idempotency responses at rest. The Tool Broker uses the independent `lease_signing_key` to verify and renew persistent capability leases. Dex and the API share `aor_server_oauth_client_secret` through separate read-only mounts; the value is never placed in an AOR environment variable.
 
-The Model Gateway defaults to OpenAI and DeepSeek OpenAI-compatible endpoints and models. Set `AOR_OPENAI_BASE_URL`, `AOR_OPENAI_MODEL`, `AOR_DEEPSEEK_BASE_URL`, or `AOR_DEEPSEEK_MODEL` in the host environment before `make compose-up` to select compatible endpoints or approved models. Provider credentials always remain in the two provider secret files.
+The Model Gateway defaults to OpenAI and DeepSeek OpenAI-compatible endpoints and models. Goal and planning roles use the configured OpenAI model because that route requires strict JSON Schema output. Set `AOR_OPENAI_BASE_URL`, `AOR_OPENAI_MODEL`, `AOR_DEEPSEEK_BASE_URL`, or `AOR_DEEPSEEK_MODEL` in the host environment before `make compose-up` to select compatible endpoints or approved models. Provider credentials always remain in the two provider secret files. The test profile accepts only `PUBLIC` project data because provider residency and retention remain provider-defined; a deployment must supply verified provider metadata before allowing a higher classification.
 
 ## Knowledge Root
 
