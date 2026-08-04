@@ -10,8 +10,38 @@ func TestLoadServerConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load server config: %v", err)
 	}
-	if config.Database.Address() != "postgres:5432" || config.Temporal.Namespace != "aor" || config.NATS.Stream != "AOR_EVENTS" || !config.S3.UsePathStyle || config.KnowledgeRoot != "/var/lib/aor/knowledge" || config.ModelGatewayClient.ClientID != "aor-server" {
+	if config.Database.Address() != "postgres:5432" || config.Temporal.Namespace != "aor" || config.NATS.Stream != "AOR_EVENTS" || !config.S3.UsePathStyle || config.KnowledgeRoot != "/var/lib/aor/knowledge" || config.ModelGatewayClient.ClientID != "aor-server" || len(config.GoalPlan.Routes) != 4 {
 		t.Fatalf("unexpected defaults: %+v", config)
+	}
+}
+
+func TestServerRequiresExactGoalPlanRoutes(t *testing.T) {
+	valid := validServerEnvironment()
+	config, err := Load("aor-server", environment(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if route := config.GoalPlan.Routes["MODULE_PLANNER"]; route.Provider != "primary" || route.Model != "model-a" || route.MaxAttempts != 3 {
+		t.Fatalf("module planner route = %#v", route)
+	}
+
+	for _, value := range []string{
+		`{}`,
+		`{"GOAL_PROPOSER":{"provider":"primary","model":"model-a","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3}}`,
+		`{"GOAL_PROPOSER":{"provider":"primary","model":"model-a","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3,"unknown":true}}`,
+		validGoalPlanRoutesJSON() + ` {}`,
+	} {
+		values := validServerEnvironment()
+		values["AOR_GOAL_PLAN_ROUTES_JSON"] = value
+		if _, err := Load("aor-server", environment(values)); !errors.Is(err, ErrInvalidConfiguration) {
+			t.Fatalf("routes %q error = %v", value, err)
+		}
+	}
+
+	values := validServerEnvironment()
+	delete(values, "AOR_GOAL_PLAN_ROUTES_JSON")
+	if _, err := Load("aor-server", environment(values)); !errors.Is(err, ErrInvalidConfiguration) {
+		t.Fatalf("missing routes error = %v", err)
 	}
 }
 
@@ -372,7 +402,17 @@ func validServerEnvironment() map[string]string {
 		"AOR_MODEL_GATEWAY_OAUTH_CLIENT_ID":         "aor-server",
 		"AOR_MODEL_GATEWAY_OAUTH_CLIENT_SECRET_REF": "secret://aor_server_oauth_client_secret",
 		"AOR_MODEL_GATEWAY_OAUTH_AUDIENCE":          "aor-control-plane",
+		"AOR_GOAL_PLAN_ROUTES_JSON":                 validGoalPlanRoutesJSON(),
 	}
+}
+
+func validGoalPlanRoutesJSON() string {
+	return `{
+		"GOAL_PROPOSER":{"provider":"primary","model":"model-a","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3},
+		"GOAL_CHALLENGER":{"provider":"primary","model":"model-a","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3},
+		"PLAN_SUPERVISOR":{"provider":"primary","model":"model-a","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3},
+		"MODULE_PLANNER":{"provider":"primary","model":"model-a","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3}
+	}`
 }
 
 func validModelProvidersJSON() string {

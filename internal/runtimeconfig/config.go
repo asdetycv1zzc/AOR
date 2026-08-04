@@ -39,6 +39,7 @@ type Config struct {
 	Identity           IdentityConfig
 	ModelGateway       ModelGatewayConfig
 	ModelGatewayClient ModelGatewayClientConfig
+	GoalPlan           GoalPlanConfig
 	Services           ServiceEndpoints
 	Sandbox            SandboxConfig
 }
@@ -107,6 +108,22 @@ type ModelGatewayClientConfig struct {
 	ClientSecretRef string
 	Scopes          []string
 	Audience        string
+}
+
+type GoalPlanConfig struct {
+	Routes map[string]GoalPlanRouteConfig
+}
+
+type GoalPlanRouteConfig struct {
+	Provider            string  `json:"provider"`
+	Model               string  `json:"model"`
+	MaxOutputTokens     int     `json:"maxOutputTokens"`
+	Temperature         float64 `json:"temperature"`
+	Seed                *int64  `json:"seed,omitempty"`
+	ProviderPolicy      string  `json:"providerPolicy"`
+	CachePolicy         string  `json:"cachePolicy"`
+	WorstCaseCostMicros int64   `json:"worstCaseCostMicros"`
+	MaxAttempts         int     `json:"maxAttempts"`
 }
 
 type ProviderConfig struct {
@@ -285,6 +302,16 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 			return Config{}, configurationError("AOR_OIDC_SERVICE_SUBJECTS_JSON")
 		}
 	}
+	if raw, found := lookup("AOR_GOAL_PLAN_ROUTES_JSON"); found && strings.TrimSpace(raw) != "" {
+		decoder := json.NewDecoder(strings.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&config.GoalPlan.Routes); err != nil {
+			return Config{}, configurationError("AOR_GOAL_PLAN_ROUTES_JSON")
+		}
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			return Config{}, configurationError("AOR_GOAL_PLAN_ROUTES_JSON")
+		}
+	}
 	applyProviderCapabilityDefaults(config.ModelGateway.Providers)
 	if err := config.Validate(); err != nil {
 		return Config{}, err
@@ -301,6 +328,11 @@ func (config Config) Validate() error {
 	}
 	if config.Component == "aor-server" && (!validKnowledgeRoot(config.KnowledgeRoot) || !validSecretReference(config.LeaseSigningKeyRef) || !validDeploymentProfile(config.DeploymentProfile)) {
 		return ErrInvalidConfiguration
+	}
+	if config.Component == "aor-server" {
+		if err := validateGoalPlanRoutes(config.GoalPlan.Routes); err != nil {
+			return err
+		}
 	}
 	if needsDatabase(config.Component) {
 		if config.Database.Host == "" || config.Database.Port < 1 || config.Database.Port > 65535 || config.Database.Name == "" || config.Database.User == "" || !validSecretReference(config.Database.PasswordRef) || !oneOf(config.Database.SSLMode, "disable", "require", "verify-ca", "verify-full") {
@@ -417,6 +449,23 @@ func validateProviders(providers []ProviderConfig) error {
 	}
 	if len(families) < 2 {
 		return ErrInvalidConfiguration
+	}
+	return nil
+}
+
+func validateGoalPlanRoutes(routes map[string]GoalPlanRouteConfig) error {
+	required := []string{"GOAL_PROPOSER", "GOAL_CHALLENGER", "PLAN_SUPERVISOR", "MODULE_PLANNER"}
+	if len(routes) != len(required) {
+		return ErrInvalidConfiguration
+	}
+	for _, role := range required {
+		route, found := routes[role]
+		if !found || !validIdentityPart(route.Provider, 128) || !validIdentityPart(route.Model, 256) ||
+			route.MaxOutputTokens < 1 || route.MaxOutputTokens > 1_000_000 || route.Temperature < 0 || route.Temperature > 2 ||
+			!validIdentityPart(route.ProviderPolicy, 256) || !validIdentityPart(route.CachePolicy, 128) ||
+			route.WorstCaseCostMicros < 0 || route.MaxAttempts < 1 || route.MaxAttempts > 3 {
+			return ErrInvalidConfiguration
+		}
 	}
 	return nil
 }
