@@ -298,6 +298,9 @@ func (a *Adapter) requireInputLimit(ctx context.Context, request modelgateway.No
 
 func (a *Adapter) encodeRequest(request modelgateway.NormalizedRequest, stream bool) ([]byte, error) {
 	value := chatRequest{Model: request.Model, MaxTokens: request.MaxOutputTokens, Temperature: request.Temperature, Stream: stream}
+	if stream {
+		value.StreamOptions = &chatStreamOptions{IncludeUsage: true}
+	}
 	for _, message := range request.Messages {
 		value.Messages = append(value.Messages, chatMessage{Role: message.Role, Content: message.Content})
 	}
@@ -453,6 +456,11 @@ type chatRequest struct {
 	Temperature    float64             `json:"temperature"`
 	Seed           *int64              `json:"seed,omitempty"`
 	Stream         bool                `json:"stream,omitempty"`
+	StreamOptions  *chatStreamOptions  `json:"stream_options,omitempty"`
+}
+
+type chatStreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type chatMessage struct {

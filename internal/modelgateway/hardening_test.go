@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -116,6 +117,15 @@ func TestGatewayRejectsChangedBodyForRequestID(t *testing.T) {
 	request.Messages[0].Content = "different"
 	if _, err := gateway.Generate(context.Background(), request, options); !errors.Is(err, ErrRequestConflict) {
 		t.Fatalf("conflict error = %v", err)
+	}
+	for _, changed := range []GenerateOptions{
+		{Provider: "primary", AccountID: "account", ReservationID: "other-reservation", MaxAttempts: 1},
+		{Provider: "primary", AccountID: "account", ReservationID: "reservation", MaxAttempts: 2},
+		{Provider: "other-provider", AccountID: "account", ReservationID: "reservation", MaxAttempts: 1},
+	} {
+		if _, err := gateway.Generate(context.Background(), hardeningRequest("conflict"), changed); !errors.Is(err, ErrRequestConflict) {
+			t.Fatalf("changed execution options=%#v error=%v", changed, err)
+		}
 	}
 	if adapter.Calls() != 1 {
 		t.Fatalf("provider calls = %d", adapter.Calls())
@@ -382,6 +392,68 @@ func TestGatewaySettlesAuthoritativeFinalStreamUsage(t *testing.T) {
 	}
 }
 
+func TestGatewayPublishesOnlyValidatedAggregatedStreamContent(t *testing.T) {
+	ledger := NewBudgetLedger(time.Now)
+	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "account", TenantID: "tenant", LimitMicros: 1_000}); err != nil {
+		t.Fatal(err)
+	}
+	stream := &aggregatedUsageStream{
+		events: []json.RawMessage{
+			json.RawMessage(`{"id":"provider-stream","choices":[{"delta":{"content":"{\\\"ok\\\""}}]}`),
+			json.RawMessage(`{"choices":[{"delta":{"content":":true}"}}]}`),
+		},
+		content: json.RawMessage(`{"ok":true}`),
+		usage:   Usage{InputTokens: 2, OutputTokens: 3, ProviderRequestID: "provider-stream", ModelVersion: "model-v2"},
+	}
+	adapter := &hardeningAdapter{stream: stream}
+	gateway := NewGateway(ledger, time.Now)
+	if err := gateway.Register("primary", "model", adapter, Pricing{InputMicrosPerToken: 2, OutputMicrosPerToken: 3}); err != nil {
+		t.Fatal(err)
+	}
+	responseStream, err := gateway.Stream(context.Background(), hardeningRequest("stream-aggregate"), GenerateOptions{Provider: "primary", AccountID: "account", ReservationID: "stream-aggregate-reservation", MaxAttempts: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := responseStream.Recv(context.Background())
+	if err != nil || string(value) != `{"ok":true}` {
+		t.Fatalf("final stream value=%s err=%v", value, err)
+	}
+	if strings.Contains(string(value), "choices") || strings.Contains(string(value), "delta") {
+		t.Fatalf("provider envelope leaked: %s", value)
+	}
+	if _, err := responseStream.Recv(context.Background()); !errors.Is(err, io.EOF) {
+		t.Fatalf("terminal error=%v", err)
+	}
+	reservation, found := ledger.Reservation("tenant", "stream-aggregate-reservation")
+	if !found || reservation.State != ReservationSettled || reservation.SettledMicros != 13 {
+		t.Fatalf("reservation=%#v found=%v", reservation, found)
+	}
+}
+
+func TestGatewayDoesNotPublishStreamWithoutAuthoritativeUsage(t *testing.T) {
+	ledger := NewBudgetLedger(time.Now)
+	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "account", TenantID: "tenant", LimitMicros: 1_000}); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &hardeningAdapter{stream: &rawOnlyStream{events: []json.RawMessage{json.RawMessage(`{"ok":true}`)}}}
+	gateway := NewGateway(ledger, time.Now)
+	if err := gateway.Register("primary", "model", adapter, Pricing{InputMicrosPerToken: 1, OutputMicrosPerToken: 1}); err != nil {
+		t.Fatal(err)
+	}
+	responseStream, err := gateway.Stream(context.Background(), hardeningRequest("stream-no-usage"), GenerateOptions{Provider: "primary", AccountID: "account", ReservationID: "stream-no-usage-reservation", MaxAttempts: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := responseStream.Recv(context.Background())
+	if !errors.Is(err, ErrReconciliationRequired) || len(value) != 0 {
+		t.Fatalf("unverified stream value=%s err=%v", value, err)
+	}
+	reservation, found := ledger.Reservation("tenant", "stream-no-usage-reservation")
+	if !found || reservation.State != ReservationReconcile {
+		t.Fatalf("reservation=%#v found=%v", reservation, found)
+	}
+}
+
 func TestGatewayValidatesAggregatedStreamAtEOFBeforeSuccess(t *testing.T) {
 	ledger := NewBudgetLedger(time.Now)
 	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "account", TenantID: "tenant", LimitMicros: 1_000}); err != nil {
@@ -411,14 +483,11 @@ func TestGatewayValidatesAggregatedStreamAtEOFBeforeSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := responseStream.Recv(context.Background()); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := responseStream.Recv(context.Background()); !errors.Is(err, ErrOutputSchema) {
-		t.Fatalf("terminal schema error = %v", err)
+		t.Fatalf("stream schema error = %v", err)
 	}
 	reservation, found := ledger.Reservation("tenant", "stream-final-schema-reservation")
-	if !found || reservation.State != ReservationSettled || reservation.SettledMicros != 4 {
+	if !found || reservation.State != ReservationSettled || reservation.SettledMicros != 2 {
 		t.Fatalf("reservation=%#v found=%t", reservation, found)
 	}
 	call, found := ledger.ModelCall("tenant", "stream-final-schema")
@@ -533,6 +602,68 @@ type hardeningUsageStream struct {
 	events []json.RawMessage
 	usage  Usage
 	closed bool
+}
+
+type aggregatedUsageStream struct {
+	mu      sync.Mutex
+	events  []json.RawMessage
+	content json.RawMessage
+	usage   Usage
+	closed  bool
+}
+
+type rawOnlyStream struct {
+	mu     sync.Mutex
+	events []json.RawMessage
+	closed bool
+}
+
+func (stream *rawOnlyStream) Recv(context.Context) (json.RawMessage, error) {
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	if stream.closed || len(stream.events) == 0 {
+		return nil, io.EOF
+	}
+	value := append(json.RawMessage(nil), stream.events[0]...)
+	stream.events = stream.events[1:]
+	return value, nil
+}
+
+func (stream *rawOnlyStream) Close() error {
+	stream.mu.Lock()
+	stream.closed = true
+	stream.mu.Unlock()
+	return nil
+}
+
+func (stream *aggregatedUsageStream) Recv(context.Context) (json.RawMessage, error) {
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	if stream.closed || len(stream.events) == 0 {
+		return nil, io.EOF
+	}
+	event := append(json.RawMessage(nil), stream.events[0]...)
+	stream.events = stream.events[1:]
+	return event, nil
+}
+
+func (stream *aggregatedUsageStream) Close() error {
+	stream.mu.Lock()
+	stream.closed = true
+	stream.mu.Unlock()
+	return nil
+}
+
+func (stream *aggregatedUsageStream) FinalUsage() (Usage, bool) {
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	return stream.usage, len(stream.events) == 0 && !stream.closed
+}
+
+func (stream *aggregatedUsageStream) FinalContent() (json.RawMessage, bool) {
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	return append(json.RawMessage(nil), stream.content...), len(stream.events) == 0 && !stream.closed
 }
 
 func (stream *hardeningUsageStream) Recv(context.Context) (json.RawMessage, error) {

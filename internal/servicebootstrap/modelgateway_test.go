@@ -63,6 +63,9 @@ func TestConfiguredProviderPolicyUsesExplicitRoutesWithoutDowngrade(t *testing.T
 		if candidate.Provider != want[index].provider || candidate.Model != want[index].model || candidate.CapabilityRank != 100 {
 			t.Fatalf("candidate %d = %#v", index, candidate)
 		}
+		if len(candidate.AllowedDataClassifications) != 1 || candidate.AllowedDataClassifications[0] != "PUBLIC" || len(candidate.AllowedDataResidencies) != 1 || candidate.AllowedDataResidencies[0] != "provider-defined" || candidate.RetentionPolicy != "provider-defined" {
+			t.Fatalf("candidate metadata %d = %#v", index, candidate)
+		}
 	}
 }
 

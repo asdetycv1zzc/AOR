@@ -31,27 +31,29 @@ type HTTPAuthorizer interface {
 }
 
 type ModelAuthorizationRequest struct {
-	Operation         string
-	Provider          string
-	Model             string
-	RequestID         string
-	AccountID         string
-	ReservationID     string
-	ProviderRequestID string
-	ProjectID         string
-	TaskID            string
-	AgentInstanceID   string
-	Role              string
+	Operation          string
+	Provider           string
+	Model              string
+	DataClassification string
+	RequestID          string
+	AccountID          string
+	ReservationID      string
+	ProviderRequestID  string
+	ProjectID          string
+	TaskID             string
+	AgentInstanceID    string
+	Role               string
 }
 
 type ModelAuthorization struct {
-	TenantID        string
-	ProjectID       string
-	TaskID          string
-	AgentInstanceID string
-	Role            string
-	Provider        string
-	AccountID       string
+	TenantID           string
+	ProjectID          string
+	TaskID             string
+	AgentInstanceID    string
+	Role               string
+	Provider           string
+	AccountID          string
+	DataClassification string
 }
 
 type HTTPConfig struct {
@@ -239,16 +241,21 @@ func (s *HTTPService) serveCapabilities(writer http.ResponseWriter, request *htt
 func (s *HTTPService) authorizeGenerate(ctx context.Context, operation string, request NormalizedRequest, options GenerateOptions) (NormalizedRequest, GenerateOptions, error) {
 	authorization, err := s.authorize(ctx, ModelAuthorizationRequest{
 		Operation: operation, Provider: options.Provider, Model: request.Model, RequestID: request.RequestID,
-		AccountID: options.AccountID, ReservationID: options.ReservationID,
+		DataClassification: request.DataClassification,
+		AccountID:          options.AccountID, ReservationID: options.ReservationID,
 		ProjectID: request.ProjectID, TaskID: request.TaskID, AgentInstanceID: request.AgentInstanceID, Role: request.Role,
 	})
 	if err != nil {
 		return NormalizedRequest{}, GenerateOptions{}, err
 	}
-	if request.TenantID != authorization.TenantID || request.ProjectID != authorization.ProjectID || request.TaskID != authorization.TaskID || request.AgentInstanceID != authorization.AgentInstanceID || request.Role != authorization.Role || options.Provider != authorization.Provider || options.AccountID != authorization.AccountID ||
+	if request.TenantID != authorization.TenantID || request.ProjectID != authorization.ProjectID || request.TaskID != authorization.TaskID || request.AgentInstanceID != authorization.AgentInstanceID || request.Role != authorization.Role || request.DataClassification != authorization.DataClassification || options.Provider != authorization.Provider || options.AccountID != authorization.AccountID ||
 		request.TenantID == "" || request.ProjectID == "" || request.AgentInstanceID == "" || request.Role == "" || options.AccountID == "" {
 		return NormalizedRequest{}, GenerateOptions{}, ErrAuthorizationDenied
 	}
+	if authorization.DataClassification == "" {
+		return NormalizedRequest{}, GenerateOptions{}, ErrAuthorizationDenied
+	}
+	request.DataClassification = authorization.DataClassification
 	return request, options, nil
 }
 

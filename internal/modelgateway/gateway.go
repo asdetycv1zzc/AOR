@@ -1,7 +1,6 @@
 package modelgateway
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -101,6 +100,10 @@ func NewGatewayWithConfig(ledger BudgetLedgerBackend, clock func() time.Time, co
 	policies := make(map[string]ProviderPolicy, len(config.ProviderPolicies))
 	for name, policy := range config.ProviderPolicies {
 		policy.Candidates = append([]ProviderCandidate(nil), policy.Candidates...)
+		for index := range policy.Candidates {
+			policy.Candidates[index].AllowedDataClassifications = append([]string(nil), policy.Candidates[index].AllowedDataClassifications...)
+			policy.Candidates[index].AllowedDataResidencies = append([]string(nil), policy.Candidates[index].AllowedDataResidencies...)
+		}
 		policies[name] = policy
 	}
 	replayStore := config.ReplayStore
@@ -142,6 +145,16 @@ type GenerateOptions struct {
 	MaxAttempts   int    `json:"maxAttempts"`
 }
 
+func normalizeGenerateOptions(options GenerateOptions) (GenerateOptions, error) {
+	if options.MaxAttempts <= 0 {
+		options.MaxAttempts = 3
+	}
+	if options.Provider == "" || options.AccountID == "" || options.ReservationID == "" || options.MaxAttempts > 3 {
+		return GenerateOptions{}, ErrInvalidRequest
+	}
+	return options, nil
+}
+
 // Capabilities returns provider metadata only for a registered provider/model
 // pair. Callers cannot probe arbitrary adapters through the gateway.
 func (g *Gateway) Capabilities(ctx context.Context, provider, model string) (ModelCapabilities, error) {
@@ -171,18 +184,23 @@ func (g *Gateway) Stream(ctx context.Context, request NormalizedRequest, options
 	if ctx == nil {
 		return nil, ErrInvalidRequest
 	}
+	var err error
+	options, err = normalizeGenerateOptions(options)
+	if err != nil {
+		return nil, err
+	}
 	if policy, found := g.policyFor(request); found {
 		return g.streamWithPolicy(ctx, request, options, policy)
 	}
 	if request.ProviderPolicy != "" {
 		return nil, ErrProviderNotAllowed
 	}
-	adapter, key, capabilities, estimate, reservation, err := g.prepare(ctx, request, options, true)
+	adapter, key, capabilities, estimate, reservation, pricing, worstCost, err := g.prepare(ctx, request, options, true)
 	if err != nil {
 		return nil, err
 	}
 	startedAt := g.clock().UTC()
-	call, err := newModelCall(request, options.Provider, capabilities.ActualModelVersion, estimate.InputTokens, startedAt)
+	call, err := newModelCall(request, options, options.Provider, capabilities.ActualModelVersion, estimate.InputTokens, startedAt)
 	if err != nil {
 		if releaseErr := g.releaseReservation(ctx, request.TenantID, reservation); releaseErr != nil {
 			return nil, releaseErr
@@ -209,7 +227,7 @@ func (g *Gateway) Stream(ctx context.Context, request NormalizedRequest, options
 		stream: stream, tenantID: request.TenantID, reservationID: reservation, context: ctx,
 		call: call, startedAt: startedAt, finalizeCall: g.finalizeModelCall,
 		clock: g.clock, responseSchema: append(json.RawMessage(nil), request.ResponseSchema...), semanticValidator: request.ResponseSemanticValidator,
-		maxResponseBytes: MaximumResponseBytes,
+		maxResponseBytes: MaximumResponseBytes, pricing: pricing, worstCost: worstCost,
 	}, nil
 }
 
@@ -217,11 +235,10 @@ func (g *Gateway) streamWithPolicy(ctx context.Context, request NormalizedReques
 	if err := validateRequest(request); err != nil {
 		return nil, err
 	}
-	if options.MaxAttempts <= 0 {
-		options.MaxAttempts = 3
-	}
-	if options.MaxAttempts > 3 || options.AccountID == "" || options.ReservationID == "" {
-		return nil, ErrInvalidRequest
+	var err error
+	options, err = normalizeGenerateOptions(options)
+	if err != nil {
+		return nil, err
 	}
 	selections, err := g.selectProviders(ctx, "stream", request, options, policy)
 	if err != nil {
@@ -241,7 +258,7 @@ func (g *Gateway) streamWithPolicy(ctx context.Context, request NormalizedReques
 		return nil, err
 	}
 	startedAt := g.clock().UTC()
-	call, err := newModelCall(request, selections[0].candidate.Provider, selections[0].caps.ActualModelVersion, selections[0].estimate.InputTokens, startedAt)
+	call, err := newModelCall(request, options, selections[0].candidate.Provider, selections[0].caps.ActualModelVersion, selections[0].estimate.InputTokens, startedAt)
 	if err != nil {
 		_ = g.releaseReservation(ctx, request.TenantID, options.ReservationID)
 		return nil, err
@@ -266,7 +283,7 @@ func (g *Gateway) streamWithPolicy(ctx context.Context, request NormalizedReques
 			stream, streamErr := selection.adapter.Stream(ctx, selection.request)
 			if streamErr == nil {
 				g.providerSucceeded(selection.key)
-				return &budgetedStream{stream: stream, tenantID: request.TenantID, reservationID: options.ReservationID, context: ctx, call: call, startedAt: startedAt, finalizeCall: g.finalizeModelCall, clock: g.clock, responseSchema: append(json.RawMessage(nil), request.ResponseSchema...), semanticValidator: request.ResponseSemanticValidator, maxResponseBytes: MaximumResponseBytes}, nil
+				return &budgetedStream{stream: stream, tenantID: request.TenantID, reservationID: options.ReservationID, context: ctx, call: call, startedAt: startedAt, finalizeCall: g.finalizeModelCall, clock: g.clock, responseSchema: append(json.RawMessage(nil), request.ResponseSchema...), semanticValidator: request.ResponseSemanticValidator, maxResponseBytes: MaximumResponseBytes, pricing: selection.pricing, worstCost: selection.worstCost}, nil
 			}
 			g.recordProviderFailure(selection.key, streamErr)
 			lastErr = streamErr
@@ -364,7 +381,11 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 	if err := validateRequest(request); err != nil {
 		return NormalizedResponse{}, err
 	}
-	digest, err := normalizedRequestDigest(request)
+	options, err := normalizeGenerateOptions(options)
+	if err != nil {
+		return NormalizedResponse{}, err
+	}
+	digest, err := normalizedRequestDigest(request, options)
 	if err != nil {
 		return NormalizedResponse{}, err
 	}
@@ -397,8 +418,13 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 	return response, runErr
 }
 
-func normalizedRequestDigest(request NormalizedRequest) (string, error) {
-	encoded, err := json.Marshal(request)
+type executionDigestInput struct {
+	Request NormalizedRequest `json:"request"`
+	Options GenerateOptions   `json:"options"`
+}
+
+func normalizedRequestDigest(request NormalizedRequest, options GenerateOptions) (string, error) {
+	encoded, err := json.Marshal(executionDigestInput{Request: request, Options: options})
 	if err != nil {
 		return "", ErrInvalidRequest
 	}
@@ -592,6 +618,10 @@ func (g *Gateway) selectProviders(ctx context.Context, operation string, request
 			lastErr = ErrProviderNotAllowed
 			continue
 		}
+		if !candidateAllowsProviderMetadata(candidate, capabilities, request.DataClassification) {
+			lastErr = ErrProviderNotAllowed
+			continue
+		}
 		if g.eligibility != nil {
 			if eligibilityErr := g.eligibility(ctx, ProviderEligibilityInput{Operation: operation, Request: request, Candidate: candidate, Capabilities: capabilities, AccountID: options.AccountID, ReservationID: options.ReservationID}); eligibilityErr != nil {
 				lastErr = eligibilityErr
@@ -651,6 +681,43 @@ func candidateAllowsClassification(candidate ProviderCandidate, classification s
 	return false
 }
 
+func candidateAllowsProviderMetadata(candidate ProviderCandidate, capabilities ModelCapabilities, classification string) bool {
+	if classification != "PUBLIC" {
+		for _, residency := range candidate.AllowedDataResidencies {
+			if residency == "provider-defined" {
+				return false
+			}
+		}
+		if candidate.RetentionPolicy == "provider-defined" {
+			return false
+		}
+	}
+	if len(candidate.AllowedDataResidencies) != 0 {
+		if len(capabilities.DataResidency) == 0 {
+			return false
+		}
+		matched := false
+		for _, allowed := range candidate.AllowedDataResidencies {
+			for _, actual := range capabilities.DataResidency {
+				if allowed == actual {
+					matched = true
+					break
+				}
+			}
+			if matched {
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	if candidate.RetentionPolicy != "" && (capabilities.RetentionPolicy == "" || candidate.RetentionPolicy != capabilities.RetentionPolicy) {
+		return false
+	}
+	return true
+}
+
 func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequest, options GenerateOptions, policy ProviderPolicy) (NormalizedResponse, error) {
 	if err := validateRequest(request); err != nil {
 		return NormalizedResponse{}, err
@@ -680,7 +747,7 @@ func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequ
 		return NormalizedResponse{}, err
 	}
 	startedAt := g.clock().UTC()
-	call, err := newModelCall(request, selections[0].candidate.Provider, selections[0].caps.ActualModelVersion, 0, startedAt)
+	call, err := newModelCall(request, options, selections[0].candidate.Provider, selections[0].caps.ActualModelVersion, 0, startedAt)
 	if err != nil {
 		_ = g.releaseReservation(ctx, request.TenantID, options.ReservationID)
 		return NormalizedResponse{}, err
@@ -734,11 +801,16 @@ func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequ
 				break
 			}
 			g.providerSucceeded(selection.key)
-			attemptCost := response.Usage.CostMicros
-			if attemptCost < 0 || attemptCost == 0 && selection.worstCost > 0 {
-				attemptCost = selection.worstCost
+			attemptCost, costErr := usageCost(response.Usage, selection.pricing, selection.worstCost)
+			if costErr != nil {
+				err = costErr
 			}
-			incurred, err = addCost(incurred, attemptCost)
+			if err == nil {
+				incurred, err = addCost(incurred, attemptCost)
+			}
+			if err == nil {
+				response.Usage.CostMicros = attemptCost
+			}
 			if err == nil {
 				call.InputTokens, err = addCost(call.InputTokens, response.Usage.InputTokens)
 			}
@@ -789,6 +861,10 @@ func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequ
 			}
 			if schemaErr := validateResponse(request.ResponseSchema, response.Content); schemaErr != nil {
 				lastErr = schemaErr
+				continue
+			}
+			if semanticErr := validateResponseSemantics(request.ResponseSemanticValidator, response.Content); semanticErr != nil {
+				lastErr = semanticErr
 				continue
 			}
 			if response.Usage.ProviderRequestID == "" {
@@ -920,7 +996,7 @@ func (g *Gateway) generateSingle(ctx context.Context, request NormalizedRequest,
 		return NormalizedResponse{}, err
 	}
 	startedAt := g.clock().UTC()
-	call, err := newModelCall(request, options.Provider, capabilities.ActualModelVersion, 0, startedAt)
+	call, err := newModelCall(request, options, options.Provider, capabilities.ActualModelVersion, 0, startedAt)
 	if err != nil {
 		if releaseErr := g.releaseReservation(ctx, request.TenantID, options.ReservationID); releaseErr != nil {
 			return NormalizedResponse{}, releaseErr
@@ -968,14 +1044,16 @@ func (g *Gateway) generateSingle(ctx context.Context, request NormalizedRequest,
 			return NormalizedResponse{}, redactError(generateErr)
 		}
 		g.providerSucceeded(key)
-		attemptCost := response.Usage.CostMicros
-		if attemptCost < 0 {
-			attemptCost = worst
+		attemptCost, costErr := usageCost(response.Usage, pricing, worst)
+		if costErr != nil {
+			err = costErr
 		}
-		if attemptCost == 0 && worst > 0 {
-			attemptCost = worst
+		if err == nil {
+			incurred, err = addCost(incurred, attemptCost)
 		}
-		incurred, err = addCost(incurred, attemptCost)
+		if err == nil {
+			response.Usage.CostMicros = attemptCost
+		}
 		if err == nil {
 			call.InputTokens, err = addCost(call.InputTokens, response.Usage.InputTokens)
 		}
@@ -1028,6 +1106,10 @@ func (g *Gateway) generateSingle(ctx context.Context, request NormalizedRequest,
 			lastErr = err
 			continue
 		}
+		if err := validateResponseSemantics(request.ResponseSemanticValidator, response.Content); err != nil {
+			lastErr = err
+			continue
+		}
 		if response.Usage.ProviderRequestID == "" {
 			response.Usage.ProviderRequestID = response.ProviderRequestID
 		}
@@ -1054,8 +1136,8 @@ func (g *Gateway) generateSingle(ctx context.Context, request NormalizedRequest,
 	return NormalizedResponse{}, ErrOutputSchema
 }
 
-func newModelCall(request NormalizedRequest, provider, actualModelVersion string, inputTokens int64, createdAt time.Time) (ModelCall, error) {
-	encoded, err := json.Marshal(request)
+func newModelCall(request NormalizedRequest, options GenerateOptions, provider, actualModelVersion string, inputTokens int64, createdAt time.Time) (ModelCall, error) {
+	encoded, err := json.Marshal(executionDigestInput{Request: request, Options: options})
 	if err != nil {
 		return ModelCall{}, ErrInvalidRequest
 	}
@@ -1123,62 +1205,61 @@ func elapsedMilliseconds(startedAt, completedAt time.Time) int64 {
 	return completedAt.Sub(startedAt).Milliseconds()
 }
 
-func (g *Gateway) prepare(ctx context.Context, request NormalizedRequest, options GenerateOptions, requireStreaming bool) (ModelAdapter, string, ModelCapabilities, TokenEstimate, string, error) {
+func (g *Gateway) prepare(ctx context.Context, request NormalizedRequest, options GenerateOptions, requireStreaming bool) (ModelAdapter, string, ModelCapabilities, TokenEstimate, string, Pricing, int64, error) {
 	if err := validateRequest(request); err != nil {
-		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", err
+		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", Pricing{}, 0, err
 	}
-	if options.MaxAttempts <= 0 {
-		options.MaxAttempts = 3
-	}
-	if options.MaxAttempts > 3 || options.Provider == "" || options.AccountID == "" || options.ReservationID == "" {
-		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", ErrInvalidRequest
+	var err error
+	options, err = normalizeGenerateOptions(options)
+	if err != nil {
+		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", Pricing{}, 0, err
 	}
 	key := options.Provider + "\x00" + request.Model
 	adapter, pricing, allowed := g.provider(key, options.Provider, request.Model)
 	if adapter == nil || !allowed {
-		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", ErrProviderNotAllowed
+		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", Pricing{}, 0, ErrProviderNotAllowed
 	}
 	if !g.providerReady(key, g.clock().UTC()) {
-		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", ErrProviderUnavailable
+		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", Pricing{}, 0, ErrProviderUnavailable
 	}
 	capabilities, err := adapter.Capabilities(ctx, request.Model)
 	if err != nil {
 		g.recordProviderFailure(key, err)
-		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", redactError(err)
+		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", Pricing{}, 0, redactError(err)
 	}
 	if request.MaxOutputTokens > capabilities.MaxOutputTokens || request.MaxOutputTokens <= 0 || requireStreaming && !capabilities.SupportsStreaming {
-		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", ErrProviderNotAllowed
+		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", Pricing{}, 0, ErrProviderNotAllowed
 	}
 	estimate, err := adapter.CountTokens(ctx, request)
 	if err != nil {
 		g.recordProviderFailure(key, err)
-		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", redactError(err)
+		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", Pricing{}, 0, redactError(err)
 	}
 	if estimate.InputTokens < 0 || estimate.InputTokens > int64(capabilities.MaxInputTokens) {
-		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", ErrInvalidRequest
+		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", Pricing{}, 0, ErrInvalidRequest
 	}
 	inputCost, err := multiplyCost(estimate.InputTokens, pricing.InputMicrosPerToken)
 	if err != nil {
-		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", err
+		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", Pricing{}, 0, err
 	}
 	outputCost, err := multiplyCost(int64(request.MaxOutputTokens), pricing.OutputMicrosPerToken)
 	if err != nil {
-		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", err
+		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", Pricing{}, 0, err
 	}
 	worst, err := addCost(inputCost, outputCost)
 	if err != nil {
-		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", err
+		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", Pricing{}, 0, err
 	}
 	if request.WorstCaseCostMicros > worst {
 		worst = request.WorstCaseCostMicros
 	}
 	if worst < 0 || worst > math.MaxInt64/int64(options.MaxAttempts) {
-		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", ErrInvalidRequest
+		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", Pricing{}, 0, ErrInvalidRequest
 	}
 	if _, err := g.claimExternalCall(ctx, request.TenantID, options.AccountID, options.ReservationID, request.RequestID, worst*int64(options.MaxAttempts)); err != nil {
-		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", err
+		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", Pricing{}, 0, err
 	}
-	return adapter, key, capabilities, estimate, options.ReservationID, nil
+	return adapter, key, capabilities, estimate, options.ReservationID, pricing, worst, nil
 }
 
 func (g *Gateway) claimExternalCall(ctx context.Context, tenantID, accountID, reservationID, requestID string, amountMicros int64) (Reservation, error) {
@@ -1220,91 +1301,190 @@ type budgetedStream struct {
 	maxResponseBytes  int
 	responseSchema    json.RawMessage
 	semanticValidator func(json.RawMessage) error
-	buffer            bytes.Buffer
+	pricing           Pricing
+	worstCost         int64
+	recvMu            sync.Mutex
+	prepared          bool
+	delivered         bool
+	finalContent      json.RawMessage
+	terminalErr       error
+	rawBytes          int
+	eventCount        int
+	lastEvent         json.RawMessage
 	once              sync.Once
 	finalizeErr       error
 }
 
 func (s *budgetedStream) Recv(ctx context.Context) (json.RawMessage, error) {
-	value, err := s.stream.Recv(ctx)
-	if err == nil {
-		if !utf8.Valid(value) || !json.Valid(value) || s.buffer.Len()+len(value) > s.maxResponseBytes {
-			if finalizeErr := s.finalizeFailure(ErrOutputSchema); finalizeErr != nil {
-				return nil, finalizeErr
-			}
-			return nil, ErrOutputSchema
+	if ctx == nil {
+		return nil, ErrInvalidRequest
+	}
+	s.recvMu.Lock()
+	defer s.recvMu.Unlock()
+	if s.terminalErr != nil {
+		return nil, s.terminalErr
+	}
+	if s.delivered {
+		return nil, io.EOF
+	}
+	if !s.prepared {
+		if err := s.drain(ctx); err != nil {
+			s.terminalErr = err
+			return nil, err
 		}
-		_, _ = s.buffer.Write(value)
-		return value, nil
+		s.prepared = true
 	}
-	if errors.Is(err, io.EOF) {
-		if finalizeErr := s.finalizeTerminal(); finalizeErr != nil {
-			return nil, finalizeErr
-		}
-		return nil, err
+	if len(s.finalContent) == 0 {
+		s.delivered = true
+		return nil, io.EOF
 	}
-	if finalizeErr := s.finalizeFailure(err); finalizeErr != nil {
-		return nil, finalizeErr
-	}
-	return value, err
+	s.delivered = true
+	return append(json.RawMessage(nil), s.finalContent...), nil
 }
 
 func (s *budgetedStream) Close() error {
 	closeErr := s.stream.Close()
+	s.recvMu.Lock()
+	defer s.recvMu.Unlock()
 	if finalizeErr := s.finalizeFailure(nil); finalizeErr != nil {
 		return finalizeErr
 	}
 	return closeErr
 }
 
+func (s *budgetedStream) drain(ctx context.Context) error {
+	for {
+		value, err := s.stream.Recv(ctx)
+		if err == nil {
+			if !utf8.Valid(value) || !json.Valid(value) || s.rawBytes+len(value) > s.maxResponseBytes {
+				_ = s.finalizeFailure(ErrOutputSchema)
+				return ErrOutputSchema
+			}
+			if containsCredentialLike(string(value)) {
+				_ = s.finalizeFailure(ErrCredentialDetected)
+				return ErrCredentialDetected
+			}
+			s.rawBytes += len(value)
+			s.eventCount++
+			s.lastEvent = append(s.lastEvent[:0], value...)
+			continue
+		}
+		if errors.Is(err, io.EOF) {
+			return s.finalizeTerminal()
+		}
+		if finalizeErr := s.finalizeFailure(err); finalizeErr != nil {
+			return finalizeErr
+		}
+		return err
+	}
+}
+
+func (s *budgetedStream) finalContentValue() ([]byte, error) {
+	if contentStream, ok := s.stream.(FinalContentAwareStream); ok {
+		content, ready := contentStream.FinalContent()
+		if !ready {
+			return nil, ErrReconciliationRequired
+		}
+		return append([]byte(nil), content...), nil
+	}
+	if s.eventCount == 0 {
+		return nil, nil
+	}
+	if s.eventCount != 1 {
+		return nil, ErrOutputSchema
+	}
+	// Legacy adapters may expose one already-normalized event. Multiple raw
+	// provider envelopes are never concatenated.
+	return append([]byte(nil), s.lastEvent...), nil
+}
+
 func (s *budgetedStream) finalizeTerminal() error {
 	s.once.Do(func() {
 		usage, found := streamUsage(s.stream)
+		content, contentErr := s.finalContentValue()
+		if contentErr != nil && !errors.Is(contentErr, ErrOutputSchema) {
+			s.finalizeErr = s.finalizeUnknown()
+			if s.finalizeErr == nil {
+				s.finalizeErr = contentErr
+			}
+			return
+		}
 		if !found || usage.InputTokens < 0 || usage.OutputTokens < 0 || usage.CostMicros < 0 {
 			s.finalizeErr = s.finalizeUnknown()
+			if s.finalizeErr == nil {
+				if contentErr != nil {
+					s.finalizeErr = contentErr
+				} else {
+					s.finalizeErr = ErrReconciliationRequired
+				}
+			}
+			return
+		}
+		if contentErr != nil {
+			s.finalizeErr = s.finishRejected(ErrOutputSchema, usage, nil)
+			return
+		}
+		cost, costErr := usageCost(usage, s.pricing, s.worstCost)
+		if costErr != nil {
+			s.finalizeErr = s.finalizeUnknown()
+			if s.finalizeErr == nil {
+				s.finalizeErr = costErr
+			}
 			return
 		}
 		call := s.call
 		call.InputTokens = usage.InputTokens
 		call.OutputTokens = usage.OutputTokens
-		call.CostMicros = usage.CostMicros
+		call.CostMicros = cost
 		call.ProviderRequestID = usage.ProviderRequestID
 		if usage.ModelVersion != "" {
 			call.ActualModelVersion = usage.ModelVersion
 		}
-		if s.buffer.Len() != 0 {
-			call.OutputSHA256 = digestBytes(s.buffer.Bytes())
+		if len(content) != 0 {
+			call.OutputSHA256 = digestBytes(content)
 		}
 		call.LatencyMilliseconds = elapsedMilliseconds(s.startedAt, s.clock().UTC())
-		if validationErr := validateStreamFinal(s.responseSchema, s.semanticValidator, s.buffer.Bytes()); validationErr != nil {
-			call.Status = ModelCallFailedOutputSchema
-			s.finalizeErr = s.finalizeCall(context.WithoutCancel(s.context), ModelCallFinalization{
-				ReservationID: s.reservationID, Disposition: ReservationDispositionSettle,
-				ActualMicros: usage.CostMicros, Call: call,
-			})
-			if s.finalizeErr == nil {
-				s.finalizeErr = validationErr
-			}
+		if containsCredentialLike(string(content)) {
+			s.finalizeErr = s.finishRejected(ErrCredentialDetected, usage, content)
 			return
 		}
-		if containsCredentialLike(string(s.buffer.Bytes())) {
-			call.Status = ModelCallFailedCredential
-			s.finalizeErr = s.finalizeCall(context.WithoutCancel(s.context), ModelCallFinalization{
-				ReservationID: s.reservationID, Disposition: ReservationDispositionSettle,
-				ActualMicros: usage.CostMicros, Call: call,
-			})
-			if s.finalizeErr == nil {
-				s.finalizeErr = ErrCredentialDetected
-			}
+		if validationErr := validateStreamFinal(s.responseSchema, s.semanticValidator, content); validationErr != nil {
+			s.finalizeErr = s.finishRejected(validationErr, usage, content)
 			return
 		}
 		call.Status = ModelCallSucceeded
 		s.finalizeErr = s.finalizeCall(context.WithoutCancel(s.context), ModelCallFinalization{
 			ReservationID: s.reservationID, Disposition: ReservationDispositionSettle,
-			ActualMicros: usage.CostMicros, Call: call,
+			ActualMicros: cost, Call: call,
 		})
+		if s.finalizeErr == nil {
+			s.finalContent = append(json.RawMessage(nil), content...)
+		}
 	})
 	return s.finalizeErr
+}
+
+func (s *budgetedStream) finishRejected(rejection error, usage Usage, content []byte) error {
+	call := s.call
+	call.InputTokens = usage.InputTokens
+	call.OutputTokens = usage.OutputTokens
+	call.CostMicros, _ = usageCost(usage, s.pricing, s.worstCost)
+	call.Status = ModelCallFailedOutputSchema
+	if errors.Is(rejection, ErrCredentialDetected) {
+		call.Status = ModelCallFailedCredential
+	}
+	if len(content) != 0 {
+		call.OutputSHA256 = digestBytes(content)
+	}
+	call.LatencyMilliseconds = elapsedMilliseconds(s.startedAt, s.clock().UTC())
+	finalizeErr := s.finalizeCall(context.WithoutCancel(s.context), ModelCallFinalization{
+		ReservationID: s.reservationID, Disposition: ReservationDispositionSettle,
+		ActualMicros: call.CostMicros, Call: call,
+	})
+	if finalizeErr != nil {
+		return finalizeErr
+	}
+	return rejection
 }
 
 func validateStreamFinal(schema json.RawMessage, semanticValidator func(json.RawMessage) error, content []byte) error {
@@ -1314,10 +1494,15 @@ func validateStreamFinal(schema json.RawMessage, semanticValidator func(json.Raw
 	if err := validateResponse(schema, content); err != nil {
 		return err
 	}
-	if semanticValidator != nil {
-		if err := semanticValidator(append(json.RawMessage(nil), content...)); err != nil {
-			return ErrOutputSchema
-		}
+	return validateResponseSemantics(semanticValidator, content)
+}
+
+func validateResponseSemantics(semanticValidator func(json.RawMessage) error, content []byte) error {
+	if semanticValidator == nil {
+		return nil
+	}
+	if err := semanticValidator(append(json.RawMessage(nil), content...)); err != nil {
+		return ErrOutputSchema
 	}
 	return nil
 }
@@ -1325,7 +1510,7 @@ func validateStreamFinal(schema json.RawMessage, semanticValidator func(json.Raw
 func (s *budgetedStream) finalizeFailure(cause error) error {
 	s.once.Do(func() {
 		var providerFailure *ProviderFailure
-		if cause != nil && errors.As(cause, &providerFailure) && providerFailure.OutcomeKnown && s.buffer.Len() == 0 {
+		if cause != nil && errors.As(cause, &providerFailure) && providerFailure.OutcomeKnown && s.rawBytes == 0 {
 			call := s.call
 			call.Status = ModelCallFailedProvider
 			call.LatencyMilliseconds = elapsedMilliseconds(s.startedAt, s.clock().UTC())
@@ -1410,6 +1595,27 @@ func addCost(current, additional int64) (int64, error) {
 		return 0, ErrInvalidRequest
 	}
 	return current + additional, nil
+}
+
+func usageCost(usage Usage, pricing Pricing, fallback int64) (int64, error) {
+	if usage.InputTokens < 0 || usage.OutputTokens < 0 || usage.CostMicros < 0 || fallback < 0 {
+		return 0, ErrInvalidRequest
+	}
+	if usage.InputTokens != 0 || usage.OutputTokens != 0 {
+		input, err := multiplyCost(usage.InputTokens, pricing.InputMicrosPerToken)
+		if err != nil {
+			return 0, err
+		}
+		output, err := multiplyCost(usage.OutputTokens, pricing.OutputMicrosPerToken)
+		if err != nil {
+			return 0, err
+		}
+		return addCost(input, output)
+	}
+	if usage.CostMicros != 0 {
+		return usage.CostMicros, nil
+	}
+	return fallback, nil
 }
 
 func multiplyCost(units, rate int64) (int64, error) {

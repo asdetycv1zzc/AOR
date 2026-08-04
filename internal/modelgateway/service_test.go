@@ -87,6 +87,14 @@ func TestHTTPServiceBindsAuthorizationBeforeGateway(t *testing.T) {
 	if writer.Code != http.StatusForbidden || errorCode(t, writer) != "AOR_FORBIDDEN" || adapter.GenerateCalls() != 0 {
 		t.Fatalf("status=%d code=%s calls=%d", writer.Code, errorCode(t, writer), adapter.GenerateCalls())
 	}
+	input.Request.DataClassification = "PUBLIC"
+	request = httptest.NewRequest(http.MethodPost, "/v1/model/generate", bytes.NewReader(marshalTransport(t, input)))
+	request.Header.Set("Content-Type", "application/json")
+	writer = httptest.NewRecorder()
+	service.ServeHTTP(writer, request)
+	if writer.Code != http.StatusForbidden || errorCode(t, writer) != "AOR_FORBIDDEN" || adapter.GenerateCalls() != 0 {
+		t.Fatalf("classification status=%d code=%s calls=%d", writer.Code, errorCode(t, writer), adapter.GenerateCalls())
+	}
 }
 
 func TestHTTPServiceCapabilitiesCancelAndStreaming(t *testing.T) {
@@ -123,7 +131,7 @@ func TestHTTPServiceCapabilitiesCancelAndStreaming(t *testing.T) {
 		t.Fatalf("stream status=%d headers=%v body=%q", streamWriter.Code, streamWriter.Header(), streamWriter.Body.String())
 	}
 	reservation, found := ledger.Reservation("tenant", "stream-reservation")
-	if !found || reservation.State != ReservationReconcile {
+	if !found || reservation.State != ReservationSettled || reservation.SettledMicros != 3 {
 		t.Fatalf("stream reservation = %#v found=%v", reservation, found)
 	}
 }
@@ -201,6 +209,21 @@ func TestHTTPServiceMapsStableErrorsAndBoundsBodies(t *testing.T) {
 	}
 }
 
+func TestRedactErrorPreservesStableClassification(t *testing.T) {
+	if !errors.Is(redactError(ErrOutputSchema), ErrOutputSchema) {
+		t.Fatal("redacted schema error lost its sentinel")
+	}
+	failure := &ProviderFailure{Cause: errors.New("provider failed"), Retryable: true, OutcomeKnown: false}
+	redacted := redactError(failure)
+	var classified *ProviderFailure
+	if !errors.As(redacted, &classified) || classified != failure {
+		t.Fatalf("redacted provider failure = %#v", redacted)
+	}
+	if got := stableError(redacted); got.Code != "AOR_PROVIDER_RESULT_UNKNOWN" {
+		t.Fatalf("stable error = %#v", got)
+	}
+}
+
 type serviceAuthorizer struct{}
 
 type nilServiceAuthorizer struct{}
@@ -213,7 +236,7 @@ func (serviceAuthorizer) AuthorizeModel(_ context.Context, request ModelAuthoriz
 	if request.Provider != "provider" {
 		return ModelAuthorization{}, errors.New("denied")
 	}
-	return ModelAuthorization{TenantID: "tenant", ProjectID: "project", TaskID: "task", AgentInstanceID: "agent", Role: "EXECUTOR", Provider: "provider", AccountID: "account"}, nil
+	return ModelAuthorization{TenantID: "tenant", ProjectID: "project", TaskID: "task", AgentInstanceID: "agent", Role: "EXECUTOR", Provider: "provider", AccountID: "account", DataClassification: "INTERNAL"}, nil
 }
 
 type serviceAdapter struct {
@@ -238,7 +261,7 @@ func (a *serviceAdapter) Generate(_ context.Context, request NormalizedRequest) 
 }
 
 func (a *serviceAdapter) Stream(context.Context, NormalizedRequest) (ResponseStream, error) {
-	return &serviceStream{events: []json.RawMessage{json.RawMessage(`{"delta":"ok"}`)}}, nil
+	return &serviceStream{events: []json.RawMessage{json.RawMessage(`{"delta":"ok"}`)}, usage: Usage{InputTokens: 2, OutputTokens: 1, ProviderRequestID: "provider-stream", ModelVersion: "model-v1"}}, nil
 }
 
 func (a *serviceAdapter) Cancel(context.Context, string) error {
@@ -271,6 +294,7 @@ func (a *serviceAdapter) CancelCalls() int {
 type serviceStream struct {
 	mu     sync.Mutex
 	events []json.RawMessage
+	usage  Usage
 	closed bool
 }
 
@@ -290,6 +314,21 @@ func (s *serviceStream) Close() error {
 	s.closed = true
 	s.mu.Unlock()
 	return nil
+}
+
+func (s *serviceStream) FinalUsage() (Usage, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.usage, len(s.events) == 0 && !s.closed
+}
+
+func (s *serviceStream) FinalContent() (json.RawMessage, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.events) != 0 || s.closed {
+		return nil, false
+	}
+	return json.RawMessage(`{"delta":"ok"}`), true
 }
 
 func newHTTPService(t *testing.T) (*HTTPService, *serviceAdapter, *BudgetLedger) {

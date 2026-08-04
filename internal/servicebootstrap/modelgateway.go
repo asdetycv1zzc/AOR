@@ -121,9 +121,22 @@ func ModelGateway(config runtimeconfig.Config, clients *runtimeclient.Clients) (
 func configuredProviderPolicy(providers []runtimeconfig.ProviderConfig) modelgateway.ProviderPolicy {
 	candidates := make([]modelgateway.ProviderCandidate, 0)
 	for _, provider := range providers {
+		classes := append([]string(nil), provider.AllowedDataClassifications...)
+		if len(classes) == 0 {
+			classes = []string{"PUBLIC"}
+		}
+		residency := append([]string(nil), provider.DataResidency...)
+		if len(residency) == 0 {
+			residency = []string{"provider-defined"}
+		}
+		retention := provider.RetentionPolicy
+		if retention == "" {
+			retention = "provider-defined"
+		}
 		for _, model := range provider.Models {
 			candidates = append(candidates, modelgateway.ProviderCandidate{
 				Provider: provider.ID, Model: model, CapabilityRank: 100,
+				AllowedDataClassifications: append([]string(nil), classes...), AllowedDataResidencies: append([]string(nil), residency...), RetentionPolicy: retention,
 			})
 		}
 	}
@@ -136,13 +149,14 @@ func authorizeProviderCandidate(ctx context.Context, authorizer *modelGatewayAut
 	}
 	authorization, err := authorizer.AuthorizeModel(ctx, modelgateway.ModelAuthorizationRequest{
 		Operation: input.Operation, Provider: input.Candidate.Provider, Model: input.Candidate.Model,
-		RequestID: input.Request.RequestID, AccountID: input.AccountID, ReservationID: input.ReservationID,
+		DataClassification: input.Request.DataClassification,
+		RequestID:          input.Request.RequestID, AccountID: input.AccountID, ReservationID: input.ReservationID,
 		ProjectID: input.Request.ProjectID, TaskID: input.Request.TaskID,
 		AgentInstanceID: input.Request.AgentInstanceID, Role: input.Request.Role,
 	})
 	if err != nil || authorization.TenantID != input.Request.TenantID || authorization.ProjectID != input.Request.ProjectID ||
 		authorization.TaskID != input.Request.TaskID || authorization.AgentInstanceID != input.Request.AgentInstanceID ||
-		authorization.Role != input.Request.Role || authorization.Provider != input.Candidate.Provider || authorization.AccountID != input.AccountID {
+		authorization.Role != input.Request.Role || authorization.Provider != input.Candidate.Provider || authorization.AccountID != input.AccountID || authorization.DataClassification != input.Request.DataClassification {
 		return modelgateway.ErrAuthorizationDenied
 	}
 	return nil
@@ -272,6 +286,9 @@ func (authorizer *modelGatewayAuthorizer) AuthorizeModel(ctx context.Context, re
 	if err != nil {
 		return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
 	}
+	if project.Classification == "" || request.DataClassification != "" && request.DataClassification != project.Classification {
+		return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
+	}
 	reservationAvailable := account.ID == request.AccountID && modelAccountScopeMatches(account.ScopeType, account.ScopeID, projectID, request.TaskID) && reservation.AccountID == request.AccountID && reservation.RequestID == request.RequestID && reservation.State == string(modelgateway.ReservationOpen)
 	budgetAvailable := account.Available || reservationAvailable
 	if request.Operation != "capabilities" && (request.AccountID == "" || !budgetAvailable) {
@@ -287,7 +304,7 @@ func (authorizer *modelGatewayAuthorizer) AuthorizeModel(ctx context.Context, re
 	action := modelAction(request.Operation)
 	digest, err := canonicaljson.Digest(mustJSON(modelAuthorizationDigest{
 		Operation: request.Operation, Provider: request.Provider, Model: request.Model, RequestID: request.RequestID,
-		ProjectID: projectID, TaskID: request.TaskID, AgentInstanceID: agentInstanceID, Role: role,
+		ProjectID: projectID, TaskID: request.TaskID, AgentInstanceID: agentInstanceID, Role: role, DataClassification: project.Classification,
 	}))
 	if err != nil {
 		return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
@@ -307,18 +324,19 @@ func (authorizer *modelGatewayAuthorizer) AuthorizeModel(ctx context.Context, re
 	if err != nil || !decision.Decision.Allowed() {
 		return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
 	}
-	return modelgateway.ModelAuthorization{TenantID: principal.TenantID, ProjectID: projectID, TaskID: task.ID, AgentInstanceID: agentInstanceID, Role: role, Provider: request.Provider, AccountID: request.AccountID}, nil
+	return modelgateway.ModelAuthorization{TenantID: principal.TenantID, ProjectID: projectID, TaskID: task.ID, AgentInstanceID: agentInstanceID, Role: role, Provider: request.Provider, AccountID: request.AccountID, DataClassification: project.Classification}, nil
 }
 
 type modelAuthorizationDigest struct {
-	Operation       string `json:"operation"`
-	Provider        string `json:"provider"`
-	Model           string `json:"model"`
-	RequestID       string `json:"requestId"`
-	ProjectID       string `json:"projectId"`
-	TaskID          string `json:"taskId"`
-	AgentInstanceID string `json:"agentInstanceId"`
-	Role            string `json:"role"`
+	Operation          string `json:"operation"`
+	Provider           string `json:"provider"`
+	Model              string `json:"model"`
+	RequestID          string `json:"requestId"`
+	ProjectID          string `json:"projectId"`
+	TaskID             string `json:"taskId"`
+	AgentInstanceID    string `json:"agentInstanceId"`
+	Role               string `json:"role"`
+	DataClassification string `json:"dataClassification"`
 }
 
 type modelProjectProjection struct {

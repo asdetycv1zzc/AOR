@@ -58,6 +58,11 @@ func TestModelGatewayRequiresTwoProviderFamilies(t *testing.T) {
 	if len(config.ModelGateway.Providers) != 2 {
 		t.Fatalf("provider count = %d", len(config.ModelGateway.Providers))
 	}
+	for _, provider := range config.ModelGateway.Providers {
+		if len(provider.AllowedDataClassifications) != 1 || provider.AllowedDataClassifications[0] != "PUBLIC" {
+			t.Fatalf("default provider classification = %#v", provider.AllowedDataClassifications)
+		}
+	}
 
 	base["AOR_MODEL_PROVIDERS_JSON"] = `[
 		{"id":"one","provider":"openai","baseUrl":"https://one.example/v1","apiKeyRef":"secret://model/one","models":["model-a"]},
@@ -214,6 +219,26 @@ func TestProviderCapabilityProfilePreservesExplicitFalse(t *testing.T) {
 	}
 	if config.ModelGateway.Providers[0].SupportsStreaming || config.ModelGateway.Providers[0].SupportsToolCalls {
 		t.Fatalf("explicit capability false was overwritten: %#v", config.ModelGateway.Providers[0])
+	}
+}
+
+func TestProviderClassificationRequiresTrustedMetadata(t *testing.T) {
+	base := map[string]string{
+		"AOR_DATABASE_PASSWORD_REF": "secret://postgres/password",
+		"AOR_MODEL_PROVIDERS_JSON": `[
+			{"id":"one","provider":"openai","baseUrl":"https://one.example","apiKeyRef":"secret://model/one","models":["m"],"allowedDataClassifications":["CONFIDENTIAL"]},
+			{"id":"two","provider":"deepseek","baseUrl":"https://two.example","apiKeyRef":"secret://model/two","models":["m"]}
+		]`,
+	}
+	if _, err := Load("aor-model-gateway", environment(base)); !errors.Is(err, ErrInvalidConfiguration) {
+		t.Fatalf("provider-defined confidential metadata error = %v", err)
+	}
+	base["AOR_MODEL_PROVIDERS_JSON"] = `[
+		{"id":"one","provider":"openai","baseUrl":"https://one.example","apiKeyRef":"secret://model/one","models":["m"],"allowedDataClassifications":["UNKNOWN"],"dataResidency":["US"],"retentionPolicy":"none","modalities":["text"],"maxInputTokens":1024,"maxOutputTokens":256},
+		{"id":"two","provider":"deepseek","baseUrl":"https://two.example","apiKeyRef":"secret://model/two","models":["m"]}
+	]`
+	if _, err := Load("aor-model-gateway", environment(base)); !errors.Is(err, ErrInvalidConfiguration) {
+		t.Fatalf("invalid provider classification error = %v", err)
 	}
 }
 

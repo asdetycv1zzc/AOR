@@ -15,9 +15,19 @@ func redactError(value error) error {
 		return nil
 	}
 	message, _ := credentials.Redact(value.Error(), "[REDACTED]")
-	return &gatewayError{message: message}
+	return &gatewayError{message: message, cause: value}
 }
 
-type gatewayError struct{ message string }
+type gatewayError struct {
+	message string
+	cause   error
+}
 
 func (e *gatewayError) Error() string { return strings.TrimSpace(e.message) }
+
+func (e *gatewayError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}

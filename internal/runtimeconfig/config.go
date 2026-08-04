@@ -94,24 +94,25 @@ type ModelGatewayConfig struct {
 }
 
 type ProviderConfig struct {
-	ID                     string   `json:"id"`
-	Provider               string   `json:"provider"`
-	BaseURL                string   `json:"baseUrl"`
-	APIKeyRef              string   `json:"apiKeyRef"`
-	Models                 []string `json:"models"`
-	InputMicrosPerToken    int64    `json:"inputMicrosPerToken"`
-	OutputMicrosPerToken   int64    `json:"outputMicrosPerToken"`
-	SupportsStreaming      bool     `json:"supportsStreaming"`
-	SupportsToolCalls      bool     `json:"supportsToolCalls"`
-	SupportsJSONSchema     bool     `json:"supportsJsonSchema"`
-	SupportsSeed           bool     `json:"supportsSeed"`
-	SupportsPromptCaching  bool     `json:"supportsPromptCaching"`
-	MaxInputTokens         int      `json:"maxInputTokens"`
-	MaxOutputTokens        int      `json:"maxOutputTokens"`
-	DataResidency          []string `json:"dataResidency"`
-	RetentionPolicy        string   `json:"retentionPolicy"`
-	Modalities             []string `json:"modalities"`
-	capabilitiesConfigured bool
+	ID                         string   `json:"id"`
+	Provider                   string   `json:"provider"`
+	BaseURL                    string   `json:"baseUrl"`
+	APIKeyRef                  string   `json:"apiKeyRef"`
+	Models                     []string `json:"models"`
+	InputMicrosPerToken        int64    `json:"inputMicrosPerToken"`
+	OutputMicrosPerToken       int64    `json:"outputMicrosPerToken"`
+	SupportsStreaming          bool     `json:"supportsStreaming"`
+	SupportsToolCalls          bool     `json:"supportsToolCalls"`
+	SupportsJSONSchema         bool     `json:"supportsJsonSchema"`
+	SupportsSeed               bool     `json:"supportsSeed"`
+	SupportsPromptCaching      bool     `json:"supportsPromptCaching"`
+	MaxInputTokens             int      `json:"maxInputTokens"`
+	MaxOutputTokens            int      `json:"maxOutputTokens"`
+	AllowedDataClassifications []string `json:"allowedDataClassifications"`
+	DataResidency              []string `json:"dataResidency"`
+	RetentionPolicy            string   `json:"retentionPolicy"`
+	Modalities                 []string `json:"modalities"`
+	capabilitiesConfigured     bool
 }
 
 type ServiceEndpoints struct {
@@ -318,7 +319,7 @@ func validateProviders(providers []ProviderConfig) error {
 	ids := make(map[string]struct{}, len(providers))
 	families := make(map[string]struct{}, len(providers))
 	for _, provider := range providers {
-		if provider.ID == "" || provider.Provider == "" || !validURL(provider.BaseURL, "http", "https") || !validSecretReference(provider.APIKeyRef) || len(provider.Models) == 0 || provider.InputMicrosPerToken < 0 || provider.OutputMicrosPerToken < 0 || provider.MaxInputTokens <= 0 || provider.MaxOutputTokens <= 0 || strings.TrimSpace(provider.RetentionPolicy) == "" || len(provider.DataResidency) == 0 || len(provider.Modalities) == 0 {
+		if provider.ID == "" || provider.Provider == "" || !validURL(provider.BaseURL, "http", "https") || !validSecretReference(provider.APIKeyRef) || len(provider.Models) == 0 || provider.InputMicrosPerToken < 0 || provider.OutputMicrosPerToken < 0 || provider.MaxInputTokens <= 0 || provider.MaxOutputTokens <= 0 || len(provider.AllowedDataClassifications) == 0 || strings.TrimSpace(provider.RetentionPolicy) == "" || len(provider.DataResidency) == 0 || len(provider.Modalities) == 0 {
 			return ErrInvalidConfiguration
 		}
 		if _, duplicate := ids[provider.ID]; duplicate {
@@ -341,6 +342,14 @@ func validateProviders(providers []ProviderConfig) error {
 				return ErrInvalidConfiguration
 			}
 		}
+		for _, classification := range provider.AllowedDataClassifications {
+			if !oneOf(classification, "PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED") {
+				return ErrInvalidConfiguration
+			}
+		}
+		if (provider.RetentionPolicy == "provider-defined" || len(provider.DataResidency) == 1 && provider.DataResidency[0] == "provider-defined") && allowsNonPublic(provider.AllowedDataClassifications) {
+			return ErrInvalidConfiguration
+		}
 		for _, modality := range provider.Modalities {
 			if strings.TrimSpace(modality) == "" || len(modality) > 64 || strings.ContainsAny(modality, "\r\n\x00") {
 				return ErrInvalidConfiguration
@@ -356,12 +365,24 @@ func validateProviders(providers []ProviderConfig) error {
 	return nil
 }
 
+func allowsNonPublic(classifications []string) bool {
+	for _, classification := range classifications {
+		if classification != "PUBLIC" {
+			return true
+		}
+	}
+	return false
+}
+
 // Capability defaults are deliberately conservative for providers that do not
 // publish a complete static model catalogue. Deployments can override every
 // value in AOR_MODEL_PROVIDERS_JSON; unsupported optional features stay off.
 func applyProviderCapabilityDefaults(providers []ProviderConfig) {
 	for index := range providers {
 		provider := &providers[index]
+		if len(provider.AllowedDataClassifications) == 0 {
+			provider.AllowedDataClassifications = []string{"PUBLIC"}
+		}
 		if provider.capabilitiesConfigured {
 			continue
 		}

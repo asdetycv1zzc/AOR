@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/akimisaka/aor/internal/modelgateway"
 )
@@ -22,7 +23,30 @@ type responseStream struct {
 	done          chan struct{}
 	closeOnce     sync.Once
 	providerID    string
+	stateMu       sync.RWMutex
+	content       []byte
+	usage         modelgateway.Usage
+	usageFound    bool
+	complete      bool
+	failed        bool
 }
+
+type streamEvent struct {
+	ID      string `json:"id"`
+	Model   string `json:"model"`
+	Choices []struct {
+		Delta struct {
+			Content *string `json:"content"`
+		} `json:"delta"`
+		Message struct {
+			Content *string `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
+	Usage *chatUsage `json:"usage"`
+}
+
+var _ modelgateway.UsageAwareStream = (*responseStream)(nil)
+var _ modelgateway.FinalContentAwareStream = (*responseStream)(nil)
 
 func (s *responseStream) Recv(ctx context.Context) (json.RawMessage, error) {
 	if ctx == nil {
@@ -91,10 +115,21 @@ func (s *responseStream) read() {
 		if len(line) == 0 {
 			if len(data) != 0 {
 				if string(data) == "[DONE]" {
+					s.stateMu.Lock()
+					s.complete = true
+					s.stateMu.Unlock()
 					return
 				}
-				if !json.Valid(data) || s.adapter.containsCredential(string(data)) {
+				if !json.Valid(data) {
 					s.fail(modelgateway.ErrOutputSchema)
+					return
+				}
+				if s.adapter.containsCredential(string(data)) {
+					s.fail(modelgateway.ErrCredentialDetected)
+					return
+				}
+				if err := s.observe(data); err != nil {
+					s.fail(err)
 					return
 				}
 				s.registerProviderID(data)
@@ -115,6 +150,9 @@ func (s *responseStream) read() {
 		}
 		if errors.Is(err, io.EOF) {
 			if len(data) == 0 {
+				s.stateMu.Lock()
+				s.complete = true
+				s.stateMu.Unlock()
 				return
 			}
 			s.fail(modelgateway.ErrOutputSchema)
@@ -124,10 +162,77 @@ func (s *responseStream) read() {
 }
 
 func (s *responseStream) fail(err error) {
+	s.stateMu.Lock()
+	s.failed = true
+	s.stateMu.Unlock()
 	select {
 	case s.failures <- err:
 	default:
 	}
+}
+
+func (s *responseStream) observe(data []byte) error {
+	var event streamEvent
+	if err := json.Unmarshal(data, &event); err != nil {
+		return modelgateway.ErrOutputSchema
+	}
+	if s.adapter.containsCredential(event.ID) || s.adapter.containsCredential(event.Model) {
+		return modelgateway.ErrCredentialDetected
+	}
+	for _, choice := range event.Choices {
+		content := choice.Delta.Content
+		if content == nil {
+			content = choice.Message.Content
+		}
+		if content == nil {
+			continue
+		}
+		if !utf8.ValidString(*content) || s.adapter.containsCredential(*content) {
+			return modelgateway.ErrCredentialDetected
+		}
+		s.stateMu.Lock()
+		s.content = append(s.content, []byte(*content)...)
+		s.stateMu.Unlock()
+	}
+	if event.Usage != nil {
+		usage, err := s.adapter.NormalizeUsage(*event.Usage)
+		if err != nil {
+			return err
+		}
+		s.stateMu.Lock()
+		if event.ID != "" {
+			usage.ProviderRequestID = event.ID
+		} else if s.usage.ProviderRequestID != "" {
+			usage.ProviderRequestID = s.usage.ProviderRequestID
+		}
+		if event.Model != "" {
+			usage.ModelVersion = event.Model
+		} else if s.usage.ModelVersion != "" {
+			usage.ModelVersion = s.usage.ModelVersion
+		}
+		s.usage = usage
+		s.usageFound = true
+		s.stateMu.Unlock()
+	}
+	return nil
+}
+
+func (s *responseStream) FinalUsage() (modelgateway.Usage, bool) {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	if !s.complete || s.failed || !s.usageFound {
+		return modelgateway.Usage{}, false
+	}
+	return s.usage, true
+}
+
+func (s *responseStream) FinalContent() (json.RawMessage, bool) {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	if !s.complete || s.failed {
+		return nil, false
+	}
+	return append(json.RawMessage(nil), s.content...), true
 }
 
 func (s *responseStream) registerProviderID(data []byte) {
@@ -138,15 +243,20 @@ func (s *responseStream) registerProviderID(data []byte) {
 		return
 	}
 	s.adapter.mu.Lock()
+	s.stateMu.Lock()
 	s.providerID = event.ID
+	s.stateMu.Unlock()
 	s.adapter.active[event.ID] = s
 	s.adapter.mu.Unlock()
 }
 
 func (s *responseStream) unregister() {
 	s.adapter.mu.Lock()
-	if s.providerID != "" && s.adapter.active[s.providerID] == s {
-		delete(s.adapter.active, s.providerID)
+	s.stateMu.RLock()
+	providerID := s.providerID
+	s.stateMu.RUnlock()
+	if providerID != "" && s.adapter.active[providerID] == s {
+		delete(s.adapter.active, providerID)
 	}
 	s.adapter.mu.Unlock()
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -124,6 +125,57 @@ func TestStreamParsesSSEAndCancelStopsTheRequest(t *testing.T) {
 	}
 	if _, err := stream.Recv(context.Background()); err == nil {
 		t.Fatal("cancelled stream returned an event")
+	}
+}
+
+func TestStreamAggregatesDeltasAndRequestsAuthoritativeUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var payload struct {
+			Stream        bool `json:"stream"`
+			StreamOptions struct {
+				IncludeUsage bool `json:"include_usage"`
+			} `json:"stream_options"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if !payload.Stream || !payload.StreamOptions.IncludeUsage {
+			t.Fatalf("stream request options = %#v", payload)
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte("data: {\"id\":\"chatcmpl-aggregate\",\"model\":\"gpt-test-v2\",\"choices\":[{\"delta\":{\"content\":\"{\\\"ok\\\"\"}}]}\n\n"))
+		_, _ = writer.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\":true}\"}}]}\n\n"))
+		_, _ = writer.Write([]byte("data: {\"id\":\"chatcmpl-aggregate\",\"model\":\"gpt-test-v2\",\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":2,\"total_tokens\":9}}\n\n"))
+		_, _ = writer.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+	adapter := testAdapter(t, server.URL, Config{})
+	stream, err := adapter.Stream(context.Background(), testRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := stream.Recv(context.Background()); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+	}
+	contentStream, ok := stream.(modelgateway.FinalContentAwareStream)
+	if !ok {
+		t.Fatal("stream does not expose final content")
+	}
+	content, ready := contentStream.FinalContent()
+	if !ready || string(content) != `{"ok":true}` {
+		t.Fatalf("final content=%s ready=%v", content, ready)
+	}
+	usageStream, ok := stream.(modelgateway.UsageAwareStream)
+	if !ok {
+		t.Fatal("stream does not expose final usage")
+	}
+	usage, ready := usageStream.FinalUsage()
+	if !ready || usage.InputTokens != 7 || usage.OutputTokens != 2 || usage.ProviderRequestID != "chatcmpl-aggregate" || usage.ModelVersion != "gpt-test-v2" {
+		t.Fatalf("final usage=%#v ready=%v", usage, ready)
 	}
 }
 

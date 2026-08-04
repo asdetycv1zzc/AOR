@@ -90,6 +90,14 @@ type UsageAwareStream interface {
 	FinalUsage() (Usage, bool)
 }
 
+// FinalContentAwareStream exposes the provider's normalized response after a
+// stream has reached its terminal event. The gateway uses this value for
+// validation and never forwards individual provider envelopes to callers.
+type FinalContentAwareStream interface {
+	ResponseStream
+	FinalContent() (json.RawMessage, bool)
+}
+
 // ProviderCandidate describes one explicitly approved route in a provider
 // policy. Model is optional and defaults to the logical model in the request.
 // CapabilityRank is an organization-defined quality floor; larger values are
@@ -99,6 +107,8 @@ type ProviderCandidate struct {
 	Model                      string   `json:"model,omitempty"`
 	CapabilityRank             int      `json:"capabilityRank"`
 	AllowedDataClassifications []string `json:"allowedDataClassifications,omitempty"`
+	AllowedDataResidencies     []string `json:"allowedDataResidencies,omitempty"`
+	RetentionPolicy            string   `json:"retentionPolicy,omitempty"`
 }
 
 type ProviderPolicy struct {
