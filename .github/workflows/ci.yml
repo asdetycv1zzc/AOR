@@ -58,6 +58,42 @@ jobs:
           GOCACHE: ${{ github.workspace }}/.cache/go-build-${{ matrix.target.goos }}-${{ matrix.target.goarch }}
         run: go test -exec=true ./...
 
+  native-linux-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          persist-credentials: false
+      - name: Install pinned Go toolchain
+        uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Run native Linux arm64 tests
+        env:
+          GOCACHE: ${{ github.workspace }}/.cache/go-build-linux-arm64-native
+        run: go test ./...
+
+  native-windows-amd64:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          persist-credentials: false
+      - name: Install pinned Go toolchain
+        uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Run native Windows amd64 tests
+        env:
+          GOCACHE: ${{ github.workspace }}/.cache/go-build-windows-amd64-native
+        run: go test ./...
+
   supply-chain:
     runs-on: ubuntu-24.04
     timeout-minutes: 20

@@ -824,6 +824,7 @@ requirements:
       - internal/repository/file_open_windows.go
     tests:
       - internal/repository/service_test.go
+      - internal/repository/file_open_windows_test.go
       - internal/bootstrap/security_corpus_test.go
       - security-corpus/path-boundary.json
     evidenceType: go-test+versioned-security-corpus+cross-platform-filesystem-gate-required
@@ -1255,6 +1256,8 @@ requirements:
       - internal/repository/file_open_windows.go
     tests:
       - internal/repository/service_test.go
+      - internal/repository/file_open_windows_test.go
+      - .github/workflows/ci.yml
       - deploy/windows/README.md
     evidenceType: cross-compile+native-windows-filesystem-gate
     owner: platform
