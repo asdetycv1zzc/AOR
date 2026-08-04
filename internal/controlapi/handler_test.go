@@ -59,6 +59,21 @@ type testArtifactCatalog struct {
 	err          error
 }
 
+type testProjectEraser struct {
+	projectID  string
+	deletionID string
+	report     ErasureReport
+	err        error
+}
+
+func (eraser *testProjectEraser) EraseProject(_ context.Context, _, projectID, deletionID string) (ErasureReport, error) {
+	eraser.projectID, eraser.deletionID = projectID, deletionID
+	if eraser.err != nil {
+		return ErasureReport{}, eraser.err
+	}
+	return eraser.report, nil
+}
+
 func (catalog *testArtifactCatalog) Publish(_ context.Context, publication artifact.Publication) (artifact.Record, error) {
 	if catalog.err != nil {
 		return artifact.Record{}, catalog.err
@@ -412,6 +427,36 @@ func TestProjectExportPublishesStableContentAddressedManifest(t *testing.T) {
 	second := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/export", nil, map[string]string{"Authorization": "Bearer " + testBearer})
 	if second.Code != http.StatusOK || second.Header().Get("ETag") != first.Header().Get("ETag") || len(catalog.publications) != 2 || !bytes.Equal(firstContent, catalog.publications[1].Data) {
 		t.Fatalf("second export status=%d etag=%q body=%s", second.Code, second.Header().Get("ETag"), second.Body.String())
+	}
+}
+
+func TestProjectDeletionExecutionRequiresEraserAndPublishesContentFreeProof(t *testing.T) {
+	handler, _, _ := newTestHandler(t)
+	eraser := &testProjectEraser{report: ErasureReport{Scopes: []string{"artifacts", "indexes", "cache", "keys"}, Records: 4, Objects: 3, CacheEntries: 2}}
+	handler.eraser = eraser
+	project := createTestProject(t, handler)
+	requested := performRequest(handler, http.MethodPost, "/v1/projects/"+project.ID+":request-deletion", []byte(`{"expectedVersion":1}`), map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "request-delete", "If-Match": `"v1"`,
+	})
+	if requested.Code != http.StatusAccepted {
+		t.Fatalf("request deletion status=%d body=%s", requested.Code, requested.Body.String())
+	}
+	executed := performRequest(handler, http.MethodPost, "/v1/projects/"+project.ID+":execute-deletion", []byte(`{"expectedVersion":2}`), map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "execute-delete", "If-Match": `"v2"`,
+	})
+	if executed.Code != http.StatusAccepted {
+		t.Fatalf("execute deletion status=%d body=%s", executed.Code, executed.Body.String())
+	}
+	var completed state.Project
+	if err := json.Unmarshal(executed.Body.Bytes(), &completed); err != nil || completed.State != contracts.ProjectArchived || completed.Deletion == nil || completed.Deletion.Status != state.ProjectDeletionCompleted || completed.Deletion.ProofSHA256 == "" || eraser.projectID != project.ID || eraser.deletionID == "" {
+		t.Fatalf("completed deletion=%#v eraser=%#v err=%v", completed, eraser, err)
+	}
+	if len(handler.publisher.(*testArtifactCatalog).publications) == 0 {
+		t.Fatal("deletion proof was not published")
+	}
+	publication := handler.publisher.(*testArtifactCatalog).publications[len(handler.publisher.(*testArtifactCatalog).publications)-1]
+	if publication.ContentType != "application/vnd.aor.deletion-proof.v1+json" || strings.Contains(string(publication.Data), "active") {
+		t.Fatalf("proof publication=%#v", publication)
 	}
 }
 

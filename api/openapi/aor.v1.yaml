@@ -65,6 +65,9 @@ paths:
   /v1/projects/{projectId}:request-deletion:
     $ref: '#/components/pathItems/ProjectCommand'
     x-operation-id: requestProjectDeletion
+  /v1/projects/{projectId}:execute-deletion:
+    $ref: '#/components/pathItems/ProjectCommand'
+    x-operation-id: executeProjectDeletion
   /v1/projects/{projectId}:approve-release:
     $ref: '#/components/pathItems/ProjectCommand'
     x-operation-id: approveProjectRelease

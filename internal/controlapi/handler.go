@@ -47,7 +47,19 @@ type Config struct {
 	Artifacts     artifact.Catalog
 	Knowledge     KnowledgeReader
 	TaskHistory   TaskHistoryReader
+	Eraser        ProjectEraser
 	Clock         func() time.Time
+}
+
+type ErasureReport struct {
+	Scopes       []string `json:"scopes"`
+	Records      int64    `json:"records"`
+	Objects      int64    `json:"objects"`
+	CacheEntries int64    `json:"cacheEntries"`
+}
+
+type ProjectEraser interface {
+	EraseProject(context.Context, string, string, string) (ErasureReport, error)
 }
 
 type KnowledgeReader interface {
@@ -72,6 +84,7 @@ type Handler struct {
 	publisher     artifact.Publisher
 	knowledge     KnowledgeReader
 	taskHistory   TaskHistoryReader
+	eraser        ProjectEraser
 	autoBudget    bool
 	clock         func() time.Time
 }
@@ -253,6 +266,7 @@ func New(config Config) (*Handler, error) {
 		artifacts:     config.Artifacts,
 		knowledge:     config.Knowledge,
 		taskHistory:   config.TaskHistory,
+		eraser:        config.Eraser,
 		autoBudget:    autoBudget,
 		clock:         config.Clock,
 	}
@@ -287,6 +301,10 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 		if id, commandName, found := strings.Cut(projectID, ":"); found {
 			if !validProjectID(id) {
 				writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+				return
+			}
+			if request.Method == http.MethodPost && validProjectID(id) && commandName == "execute-deletion" {
+				handler.executeProjectDeletion(response, request, principal, id)
 				return
 			}
 			if request.Method == http.MethodPost && validProjectID(id) && commandName != "" {
@@ -344,6 +362,20 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 		}
 		writeMethodNotAllowed(response, request)
 		return
+	}
+	if len(parts) == 1 {
+		if id, commandName, found := strings.Cut(projectID, ":"); found && commandName == "execute-deletion" {
+			if !validProjectID(id) {
+				writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+				return
+			}
+			if request.Method == http.MethodPost {
+				handler.executeProjectDeletion(response, request, principal, id)
+				return
+			}
+			writeMethodNotAllowed(response, request)
+			return
+		}
 	}
 	if len(parts) == 2 && parts[1] == "legal-holds" {
 		if !validProjectID(projectID) {
@@ -953,6 +985,128 @@ func (handler *Handler) exportProject(response http.ResponseWriter, request *htt
 		ProjectID: projectID, ProjectVersion: project.Version, ArtifactID: record.ID, URI: record.URI,
 		SHA256: record.SHA256, SizeBytes: record.SizeBytes, CreatedAt: record.CreatedAt,
 	})
+}
+
+func (handler *Handler) executeProjectDeletion(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string) {
+	if handler.erasureUnavailable() {
+		writeError(response, request, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "project eraser"}))
+		return
+	}
+	idempotencyKey, err := requiredIdempotencyKey(request)
+	if err != nil {
+		writeError(response, request, err)
+		return
+	}
+	var body commandBody
+	if err := decodeJSON(request, &body); err != nil || body.ExpectedVersion < 1 {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "project deletion execution"}))
+		return
+	}
+	if err := requireProjectVersionHeader(request, body.ExpectedVersion); err != nil {
+		writeError(response, request, err)
+		return
+	}
+	project, err := handler.authorizeProjectResourceRead(request.Context(), principal, projectID, authz.ActionProjectCommand, "project-deletion", projectID)
+	if err != nil {
+		writeError(response, request, err)
+		return
+	}
+	if project.Deletion == nil || project.Deletion.Status == state.ProjectDeletionBlocked {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidStateTransition, "", map[string]any{"scope": "project deletion"}))
+		return
+	}
+	if project.Deletion.Status == state.ProjectDeletionCompleted {
+		writeProject(response, http.StatusAccepted, project)
+		return
+	}
+	if project.Deletion.Status == state.ProjectDeletionReady {
+		begun, beginErr := handler.orchestrator.HandleProject(request.Context(), orchestrator.ProjectRequest{
+			TenantID: principal.TenantID, ProjectID: projectID, PrincipalID: principal.ID,
+			IdempotencyKey: idempotencyKey + ":begin", ExpectedVersion: project.Version,
+			Command: state.ProjectCommand{Type: state.ProjectCommandBeginDeletion},
+		})
+		if beginErr != nil {
+			writeError(response, request, normalizeError(beginErr))
+			return
+		}
+		project = begun.Project
+	}
+	if project.Deletion == nil || project.Deletion.Status != state.ProjectDeletionErasing {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidStateTransition, "", map[string]any{"scope": "project deletion execution"}))
+		return
+	}
+	report, err := handler.eraser.EraseProject(request.Context(), principal.TenantID, projectID, project.Deletion.ID)
+	if err != nil {
+		writeError(response, request, normalizeProjectErasureError(err))
+		return
+	}
+	proof := struct {
+		SchemaVersion string    `json:"schemaVersion"`
+		DeletionID    string    `json:"deletionId"`
+		ProjectID     string    `json:"projectId"`
+		CompletedAt   time.Time `json:"completedAt"`
+		Scopes        []string  `json:"scopes"`
+		Records       int64     `json:"records"`
+		Objects       int64     `json:"objects"`
+		CacheEntries  int64     `json:"cacheEntries"`
+	}{SchemaVersion: "1.0", DeletionID: project.Deletion.ID, ProjectID: projectID, CompletedAt: handler.clock().UTC(), Scopes: append([]string(nil), report.Scopes...), Records: report.Records, Objects: report.Objects, CacheEntries: report.CacheEntries}
+	encoded, err := json.Marshal(proof)
+	if err != nil {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInternalError, "", map[string]any{"scope": "deletion proof"}))
+		return
+	}
+	content, err := canonicaljson.Canonicalize(encoded)
+	if err != nil {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInternalError, "", map[string]any{"scope": "deletion proof"}))
+		return
+	}
+	digest, err := canonicaljson.Digest(content)
+	if err != nil {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInternalError, "", map[string]any{"scope": "deletion proof"}))
+		return
+	}
+	retention := handler.clock().UTC().AddDate(7, 0, 0)
+	record, err := handler.publisher.Publish(request.Context(), artifact.Publication{
+		TenantID: principal.TenantID, ProjectID: projectID, CreatedByPrincipal: principal.ID,
+		ContentType: "application/vnd.aor.deletion-proof.v1+json", RetentionUntil: &retention, Data: content,
+		Metadata: map[string]any{"kind": "deletion-proof", "deletionId": project.Deletion.ID, "schemaVersion": "1.0"},
+	})
+	if err != nil || record.SHA256 != digest {
+		if err == nil {
+			err = aorerrors.New(aorerrors.CodeArtifactHashMismatch, "", map[string]any{"scope": "deletion proof"})
+		}
+		writeError(response, request, normalizeArtifactError(err))
+		return
+	}
+	completed, err := handler.orchestrator.HandleProject(request.Context(), orchestrator.ProjectRequest{
+		TenantID: principal.TenantID, ProjectID: projectID, PrincipalID: principal.ID,
+		IdempotencyKey: idempotencyKey + ":complete", ExpectedVersion: project.Version,
+		Command: state.ProjectCommand{Type: state.ProjectCommandCompleteDeletion, Deletion: &state.ProjectDeletion{
+			ProofSHA256: digest, ProofArtifactURI: record.URI, BackupExpiresAt: &retention,
+		}},
+	})
+	if err != nil {
+		writeError(response, request, normalizeError(err))
+		return
+	}
+	writeProject(response, http.StatusAccepted, completed.Project)
+}
+
+func (handler *Handler) erasureUnavailable() bool {
+	return handler == nil || handler.eraser == nil || handler.publisher == nil
+}
+
+func normalizeProjectErasureError(err error) error {
+	if err == nil {
+		return aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "project eraser"})
+	}
+	if errors.Is(err, artifact.ErrInvalidRequest) {
+		return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "project eraser"})
+	}
+	if errors.Is(err, artifact.ErrConflict) {
+		return aorerrors.New(aorerrors.CodeConflict, "", map[string]any{"scope": "project eraser"})
+	}
+	return aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", err, map[string]any{"scope": "project eraser"})
 }
 
 func (handler *Handler) projectEventHistory(ctx context.Context, tenantID, projectID string) ([]eventing.DomainEvent, error) {
