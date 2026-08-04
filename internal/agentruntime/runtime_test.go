@@ -134,6 +134,9 @@ func TestModulePlannerDeclarationPrecedesModuleSpec(t *testing.T) {
 	items := declaration.ContextManifest.Items[:0]
 	for _, item := range declaration.ContextManifest.Items {
 		if item.Kind != ContextModuleReference {
+			if item.Kind == ContextPlanReference {
+				item.Trust = TrustGeneratedUnreviewed
+			}
 			items = append(items, item)
 		}
 	}
@@ -141,6 +144,32 @@ func TestModulePlannerDeclarationPrecedesModuleSpec(t *testing.T) {
 	declaration.ContextManifest.SHA256 = DigestContextManifest(declaration.ContextManifest)
 	if err := runtime.Declare(declaration); err != nil {
 		t.Fatalf("pre-ModuleSpec declaration rejected: %v", err)
+	}
+}
+
+func TestDraftReferenceTrustCannotMasqueradeAsApproved(t *testing.T) {
+	clock := &mutableClock{now: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)}
+	runtime := newTestRuntime(t, clock, &fakeAuthority{clock: clock}, &fakeGateway{}, &fakeBroker{})
+	declaration := testDeclaration(RoleGoalChallenger)
+	declaration.Envelope.Intent = aop.IntentChallengeGoal
+	items := declaration.ContextManifest.Items[:0]
+	for _, item := range declaration.ContextManifest.Items {
+		if item.Kind == ContextGoalReference {
+			item.Trust = TrustGeneratedUnreviewed
+			items = append(items, item)
+		}
+	}
+	declaration.ContextManifest.Items = items
+	declaration.ContextManifest.SHA256 = DigestContextManifest(declaration.ContextManifest)
+	if err := runtime.Declare(declaration); err != nil {
+		t.Fatalf("goal challenger rejected immutable draft: %v", err)
+	}
+
+	declaration.RunID = "run_approved_goal_reference"
+	declaration.ContextManifest.Items[0].Trust = TrustProjectApproved
+	declaration.ContextManifest.SHA256 = DigestContextManifest(declaration.ContextManifest)
+	if err := runtime.Declare(declaration); !errors.Is(err, ErrInvalidDeclaration) {
+		t.Fatalf("goal challenger accepted an approved reference as its draft: %v", err)
 	}
 }
 

@@ -677,7 +677,7 @@ func contextMatchesEnvelope(declaration Declaration) bool {
 		switch item.Kind {
 		case ContextGoalReference, ContextPlanReference, ContextModuleReference:
 			digest, exists := expected[item.Kind]
-			if !exists || item.SourceSHA256 != digest || item.Trust != TrustProjectApproved {
+			if !exists || item.SourceSHA256 != digest || !validReferenceTrust(declaration.Envelope.Intent, item.Kind, item.Trust) {
 				return false
 			}
 			counts[item.Kind]++
@@ -729,6 +729,19 @@ func contextMatchesEnvelope(declaration Declaration) bool {
 		}
 	}
 	return true
+}
+
+func validReferenceTrust(intent aop.Intent, kind ContextKind, trust TrustLevel) bool {
+	switch {
+	case kind == ContextGoalReference && intent == aop.IntentProposeGoal:
+		return trust == TrustGeneratedUnreviewed || trust == TrustProjectApproved
+	case kind == ContextGoalReference && intent == aop.IntentChallengeGoal:
+		return trust == TrustGeneratedUnreviewed
+	case kind == ContextPlanReference && intent == aop.IntentDefineModule:
+		return trust == TrustGeneratedUnreviewed
+	default:
+		return trust == TrustProjectApproved
+	}
 }
 
 func validClassification(value string) bool {
