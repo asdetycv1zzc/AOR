@@ -38,6 +38,7 @@ model_actions := {
     "model.generate",
     "model.stream",
     "model.cancel",
+	"model.reconcile",
     "model.capabilities",
 }
 
@@ -102,7 +103,15 @@ model_allowed if {
 model_allowed if {
     model_scope_valid
     input.action != "model.capabilities"
+	input.action != "model.reconcile"
     input.budget.available
+}
+
+model_allowed if {
+	model_scope_valid
+	input.action == "model.reconcile"
+	input.principal.type == "SERVICE"
+	input.budget.available
 }
 
 human_control_allowed if {

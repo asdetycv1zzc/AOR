@@ -176,6 +176,9 @@ func (s *responseStream) observe(data []byte) error {
 	if err := json.Unmarshal(data, &event); err != nil {
 		return modelgateway.ErrOutputSchema
 	}
+	if len(event.Choices) == 0 && event.Usage == nil {
+		return modelgateway.ErrOutputSchema
+	}
 	if s.adapter.containsCredential(event.ID) || s.adapter.containsCredential(event.Model) {
 		return modelgateway.ErrCredentialDetected
 	}

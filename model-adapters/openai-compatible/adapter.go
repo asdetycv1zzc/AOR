@@ -350,14 +350,14 @@ func (a *Adapter) do(ctx context.Context, payload []byte) (*http.Response, conte
 
 func (a *Adapter) decodeResponse(request modelgateway.NormalizedRequest, capabilities modelgateway.ModelCapabilities, payload []byte) (modelgateway.NormalizedResponse, error) {
 	var response chatResponse
-	if err := json.Unmarshal(payload, &response); err != nil || len(response.Choices) == 0 {
+	if err := json.Unmarshal(payload, &response); err != nil || len(response.Choices) == 0 || response.Usage == nil {
 		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
 	}
 	choice := response.Choices[0]
 	if !utf8.ValidString(choice.Message.Content) || a.containsCredential(response.ID) || a.containsCredential(response.Model) || a.containsCredential(choice.Message.Content) {
 		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrCredentialDetected)
 	}
-	usage, err := a.NormalizeUsage(response.Usage)
+	usage, err := a.NormalizeUsage(*response.Usage)
 	if err != nil {
 		return modelgateway.NormalizedResponse{}, unknownFailure(err)
 	}
@@ -499,7 +499,7 @@ type chatResponse struct {
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
-	Usage chatUsage `json:"usage"`
+	Usage *chatUsage `json:"usage"`
 }
 
 type chatUsage struct {

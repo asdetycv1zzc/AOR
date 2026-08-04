@@ -102,3 +102,18 @@ test_lease_grant_rejects_terminal_task_or_missing_budget if {
 	budget_result := authz.lease_grant with input as without_budget
 	budget_result.decision == "DENY"
 }
+
+test_model_reconcile_requires_service_principal if {
+	request := object.union(base_input, {
+		"action": "model.reconcile",
+		"budget": {"accountId": "budget_1", "available": true},
+	})
+	agent_result := authz.decision with input as request
+	agent_result.decision == "DENY"
+
+	service_request := object.union(request, {
+		"principal": object.union(request.principal, {"type": "SERVICE"}),
+	})
+	service_result := authz.decision with input as service_request
+	service_result.decision == "ALLOW"
+}

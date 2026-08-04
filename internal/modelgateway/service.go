@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/akimisaka/aor/internal/observability"
+	"github.com/akimisaka/aor/pkg/canonicaljson"
 )
 
 const (
@@ -35,6 +36,9 @@ type ModelAuthorizationRequest struct {
 	Provider           string
 	Model              string
 	DataClassification string
+	ProviderPolicy     string
+	PolicyDigest       string
+	ReceiptSHA256      string
 	RequestID          string
 	AccountID          string
 	ReservationID      string
@@ -54,6 +58,8 @@ type ModelAuthorization struct {
 	Provider           string
 	AccountID          string
 	DataClassification string
+	ProviderPolicy     string
+	PolicyDigest       string
 }
 
 type HTTPConfig struct {
@@ -115,6 +121,8 @@ func (s *HTTPService) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 		s.serveStream(writer, request.WithContext(ctx), traceParent)
 	case request.Method == http.MethodPost && request.URL.Path == "/v1/model/cancel":
 		s.serveCancel(writer, request.WithContext(ctx), traceParent)
+	case request.Method == http.MethodPost && request.URL.Path == "/v1/model/reconcile":
+		s.serveReconcile(writer, request.WithContext(ctx), traceParent)
 	case request.Method == http.MethodGet && request.URL.Path == "/v1/model/capabilities":
 		s.serveCapabilities(writer, request.WithContext(ctx), traceParent)
 	default:
@@ -214,6 +222,47 @@ func (s *HTTPService) serveCancel(writer http.ResponseWriter, request *http.Requ
 	s.writeJSON(writer, traceParent, http.StatusOK, map[string]bool{"cancelled": true})
 }
 
+func (s *HTTPService) serveReconcile(writer http.ResponseWriter, request *http.Request, traceParent string) {
+	var input transportReconcileRequest
+	if err := s.decodeJSON(writer, request, &input); err != nil {
+		writeHTTPError(writer, traceParent, err)
+		return
+	}
+	receiptSHA256, err := canonicaljson.Digest(input.Usage)
+	if err != nil {
+		writeHTTPError(writer, traceParent, ErrInvalidRequest)
+		return
+	}
+	authorization, err := s.authorize(request.Context(), ModelAuthorizationRequest{
+		Operation: "reconcile", Provider: input.Provider, Model: input.Model, RequestID: input.RequestID,
+		AccountID: input.AccountID, ReservationID: input.ReservationID, ReceiptSHA256: receiptSHA256,
+		ProjectID: input.ProjectID, TaskID: input.TaskID, AgentInstanceID: input.AgentInstanceID, Role: input.Role,
+	})
+	if err != nil {
+		writeHTTPError(writer, traceParent, err)
+		return
+	}
+	if input.Provider != authorization.Provider || input.AccountID != authorization.AccountID ||
+		input.ProjectID != authorization.ProjectID || input.TaskID != authorization.TaskID ||
+		input.AgentInstanceID != authorization.AgentInstanceID || input.Role != authorization.Role ||
+		input.Provider == "" || input.Model == "" || input.RequestID == "" || input.ReservationID == "" || input.AccountID == "" {
+		writeHTTPError(writer, traceParent, ErrAuthorizationDenied)
+		return
+	}
+	reservation, err := s.gateway.ReconcileUsage(request.Context(), UsageReconciliationRequest{
+		TenantID: authorization.TenantID, RequestID: input.RequestID, ReservationID: input.ReservationID,
+		Provider: input.Provider, Model: input.Model, RawUsage: append(json.RawMessage(nil), input.Usage...),
+	})
+	if err != nil {
+		writeHTTPError(writer, traceParent, err)
+		return
+	}
+	s.writeJSON(writer, traceParent, http.StatusOK, transportReconcileResponse{
+		RequestID: input.RequestID, ReservationID: reservation.ID, State: reservation.State,
+		ActualMicros: reservation.SettledMicros,
+	})
+}
+
 func (s *HTTPService) serveCapabilities(writer http.ResponseWriter, request *http.Request, traceParent string) {
 	query := request.URL.Query()
 	if len(query) != 3 || len(query["provider"]) != 1 || len(query["model"]) != 1 || len(query["projectId"]) != 1 {
@@ -241,21 +290,22 @@ func (s *HTTPService) serveCapabilities(writer http.ResponseWriter, request *htt
 func (s *HTTPService) authorizeGenerate(ctx context.Context, operation string, request NormalizedRequest, options GenerateOptions) (NormalizedRequest, GenerateOptions, error) {
 	authorization, err := s.authorize(ctx, ModelAuthorizationRequest{
 		Operation: operation, Provider: options.Provider, Model: request.Model, RequestID: request.RequestID,
-		DataClassification: request.DataClassification,
-		AccountID:          options.AccountID, ReservationID: options.ReservationID,
+		AccountID: options.AccountID, ReservationID: options.ReservationID,
 		ProjectID: request.ProjectID, TaskID: request.TaskID, AgentInstanceID: request.AgentInstanceID, Role: request.Role,
 	})
 	if err != nil {
 		return NormalizedRequest{}, GenerateOptions{}, err
 	}
-	if request.TenantID != authorization.TenantID || request.ProjectID != authorization.ProjectID || request.TaskID != authorization.TaskID || request.AgentInstanceID != authorization.AgentInstanceID || request.Role != authorization.Role || request.DataClassification != authorization.DataClassification || options.Provider != authorization.Provider || options.AccountID != authorization.AccountID ||
+	if request.TenantID != authorization.TenantID || request.ProjectID != authorization.ProjectID || request.TaskID != authorization.TaskID || request.AgentInstanceID != authorization.AgentInstanceID || request.Role != authorization.Role || options.Provider != authorization.Provider || options.AccountID != authorization.AccountID ||
 		request.TenantID == "" || request.ProjectID == "" || request.AgentInstanceID == "" || request.Role == "" || options.AccountID == "" {
 		return NormalizedRequest{}, GenerateOptions{}, ErrAuthorizationDenied
 	}
-	if authorization.DataClassification == "" {
+	if authorization.DataClassification == "" || authorization.ProviderPolicy == "" || authorization.PolicyDigest == "" {
 		return NormalizedRequest{}, GenerateOptions{}, ErrAuthorizationDenied
 	}
 	request.DataClassification = authorization.DataClassification
+	request.ProviderPolicy = authorization.ProviderPolicy
+	request.PolicyDigest = authorization.PolicyDigest
 	return request, options, nil
 }
 
@@ -358,6 +408,26 @@ type transportGenerateRequest struct {
 
 type transportGenerateResponse struct {
 	Response NormalizedResponse `json:"response"`
+}
+
+type transportReconcileRequest struct {
+	Provider        string          `json:"provider"`
+	Model           string          `json:"model"`
+	RequestID       string          `json:"requestId"`
+	AccountID       string          `json:"accountId"`
+	ReservationID   string          `json:"reservationId"`
+	ProjectID       string          `json:"projectId"`
+	TaskID          string          `json:"taskId,omitempty"`
+	AgentInstanceID string          `json:"agentInstanceId"`
+	Role            string          `json:"role"`
+	Usage           json.RawMessage `json:"usage"`
+}
+
+type transportReconcileResponse struct {
+	RequestID     string           `json:"requestId"`
+	ReservationID string           `json:"reservationId"`
+	State         ReservationState `json:"state"`
+	ActualMicros  int64            `json:"actualMicros"`
 }
 
 type transportCancelRequest struct {

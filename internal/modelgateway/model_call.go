@@ -21,6 +21,7 @@ const (
 	ModelCallFailedOutputSize   ModelCallStatus = "FAILED_OUTPUT_SIZE"
 	ModelCallFailedCredential   ModelCallStatus = "FAILED_CREDENTIAL"
 	ModelCallReconcile          ModelCallStatus = "RECONCILE"
+	ModelCallReconciled         ModelCallStatus = "RECONCILED"
 )
 
 type ReservationDisposition string
@@ -32,27 +33,29 @@ const (
 )
 
 type ModelCall struct {
-	ID                  string          `json:"id"`
-	TenantID            string          `json:"tenantId"`
-	RequestID           string          `json:"requestId"`
-	ProjectID           string          `json:"projectId"`
-	TaskID              string          `json:"taskId,omitempty"`
-	AgentInstanceID     string          `json:"agentInstanceId"`
-	Provider            string          `json:"provider"`
-	LogicalModel        string          `json:"logicalModel"`
-	ActualModelVersion  string          `json:"actualModelVersion"`
-	PromptBundleVersion string          `json:"promptBundleVersion"`
-	InputSHA256         string          `json:"inputSha256"`
-	OutputSHA256        string          `json:"outputSha256,omitempty"`
-	InputTokens         int64           `json:"inputTokens"`
-	OutputTokens        int64           `json:"outputTokens"`
-	CacheReadTokens     *int64          `json:"cacheReadTokens,omitempty"`
-	CacheWriteTokens    *int64          `json:"cacheWriteTokens,omitempty"`
-	CostMicros          int64           `json:"costMicros"`
-	LatencyMilliseconds int64           `json:"latencyMs"`
-	Status              ModelCallStatus `json:"status"`
-	ProviderRequestID   string          `json:"providerRequestId,omitempty"`
-	CreatedAt           time.Time       `json:"createdAt"`
+	ID                          string          `json:"id"`
+	TenantID                    string          `json:"tenantId"`
+	RequestID                   string          `json:"requestId"`
+	ProjectID                   string          `json:"projectId"`
+	TaskID                      string          `json:"taskId,omitempty"`
+	AgentInstanceID             string          `json:"agentInstanceId"`
+	Provider                    string          `json:"provider"`
+	LogicalModel                string          `json:"logicalModel"`
+	ActualModelVersion          string          `json:"actualModelVersion"`
+	PromptBundleVersion         string          `json:"promptBundleVersion"`
+	InputSHA256                 string          `json:"inputSha256"`
+	OutputSHA256                string          `json:"outputSha256,omitempty"`
+	InputTokens                 int64           `json:"inputTokens"`
+	OutputTokens                int64           `json:"outputTokens"`
+	CacheReadTokens             *int64          `json:"cacheReadTokens,omitempty"`
+	CacheWriteTokens            *int64          `json:"cacheWriteTokens,omitempty"`
+	CostMicros                  int64           `json:"costMicros"`
+	LatencyMilliseconds         int64           `json:"latencyMs"`
+	Status                      ModelCallStatus `json:"status"`
+	ProviderRequestID           string          `json:"providerRequestId,omitempty"`
+	ReconciliationReceiptSHA256 string          `json:"reconciliationReceiptSha256,omitempty"`
+	ReconciledAt                *time.Time      `json:"reconciledAt,omitempty"`
+	CreatedAt                   time.Time       `json:"createdAt"`
 }
 
 type ModelCallFinalization struct {
@@ -75,7 +78,7 @@ func (finalization ModelCallFinalization) validate() error {
 		return ErrInvalidRequest
 	}
 	call := finalization.Call
-	if call.TenantID == "" || call.RequestID == "" || call.ProjectID == "" || call.AgentInstanceID == "" || call.Provider == "" || call.LogicalModel == "" || call.ActualModelVersion == "" || call.PromptBundleVersion == "" || !validModelDigest(call.InputSHA256) || call.OutputSHA256 != "" && !validModelDigest(call.OutputSHA256) || call.InputTokens < 0 || call.OutputTokens < 0 || call.CostMicros < 0 || call.LatencyMilliseconds < 0 || !validModelCallStatus(call.Status) || call.CreatedAt.IsZero() {
+	if call.TenantID == "" || call.RequestID == "" || call.ProjectID == "" || call.AgentInstanceID == "" || call.Provider == "" || call.LogicalModel == "" || call.ActualModelVersion == "" || call.PromptBundleVersion == "" || !validModelDigest(call.InputSHA256) || call.OutputSHA256 != "" && !validModelDigest(call.OutputSHA256) || call.InputTokens < 0 || call.OutputTokens < 0 || call.CostMicros < 0 || call.LatencyMilliseconds < 0 || !validModelCallStatus(call.Status) || call.CreatedAt.IsZero() || call.ReconciliationReceiptSHA256 != "" || call.ReconciledAt != nil {
 		return ErrInvalidRequest
 	}
 	for _, value := range []string{call.TenantID, call.RequestID, call.ProjectID, call.TaskID, call.AgentInstanceID, call.Provider, call.LogicalModel, call.ActualModelVersion, call.PromptBundleVersion, call.ProviderRequestID} {
@@ -88,7 +91,7 @@ func (finalization ModelCallFinalization) validate() error {
 	}
 	switch finalization.Disposition {
 	case ReservationDispositionSettle:
-		if call.Status == ModelCallReconcile || call.CostMicros != finalization.ActualMicros {
+		if call.Status == ModelCallReconcile || call.Status == ModelCallReconciled || call.CostMicros != finalization.ActualMicros {
 			return ErrInvalidRequest
 		}
 	case ReservationDispositionRelease:
@@ -109,7 +112,7 @@ func validDisposition(value ReservationDisposition) bool {
 
 func validModelCallStatus(value ModelCallStatus) bool {
 	switch value {
-	case ModelCallSucceeded, ModelCallFailedProvider, ModelCallFailedOutputSchema, ModelCallFailedOutputSize, ModelCallFailedCredential, ModelCallReconcile:
+	case ModelCallSucceeded, ModelCallFailedProvider, ModelCallFailedOutputSchema, ModelCallFailedOutputSize, ModelCallFailedCredential, ModelCallReconcile, ModelCallReconciled:
 		return true
 	default:
 		return false
@@ -134,7 +137,7 @@ func newModelCallID() (string, error) {
 }
 
 func sameModelCall(left, right ModelCall) bool {
-	return left.TenantID == right.TenantID && left.RequestID == right.RequestID && left.ProjectID == right.ProjectID && left.TaskID == right.TaskID && left.AgentInstanceID == right.AgentInstanceID && left.Provider == right.Provider && left.LogicalModel == right.LogicalModel && left.ActualModelVersion == right.ActualModelVersion && left.PromptBundleVersion == right.PromptBundleVersion && left.InputSHA256 == right.InputSHA256 && left.OutputSHA256 == right.OutputSHA256 && left.InputTokens == right.InputTokens && left.OutputTokens == right.OutputTokens && equalOptionalInt64(left.CacheReadTokens, right.CacheReadTokens) && equalOptionalInt64(left.CacheWriteTokens, right.CacheWriteTokens) && left.CostMicros == right.CostMicros && left.LatencyMilliseconds == right.LatencyMilliseconds && left.Status == right.Status && left.ProviderRequestID == right.ProviderRequestID && left.CreatedAt.Equal(right.CreatedAt)
+	return left.TenantID == right.TenantID && left.RequestID == right.RequestID && left.ProjectID == right.ProjectID && left.TaskID == right.TaskID && left.AgentInstanceID == right.AgentInstanceID && left.Provider == right.Provider && left.LogicalModel == right.LogicalModel && left.ActualModelVersion == right.ActualModelVersion && left.PromptBundleVersion == right.PromptBundleVersion && left.InputSHA256 == right.InputSHA256 && left.OutputSHA256 == right.OutputSHA256 && left.InputTokens == right.InputTokens && left.OutputTokens == right.OutputTokens && equalOptionalInt64(left.CacheReadTokens, right.CacheReadTokens) && equalOptionalInt64(left.CacheWriteTokens, right.CacheWriteTokens) && left.CostMicros == right.CostMicros && left.LatencyMilliseconds == right.LatencyMilliseconds && left.Status == right.Status && left.ProviderRequestID == right.ProviderRequestID && left.ReconciliationReceiptSHA256 == right.ReconciliationReceiptSHA256 && equalOptionalTime(left.ReconciledAt, right.ReconciledAt) && left.CreatedAt.Equal(right.CreatedAt)
 }
 
 func equalOptionalInt64(left, right *int64) bool {
@@ -142,6 +145,13 @@ func equalOptionalInt64(left, right *int64) bool {
 		return left == nil && right == nil
 	}
 	return *left == *right
+}
+
+func equalOptionalTime(left, right *time.Time) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.Equal(*right)
 }
 
 func (ledger *BudgetLedger) FinalizeModelCall(ctx context.Context, finalization ModelCallFinalization) (Reservation, error) {

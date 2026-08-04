@@ -105,7 +105,7 @@ func ModelGateway(config runtimeconfig.Config, clients *runtimeclient.Clients) (
 	authorizer = &modelGatewayAuthorizer{
 		db: clients.Database(), opa: opaClient, allowed: allowed, clock: time.Now,
 		allowHuman:        config.Environment == runtimeconfig.EnvironmentDevelopment || config.Environment == runtimeconfig.EnvironmentTest,
-		deploymentProfile: deploymentProfileForEnvironment(config.Environment),
+		deploymentProfile: deploymentProfileForEnvironment(config.Environment), providerPolicy: "default",
 	}
 	service, err := modelgateway.NewHTTPService(gateway, authorizer, modelgateway.HTTPConfig{})
 	if err != nil {
@@ -156,7 +156,7 @@ func authorizeProviderCandidate(ctx context.Context, authorizer *modelGatewayAut
 	})
 	if err != nil || authorization.TenantID != input.Request.TenantID || authorization.ProjectID != input.Request.ProjectID ||
 		authorization.TaskID != input.Request.TaskID || authorization.AgentInstanceID != input.Request.AgentInstanceID ||
-		authorization.Role != input.Request.Role || authorization.Provider != input.Candidate.Provider || authorization.AccountID != input.AccountID || authorization.DataClassification != input.Request.DataClassification {
+		authorization.Role != input.Request.Role || authorization.Provider != input.Candidate.Provider || authorization.AccountID != input.AccountID || authorization.DataClassification != input.Request.DataClassification || authorization.ProviderPolicy != input.Request.ProviderPolicy || authorization.PolicyDigest != input.Request.PolicyDigest {
 		return modelgateway.ErrAuthorizationDenied
 	}
 	return nil
@@ -217,6 +217,7 @@ type modelGatewayAuthorizer struct {
 	clock             func() time.Time
 	allowHuman        bool
 	deploymentProfile string
+	providerPolicy    string
 }
 
 func (authorizer *modelGatewayAuthorizer) AuthorizeModel(ctx context.Context, request modelgateway.ModelAuthorizationRequest) (modelgateway.ModelAuthorization, error) {
@@ -231,6 +232,9 @@ func (authorizer *modelGatewayAuthorizer) AuthorizeModel(ctx context.Context, re
 		return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
 	}
 	if principal.Type != authn.PrincipalUser && principal.Type != authn.PrincipalService && principal.Type != authn.PrincipalAgentRuntime && principal.Type != authn.PrincipalAgentInstance && principal.Type != authn.PrincipalBreakGlassAdmin {
+		return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
+	}
+	if request.Operation == "reconcile" && principal.Type != authn.PrincipalService {
 		return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
 	}
 	if _, err := uuid.Parse(principal.TenantID); err != nil {
@@ -286,12 +290,19 @@ func (authorizer *modelGatewayAuthorizer) AuthorizeModel(ctx context.Context, re
 	if err != nil {
 		return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
 	}
-	if project.Classification == "" || request.DataClassification != "" && request.DataClassification != project.Classification {
+	if project.Classification == "" {
 		return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
 	}
-	reservationAvailable := account.ID == request.AccountID && modelAccountScopeMatches(account.ScopeType, account.ScopeID, projectID, request.TaskID) && reservation.AccountID == request.AccountID && reservation.RequestID == request.RequestID && reservation.State == string(modelgateway.ReservationOpen)
+	reservationStateAllowed := reservation.State == string(modelgateway.ReservationOpen)
+	if request.Operation == "reconcile" {
+		reservationStateAllowed = reservation.State == string(modelgateway.ReservationReconcile) || reservation.State == string(modelgateway.ReservationSettled)
+	}
+	reservationAvailable := account.ID == request.AccountID && modelAccountScopeMatches(account.ScopeType, account.ScopeID, projectID, request.TaskID) && reservation.AccountID == request.AccountID && reservation.RequestID == request.RequestID && reservationStateAllowed
 	budgetAvailable := account.Available || reservationAvailable
 	if request.Operation != "capabilities" && (request.AccountID == "" || !budgetAvailable) {
+		return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
+	}
+	if request.Operation == "reconcile" && (!reservationAvailable || request.ReceiptSHA256 == "") {
 		return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
 	}
 	if request.Operation == "cancel" && (request.ProviderRequestID == "" || reservation.AccountID != request.AccountID || reservation.RequestID != request.RequestID || reservation.State != string(modelgateway.ReservationOpen)) {
@@ -305,6 +316,7 @@ func (authorizer *modelGatewayAuthorizer) AuthorizeModel(ctx context.Context, re
 	digest, err := canonicaljson.Digest(mustJSON(modelAuthorizationDigest{
 		Operation: request.Operation, Provider: request.Provider, Model: request.Model, RequestID: request.RequestID,
 		ProjectID: projectID, TaskID: request.TaskID, AgentInstanceID: agentInstanceID, Role: role, DataClassification: project.Classification,
+		ProviderPolicy: authorizer.providerPolicy, ReceiptSHA256: request.ReceiptSHA256,
 	}))
 	if err != nil {
 		return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
@@ -324,7 +336,10 @@ func (authorizer *modelGatewayAuthorizer) AuthorizeModel(ctx context.Context, re
 	if err != nil || !decision.Decision.Allowed() {
 		return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
 	}
-	return modelgateway.ModelAuthorization{TenantID: principal.TenantID, ProjectID: projectID, TaskID: task.ID, AgentInstanceID: agentInstanceID, Role: role, Provider: request.Provider, AccountID: request.AccountID, DataClassification: project.Classification}, nil
+	if decision.PolicyVersion == "" {
+		return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
+	}
+	return modelgateway.ModelAuthorization{TenantID: principal.TenantID, ProjectID: projectID, TaskID: task.ID, AgentInstanceID: agentInstanceID, Role: role, Provider: request.Provider, AccountID: request.AccountID, DataClassification: project.Classification, ProviderPolicy: authorizer.providerPolicy, PolicyDigest: decision.PolicyVersion}, nil
 }
 
 type modelAuthorizationDigest struct {
@@ -337,6 +352,8 @@ type modelAuthorizationDigest struct {
 	AgentInstanceID    string `json:"agentInstanceId"`
 	Role               string `json:"role"`
 	DataClassification string `json:"dataClassification"`
+	ProviderPolicy     string `json:"providerPolicy"`
+	ReceiptSHA256      string `json:"receiptSha256,omitempty"`
 }
 
 type modelProjectProjection struct {
@@ -442,13 +459,15 @@ func modelAction(operation string) string {
 		return authz.ActionModelStream
 	case "cancel":
 		return authz.ActionModelCancel
+	case "reconcile":
+		return authz.ActionModelReconcile
 	default:
 		return authz.ActionModelCapabilities
 	}
 }
 
 func validModelOperation(operation string) bool {
-	return operation == "generate" || operation == "stream" || operation == "cancel" || operation == "capabilities"
+	return operation == "generate" || operation == "stream" || operation == "cancel" || operation == "reconcile" || operation == "capabilities"
 }
 
 func validModelRole(role string) bool {

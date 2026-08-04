@@ -212,21 +212,24 @@ ON CONFLICT (tenant_id, request_id) DO NOTHING`, call.ID, call.TenantID, call.Re
 
 func loadModelCall(ctx context.Context, tx *sql.Tx, tenantID, requestID string) (ModelCall, bool, error) {
 	var call ModelCall
-	var taskID, outputSHA, providerRequest sql.NullString
+	var taskID, outputSHA, providerRequest, reconciliationReceipt sql.NullString
 	var cacheRead, cacheWrite sql.NullInt64
+	var reconciledAt sql.NullTime
 	err := tx.QueryRowContext(ctx, `
 SELECT id::text, tenant_id::text, request_id, project_id::text, task_id::text,
        agent_instance_id, provider, logical_model, actual_model_version,
        prompt_bundle_version, input_sha256, output_sha256, input_tokens,
        output_tokens, cache_read_tokens, cache_write_tokens, cost_micros,
-       latency_ms, status, provider_request_id, created_at
+	       latency_ms, status, provider_request_id, reconciliation_receipt_sha256,
+	       reconciled_at, created_at
 FROM model_calls
 WHERE tenant_id = $1::uuid AND request_id = $2`, tenantID, requestID).Scan(
 		&call.ID, &call.TenantID, &call.RequestID, &call.ProjectID, &taskID,
 		&call.AgentInstanceID, &call.Provider, &call.LogicalModel, &call.ActualModelVersion,
 		&call.PromptBundleVersion, &call.InputSHA256, &outputSHA, &call.InputTokens,
 		&call.OutputTokens, &cacheRead, &cacheWrite, &call.CostMicros,
-		&call.LatencyMilliseconds, &call.Status, &providerRequest, &call.CreatedAt,
+		&call.LatencyMilliseconds, &call.Status, &providerRequest, &reconciliationReceipt,
+		&reconciledAt, &call.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ModelCall{}, false, nil
@@ -237,6 +240,7 @@ WHERE tenant_id = $1::uuid AND request_id = $2`, tenantID, requestID).Scan(
 	call.TaskID = taskID.String
 	call.OutputSHA256 = outputSHA.String
 	call.ProviderRequestID = providerRequest.String
+	call.ReconciliationReceiptSHA256 = reconciliationReceipt.String
 	if cacheRead.Valid {
 		value := cacheRead.Int64
 		call.CacheReadTokens = &value
@@ -244,6 +248,10 @@ WHERE tenant_id = $1::uuid AND request_id = $2`, tenantID, requestID).Scan(
 	if cacheWrite.Valid {
 		value := cacheWrite.Int64
 		call.CacheWriteTokens = &value
+	}
+	if reconciledAt.Valid {
+		value := reconciledAt.Time.UTC()
+		call.ReconciledAt = &value
 	}
 	call.CreatedAt = call.CreatedAt.UTC()
 	return call, true, nil

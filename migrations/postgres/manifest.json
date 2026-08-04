@@ -127,6 +127,13 @@
       "file": "000018_repository_submissions.up.sql",
       "sha256": "sha256:7ccf9fbc2028e3d13f7f58d97d122eb80bca6a74cc122c94dcb9f2d7d2527d7d",
       "destructive": false
+    },
+    {
+      "version": 19,
+      "mode": "EXPAND",
+      "file": "000019_model_usage_reconciliation.up.sql",
+      "sha256": "sha256:e9ee4ef5c3807bd73032b064bbe6672f0318b2e11f7c1417eef78a75c4941893",
+      "destructive": false
     }
   ]
 }

@@ -88,12 +88,15 @@ func TestHTTPServiceBindsAuthorizationBeforeGateway(t *testing.T) {
 		t.Fatalf("status=%d code=%s calls=%d", writer.Code, errorCode(t, writer), adapter.GenerateCalls())
 	}
 	input.Request.DataClassification = "PUBLIC"
+	input.Request.ProviderPolicy = "untrusted-policy"
+	input.Request.PolicyDigest = "untrusted-policy-digest"
+	input.Request.TenantID = "tenant"
 	request = httptest.NewRequest(http.MethodPost, "/v1/model/generate", bytes.NewReader(marshalTransport(t, input)))
 	request.Header.Set("Content-Type", "application/json")
 	writer = httptest.NewRecorder()
 	service.ServeHTTP(writer, request)
-	if writer.Code != http.StatusForbidden || errorCode(t, writer) != "AOR_FORBIDDEN" || adapter.GenerateCalls() != 0 {
-		t.Fatalf("classification status=%d code=%s calls=%d", writer.Code, errorCode(t, writer), adapter.GenerateCalls())
+	if writer.Code != http.StatusOK || adapter.GenerateCalls() != 1 {
+		t.Fatalf("authoritative classification status=%d code=%s calls=%d", writer.Code, errorCode(t, writer), adapter.GenerateCalls())
 	}
 }
 
@@ -133,6 +136,50 @@ func TestHTTPServiceCapabilitiesCancelAndStreaming(t *testing.T) {
 	reservation, found := ledger.Reservation("tenant", "stream-reservation")
 	if !found || reservation.State != ReservationSettled || reservation.SettledMicros != 3 {
 		t.Fatalf("stream reservation = %#v found=%v", reservation, found)
+	}
+}
+
+func TestHTTPServiceReconcilesAuthoritativeUsageIdempotently(t *testing.T) {
+	service, _, ledger := newHTTPService(t)
+	if _, err := ledger.Reserve(context.Background(), "tenant", "account", "reconcile-reservation", "reconcile-request", 100); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	_, err := ledger.FinalizeModelCall(context.Background(), ModelCallFinalization{
+		ReservationID: "reconcile-reservation", Disposition: ReservationDispositionReconcile,
+		Call: ModelCall{
+			TenantID: "tenant", RequestID: "reconcile-request", ProjectID: "project", TaskID: "task", AgentInstanceID: "agent",
+			Provider: "provider", LogicalModel: "model", ActualModelVersion: "model-v1", PromptBundleVersion: "v1",
+			InputSHA256: digestBytes([]byte("reconcile-input")), Status: ModelCallReconcile, CreatedAt: now,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := transportReconcileRequest{
+		Provider: "provider", Model: "model", RequestID: "reconcile-request", AccountID: "account", ReservationID: "reconcile-reservation",
+		ProjectID: "project", TaskID: "task", AgentInstanceID: "agent", Role: "EXECUTOR",
+		Usage: json.RawMessage(`{"inputTokens":2,"outputTokens":3,"costMicros":999,"providerRequestId":"provider-reconciled","modelVersion":"model-v1"}`),
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		request := httptest.NewRequest(http.MethodPost, "/v1/model/reconcile", bytes.NewReader(marshalTransport(t, input)))
+		request.Header.Set("Content-Type", "application/json")
+		writer := httptest.NewRecorder()
+		service.ServeHTTP(writer, request)
+		if writer.Code != http.StatusOK {
+			t.Fatalf("attempt=%d status=%d body=%s", attempt, writer.Code, writer.Body.String())
+		}
+		var response transportReconcileResponse
+		if err := json.Unmarshal(writer.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		if response.RequestID != input.RequestID || response.ReservationID != input.ReservationID || response.State != ReservationSettled || response.ActualMicros != 5 {
+			t.Fatalf("attempt=%d response=%#v", attempt, response)
+		}
+	}
+	account, _ := ledger.Account("tenant", "account")
+	if account.SpentMicros != 5 || account.ReservedMicros != 0 {
+		t.Fatalf("account=%#v", account)
 	}
 }
 
@@ -236,7 +283,7 @@ func (serviceAuthorizer) AuthorizeModel(_ context.Context, request ModelAuthoriz
 	if request.Provider != "provider" {
 		return ModelAuthorization{}, errors.New("denied")
 	}
-	return ModelAuthorization{TenantID: "tenant", ProjectID: "project", TaskID: "task", AgentInstanceID: "agent", Role: "EXECUTOR", Provider: "provider", AccountID: "account", DataClassification: "INTERNAL"}, nil
+	return ModelAuthorization{TenantID: "tenant", ProjectID: "project", TaskID: "task", AgentInstanceID: "agent", Role: "EXECUTOR", Provider: "provider", AccountID: "account", DataClassification: "INTERNAL", ProviderPolicy: "default", PolicyDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, nil
 }
 
 type serviceAdapter struct {
@@ -272,11 +319,18 @@ func (a *serviceAdapter) Cancel(context.Context, string) error {
 }
 
 func (a *serviceAdapter) NormalizeUsage(raw any) (Usage, error) {
-	value, ok := raw.(Usage)
-	if !ok {
+	switch value := raw.(type) {
+	case Usage:
+		return value, nil
+	case json.RawMessage:
+		var usage Usage
+		if err := json.Unmarshal(value, &usage); err != nil {
+			return Usage{}, ErrInvalidRequest
+		}
+		return usage, nil
+	default:
 		return Usage{}, ErrInvalidRequest
 	}
-	return value, nil
 }
 
 func (a *serviceAdapter) GenerateCalls() int {
@@ -337,7 +391,9 @@ func newHTTPService(t *testing.T) (*HTTPService, *serviceAdapter, *BudgetLedger)
 	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "account", TenantID: "tenant", LimitMicros: 100_000}); err != nil {
 		t.Fatal(err)
 	}
-	gateway := NewGateway(ledger, time.Now)
+	gateway := NewGatewayWithConfig(ledger, time.Now, GatewayConfig{ProviderPolicies: map[string]ProviderPolicy{
+		"default": {Candidates: []ProviderCandidate{{Provider: "provider", Model: "model", CapabilityRank: 100, AllowedDataClassifications: []string{"INTERNAL"}}}},
+	}})
 	adapter := &serviceAdapter{}
 	if err := gateway.Register("provider", "model", adapter, Pricing{InputMicrosPerToken: 1, OutputMicrosPerToken: 1}); err != nil {
 		t.Fatal(err)

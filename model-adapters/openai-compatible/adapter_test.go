@@ -93,6 +93,19 @@ func TestGenerateClassifiesHTTPAndNetworkFailuresWithoutProviderBody(t *testing.
 	}
 }
 
+func TestGenerateRequiresAuthoritativeProviderUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write([]byte(`{"id":"chatcmpl-missing-usage","model":"gpt-test-v1","choices":[{"message":{"content":"{\"ok\":true}"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+	adapter := testAdapter(t, server.URL, Config{})
+	_, err := adapter.Generate(context.Background(), testRequest())
+	var failure *modelgateway.ProviderFailure
+	if !errors.As(err, &failure) || failure.OutcomeKnown || !errors.Is(failure, modelgateway.ErrOutputSchema) {
+		t.Fatalf("missing usage failure = %#v", err)
+	}
+}
+
 func TestStreamParsesSSEAndCancelStopsTheRequest(t *testing.T) {
 	cancelled := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

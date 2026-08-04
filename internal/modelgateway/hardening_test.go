@@ -119,6 +119,7 @@ func TestGatewayRejectsChangedBodyForRequestID(t *testing.T) {
 		t.Fatalf("conflict error = %v", err)
 	}
 	for _, changed := range []GenerateOptions{
+		{Provider: "primary", AccountID: "other-account", ReservationID: "reservation", MaxAttempts: 1},
 		{Provider: "primary", AccountID: "account", ReservationID: "other-reservation", MaxAttempts: 1},
 		{Provider: "primary", AccountID: "account", ReservationID: "reservation", MaxAttempts: 2},
 		{Provider: "other-provider", AccountID: "account", ReservationID: "reservation", MaxAttempts: 1},
@@ -496,6 +497,131 @@ func TestGatewayValidatesAggregatedStreamAtEOFBeforeSuccess(t *testing.T) {
 	}
 }
 
+func TestGatewayRejectsMalformedStreamEventBeforeFinalValidation(t *testing.T) {
+	ledger := NewBudgetLedger(time.Now)
+	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "account", TenantID: "tenant", LimitMicros: 1_000}); err != nil {
+		t.Fatal(err)
+	}
+	stream := &aggregatedUsageStream{
+		events:  []json.RawMessage{json.RawMessage(`{"delta":"valid"}`), json.RawMessage(`{"delta":`)},
+		content: json.RawMessage(`{"ok":true}`),
+		usage:   Usage{InputTokens: 1, OutputTokens: 1, ProviderRequestID: "provider-stream", ModelVersion: "model-v1"},
+	}
+	adapter := &hardeningAdapter{stream: stream}
+	gateway := NewGateway(ledger, time.Now)
+	if err := gateway.Register("primary", "model", adapter, Pricing{InputMicrosPerToken: 1, OutputMicrosPerToken: 1}); err != nil {
+		t.Fatal(err)
+	}
+	responseStream, err := gateway.Stream(context.Background(), hardeningRequest("stream-invalid-event"), GenerateOptions{Provider: "primary", AccountID: "account", ReservationID: "stream-invalid-event-reservation", MaxAttempts: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, err := responseStream.Recv(context.Background()); !errors.Is(err, ErrOutputSchema) || len(value) != 0 {
+		t.Fatalf("malformed event value=%s err=%v", value, err)
+	}
+	reservation, found := ledger.Reservation("tenant", "stream-invalid-event-reservation")
+	if !found || reservation.State != ReservationReconcile {
+		t.Fatalf("reservation=%#v found=%v", reservation, found)
+	}
+}
+
+func TestGatewaySettlesAuthoritativeZeroUsageWithoutWorstCaseCharge(t *testing.T) {
+	ledger := NewBudgetLedger(time.Now)
+	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "account", TenantID: "tenant", LimitMicros: 1_000}); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &hardeningAdapter{response: NormalizedResponse{Content: json.RawMessage(`{"ok":true}`), Usage: Usage{ProviderRequestID: "provider-zero", ModelVersion: "model-v1"}}}
+	gateway := NewGateway(ledger, time.Now)
+	if err := gateway.Register("primary", "model", adapter, Pricing{InputMicrosPerToken: 2, OutputMicrosPerToken: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gateway.Generate(context.Background(), hardeningRequest("zero-usage"), GenerateOptions{Provider: "primary", AccountID: "account", ReservationID: "zero-usage-reservation", MaxAttempts: 1}); err != nil {
+		t.Fatal(err)
+	}
+	account, _ := ledger.Account("tenant", "account")
+	reservation, found := ledger.Reservation("tenant", "zero-usage-reservation")
+	if !found || reservation.State != ReservationSettled || reservation.SettledMicros != 0 || account.SpentMicros != 0 || account.ReservedMicros != 0 {
+		t.Fatalf("account=%#v reservation=%#v found=%v", account, reservation, found)
+	}
+}
+
+func TestGatewayReconcilesProviderUsageAtomicallyAndIdempotently(t *testing.T) {
+	ledger := NewBudgetLedger(time.Now)
+	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "account", TenantID: "tenant", ScopeType: "PROJECT", ScopeID: "project", LimitMicros: 1_000}); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &hardeningAdapter{failures: []error{&ProviderFailure{Cause: errors.New("provider outcome unknown"), Retryable: true, OutcomeKnown: false}}}
+	gateway := NewGateway(ledger, time.Now)
+	if err := gateway.Register("primary", "model", adapter, Pricing{InputMicrosPerToken: 2, OutputMicrosPerToken: 3}); err != nil {
+		t.Fatal(err)
+	}
+	request := hardeningRequest("reconcile-usage")
+	if _, err := gateway.Generate(context.Background(), request, GenerateOptions{Provider: "primary", AccountID: "account", ReservationID: "reconcile-reservation", MaxAttempts: 1}); err == nil {
+		t.Fatal("unknown provider outcome succeeded")
+	}
+	rawUsage := json.RawMessage(`{"inputTokens":2,"outputTokens":3,"costMicros":999,"providerRequestId":"provider-reconciled","modelVersion":"model-v1"}`)
+	reconciliation := UsageReconciliationRequest{TenantID: "tenant", RequestID: request.RequestID, ReservationID: "reconcile-reservation", Provider: "primary", Model: "model", RawUsage: rawUsage}
+	first, err := gateway.ReconcileUsage(context.Background(), reconciliation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := gateway.ReconcileUsage(context.Background(), reconciliation)
+	if err != nil || second.SettledMicros != first.SettledMicros {
+		t.Fatalf("idempotent reconciliation=%#v error=%v", second, err)
+	}
+	if first.State != ReservationSettled || first.SettledMicros != 13 {
+		t.Fatalf("reservation=%#v", first)
+	}
+	account, _ := ledger.Account("tenant", "account")
+	call, found := ledger.ModelCall("tenant", request.RequestID)
+	if !found || account.SpentMicros != 13 || account.ReservedMicros != 0 || call.Status != ModelCallReconciled || call.InputTokens != 2 || call.OutputTokens != 3 || call.CostMicros != 13 || call.ProviderRequestID != "provider-reconciled" || !validModelDigest(call.ReconciliationReceiptSHA256) || call.ReconciledAt == nil {
+		t.Fatalf("account=%#v call=%#v found=%v", account, call, found)
+	}
+	reconciliation.RawUsage = json.RawMessage(`{"inputTokens":2,"outputTokens":4,"providerRequestId":"provider-reconciled","modelVersion":"model-v1"}`)
+	if _, err := gateway.ReconcileUsage(context.Background(), reconciliation); !errors.Is(err, ErrReservationConflict) {
+		t.Fatalf("changed reconciliation error=%v", err)
+	}
+}
+
+func TestGatewayReconciliationIncludesPreviouslyIncurredUsage(t *testing.T) {
+	ledger := NewBudgetLedger(time.Now)
+	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "account", TenantID: "tenant", LimitMicros: 1_000}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledger.Reserve(context.Background(), "tenant", "account", "partial-reservation", "partial-request", 100); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	_, err := ledger.FinalizeModelCall(context.Background(), ModelCallFinalization{
+		ReservationID: "partial-reservation", Disposition: ReservationDispositionReconcile, ActualMicros: 7,
+		Call: ModelCall{
+			TenantID: "tenant", RequestID: "partial-request", ProjectID: "project", AgentInstanceID: "agent",
+			Provider: "primary", LogicalModel: "model", ActualModelVersion: "model-v1", PromptBundleVersion: "prompt-v1",
+			InputSHA256: digestBytes([]byte("partial-input")), InputTokens: 4, OutputTokens: 1, CostMicros: 7,
+			Status: ModelCallReconcile, ProviderRequestID: "prior-known-attempt", CreatedAt: now,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &hardeningAdapter{}
+	gateway := NewGateway(ledger, time.Now)
+	if err := gateway.Register("primary", "model", adapter, Pricing{InputMicrosPerToken: 2, OutputMicrosPerToken: 3}); err != nil {
+		t.Fatal(err)
+	}
+	reservation, err := gateway.ReconcileUsage(context.Background(), UsageReconciliationRequest{
+		TenantID: "tenant", RequestID: "partial-request", ReservationID: "partial-reservation", Provider: "primary", Model: "model",
+		RawUsage: json.RawMessage(`{"inputTokens":2,"outputTokens":1,"providerRequestId":"unknown-attempt","modelVersion":"model-v1"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call, _ := ledger.ModelCall("tenant", "partial-request")
+	if reservation.SettledMicros != 14 || call.CostMicros != 14 || call.InputTokens != 6 || call.OutputTokens != 2 || call.ProviderRequestID != "unknown-attempt" {
+		t.Fatalf("reservation=%#v call=%#v", reservation, call)
+	}
+}
+
 func newHardeningGateway(t *testing.T, config GatewayConfig) (*Gateway, *hardeningAdapter, *BudgetLedger) {
 	t.Helper()
 	ledger := NewBudgetLedger(time.Now)
@@ -584,11 +710,18 @@ func (adapter *hardeningAdapter) StreamCalls() int {
 func (*hardeningAdapter) Cancel(context.Context, string) error { return nil }
 
 func (*hardeningAdapter) NormalizeUsage(raw any) (Usage, error) {
-	usage, ok := raw.(Usage)
-	if !ok {
+	switch value := raw.(type) {
+	case Usage:
+		return value, nil
+	case json.RawMessage:
+		var usage Usage
+		if json.Unmarshal(value, &usage) != nil {
+			return Usage{}, ErrInvalidRequest
+		}
+		return usage, nil
+	default:
 		return Usage{}, ErrInvalidRequest
 	}
-	return usage, nil
 }
 
 func (adapter *hardeningAdapter) Calls() int {

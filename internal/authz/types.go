@@ -50,6 +50,7 @@ const (
 	ActionModelGenerate     = "model.generate"
 	ActionModelStream       = "model.stream"
 	ActionModelCancel       = "model.cancel"
+	ActionModelReconcile    = "model.reconcile"
 	ActionModelCapabilities = "model.capabilities"
 	ActionSandboxExec       = "sandbox.exec"
 )
@@ -426,7 +427,7 @@ func IsSideEffect(action string) bool {
 func RequiresTask(action string) bool {
 	switch action {
 	case ActionGoalRead, ActionPlanRead, ActionKnowledgeRead, ActionPolicyTest, ActionModelCapabilities,
-		ActionModelGenerate, ActionModelStream, ActionModelCancel:
+		ActionModelGenerate, ActionModelStream, ActionModelCancel, ActionModelReconcile:
 		return false
 	default:
 		return true

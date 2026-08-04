@@ -212,6 +212,8 @@ func (g *Gateway) Stream(ctx context.Context, request NormalizedRequest, options
 		g.recordProviderFailure(key, err)
 		disposition := ReservationDispositionReconcile
 		call.Status = ModelCallReconcile
+		call.InputTokens = 0
+		call.OutputTokens = 0
 		var providerFailure *ProviderFailure
 		if errors.As(err, &providerFailure) && providerFailure.OutcomeKnown {
 			disposition = ReservationDispositionRelease
@@ -290,6 +292,8 @@ func (g *Gateway) streamWithPolicy(ctx context.Context, request NormalizedReques
 			var providerFailure *ProviderFailure
 			if !errors.As(streamErr, &providerFailure) || !providerFailure.OutcomeKnown {
 				call.Status = ModelCallReconcile
+				call.InputTokens = 0
+				call.OutputTokens = 0
 				call.LatencyMilliseconds = elapsedMilliseconds(startedAt, g.clock().UTC())
 				if finalizeErr := g.finalizeModelCall(ctx, ModelCallFinalization{ReservationID: options.ReservationID, Disposition: ReservationDispositionReconcile, Call: call}); finalizeErr != nil {
 					return nil, finalizeErr
@@ -463,7 +467,7 @@ func (g *Gateway) loadReplay(ctx context.Context, request NormalizedRequest, dig
 	if call.Status == ModelCallReconcile {
 		return ModelReplay{}, false, ErrReconciliationRequired
 	}
-	if call.Status == ModelCallSucceeded {
+	if call.Status == ModelCallSucceeded || call.Status == ModelCallReconciled {
 		return ModelReplay{}, false, ErrReplayUnavailable
 	}
 	return ModelReplay{}, false, ErrRequestConflict
@@ -801,7 +805,7 @@ func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequ
 				break
 			}
 			g.providerSucceeded(selection.key)
-			attemptCost, costErr := usageCost(response.Usage, selection.pricing, selection.worstCost)
+			attemptCost, costErr := usageCost(response.Usage, selection.pricing)
 			if costErr != nil {
 				err = costErr
 			}
@@ -1044,7 +1048,7 @@ func (g *Gateway) generateSingle(ctx context.Context, request NormalizedRequest,
 			return NormalizedResponse{}, redactError(generateErr)
 		}
 		g.providerSucceeded(key)
-		attemptCost, costErr := usageCost(response.Usage, pricing, worst)
+		attemptCost, costErr := usageCost(response.Usage, pricing)
 		if costErr != nil {
 			err = costErr
 		}
@@ -1424,7 +1428,7 @@ func (s *budgetedStream) finalizeTerminal() error {
 			s.finalizeErr = s.finishRejected(ErrOutputSchema, usage, nil)
 			return
 		}
-		cost, costErr := usageCost(usage, s.pricing, s.worstCost)
+		cost, costErr := usageCost(usage, s.pricing)
 		if costErr != nil {
 			s.finalizeErr = s.finalizeUnknown()
 			if s.finalizeErr == nil {
@@ -1468,7 +1472,7 @@ func (s *budgetedStream) finishRejected(rejection error, usage Usage, content []
 	call := s.call
 	call.InputTokens = usage.InputTokens
 	call.OutputTokens = usage.OutputTokens
-	call.CostMicros, _ = usageCost(usage, s.pricing, s.worstCost)
+	call.CostMicros, _ = usageCost(usage, s.pricing)
 	call.Status = ModelCallFailedOutputSchema
 	if errors.Is(rejection, ErrCredentialDetected) {
 		call.Status = ModelCallFailedCredential
@@ -1527,6 +1531,8 @@ func (s *budgetedStream) finalizeFailure(cause error) error {
 func (s *budgetedStream) finalizeUnknown() error {
 	call := s.call
 	call.Status = ModelCallReconcile
+	call.InputTokens = 0
+	call.OutputTokens = 0
 	call.CostMicros = 0
 	call.OutputSHA256 = ""
 	call.LatencyMilliseconds = elapsedMilliseconds(s.startedAt, s.clock().UTC())
@@ -1597,8 +1603,8 @@ func addCost(current, additional int64) (int64, error) {
 	return current + additional, nil
 }
 
-func usageCost(usage Usage, pricing Pricing, fallback int64) (int64, error) {
-	if usage.InputTokens < 0 || usage.OutputTokens < 0 || usage.CostMicros < 0 || fallback < 0 {
+func usageCost(usage Usage, pricing Pricing) (int64, error) {
+	if usage.InputTokens < 0 || usage.OutputTokens < 0 || usage.CostMicros < 0 {
 		return 0, ErrInvalidRequest
 	}
 	if usage.InputTokens != 0 || usage.OutputTokens != 0 {
@@ -1612,10 +1618,7 @@ func usageCost(usage Usage, pricing Pricing, fallback int64) (int64, error) {
 		}
 		return addCost(input, output)
 	}
-	if usage.CostMicros != 0 {
-		return usage.CostMicros, nil
-	}
-	return fallback, nil
+	return usage.CostMicros, nil
 }
 
 func multiplyCost(units, rate int64) (int64, error) {
