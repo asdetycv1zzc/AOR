@@ -229,6 +229,25 @@ services:
       retries: 20
       start_period: 5s
 
+  identity:
+    image: ghcr.io/dexidp/dex:v2.45.1@sha256:8499afd690c437f52301efd2b05b2455da5bd2dfc20332cd697dc9937f808462
+    restart: unless-stopped
+    command: [dex, serve, /etc/dex/config.yaml]
+    volumes:
+      - ./dex.yaml:/etc/dex/config.yaml:ro
+    ports:
+      - 127.0.0.1:5556:5556
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    networks: [aor]
+    healthcheck:
+      test: [CMD, /usr/bin/wget, -q, -O, /dev/null, http://127.0.0.1:5558/healthz]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
   aor-api:
     <<: *aor-common
     image: aor/aor-server:0.1.0-test
@@ -255,6 +274,8 @@ services:
         condition: service_completed_successfully
       opa:
         condition: service_healthy
+      identity:
+        condition: service_healthy
     environment:
       AOR_ENVIRONMENT: test
       AOR_LISTEN_ADDR: :8080
@@ -272,6 +293,11 @@ services:
       AOR_S3_ACCESS_KEY_REF: secret://minio_root_user
       AOR_S3_SECRET_KEY_REF: secret://minio_root_password
       AOR_OPA_URL: http://opa:8181
+      AOR_OIDC_ISSUER: http://127.0.0.1:5556/dex
+      AOR_OIDC_JWKS_URL: http://identity:5556/dex/keys
+      AOR_OIDC_AUDIENCE: aor-control-plane
+      AOR_OIDC_DEFAULT_TENANT_ID: 11111111-1111-4111-8111-111111111111
+      AOR_OIDC_DEFAULT_ROLE: USER
     secrets: [postgres_app_password, minio_root_user, minio_root_password]
     ports:
       - 127.0.0.1:8090:8080
@@ -292,6 +318,8 @@ services:
         condition: service_completed_successfully
       nats:
         condition: service_healthy
+      identity:
+        condition: service_healthy
     environment:
       AOR_ENVIRONMENT: test
       AOR_LISTEN_ADDR: :8080
@@ -301,6 +329,11 @@ services:
       AOR_DATABASE_USER: aor_app
       AOR_DATABASE_PASSWORD_REF: secret://postgres_app_password
       AOR_NATS_URL: nats://nats:4222
+      AOR_OIDC_ISSUER: http://127.0.0.1:5556/dex
+      AOR_OIDC_JWKS_URL: http://identity:5556/dex/keys
+      AOR_OIDC_AUDIENCE: aor-control-plane
+      AOR_OIDC_DEFAULT_TENANT_ID: 11111111-1111-4111-8111-111111111111
+      AOR_OIDC_DEFAULT_ROLE: USER
       AOR_MODEL_PROVIDERS_JSON: >-
         [{"id":"openai-primary","provider":"openai","baseUrl":"${AOR_OPENAI_BASE_URL:-https://api.openai.com/v1}","apiKeyRef":"secret://model_provider_openai_key","models":["${AOR_OPENAI_MODEL:-gpt-4o-mini}"],"inputMicrosPerToken":1,"outputMicrosPerToken":4},{"id":"deepseek-audit","provider":"deepseek","baseUrl":"${AOR_DEEPSEEK_BASE_URL:-https://api.deepseek.com/v1}","apiKeyRef":"secret://model_provider_deepseek_key","models":["${AOR_DEEPSEEK_MODEL:-deepseek-chat}"],"inputMicrosPerToken":1,"outputMicrosPerToken":4}]
     secrets: [postgres_app_password, model_provider_openai_key, model_provider_deepseek_key]
@@ -321,11 +354,18 @@ services:
         condition: service_healthy
       opa:
         condition: service_healthy
+      identity:
+        condition: service_healthy
     environment:
       AOR_ENVIRONMENT: test
       AOR_LISTEN_ADDR: :8080
       AOR_NATS_URL: nats://nats:4222
       AOR_OPA_URL: http://opa:8181
+      AOR_OIDC_ISSUER: http://127.0.0.1:5556/dex
+      AOR_OIDC_JWKS_URL: http://identity:5556/dex/keys
+      AOR_OIDC_AUDIENCE: aor-control-plane
+      AOR_OIDC_DEFAULT_TENANT_ID: 11111111-1111-4111-8111-111111111111
+      AOR_OIDC_DEFAULT_ROLE: USER
     ports:
       - 127.0.0.1:8092:8080
 

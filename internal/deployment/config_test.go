@@ -18,10 +18,20 @@ func TestDeploymentProfilesFailClosed(t *testing.T) {
 	for _, value := range []string{
 		"AOR_DATABASE_USER: aor_app", "AOR_DATABASE_PASSWORD_REF: secret://postgres_app_password",
 		"postgres_app_password", "000003_runtime_app_role.up.sql", "model_provider_deepseek_key",
-		"provider\":\"deepseek",
+		"provider\":\"deepseek", "ghcr.io/dexidp/dex:v2.45.1@sha256:",
+		"AOR_OIDC_JWKS_URL: http://identity:5556/dex/keys", "AOR_OIDC_DEFAULT_ROLE: USER",
 	} {
 		if !strings.Contains(composeText, value) {
 			t.Errorf("compose missing %q", value)
+		}
+	}
+	dex, err := os.ReadFile("../../deploy/compose/dex.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"issuer: http://127.0.0.1:5556/dex", "id: aor-control-plane", "type: mockCallback"} {
+		if !strings.Contains(string(dex), value) {
+			t.Errorf("Dex config missing %q", value)
 		}
 	}
 	for _, value := range []string{"AOR_DATABASE_USER: aor\n", "model_provider_anthropic_key", "provider\":\"anthropic"} {

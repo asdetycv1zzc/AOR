@@ -1,0 +1,25 @@
+issuer: http://127.0.0.1:5556/dex
+
+storage:
+  type: memory
+
+web:
+  http: 0.0.0.0:5556
+
+telemetry:
+  http: 0.0.0.0:5558
+
+oauth2:
+  skipApprovalScreen: true
+
+staticClients:
+  - id: aor-control-plane
+    name: AOR local test client
+    public: true
+    redirectURIs:
+      - http://127.0.0.1:5555/callback
+
+connectors:
+  - type: mockCallback
+    id: local-test
+    name: Local test identity

@@ -7,6 +7,7 @@ This profile starts the complete local dependency set before any AOR process:
 - NATS with JetStream and persistent storage
 - MinIO with the private `aor-artifacts` bucket
 - Open Policy Agent with the repository policy and data
+- Dex with a local OAuth 2.0/OIDC test issuer and rotating JWKS
 - Two independently configured model-provider families for the Model Gateway
 
 All upstream images are pinned by version and multi-platform manifest digest. Host ports bind to `127.0.0.1`; this profile is for development and test only.
@@ -47,7 +48,7 @@ The target performs these stages in order:
 
 1. Validate the Compose model and required secret files.
 2. Pull all dependency images.
-3. Start PostgreSQL, Temporal, NATS, MinIO, and OPA, then wait for their health checks and initialization jobs.
+3. Start PostgreSQL, Temporal, NATS, MinIO, OPA, and Dex, then wait for their health checks and initialization jobs.
 4. Apply PostgreSQL migrations `000001_core.up.sql`, `000002_inbox_claims.up.sql`, and `000003_runtime_app_role.up.sql` in order; reruns detect the installed schema and keep the fixed `aor_app` role and grants idempotent. The app password is supplied through the ignored secret file and is not printed.
 5. Build the four AOR images serially from the current source.
 6. Start AOR only after every dependency and initializer has completed successfully, then wait for every process readiness endpoint.
@@ -67,5 +68,12 @@ Individual stages are available as `make compose-pull`, `make compose-deps-up`, 
 | MinIO API | `http://127.0.0.1:9000` |
 | MinIO console | `http://127.0.0.1:9001` |
 | OPA | `http://127.0.0.1:8181` |
+| OIDC discovery | `http://127.0.0.1:5556/dex/.well-known/openid-configuration` |
 
-The AOR HTTP endpoints in this profile expose only process lifecycle and build identity; they do not expose the product API. Until the service transports and real dependency clients are wired, this profile supports infrastructure and lifecycle smoke tests only and must not be treated as business-readiness evidence.
+## Test Identity
+
+Dex exposes the public client `aor-control-plane` and the local `mockCallback` connector. Obtain an access token through the OAuth 2.0 Authorization Code flow with PKCE using the issuer above and the registered redirect URI `http://127.0.0.1:5555/callback`. Send the resulting token as `Authorization: Bearer <token>` to AOR HTTP APIs. The API, Model Gateway, and Tool Broker verify RS256 signatures against Dex JWKS, bind the exact issuer and audience, and refresh unknown signing keys for rotation.
+
+The mock connector and `AOR_OIDC_DEFAULT_TENANT_ID`/`AOR_OIDC_DEFAULT_ROLE` mappings exist only for this test profile. Runtime configuration rejects those mappings outside development or test, and production identity endpoints must use HTTPS. Replace Dex mock identity with the deployment's approved identity provider and issue explicit `tenantId`, `principalType`, and `role` claims before any production use.
+
+The Control API exposes authenticated project creation, project reads, state reads, task reads, project commands, and project event streaming in addition to lifecycle endpoints. Every mutation is authorized by OPA again at the Orchestrator commit boundary. Other product transports must pass their own readiness and conformance gates before this profile can be treated as complete business-readiness evidence.
