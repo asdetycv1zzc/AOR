@@ -80,6 +80,7 @@ compose-check-secrets:
 	test -s deploy/compose/secrets/model_replay_key
 	test "$$(wc -c < deploy/compose/secrets/model_replay_key)" -eq 32
 	test -s deploy/compose/secrets/lease_signing_key
+	test -s deploy/compose/secrets/aor_server_oauth_client_secret
 
 compose-check:
 	$(COMPOSE) config --quiet

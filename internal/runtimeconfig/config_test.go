@@ -6,18 +6,79 @@ import (
 )
 
 func TestLoadServerConfiguration(t *testing.T) {
-	config, err := Load("aor-server", environment(map[string]string{
-		"AOR_DATABASE_PASSWORD_REF": "secret://postgres/password",
-		"AOR_DEPLOYMENT_PROFILE":    "TEST",
-		"AOR_LEASE_SIGNING_KEY_REF": "secret://authz/lease-signing-key",
-		"AOR_S3_ACCESS_KEY_REF":     "secret://minio/access-key",
-		"AOR_S3_SECRET_KEY_REF":     "secret://minio/secret-key",
-	}))
+	config, err := Load("aor-server", environment(validServerEnvironment()))
 	if err != nil {
 		t.Fatalf("load server config: %v", err)
 	}
-	if config.Database.Address() != "postgres:5432" || config.Temporal.Namespace != "aor" || config.NATS.Stream != "AOR_EVENTS" || !config.S3.UsePathStyle || config.KnowledgeRoot != "/var/lib/aor/knowledge" {
+	if config.Database.Address() != "postgres:5432" || config.Temporal.Namespace != "aor" || config.NATS.Stream != "AOR_EVENTS" || !config.S3.UsePathStyle || config.KnowledgeRoot != "/var/lib/aor/knowledge" || config.ModelGatewayClient.ClientID != "aor-server" {
 		t.Fatalf("unexpected defaults: %+v", config)
+	}
+}
+
+func TestLoadModelGatewayOAuthClientConfiguration(t *testing.T) {
+	values := validServerEnvironment()
+	values["AOR_MODEL_GATEWAY_OAUTH_SCOPES"] = "profile audience:server:client_id:aor-control-plane"
+	config, err := Load("aor-server", environment(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.ModelGatewayClient.TokenEndpoint != "http://identity:5556/dex/token" || config.ModelGatewayClient.ClientSecretRef != "secret://aor_server_oauth_client_secret" || len(config.ModelGatewayClient.Scopes) != 2 || config.ModelGatewayClient.Audience != "aor-control-plane" {
+		t.Fatalf("model gateway client config = %#v", config.ModelGatewayClient)
+	}
+}
+
+func TestServerRequiresCompleteModelGatewayOAuthClientConfiguration(t *testing.T) {
+	for _, key := range []string{
+		"AOR_MODEL_GATEWAY_OAUTH_TOKEN_ENDPOINT",
+		"AOR_MODEL_GATEWAY_OAUTH_CLIENT_ID",
+		"AOR_MODEL_GATEWAY_OAUTH_CLIENT_SECRET_REF",
+		"AOR_MODEL_GATEWAY_OAUTH_AUDIENCE",
+	} {
+		values := validServerEnvironment()
+		delete(values, key)
+		if _, err := Load("aor-server", environment(values)); !errors.Is(err, ErrInvalidConfiguration) {
+			t.Fatalf("missing %s error = %v", key, err)
+		}
+	}
+
+	for _, scopes := range []string{"scope\nother", "scope scope", "scope\tother"} {
+		values := validServerEnvironment()
+		values["AOR_MODEL_GATEWAY_OAUTH_SCOPES"] = scopes
+		if _, err := Load("aor-server", environment(values)); !errors.Is(err, ErrInvalidConfiguration) {
+			t.Fatalf("scopes %q error = %v", scopes, err)
+		}
+	}
+}
+
+func TestServiceSubjectMappingsAreExactAndTestOnly(t *testing.T) {
+	const mappings = `[{"subject":"Cgphb3Itc2VydmVy","tenantId":"11111111-1111-4111-8111-111111111111"}]`
+	values := map[string]string{
+		"AOR_DATABASE_PASSWORD_REF":      "secret://postgres/password",
+		"AOR_MODEL_PROVIDERS_JSON":       validModelProvidersJSON(),
+		"AOR_OIDC_SERVICE_SUBJECTS_JSON": mappings,
+	}
+	config, err := Load("aor-model-gateway", environment(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Identity.ServiceSubjects) != 1 || config.Identity.ServiceSubjects[0].Subject != "Cgphb3Itc2VydmVy" {
+		t.Fatalf("service mappings = %#v", config.Identity.ServiceSubjects)
+	}
+
+	values["AOR_ENVIRONMENT"] = EnvironmentPreproduction
+	if _, err := Load("aor-model-gateway", environment(values)); !errors.Is(err, ErrInvalidConfiguration) {
+		t.Fatalf("preproduction service mapping error = %v", err)
+	}
+
+	values["AOR_ENVIRONMENT"] = EnvironmentTest
+	values["AOR_OIDC_SERVICE_SUBJECTS_JSON"] = `[{"subject":"same","tenantId":"11111111-1111-4111-8111-111111111111"},{"subject":"same","tenantId":"22222222-2222-4222-8222-222222222222"}]`
+	if _, err := Load("aor-model-gateway", environment(values)); !errors.Is(err, ErrInvalidConfiguration) {
+		t.Fatalf("duplicate service mapping error = %v", err)
+	}
+
+	values["AOR_OIDC_SERVICE_SUBJECTS_JSON"] = `[{"subject":"service","tenantId":"11111111-1111-4111-8111-111111111111","role":"USER"}]`
+	if _, err := Load("aor-model-gateway", environment(values)); !errors.Is(err, ErrInvalidConfiguration) {
+		t.Fatalf("configurable service role error = %v", err)
 	}
 }
 
@@ -298,6 +359,27 @@ func environment(values map[string]string) LookupEnv {
 		value, found := values[key]
 		return value, found
 	}
+}
+
+func validServerEnvironment() map[string]string {
+	return map[string]string{
+		"AOR_DATABASE_PASSWORD_REF":                 "secret://postgres/password",
+		"AOR_DEPLOYMENT_PROFILE":                    "TEST",
+		"AOR_LEASE_SIGNING_KEY_REF":                 "secret://authz/lease-signing-key",
+		"AOR_S3_ACCESS_KEY_REF":                     "secret://minio/access-key",
+		"AOR_S3_SECRET_KEY_REF":                     "secret://minio/secret-key",
+		"AOR_MODEL_GATEWAY_OAUTH_TOKEN_ENDPOINT":    "http://identity:5556/dex/token",
+		"AOR_MODEL_GATEWAY_OAUTH_CLIENT_ID":         "aor-server",
+		"AOR_MODEL_GATEWAY_OAUTH_CLIENT_SECRET_REF": "secret://aor_server_oauth_client_secret",
+		"AOR_MODEL_GATEWAY_OAUTH_AUDIENCE":          "aor-control-plane",
+	}
+}
+
+func validModelProvidersJSON() string {
+	return `[
+		{"id":"primary","provider":"openai","baseUrl":"https://api.openai.example/v1","apiKeyRef":"secret://model/openai","models":["model-a"]},
+		{"id":"audit","provider":"anthropic","baseUrl":"https://api.anthropic.example/v1","apiKeyRef":"secret://model/anthropic","models":["model-b"]}
+	]`
 }
 
 func validWorkerEnvironment() map[string]string {

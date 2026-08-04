@@ -38,6 +38,7 @@ type Config struct {
 	OPA                OPAConfig
 	Identity           IdentityConfig
 	ModelGateway       ModelGatewayConfig
+	ModelGatewayClient ModelGatewayClientConfig
 	Services           ServiceEndpoints
 	Sandbox            SandboxConfig
 }
@@ -85,6 +86,12 @@ type IdentityConfig struct {
 	Audience        string
 	DefaultTenantID string
 	DefaultRole     string
+	ServiceSubjects []ServiceSubjectMapping
+}
+
+type ServiceSubjectMapping struct {
+	Subject  string `json:"subject"`
+	TenantID string `json:"tenantId"`
 }
 
 type ModelGatewayConfig struct {
@@ -92,6 +99,14 @@ type ModelGatewayConfig struct {
 	ReplayKeyRef   string
 	ReplayKeyID    string
 	ReplayTTLHours int
+}
+
+type ModelGatewayClientConfig struct {
+	TokenEndpoint   string
+	ClientID        string
+	ClientSecretRef string
+	Scopes          []string
+	Audience        string
 }
 
 type ProviderConfig struct {
@@ -184,6 +199,12 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 			ReplayKeyRef: value(lookup, "AOR_MODEL_REPLAY_KEY_REF", "secret://model/replay-key"),
 			ReplayKeyID:  value(lookup, "AOR_MODEL_REPLAY_KEY_ID", "model-replay-v1"),
 		},
+		ModelGatewayClient: ModelGatewayClientConfig{
+			TokenEndpoint:   value(lookup, "AOR_MODEL_GATEWAY_OAUTH_TOKEN_ENDPOINT", ""),
+			ClientID:        value(lookup, "AOR_MODEL_GATEWAY_OAUTH_CLIENT_ID", ""),
+			ClientSecretRef: value(lookup, "AOR_MODEL_GATEWAY_OAUTH_CLIENT_SECRET_REF", ""),
+			Audience:        value(lookup, "AOR_MODEL_GATEWAY_OAUTH_AUDIENCE", ""),
+		},
 		Services: ServiceEndpoints{
 			API:          value(lookup, "AOR_API_URL", "http://aor-api:8080"),
 			ModelGateway: value(lookup, "AOR_MODEL_GATEWAY_URL", "http://aor-model-gateway:8080"),
@@ -219,6 +240,10 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	config.ModelGatewayClient.Scopes, err = oauthScopes(lookup, "AOR_MODEL_GATEWAY_OAUTH_SCOPES")
+	if err != nil {
+		return Config{}, err
+	}
 	if raw := value(lookup, "AOR_SANDBOX_HOLD_COMMAND_JSON", `["/bin/sh","-c","while :; do sleep 3600; done"]`); raw != "" {
 		decoder := json.NewDecoder(strings.NewReader(raw))
 		if err := decoder.Decode(&config.Sandbox.HoldCommand); err != nil {
@@ -248,6 +273,16 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 		}
 		if err := markProviderCapabilityConfiguration(raw, config.ModelGateway.Providers); err != nil {
 			return Config{}, configurationError("AOR_MODEL_PROVIDERS_JSON")
+		}
+	}
+	if raw, found := lookup("AOR_OIDC_SERVICE_SUBJECTS_JSON"); found && strings.TrimSpace(raw) != "" {
+		decoder := json.NewDecoder(strings.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&config.Identity.ServiceSubjects); err != nil {
+			return Config{}, configurationError("AOR_OIDC_SERVICE_SUBJECTS_JSON")
+		}
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			return Config{}, configurationError("AOR_OIDC_SERVICE_SUBJECTS_JSON")
 		}
 	}
 	applyProviderCapabilityDefaults(config.ModelGateway.Providers)
@@ -296,8 +331,17 @@ func (config Config) Validate() error {
 	if config.Environment != EnvironmentDevelopment && config.Environment != EnvironmentTest && (config.Identity.DefaultTenantID != "" || config.Identity.DefaultRole != "") {
 		return ErrInvalidConfiguration
 	}
+	if err := validateServiceSubjectMappings(config); err != nil {
+		return err
+	}
+	if needsModelGatewayClient(config.Component) || modelGatewayClientConfigured(config.ModelGatewayClient) {
+		client := config.ModelGatewayClient
+		if !validURL(config.Services.ModelGateway, "http", "https") || !validURL(client.TokenEndpoint, "http", "https") || !validOAuthClientID(client.ClientID) || !validSecretReference(client.ClientSecretRef) || !validOAuthAudience(client.Audience) || !validOAuthScopes(client.Scopes) {
+			return ErrInvalidConfiguration
+		}
+	}
 	if config.Environment == EnvironmentProduction {
-		if (needsS3(config.Component) && !strings.HasPrefix(config.S3.Endpoint, "https://")) || (needsOPA(config.Component) && !strings.HasPrefix(config.OPA.URL, "https://")) || (needsNATS(config.Component) && !strings.HasPrefix(config.NATS.URL, "tls://")) || (needsIdentity(config.Component) && (!strings.HasPrefix(config.Identity.Issuer, "https://") || !strings.HasPrefix(config.Identity.JWKSURL, "https://"))) {
+		if (needsS3(config.Component) && !strings.HasPrefix(config.S3.Endpoint, "https://")) || (needsOPA(config.Component) && !strings.HasPrefix(config.OPA.URL, "https://")) || (needsNATS(config.Component) && !strings.HasPrefix(config.NATS.URL, "tls://")) || (needsIdentity(config.Component) && (!strings.HasPrefix(config.Identity.Issuer, "https://") || !strings.HasPrefix(config.Identity.JWKSURL, "https://"))) || (needsModelGatewayClient(config.Component) && (!strings.HasPrefix(config.Services.ModelGateway, "https://") || !strings.HasPrefix(config.ModelGatewayClient.TokenEndpoint, "https://"))) {
 			return ErrInvalidConfiguration
 		}
 	}
@@ -475,6 +519,79 @@ func boolean(lookup LookupEnv, key string, fallback bool) (bool, error) {
 		return false, configurationError(key)
 	}
 	return parsed, nil
+}
+
+func oauthScopes(lookup LookupEnv, key string) ([]string, error) {
+	raw, found := lookup(key)
+	if !found || strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	if strings.ContainsAny(raw, "\t\r\n\x00") {
+		return nil, configurationError(key)
+	}
+	return strings.Fields(raw), nil
+}
+
+func validateServiceSubjectMappings(config Config) error {
+	mappings := config.Identity.ServiceSubjects
+	if len(mappings) == 0 {
+		return nil
+	}
+	if !needsIdentity(config.Component) || config.Environment != EnvironmentDevelopment && config.Environment != EnvironmentTest || len(mappings) > 32 {
+		return ErrInvalidConfiguration
+	}
+	seen := make(map[string]struct{}, len(mappings))
+	for _, mapping := range mappings {
+		if !validIdentityPart(mapping.Subject, 512) || !validUUID(mapping.TenantID) {
+			return ErrInvalidConfiguration
+		}
+		if _, duplicate := seen[mapping.Subject]; duplicate {
+			return ErrInvalidConfiguration
+		}
+		seen[mapping.Subject] = struct{}{}
+	}
+	return nil
+}
+
+func modelGatewayClientConfigured(config ModelGatewayClientConfig) bool {
+	return config.TokenEndpoint != "" || config.ClientID != "" || config.ClientSecretRef != "" || len(config.Scopes) != 0 || config.Audience != ""
+}
+
+func validOAuthClientID(value string) bool {
+	return validIdentityPart(value, 256) && !strings.ContainsAny(value, ":")
+}
+
+func validOAuthAudience(value string) bool {
+	return validIdentityPart(value, 2048)
+}
+
+func validOAuthScopes(scopes []string) bool {
+	if len(scopes) > 32 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(scopes))
+	for _, scope := range scopes {
+		if !validIdentityPart(scope, 256) {
+			return false
+		}
+		if _, duplicate := seen[scope]; duplicate {
+			return false
+		}
+		seen[scope] = struct{}{}
+	}
+	return true
+}
+
+func validIdentityPart(value string, maximum int) bool {
+	if value == "" || len(value) > maximum || strings.TrimSpace(value) != value {
+		return false
+	}
+	for _, character := range value {
+		if character <= 0x20 || character == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 func validSecretReference(reference string) bool {
@@ -657,6 +774,10 @@ func needsOPA(component string) bool {
 
 func needsIdentity(component string) bool {
 	return oneOf(component, "aor-server", "aor-model-gateway", "aor-tool-broker")
+}
+
+func needsModelGatewayClient(component string) bool {
+	return component == "aor-server"
 }
 
 func configurationError(key string) error {

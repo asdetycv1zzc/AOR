@@ -208,11 +208,19 @@ func requestTrace(request *http.Request) (observability.TraceContext, error) {
 
 func oidcAuthenticator(config runtimeconfig.Config) (authn.Authenticator, error) {
 	allowHTTP := config.Environment == runtimeconfig.EnvironmentDevelopment || config.Environment == runtimeconfig.EnvironmentTest
-	verifier, err := authn.NewRemoteJWKSVerifier(authn.RemoteJWKSConfig{
+	remoteVerifier, err := authn.NewRemoteJWKSVerifier(authn.RemoteJWKSConfig{
 		Issuer: config.Identity.Issuer, JWKSURL: config.Identity.JWKSURL, AllowHTTP: allowHTTP,
 	})
 	if err != nil {
 		return nil, err
+	}
+	var verifier authn.OIDCVerifier = remoteVerifier
+	if len(config.Identity.ServiceSubjects) > 0 {
+		mappings := make(map[string]string, len(config.Identity.ServiceSubjects))
+		for _, mapping := range config.Identity.ServiceSubjects {
+			mappings[mapping.Subject] = mapping.TenantID
+		}
+		verifier = &serviceSubjectClaimsVerifier{inner: verifier, tenantBySubject: mappings}
 	}
 	authenticator := authn.NewOIDCAuthenticator(verifier, []string{config.Identity.Issuer}, config.Identity.Audience)
 	authenticator.ClockSkew = 30 * time.Second

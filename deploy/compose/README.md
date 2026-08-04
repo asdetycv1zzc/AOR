@@ -49,15 +49,17 @@ openssl rand -hex 32 > deploy/compose/secrets/postgres_app_password
 openssl rand -hex 16 > deploy/compose/secrets/minio_root_user
 openssl rand -hex 32 > deploy/compose/secrets/minio_root_password
 openssl rand -hex 32 > deploy/compose/secrets/lease_signing_key
+openssl rand -hex 32 > deploy/compose/secrets/aor_server_oauth_client_secret
 # Exactly 32 raw bytes are required for AES-256 replay encryption.
 openssl rand 32 > deploy/compose/secrets/model_replay_key
 # Write the actual credentials issued by each provider, one value per file.
 # Do not generate placeholder keys: Compose checks that both files are nonempty.
 ${EDITOR:-vi} deploy/compose/secrets/model_provider_openai_key
 ${EDITOR:-vi} deploy/compose/secrets/model_provider_deepseek_key
+chmod 0444 deploy/compose/secrets/*
 ```
 
-The secret values are mounted as files. They are not committed or placed in AOR container environment variables. PostgreSQL migrations use the admin-only `postgres_password` to apply schema changes and configure the least-privilege `aor_app` runtime role; API, Model Gateway, Tool Broker, and worker use `secret://postgres_app_password`. AOR refers to mounted files only through `secret://` references. API, Tool Broker, and worker use the MinIO root access and secret files for local S3 access; the Model Gateway uses one mounted file for each provider family and the independent `model_replay_key` to encrypt bounded idempotency responses at rest. The Tool Broker uses the independent `lease_signing_key` to verify and renew persistent capability leases.
+The local Compose engine exposes file-backed secrets as read-only bind mounts, so the source files use mode `0444` for the containers' distinct non-root UIDs; the containing `secrets/` directory remains mode `0700` and prevents other host users from traversing to them. The secret values are not committed or placed in AOR container environment variables. PostgreSQL migrations use the admin-only `postgres_password` to apply schema changes and configure the least-privilege `aor_app` runtime role; API, Model Gateway, Tool Broker, and worker use `secret://postgres_app_password`. AOR refers to mounted files only through `secret://` references. API, Tool Broker, and worker use the MinIO root access and secret files for local S3 access; the Model Gateway uses one mounted file for each provider family and the independent `model_replay_key` to encrypt bounded idempotency responses at rest. The Tool Broker uses the independent `lease_signing_key` to verify and renew persistent capability leases. Dex and the API share `aor_server_oauth_client_secret` through separate read-only mounts; the value is never placed in an AOR environment variable.
 
 The Model Gateway defaults to OpenAI and DeepSeek OpenAI-compatible endpoints and models. Set `AOR_OPENAI_BASE_URL`, `AOR_OPENAI_MODEL`, `AOR_DEEPSEEK_BASE_URL`, or `AOR_DEEPSEEK_MODEL` in the host environment before `make compose-up` to select compatible endpoints or approved models. Provider credentials always remain in the two provider secret files.
 
@@ -102,8 +104,8 @@ Individual stages are available as `make compose-pull`, `make compose-deps-up`, 
 
 ## Test Identity
 
-Dex exposes the public client `aor-control-plane` and the local `mockCallback` connector. Obtain an access token through the OAuth 2.0 Authorization Code flow with PKCE using the issuer above and the registered redirect URI `http://127.0.0.1:5555/callback`. Send the resulting token as `Authorization: Bearer <token>` to AOR HTTP APIs. The API, Model Gateway, and Tool Broker verify RS256 signatures against Dex JWKS, bind the exact issuer and audience, and refresh unknown signing keys for rotation.
+Dex exposes the public client `aor-control-plane`, the confidential `aor-server` workload client, and the local `mockCallback` connector. Obtain a user access token through the OAuth 2.0 Authorization Code flow with PKCE using the issuer above and the registered redirect URI `http://127.0.0.1:5555/callback`. Send the resulting token as `Authorization: Bearer <token>` to AOR HTTP APIs. The API exchanges its file-backed client credential for a five-minute token with the exact `aor-control-plane` audience before calling Model Gateway. The API, Model Gateway, and Tool Broker verify RS256 signatures against Dex JWKS, bind the exact issuer and audience, and refresh unknown signing keys for rotation.
 
-The mock connector and `AOR_OIDC_DEFAULT_TENANT_ID`/`AOR_OIDC_DEFAULT_ROLE` mappings exist only for this test profile. Runtime configuration rejects those mappings outside development or test, and production identity endpoints must use HTTPS. Replace Dex mock identity with the deployment's approved identity provider and issue explicit `tenantId`, `principalType`, and `role` claims before any production use.
+The mock connector, default user claims, and exact `aor-server` subject mapping exist only for this test profile. Dex deterministically encodes that client ID as subject `Cgphb3Itc2VydmVy`; Model Gateway maps only that verified subject to `SERVICE` and has no default user mapping. The pinned Dex image is an immutable build of upstream revision `155557bd65e0cb56d38c0ef84cda17d341ada061`; v2.45.1 does not implement `client_credentials`. Runtime configuration rejects fallback claim mappings outside development or test, and production identity endpoints must use HTTPS. Replace this test issuer with the deployment's approved workload identity provider and issue explicit `tenantId`, `principalType`, and `role` claims before any production use.
 
 The Control API exposes authenticated project creation, project reads, state reads, task reads, project commands, and project event streaming in addition to lifecycle endpoints. Every mutation is authorized by OPA again at the Orchestrator commit boundary. Other product transports must pass their own readiness and conformance gates before this profile can be treated as complete business-readiness evidence.

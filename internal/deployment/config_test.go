@@ -19,8 +19,9 @@ func TestDeploymentProfilesFailClosed(t *testing.T) {
 		"AOR_DATABASE_USER: aor_app", "AOR_DATABASE_PASSWORD_REF: secret://postgres_app_password",
 		"postgres_app_password", "000003_runtime_app_role.up.sql", "000004_model_authorizer_reads.up.sql", "000013_workflow_activity_results.up.sql", "000014_project_initialization_selection.up.sql", "000015_model_call_replays.up.sql", "model_provider_deepseek_key",
 		"AOR_MODEL_REPLAY_KEY_REF: secret://model_replay_key", "model_replay_key",
-		"provider\":\"deepseek", "ghcr.io/dexidp/dex:v2.45.1@sha256:",
+		"provider\":\"deepseek", "ghcr.io/dexidp/dex:master-alpine@sha256:",
 		"AOR_OIDC_JWKS_URL: http://identity:5556/dex/keys", "AOR_OIDC_DEFAULT_ROLE: USER",
+		"AOR_MODEL_GATEWAY_OAUTH_CLIENT_SECRET_REF: secret://aor_server_oauth_client_secret", "AOR_OIDC_SERVICE_SUBJECTS_JSON",
 		"AOR_OPA_URL: http://opa:8181",
 		"aor-sandbox-runtime:", "aor-sandbox-preflight:", "target: worker-runtime",
 		"AOR_SANDBOX_ENGINE_ENDPOINT: unix:///run/aor-sandbox/engine.sock", "apparmor=aor-sandbox",
@@ -48,7 +49,7 @@ func TestDeploymentProfilesFailClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, value := range []string{"issuer: http://127.0.0.1:5556/dex", "id: aor-control-plane", "type: mockCallback"} {
+	for _, value := range []string{"issuer: http://127.0.0.1:5556/dex", "id: aor-control-plane", "id: aor-server", "client_credentials", "type: mockCallback"} {
 		if !strings.Contains(string(dex), value) {
 			t.Errorf("Dex config missing %q", value)
 		}
@@ -184,11 +185,33 @@ func TestComposeControlAPICannotDropLeaseAuthorityConfiguration(t *testing.T) {
 	}{
 		{old: "AOR_DEPLOYMENT_PROFILE: TEST", new: "AOR_DEPLOYMENT_PROFILE: missing"},
 		{old: "AOR_LEASE_SIGNING_KEY_REF: secret://lease_signing_key", new: "AOR_LEASE_SIGNING_KEY_REF: missing"},
-		{old: "secrets: [postgres_app_password, lease_signing_key, minio_root_user, minio_root_password]", new: "secrets: [postgres_app_password, minio_root_user, minio_root_password]"},
+		{old: "secrets: [postgres_app_password, lease_signing_key, minio_root_user, minio_root_password, aor_server_oauth_client_secret]", new: "secrets: [postgres_app_password, minio_root_user, minio_root_password, aor_server_oauth_client_secret]"},
 	} {
 		candidate := strings.Replace(composeText, replacement.old, replacement.new, 1)
 		if candidate == composeText || ValidateCompose([]byte(candidate)) == nil {
 			t.Fatalf("compose lease authority downgrade %q accepted", replacement.new)
+		}
+	}
+}
+
+func TestComposeModelGatewayWorkloadIdentityCannotBeDropped(t *testing.T) {
+	compose, err := os.ReadFile("../../deploy/compose/docker-compose.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	composeText := string(compose)
+	for _, replacement := range []struct {
+		old string
+		new string
+	}{
+		{old: "AOR_MODEL_GATEWAY_OAUTH_CLIENT_ID: aor-server", new: "AOR_MODEL_GATEWAY_OAUTH_CLIENT_ID: missing"},
+		{old: "AOR_MODEL_GATEWAY_OAUTH_CLIENT_SECRET_REF: secret://aor_server_oauth_client_secret", new: "AOR_MODEL_GATEWAY_OAUTH_CLIENT_SECRET_REF: missing"},
+		{old: "AOR_MODEL_GATEWAY_OAUTH_SCOPES: audience:server:client_id:aor-control-plane", new: "AOR_MODEL_GATEWAY_OAUTH_SCOPES: openid"},
+		{old: "AOR_OIDC_SERVICE_SUBJECTS_JSON: '[{\"subject\":\"Cgphb3Itc2VydmVy\",\"tenantId\":\"11111111-1111-4111-8111-111111111111\"}]'", new: "AOR_OIDC_SERVICE_SUBJECTS_JSON: '[]'"},
+	} {
+		candidate := strings.Replace(composeText, replacement.old, replacement.new, 1)
+		if candidate == composeText || ValidateCompose([]byte(candidate)) == nil {
+			t.Fatalf("compose workload identity downgrade %q accepted", replacement.new)
 		}
 	}
 }
