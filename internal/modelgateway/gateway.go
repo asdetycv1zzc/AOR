@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -20,8 +19,9 @@ import (
 )
 
 const (
-	MaximumResponseBytes       = 4 << 20
-	MaximumResponseSchemaBytes = 256 << 10
+	MaximumResponseBytes          = 4 << 20
+	MaximumResponseSchemaBytes    = 256 << 10
+	MaximumNormalizedRequestBytes = 8 << 20
 )
 
 type Gateway struct {
@@ -183,6 +183,9 @@ func (g *Gateway) Capabilities(ctx context.Context, provider, model string) (Mod
 func (g *Gateway) Stream(ctx context.Context, request NormalizedRequest, options GenerateOptions) (ResponseStream, error) {
 	if ctx == nil {
 		return nil, ErrInvalidRequest
+	}
+	if requestUsesNativeTools(request) {
+		return nil, ErrProviderNotAllowed
 	}
 	var err error
 	options, err = normalizeGenerateOptions(options)
@@ -841,13 +844,14 @@ func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequ
 			if response.Usage.ProviderRequestID != "" {
 				call.ProviderRequestID = response.Usage.ProviderRequestID
 			}
-			call.OutputSHA256 = digestBytes(response.Content)
+			call.OutputSHA256 = responseOutputDigest(response)
 			call.CostMicros = incurred
 			if response.RequestID != "" && response.RequestID != request.RequestID {
 				lastErr = ErrOutputSchema
 				continue
 			}
-			if len(response.Content) > MaximumResponseBytes {
+			validationErr := validateGeneratedResponse(request, response)
+			if errors.Is(validationErr, ErrOutputTooLarge) {
 				call.Status = ModelCallFailedOutputSize
 				call.LatencyMilliseconds = elapsedMilliseconds(startedAt, g.clock().UTC())
 				if finalizeErr := g.finalizeModelCall(ctx, ModelCallFinalization{ReservationID: options.ReservationID, Disposition: ReservationDispositionSettle, ActualMicros: incurred, Call: call}); finalizeErr != nil {
@@ -855,7 +859,7 @@ func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequ
 				}
 				return NormalizedResponse{}, ErrOutputTooLarge
 			}
-			if containsCredentialLike(string(response.Content)) {
+			if errors.Is(validationErr, ErrCredentialDetected) {
 				call.Status = ModelCallFailedCredential
 				call.LatencyMilliseconds = elapsedMilliseconds(startedAt, g.clock().UTC())
 				if finalizeErr := g.finalizeModelCall(ctx, ModelCallFinalization{ReservationID: options.ReservationID, Disposition: ReservationDispositionSettle, ActualMicros: incurred, Call: call}); finalizeErr != nil {
@@ -863,12 +867,8 @@ func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequ
 				}
 				return NormalizedResponse{}, ErrCredentialDetected
 			}
-			if schemaErr := validateResponse(request.ResponseSchema, response.Content); schemaErr != nil {
-				lastErr = schemaErr
-				continue
-			}
-			if semanticErr := validateResponseSemantics(request.ResponseSemanticValidator, response.Content); semanticErr != nil {
-				lastErr = semanticErr
+			if validationErr != nil {
+				lastErr = validationErr
 				continue
 			}
 			if response.Usage.ProviderRequestID == "" {
@@ -1084,13 +1084,14 @@ func (g *Gateway) generateSingle(ctx context.Context, request NormalizedRequest,
 		if response.Usage.ProviderRequestID != "" {
 			call.ProviderRequestID = response.Usage.ProviderRequestID
 		}
-		call.OutputSHA256 = digestBytes(response.Content)
+		call.OutputSHA256 = responseOutputDigest(response)
 		call.CostMicros = incurred
 		if response.RequestID != "" && response.RequestID != request.RequestID {
 			lastErr = ErrOutputSchema
 			continue
 		}
-		if len(response.Content) > MaximumResponseBytes {
+		validationErr := validateGeneratedResponse(request, response)
+		if errors.Is(validationErr, ErrOutputTooLarge) {
 			call.Status = ModelCallFailedOutputSize
 			call.LatencyMilliseconds = elapsedMilliseconds(startedAt, g.clock().UTC())
 			if err := g.finalizeModelCall(ctx, ModelCallFinalization{ReservationID: options.ReservationID, Disposition: ReservationDispositionSettle, ActualMicros: incurred, Call: call}); err != nil {
@@ -1098,7 +1099,7 @@ func (g *Gateway) generateSingle(ctx context.Context, request NormalizedRequest,
 			}
 			return NormalizedResponse{}, ErrOutputTooLarge
 		}
-		if containsCredentialLike(string(response.Content)) {
+		if errors.Is(validationErr, ErrCredentialDetected) {
 			call.Status = ModelCallFailedCredential
 			call.LatencyMilliseconds = elapsedMilliseconds(startedAt, g.clock().UTC())
 			if err := g.finalizeModelCall(ctx, ModelCallFinalization{ReservationID: options.ReservationID, Disposition: ReservationDispositionSettle, ActualMicros: incurred, Call: call}); err != nil {
@@ -1106,12 +1107,8 @@ func (g *Gateway) generateSingle(ctx context.Context, request NormalizedRequest,
 			}
 			return NormalizedResponse{}, ErrCredentialDetected
 		}
-		if err := validateResponse(request.ResponseSchema, response.Content); err != nil {
-			lastErr = err
-			continue
-		}
-		if err := validateResponseSemantics(request.ResponseSemanticValidator, response.Content); err != nil {
-			lastErr = err
+		if validationErr != nil {
+			lastErr = validationErr
 			continue
 		}
 		if response.Usage.ProviderRequestID == "" {
@@ -1550,23 +1547,146 @@ func streamUsage(stream ResponseStream) (Usage, bool) {
 
 var _ ResponseStream = (*budgetedStream)(nil)
 
-func validateRequest(request NormalizedRequest) error {
-	if request.RequestID == "" || request.TenantID == "" || request.ProjectID == "" || request.AgentInstanceID == "" || request.Role == "" || request.Model == "" || request.PromptBundleVersion == "" || len(request.Messages) == 0 || request.MaxOutputTokens <= 0 || request.DataClassification == "" {
-		return ErrInvalidRequest
+func requestUsesNativeTools(request NormalizedRequest) bool {
+	if len(request.Tools) != 0 {
+		return true
 	}
-	encoded, err := json.Marshal(request)
-	if err != nil || containsCredentialLike(string(encoded)) {
-		return ErrCredentialDetected
+	for _, message := range request.Messages {
+		if len(message.ToolCalls) != 0 || message.ToolCallID != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func validateRequest(request NormalizedRequest) error {
+	if request.RequestID == "" || request.TenantID == "" || request.ProjectID == "" || request.AgentInstanceID == "" || request.Role == "" || request.Model == "" || request.PromptBundleVersion == "" || len(request.Messages) == 0 || len(request.Messages) > MaximumMessages || len(request.Tools) > MaximumTools || request.MaxOutputTokens <= 0 || request.DataClassification == "" {
+		return ErrInvalidRequest
 	}
 	if len(request.ResponseSchema) > MaximumResponseSchemaBytes || len(request.ResponseSchema) != 0 && !json.Valid(request.ResponseSchema) {
 		return ErrInvalidRequest
 	}
 	for _, message := range request.Messages {
-		if strings.TrimSpace(message.Role) == "" || containsCredentialLike(message.Content) {
-			return ErrCredentialDetected
+		if message.Validate() != nil {
+			return ErrInvalidRequest
 		}
 	}
+	seenTools := make(map[string]struct{}, len(request.Tools))
+	for _, tool := range request.Tools {
+		if tool.Validate() != nil {
+			return ErrInvalidRequest
+		}
+		if _, found := seenTools[tool.Name]; found {
+			return ErrInvalidRequest
+		}
+		seenTools[tool.Name] = struct{}{}
+	}
+	encoded, err := json.Marshal(request)
+	if err != nil || len(encoded) > MaximumNormalizedRequestBytes {
+		return ErrInvalidRequest
+	}
+	if containsCredentialLike(string(encoded)) {
+		return ErrCredentialDetected
+	}
 	return nil
+}
+
+type normalizedResponseOutput struct {
+	Content   json.RawMessage `json:"content,omitempty"`
+	ToolCalls []ToolCall      `json:"toolCalls,omitempty"`
+}
+
+func validateNormalizedResponseOutput(response NormalizedResponse) error {
+	hasContent := len(response.Content) != 0
+	hasToolCalls := len(response.ToolCalls) != 0
+	if hasContent == hasToolCalls {
+		return ErrOutputSchema
+	}
+	outputBytes := len(response.Content)
+	for _, call := range response.ToolCalls {
+		callBytes := len(call.ID) + len(call.Name) + len(call.Arguments)
+		if callBytes > MaximumResponseBytes-outputBytes {
+			return ErrOutputTooLarge
+		}
+		outputBytes += callBytes
+	}
+	if outputBytes > MaximumResponseBytes {
+		return ErrOutputTooLarge
+	}
+	if hasContent {
+		if !utf8.Valid(response.Content) || !json.Valid(response.Content) {
+			return ErrOutputSchema
+		}
+		if containsCredentialLike(string(response.Content)) {
+			return ErrCredentialDetected
+		}
+	} else {
+		if validateToolCallList(response.ToolCalls) != nil {
+			return ErrOutputSchema
+		}
+		for _, call := range response.ToolCalls {
+			if containsCredentialLike(call.ID) || containsCredentialLike(call.Name) || containsCredentialLike(string(call.Arguments)) {
+				return ErrCredentialDetected
+			}
+		}
+	}
+	if hasContent {
+		return nil
+	}
+	encoded, err := json.Marshal(normalizedResponseOutput{Content: response.Content, ToolCalls: response.ToolCalls})
+	if err != nil {
+		return ErrOutputSchema
+	}
+	if len(encoded) > MaximumResponseBytes {
+		return ErrOutputTooLarge
+	}
+	return nil
+}
+
+func validateGeneratedResponse(request NormalizedRequest, response NormalizedResponse) error {
+	if err := validateNormalizedResponseOutput(response); err != nil {
+		return err
+	}
+	if len(response.ToolCalls) != 0 {
+		allowed := make(map[string]struct{}, len(request.Tools))
+		for _, tool := range request.Tools {
+			allowed[tool.Name] = struct{}{}
+		}
+		for _, call := range response.ToolCalls {
+			if _, found := allowed[call.Name]; !found {
+				return ErrOutputSchema
+			}
+		}
+		return nil
+	}
+	if err := validateResponse(request.ResponseSchema, response.Content); err != nil {
+		return err
+	}
+	return validateResponseSemantics(request.ResponseSemanticValidator, response.Content)
+}
+
+func responseOutputDigest(response NormalizedResponse) string {
+	if len(response.ToolCalls) == 0 {
+		return digestBytes(response.Content)
+	}
+	type digestToolCall struct {
+		ID        string `json:"id"`
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	}
+	calls := make([]digestToolCall, 0, len(response.ToolCalls))
+	for _, call := range response.ToolCalls {
+		calls = append(calls, digestToolCall{ID: call.ID, Name: call.Name, Arguments: string(call.Arguments)})
+	}
+	encoded, _ := json.Marshal(struct {
+		Content   string           `json:"content"`
+		ToolCalls []digestToolCall `json:"toolCalls"`
+	}{Content: string(response.Content), ToolCalls: calls})
+	digest, err := canonicaljson.Digest(encoded)
+	if err != nil {
+		return digestBytes(encoded)
+	}
+	return digest
 }
 
 func validateResponse(schemaJSON, content []byte) error {

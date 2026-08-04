@@ -114,7 +114,7 @@ func TestPostgresModelReplaySurvivesRestartAndRejectsConflict(t *testing.T) {
 		Call: ModelCall{
 			TenantID: tenantID, RequestID: requestID, ProjectID: projectID, AgentInstanceID: agentID,
 			Provider: "integration", LogicalModel: "model", ActualModelVersion: "model-v1",
-			PromptBundleVersion: "prompt-v1", InputSHA256: inputDigest, OutputSHA256: digestBytes(response.Content),
+			PromptBundleVersion: "prompt-v1", InputSHA256: inputDigest, OutputSHA256: responseOutputDigest(response),
 			InputTokens: 13, OutputTokens: 5, CostMicros: 29, Status: ModelCallSucceeded,
 			ProviderRequestID: response.ProviderRequestID, CreatedAt: now,
 		},

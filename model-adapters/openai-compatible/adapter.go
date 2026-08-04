@@ -126,7 +126,10 @@ func (a *Adapter) CountTokens(ctx context.Context, request modelgateway.Normaliz
 	}
 	bytesCount := int64(0)
 	for _, message := range request.Messages {
-		bytesCount += int64(len(message.Role) + len(message.Content) + 4)
+		bytesCount += int64(len(message.Role) + len(message.Content) + len(message.ToolCallID) + 4)
+		for _, call := range message.ToolCalls {
+			bytesCount += int64(len(call.ID) + len(call.Name) + len(call.Arguments) + 12)
+		}
 	}
 	for _, tool := range request.Tools {
 		bytesCount += int64(len(tool.Name) + len(tool.Description) + len(tool.Schema) + 12)
@@ -167,6 +170,9 @@ func (a *Adapter) Stream(ctx context.Context, request modelgateway.NormalizedReq
 	capabilities, err := a.validateRequest(request, true)
 	if err != nil {
 		return nil, err
+	}
+	if requestUsesNativeTools(request) {
+		return nil, modelgateway.ErrProviderNotAllowed
 	}
 	if !capabilities.SupportsStreaming {
 		return nil, modelgateway.ErrProviderNotAllowed
@@ -253,7 +259,7 @@ func (a *Adapter) validateRequest(request modelgateway.NormalizedRequest, requir
 	if err != nil {
 		return modelgateway.ModelCapabilities{}, err
 	}
-	if request.Model == "" || len(request.Messages) == 0 || request.MaxOutputTokens <= 0 || request.MaxOutputTokens > capabilities.MaxOutputTokens ||
+	if request.Model == "" || len(request.Messages) == 0 || len(request.Messages) > modelgateway.MaximumMessages || len(request.Tools) > modelgateway.MaximumTools || request.MaxOutputTokens <= 0 || request.MaxOutputTokens > capabilities.MaxOutputTokens ||
 		request.Temperature < 0 || request.Temperature > 2 || !utf8.ValidString(request.Model) {
 		return modelgateway.ModelCapabilities{}, modelgateway.ErrInvalidRequest
 	}
@@ -267,14 +273,24 @@ func (a *Adapter) validateRequest(request modelgateway.NormalizedRequest, requir
 		return modelgateway.ModelCapabilities{}, modelgateway.ErrProviderNotAllowed
 	}
 	for _, message := range request.Messages {
-		if strings.TrimSpace(message.Role) == "" || !utf8.ValidString(message.Role) || !utf8.ValidString(message.Content) || a.containsCredential(message.Content) {
+		if message.Validate() != nil || a.containsCredential(message.Role) || a.containsCredential(message.Content) || a.containsCredential(message.ToolCallID) {
 			return modelgateway.ModelCapabilities{}, modelgateway.ErrInvalidRequest
+		}
+		for _, call := range message.ToolCalls {
+			if a.containsCredential(call.ID) || a.containsCredential(call.Name) || a.containsCredential(string(call.Arguments)) {
+				return modelgateway.ModelCapabilities{}, modelgateway.ErrInvalidRequest
+			}
 		}
 	}
+	seenTools := make(map[string]struct{}, len(request.Tools))
 	for _, tool := range request.Tools {
-		if tool.Name == "" || !utf8.ValidString(tool.Name) || !utf8.ValidString(tool.Description) || len(tool.Schema) != 0 && !json.Valid(tool.Schema) || a.containsCredential(string(tool.Schema)) {
+		if tool.Validate() != nil || a.containsCredential(tool.Name) || a.containsCredential(tool.Description) || a.containsCredential(string(tool.Schema)) {
 			return modelgateway.ModelCapabilities{}, modelgateway.ErrInvalidRequest
 		}
+		if _, found := seenTools[tool.Name]; found {
+			return modelgateway.ModelCapabilities{}, modelgateway.ErrInvalidRequest
+		}
+		seenTools[tool.Name] = struct{}{}
 	}
 	if a.containsCredential(string(request.ResponseSchema)) {
 		return modelgateway.ModelCapabilities{}, modelgateway.ErrInvalidRequest
@@ -297,12 +313,23 @@ func (a *Adapter) requireInputLimit(ctx context.Context, request modelgateway.No
 }
 
 func (a *Adapter) encodeRequest(request modelgateway.NormalizedRequest, stream bool) ([]byte, error) {
+	if stream && requestUsesNativeTools(request) {
+		return nil, modelgateway.ErrProviderNotAllowed
+	}
 	value := chatRequest{Model: request.Model, MaxTokens: request.MaxOutputTokens, Temperature: request.Temperature, Stream: stream}
 	if stream {
 		value.StreamOptions = &chatStreamOptions{IncludeUsage: true}
 	}
 	for _, message := range request.Messages {
-		value.Messages = append(value.Messages, chatMessage{Role: message.Role, Content: message.Content})
+		wireMessage := chatMessage{Role: message.Role, ToolCallID: message.ToolCallID}
+		if message.Content != "" {
+			content := message.Content
+			wireMessage.Content = &content
+		}
+		for _, call := range message.ToolCalls {
+			wireMessage.ToolCalls = append(wireMessage.ToolCalls, chatToolCall{ID: call.ID, Type: "function", Function: chatToolCallFunction{Name: call.Name, Arguments: string(call.Arguments)}})
+		}
+		value.Messages = append(value.Messages, wireMessage)
 	}
 	for _, tool := range request.Tools {
 		parameters := tool.Schema
@@ -350,12 +377,64 @@ func (a *Adapter) do(ctx context.Context, payload []byte) (*http.Response, conte
 
 func (a *Adapter) decodeResponse(request modelgateway.NormalizedRequest, capabilities modelgateway.ModelCapabilities, payload []byte) (modelgateway.NormalizedResponse, error) {
 	var response chatResponse
-	if err := json.Unmarshal(payload, &response); err != nil || len(response.Choices) == 0 || response.Usage == nil {
+	if !utf8.Valid(payload) || json.Unmarshal(payload, &response) != nil || len(response.Choices) != 1 || response.Usage == nil {
 		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
 	}
 	choice := response.Choices[0]
-	if !utf8.ValidString(choice.Message.Content) || a.containsCredential(response.ID) || a.containsCredential(response.Model) || a.containsCredential(choice.Message.Content) {
+	if strings.TrimSpace(response.ID) == "" || len(response.ID) > modelgateway.MaximumToolCallIDBytes || strings.ContainsAny(response.ID, "\r\n\x00") || strings.TrimSpace(choice.FinishReason) == "" || len(choice.FinishReason) > 128 || !utf8.ValidString(response.ID) || !utf8.ValidString(response.Model) || !utf8.ValidString(choice.FinishReason) {
+		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
+	}
+	if a.containsCredential(response.ID) || a.containsCredential(response.Model) || a.containsCredential(choice.FinishReason) {
 		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrCredentialDetected)
+	}
+	hasContent := choice.Message.Content != nil && *choice.Message.Content != ""
+	hasToolCalls := len(choice.Message.ToolCalls) != 0
+	if hasContent == hasToolCalls || len(choice.Message.ToolCalls) > modelgateway.MaximumToolCalls {
+		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
+	}
+	if hasContent && len(*choice.Message.Content) > modelgateway.MaximumResponseBytes {
+		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputTooLarge)
+	}
+	outputBytes := 0
+	for _, wireCall := range choice.Message.ToolCalls {
+		callBytes := len(wireCall.ID) + len(wireCall.Function.Name) + len(wireCall.Function.Arguments)
+		if callBytes > modelgateway.MaximumResponseBytes-outputBytes {
+			return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputTooLarge)
+		}
+		outputBytes += callBytes
+	}
+	var content json.RawMessage
+	if hasContent {
+		if !utf8.ValidString(*choice.Message.Content) || !json.Valid([]byte(*choice.Message.Content)) {
+			return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
+		}
+		if a.containsCredential(*choice.Message.Content) {
+			return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrCredentialDetected)
+		}
+		content = append(json.RawMessage(nil), (*choice.Message.Content)...)
+	}
+	toolCalls := make([]modelgateway.ToolCall, 0, len(choice.Message.ToolCalls))
+	allowed := make(map[string]struct{}, len(request.Tools))
+	for _, tool := range request.Tools {
+		allowed[tool.Name] = struct{}{}
+	}
+	seenCallIDs := make(map[string]struct{}, len(choice.Message.ToolCalls))
+	for _, wireCall := range choice.Message.ToolCalls {
+		call := modelgateway.ToolCall{ID: wireCall.ID, Name: wireCall.Function.Name, Arguments: json.RawMessage(wireCall.Function.Arguments)}
+		if wireCall.Type != "function" || call.Validate() != nil {
+			return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
+		}
+		if a.containsCredential(call.ID) || a.containsCredential(call.Name) || a.containsCredential(string(call.Arguments)) {
+			return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrCredentialDetected)
+		}
+		if _, found := allowed[call.Name]; !found {
+			return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
+		}
+		if _, found := seenCallIDs[call.ID]; found {
+			return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
+		}
+		seenCallIDs[call.ID] = struct{}{}
+		toolCalls = append(toolCalls, call)
 	}
 	usage, err := a.NormalizeUsage(*response.Usage)
 	if err != nil {
@@ -374,8 +453,20 @@ func (a *Adapter) decodeResponse(request modelgateway.NormalizedRequest, capabil
 	}
 	return modelgateway.NormalizedResponse{
 		RequestID: request.RequestID, ProviderRequestID: response.ID, ModelVersion: modelVersion,
-		Content: json.RawMessage(choice.Message.Content), FinishReason: choice.FinishReason, Usage: usage,
+		Content: content, ToolCalls: toolCalls, FinishReason: choice.FinishReason, Usage: usage,
 	}, nil
+}
+
+func requestUsesNativeTools(request modelgateway.NormalizedRequest) bool {
+	if len(request.Tools) != 0 {
+		return true
+	}
+	for _, message := range request.Messages {
+		if len(message.ToolCalls) != 0 || message.ToolCallID != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Adapter) containsCredential(value string) bool {
@@ -464,8 +555,21 @@ type chatStreamOptions struct {
 }
 
 type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string         `json:"role"`
+	Content    *string        `json:"content,omitempty"`
+	ToolCalls  []chatToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
+}
+
+type chatToolCall struct {
+	ID       string               `json:"id"`
+	Type     string               `json:"type"`
+	Function chatToolCallFunction `json:"function"`
+}
+
+type chatToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 type chatTool struct {
@@ -494,10 +598,8 @@ type chatResponse struct {
 	ID      string `json:"id"`
 	Model   string `json:"model"`
 	Choices []struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-		FinishReason string `json:"finish_reason"`
+		Message      chatMessage `json:"message"`
+		FinishReason string      `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *chatUsage `json:"usage"`
 }

@@ -116,7 +116,7 @@ func (ledger *PostgresBudgetLedger) StoreModelReplay(ctx context.Context, tenant
 	if err != nil {
 		return err
 	}
-	if !found || call.Status != ModelCallSucceeded || call.InputSHA256 != replay.InputSHA256 || call.OutputSHA256 != digestBytes(replay.Response.Content) {
+	if !found || call.Status != ModelCallSucceeded || call.InputSHA256 != replay.InputSHA256 || call.OutputSHA256 != responseOutputDigest(replay.Response) {
 		return ErrRequestConflict
 	}
 	if err := ledger.insertModelReplayTx(ctx, tx, tenantID, requestID, replay); err != nil {
@@ -126,7 +126,7 @@ func (ledger *PostgresBudgetLedger) StoreModelReplay(ctx context.Context, tenant
 }
 
 func validateReplayPayload(tenantID, requestID string, replay ModelReplay) error {
-	if tenantID == "" || requestID == "" || !validModelDigest(replay.InputSHA256) || replay.Response.RequestID != requestID || len(replay.Response.Content) == 0 || len(replay.Response.Content) > MaximumResponseBytes || !json.Valid(replay.Response.Content) || containsCredentialLike(string(replay.Response.Content)) {
+	if tenantID == "" || requestID == "" || !validModelDigest(replay.InputSHA256) || replay.Response.RequestID != requestID || validateNormalizedResponseOutput(replay.Response) != nil {
 		return ErrInvalidRequest
 	}
 	return nil

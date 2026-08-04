@@ -4,17 +4,113 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"unicode/utf8"
+)
+
+const (
+	MaximumMessages             = 1024
+	MaximumMessageContentBytes  = 4 << 20
+	MaximumTools                = 128
+	MaximumToolCalls            = 64
+	MaximumToolCallIDBytes      = 512
+	MaximumToolNameBytes        = 128
+	MaximumToolDescriptionBytes = 16 << 10
+	MaximumToolSchemaBytes      = 256 << 10
+	MaximumToolArgumentsBytes   = 1 << 20
+	MaximumToolResultBytes      = 1 << 20
 )
 
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content,omitempty"`
+	ToolCalls  []ToolCall `json:"toolCalls,omitempty"`
+	ToolCallID string     `json:"toolCallId,omitempty"`
+}
+
+// ToolCall is the provider-independent form of one native function call.
+// Arguments remain JSON rather than an encoded JSON string at this boundary.
+type ToolCall struct {
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
+}
+
+func (call ToolCall) Validate() error {
+	if !validToolProtocolString(call.ID, MaximumToolCallIDBytes) || !validToolProtocolString(call.Name, MaximumToolNameBytes) || len(call.Arguments) == 0 || len(call.Arguments) > MaximumToolArgumentsBytes || !utf8.Valid(call.Arguments) || !json.Valid(call.Arguments) {
+		return ErrInvalidRequest
+	}
+	var arguments map[string]json.RawMessage
+	if json.Unmarshal(call.Arguments, &arguments) != nil || arguments == nil {
+		return ErrInvalidRequest
+	}
+	return nil
+}
+
+func (message Message) Validate() error {
+	if len(message.Role) > 32 || !utf8.ValidString(message.Role) || len(message.Content) > MaximumMessageContentBytes || !utf8.ValidString(message.Content) {
+		return ErrInvalidRequest
+	}
+	switch message.Role {
+	case "system", "user":
+		if strings.TrimSpace(message.Content) == "" || len(message.ToolCalls) != 0 || message.ToolCallID != "" {
+			return ErrInvalidRequest
+		}
+	case "assistant":
+		if message.ToolCallID != "" || (strings.TrimSpace(message.Content) == "") == (len(message.ToolCalls) == 0) {
+			return ErrInvalidRequest
+		}
+		if err := validateToolCallList(message.ToolCalls); err != nil {
+			return err
+		}
+	case "tool":
+		if !validToolProtocolString(message.ToolCallID, MaximumToolCallIDBytes) || len(message.ToolCalls) != 0 || strings.TrimSpace(message.Content) == "" || len(message.Content) > MaximumToolResultBytes {
+			return ErrInvalidRequest
+		}
+	default:
+		return ErrInvalidRequest
+	}
+	return nil
 }
 
 type ToolDefinition struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	Schema      json.RawMessage `json:"schema,omitempty"`
+}
+
+func (definition ToolDefinition) Validate() error {
+	if !validToolProtocolString(definition.Name, MaximumToolNameBytes) || len(definition.Description) > MaximumToolDescriptionBytes || !utf8.ValidString(definition.Description) || len(definition.Schema) > MaximumToolSchemaBytes || len(definition.Schema) != 0 && (!utf8.Valid(definition.Schema) || !json.Valid(definition.Schema)) {
+		return ErrInvalidRequest
+	}
+	if len(definition.Schema) != 0 {
+		var schema map[string]json.RawMessage
+		if json.Unmarshal(definition.Schema, &schema) != nil || schema == nil {
+			return ErrInvalidRequest
+		}
+	}
+	return nil
+}
+
+func validateToolCallList(calls []ToolCall) error {
+	if len(calls) > MaximumToolCalls {
+		return ErrInvalidRequest
+	}
+	seen := make(map[string]struct{}, len(calls))
+	for _, call := range calls {
+		if call.Validate() != nil {
+			return ErrInvalidRequest
+		}
+		if _, found := seen[call.ID]; found {
+			return ErrInvalidRequest
+		}
+		seen[call.ID] = struct{}{}
+	}
+	return nil
+}
+
+func validToolProtocolString(value string, maximum int) bool {
+	return strings.TrimSpace(value) != "" && len(value) <= maximum && utf8.ValidString(value) && !strings.ContainsAny(value, "\r\n\x00")
 }
 
 type ModelCapabilities struct {
@@ -71,7 +167,8 @@ type NormalizedResponse struct {
 	RequestID         string          `json:"requestId"`
 	ProviderRequestID string          `json:"providerRequestId"`
 	ModelVersion      string          `json:"modelVersion"`
-	Content           json.RawMessage `json:"content"`
+	Content           json.RawMessage `json:"content,omitempty"`
+	ToolCalls         []ToolCall      `json:"toolCalls,omitempty"`
 	FinishReason      string          `json:"finishReason"`
 	Usage             Usage           `json:"usage"`
 }

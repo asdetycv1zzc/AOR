@@ -120,7 +120,7 @@ func TestStreamParsesSSEAndCancelStopsTheRequest(t *testing.T) {
 	}))
 	defer server.Close()
 	adapter := testAdapter(t, server.URL, Config{})
-	stream, err := adapter.Stream(context.Background(), testRequest())
+	stream, err := adapter.Stream(context.Background(), streamingTestRequest())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestStreamAggregatesDeltasAndRequestsAuthoritativeUsage(t *testing.T) {
 	}))
 	defer server.Close()
 	adapter := testAdapter(t, server.URL, Config{})
-	stream, err := adapter.Stream(context.Background(), testRequest())
+	stream, err := adapter.Stream(context.Background(), streamingTestRequest())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,6 +248,96 @@ func TestNormalizeUsageRejectsCredentialValues(t *testing.T) {
 	}
 }
 
+func TestGenerateTransportsNativeToolCallsAndResults(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var payload chatRequest
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if len(payload.Messages) != 3 {
+			t.Fatalf("messages = %#v", payload.Messages)
+		}
+		assistant := payload.Messages[1]
+		if assistant.Content != nil || len(assistant.ToolCalls) != 1 || assistant.ToolCalls[0].ID != "call-1" || assistant.ToolCalls[0].Function.Name != "repo.read" || assistant.ToolCalls[0].Function.Arguments != `{"path":"README.md"}` {
+			t.Fatalf("assistant message = %#v", assistant)
+		}
+		toolResult := payload.Messages[2]
+		if toolResult.ToolCallID != "call-1" || toolResult.Content == nil || *toolResult.Content != `{"content":"README"}` {
+			t.Fatalf("tool result = %#v", toolResult)
+		}
+		_, _ = writer.Write([]byte(`{"id":"chatcmpl-tool","model":"gpt-test-v2","choices":[{"message":{"content":null,"tool_calls":[{"id":"call-2","type":"function","function":{"name":"repo.read","arguments":"{\"path\":\"SPEC.md\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":17,"completion_tokens":4,"total_tokens":21}}`))
+	}))
+	defer server.Close()
+
+	request := testRequest()
+	request.Messages = []modelgateway.Message{
+		{Role: "user", Content: "read files"},
+		{Role: "assistant", ToolCalls: []modelgateway.ToolCall{{ID: "call-1", Name: "repo.read", Arguments: json.RawMessage(`{"path":"README.md"}`)}}},
+		{Role: "tool", ToolCallID: "call-1", Content: `{"content":"README"}`},
+	}
+	response, err := testAdapter(t, server.URL, Config{}).Generate(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Content) != 0 || len(response.ToolCalls) != 1 || response.ToolCalls[0].ID != "call-2" || response.ToolCalls[0].Name != "repo.read" || string(response.ToolCalls[0].Arguments) != `{"path":"SPEC.md"}` {
+		t.Fatalf("response = %#v", response)
+	}
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roundTrip modelgateway.NormalizedResponse
+	if err := json.Unmarshal(encoded, &roundTrip); err != nil || len(roundTrip.ToolCalls) != 1 || string(roundTrip.ToolCalls[0].Arguments) != `{"path":"SPEC.md"}` {
+		t.Fatalf("round trip = %#v, %v", roundTrip, err)
+	}
+}
+
+func TestGenerateRejectsInvalidNativeToolCallResponses(t *testing.T) {
+	adapter := testAdapter(t, "http://127.0.0.1", Config{})
+	capabilities, err := adapter.Capabilities(context.Background(), "gpt-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolCall := func(id, name, arguments string) map[string]any {
+		return map[string]any{"id": id, "type": "function", "function": map[string]any{"name": name, "arguments": arguments}}
+	}
+	for _, test := range []struct {
+		name     string
+		content  any
+		calls    []map[string]any
+		expected error
+	}{
+		{name: "content and calls", content: `{"ok":true}`, calls: []map[string]any{toolCall("call-1", "repo.read", `{}`)}, expected: modelgateway.ErrOutputSchema},
+		{name: "unknown tool", calls: []map[string]any{toolCall("call-1", "repo.write", `{}`)}, expected: modelgateway.ErrOutputSchema},
+		{name: "malformed arguments", calls: []map[string]any{toolCall("call-1", "repo.read", `{`)}, expected: modelgateway.ErrOutputSchema},
+		{name: "credential", calls: []map[string]any{toolCall("call-1", "repo.read", `{"token":"`+testCredential+`"}`)}, expected: modelgateway.ErrCredentialDetected},
+		{name: "oversized arguments", calls: []map[string]any{toolCall("call-1", "repo.read", `{"value":"`+strings.Repeat("x", modelgateway.MaximumToolArgumentsBytes)+`"}`)}, expected: modelgateway.ErrOutputSchema},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			payload, marshalErr := json.Marshal(map[string]any{
+				"id": "chatcmpl-tool", "model": "gpt-test-v2",
+				"choices": []any{map[string]any{"message": map[string]any{"content": test.content, "tool_calls": test.calls}, "finish_reason": "tool_calls"}},
+				"usage":   map[string]any{"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6},
+			})
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			_, decodeErr := adapter.decodeResponse(testRequest(), capabilities, payload)
+			var failure *modelgateway.ProviderFailure
+			if !errors.As(decodeErr, &failure) || !errors.Is(failure, test.expected) {
+				t.Fatalf("decode error = %#v", decodeErr)
+			}
+		})
+	}
+}
+
+func TestStreamRejectsNativeTools(t *testing.T) {
+	adapter := testAdapter(t, "http://127.0.0.1", Config{})
+	if _, err := adapter.Stream(context.Background(), testRequest()); !errors.Is(err, modelgateway.ErrProviderNotAllowed) {
+		t.Fatalf("stream error = %v", err)
+	}
+}
+
 func testAdapter(t *testing.T, endpoint string, overrides Config) *Adapter {
 	t.Helper()
 	config := Config{
@@ -277,4 +367,10 @@ func testRequest() modelgateway.NormalizedRequest {
 		Tools:          []modelgateway.ToolDefinition{{Name: "repo.read", Description: "read", Schema: json.RawMessage(`{"type":"object"}`)}},
 		ResponseSchema: json.RawMessage(`{"type":"object"}`), MaxOutputTokens: 16, Temperature: 0.2, DataClassification: "INTERNAL",
 	}
+}
+
+func streamingTestRequest() modelgateway.NormalizedRequest {
+	request := testRequest()
+	request.Tools = nil
+	return request
 }

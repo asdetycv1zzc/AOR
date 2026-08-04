@@ -260,7 +260,7 @@ func (ledger *BudgetLedger) finalizeModelCall(ctx context.Context, finalization 
 
 func validateModelReplay(finalization ModelCallFinalization, replay ModelReplay) error {
 	call := finalization.Call
-	if finalization.Disposition != ReservationDispositionSettle || call.Status != ModelCallSucceeded || replay.InputSHA256 != call.InputSHA256 || replay.Response.RequestID != call.RequestID || len(replay.Response.Content) == 0 || len(replay.Response.Content) > MaximumResponseBytes || !json.Valid(replay.Response.Content) || containsCredentialLike(string(replay.Response.Content)) || call.OutputSHA256 != digestBytes(replay.Response.Content) {
+	if finalization.Disposition != ReservationDispositionSettle || call.Status != ModelCallSucceeded || replay.InputSHA256 != call.InputSHA256 || replay.Response.RequestID != call.RequestID || validateNormalizedResponseOutput(replay.Response) != nil || call.OutputSHA256 != responseOutputDigest(replay.Response) {
 		return ErrInvalidRequest
 	}
 	return nil
@@ -320,7 +320,7 @@ func (ledger *BudgetLedger) StoreModelReplay(ctx context.Context, tenantID, requ
 	if err := contextError(ctx); err != nil {
 		return err
 	}
-	if ledger == nil || tenantID == "" || requestID == "" || !validModelDigest(replay.InputSHA256) || replay.Response.RequestID != requestID || len(replay.Response.Content) == 0 || len(replay.Response.Content) > MaximumResponseBytes || !json.Valid(replay.Response.Content) {
+	if ledger == nil || tenantID == "" || requestID == "" || !validModelDigest(replay.InputSHA256) || replay.Response.RequestID != requestID || validateNormalizedResponseOutput(replay.Response) != nil {
 		return ErrInvalidRequest
 	}
 	ledger.mu.Lock()
@@ -333,7 +333,7 @@ func (ledger *BudgetLedger) StoreModelReplay(ctx context.Context, tenantID, requ
 		return nil
 	}
 	call, found := ledger.modelCalls[key]
-	if !found || call.Status != ModelCallSucceeded || call.InputSHA256 != replay.InputSHA256 || call.OutputSHA256 != digestBytes(replay.Response.Content) {
+	if !found || call.Status != ModelCallSucceeded || call.InputSHA256 != replay.InputSHA256 || call.OutputSHA256 != responseOutputDigest(replay.Response) {
 		return ErrRequestConflict
 	}
 	return ledger.storeModelReplayLocked(tenantID, requestID, replay)
@@ -341,6 +341,10 @@ func (ledger *BudgetLedger) StoreModelReplay(ctx context.Context, tenantID, requ
 
 func cloneNormalizedResponse(response NormalizedResponse) NormalizedResponse {
 	response.Content = append(json.RawMessage(nil), response.Content...)
+	response.ToolCalls = append([]ToolCall(nil), response.ToolCalls...)
+	for index := range response.ToolCalls {
+		response.ToolCalls[index].Arguments = append(json.RawMessage(nil), response.ToolCalls[index].Arguments...)
+	}
 	return response
 }
 
