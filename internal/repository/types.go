@@ -20,6 +20,9 @@ var (
 	ErrGitUnavailable      = errors.New("git is unavailable")
 	ErrRepositoryDirty     = errors.New("repository contains unowned changes")
 	ErrInitialCommitNeeded = errors.New("workspace must have an initial commit")
+	ErrWorkspaceConflict   = errors.New("repository workspace registration conflicts")
+	ErrRepositoryNotFound  = errors.New("project repository not found")
+	ErrRepositoryConflict  = errors.New("project repository registration conflicts")
 )
 
 type LeaseProof struct {
@@ -87,7 +90,8 @@ type Workspace struct {
 	// gitDir is service-owned metadata outside the mounted workspace. It is
 	// intentionally private so API consumers cannot use it as a repository
 	// capability.
-	gitDir string
+	gitDir         string
+	repositoryPath string
 }
 
 type WriteRequest struct {
@@ -129,6 +133,106 @@ type Signer interface {
 type SubmissionStore interface {
 	Get(context.Context, string, string, string, int) (Submission, bool, error)
 	Put(context.Context, Submission) error
+}
+
+type WorkspaceStore interface {
+	LoadWorkspace(context.Context, string) (Workspace, bool, error)
+	StoreWorkspace(context.Context, Workspace) error
+}
+
+const (
+	RepositoryInitializationEmpty  = "EMPTY"
+	RepositoryInitializationImport = "IMPORT"
+)
+
+type ProjectRepository struct {
+	TenantID       string
+	ProjectID      string
+	Path           string
+	DefaultBranch  string
+	BaselineCommit string
+	Initialization string
+	SourceSHA256   string
+	CreatedAt      time.Time
+}
+
+type ProjectRepositoryStore interface {
+	LoadProjectRepository(context.Context, string, string) (ProjectRepository, bool, error)
+	StoreProjectRepository(context.Context, ProjectRepository) error
+}
+
+type ProjectRepositoryImportRequest struct {
+	TenantID      string
+	ProjectID     string
+	SourcePath    string
+	DefaultBranch string
+	CreatedAt     time.Time
+}
+
+type MemoryRegistryStore struct {
+	mu           sync.RWMutex
+	workspaces   map[string]Workspace
+	repositories map[string]ProjectRepository
+}
+
+func NewMemoryRegistryStore() *MemoryRegistryStore {
+	return &MemoryRegistryStore{
+		workspaces:   make(map[string]Workspace),
+		repositories: make(map[string]ProjectRepository),
+	}
+}
+
+func (s *MemoryRegistryStore) LoadWorkspace(_ context.Context, id string) (Workspace, bool, error) {
+	if s == nil || id == "" {
+		return Workspace{}, false, ErrInvalidRequest
+	}
+	s.mu.RLock()
+	workspace, found := s.workspaces[id]
+	s.mu.RUnlock()
+	return cloneWorkspace(workspace), found, nil
+}
+
+func (s *MemoryRegistryStore) StoreWorkspace(_ context.Context, workspace Workspace) error {
+	if s == nil || workspace.ID == "" {
+		return ErrInvalidRequest
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if prior, found := s.workspaces[workspace.ID]; found {
+		if sameWorkspace(prior, workspace) {
+			return nil
+		}
+		return ErrWorkspaceConflict
+	}
+	s.workspaces[workspace.ID] = cloneWorkspace(workspace)
+	return nil
+}
+
+func (s *MemoryRegistryStore) LoadProjectRepository(_ context.Context, tenantID, projectID string) (ProjectRepository, bool, error) {
+	if s == nil || tenantID == "" || projectID == "" {
+		return ProjectRepository{}, false, ErrInvalidRequest
+	}
+	s.mu.RLock()
+	repository, found := s.repositories[projectRepositoryKey(tenantID, projectID)]
+	s.mu.RUnlock()
+	return repository, found, nil
+}
+
+func (s *MemoryRegistryStore) StoreProjectRepository(_ context.Context, repository ProjectRepository) error {
+	if s == nil || repository.TenantID == "" || repository.ProjectID == "" {
+		return ErrInvalidRequest
+	}
+	key := projectRepositoryKey(repository.TenantID, repository.ProjectID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if prior, found := s.repositories[key]; found {
+		if sameProjectRepository(prior, repository) {
+			return nil
+		}
+		return ErrRepositoryConflict
+	}
+	s.repositories[key] = repository
+	return nil
 }
 
 type MemorySubmissionStore struct {
@@ -178,3 +282,39 @@ func cloneSubmission(value Submission) Submission {
 	value.Workspace = cloneWorkspace(value.Workspace)
 	return value
 }
+
+func projectRepositoryKey(tenantID, projectID string) string {
+	return tenantID + "\x00" + projectID
+}
+
+func sameWorkspace(left, right Workspace) bool {
+	return left.ID == right.ID && left.TenantID == right.TenantID && left.ProjectID == right.ProjectID &&
+		left.TaskID == right.TaskID && left.Attempt == right.Attempt && left.AttemptSeriesID == right.AttemptSeriesID &&
+		left.Path == right.Path && left.Branch == right.Branch && left.BaseCommit == right.BaseCommit &&
+		left.ModuleSpecRef == right.ModuleSpecRef && left.AgentIdentity == right.AgentIdentity &&
+		left.gitDir == right.gitDir && left.repositoryPath == right.repositoryPath &&
+		sameStrings(left.AllowedPaths, right.AllowedPaths) && sameStrings(left.ForbiddenPaths, right.ForbiddenPaths) &&
+		sameStrings(left.AcceptanceCriteria, right.AcceptanceCriteria)
+}
+
+func sameProjectRepository(left, right ProjectRepository) bool {
+	return left.TenantID == right.TenantID && left.ProjectID == right.ProjectID && left.Path == right.Path &&
+		left.DefaultBranch == right.DefaultBranch && left.BaselineCommit == right.BaselineCommit &&
+		left.Initialization == right.Initialization && left.SourceSHA256 == right.SourceSHA256 &&
+		left.CreatedAt.Equal(right.CreatedAt)
+}
+
+func sameStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+var _ WorkspaceStore = (*MemoryRegistryStore)(nil)
+var _ ProjectRepositoryStore = (*MemoryRegistryStore)(nil)

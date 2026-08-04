@@ -160,6 +160,10 @@ services:
         if [ "$$repository_submissions_installed" != "t" ]; then
           psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000018_repository_submissions.up.sql
         fi
+        repository_registry_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT to_regclass('public.project_repositories') IS NOT NULL AND to_regclass('public.repository_workspaces') IS NOT NULL")"
+        if [ "$$repository_registry_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000020_repository_registry.up.sql
+        fi
         unset AOR_APP_PASSWORD
     secrets: [postgres_password, postgres_app_password]
     volumes:
@@ -181,6 +185,7 @@ services:
       - ../../migrations/postgres/000016_project_erasure.up.sql:/migrations/000016_project_erasure.up.sql:ro
       - ../../migrations/postgres/000017_relational_projection_sync.up.sql:/migrations/000017_relational_projection_sync.up.sql:ro
       - ../../migrations/postgres/000018_repository_submissions.up.sql:/migrations/000018_repository_submissions.up.sql:ro
+      - ../../migrations/postgres/000020_repository_registry.up.sql:/migrations/000020_repository_registry.up.sql:ro
       - ./postgres-app-password.sql:/migrations/postgres-app-password.sql:ro
     read_only: true
     tmpfs: [/tmp]

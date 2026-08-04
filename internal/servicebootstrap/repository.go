@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -85,8 +84,15 @@ func newRepositoryMCPClient(root string, database *sql.DB, leases toolbroker.Lea
 	if err != nil {
 		return nil, err
 	}
+	registry, err := repository.NewPostgresRegistryStore(database)
+	if err != nil {
+		return nil, err
+	}
 	authority := &repositoryExecutionAuthority{database: database, leases: leases, root: root, clock: clock}
-	service, err := repository.NewService(root, authority, store, signer, clock)
+	service, err := repository.NewServiceWithConfig(repository.ServiceConfig{
+		Root: root, Leases: authority, Submissions: store, Workspaces: registry,
+		ProjectRepositories: registry, Signer: signer, Clock: clock,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +182,10 @@ func (client *repositoryMCPClient) CallTool(ctx context.Context, name string, ar
 		if err := decodeRepositoryArguments(arguments, &input); err != nil {
 			return mcp.ToolCallResult{}, err
 		}
-		workspace, found := client.service.Workspace(input.WorkspaceID)
+		workspace, found, err := client.service.WorkspaceContext(ctx, input.WorkspaceID)
+		if err != nil {
+			return mcp.ToolCallResult{}, err
+		}
 		if !found {
 			return mcp.ToolCallResult{}, repository.ErrWorkspaceNotFound
 		}
@@ -243,8 +252,12 @@ func (authority *repositoryExecutionAuthority) workspaceRequest(ctx context.Cont
 	if err != nil {
 		return repository.WorkspaceRequest{}, err
 	}
+	repositoryPath, err := repository.ProjectRepositoryPath(authority.root, claim.TenantID, claim.ProjectID)
+	if err != nil {
+		return repository.WorkspaceRequest{}, err
+	}
 	return repository.WorkspaceRequest{
-		RepositoryPath:  filepath.Join(authority.root, "projects", claim.TenantID, claim.ProjectID),
+		RepositoryPath:  repositoryPath,
 		TenantID:        claim.TenantID,
 		ProjectID:       claim.ProjectID,
 		TaskID:          claim.TaskID,

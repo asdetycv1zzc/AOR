@@ -30,21 +30,43 @@ var (
 )
 
 type Service struct {
-	root       string
-	leases     LeaseValidator
-	store      SubmissionStore
-	signer     Signer
-	clock      func() time.Time
-	mu         sync.RWMutex
-	submitMu   sync.Mutex
-	workspaces map[string]Workspace
+	root            string
+	leases          LeaseValidator
+	store           SubmissionStore
+	workspaceStore  WorkspaceStore
+	repositoryStore ProjectRepositoryStore
+	signer          Signer
+	clock           func() time.Time
+	mu              sync.RWMutex
+	workspaceMu     sync.Mutex
+	submitMu        sync.Mutex
+	repositoryMu    sync.Mutex
+	workspaces      map[string]Workspace
+}
+
+type ServiceConfig struct {
+	Root                string
+	Leases              LeaseValidator
+	Submissions         SubmissionStore
+	Workspaces          WorkspaceStore
+	ProjectRepositories ProjectRepositoryStore
+	Signer              Signer
+	Clock               func() time.Time
 }
 
 func NewService(root string, leases LeaseValidator, store SubmissionStore, signer Signer, clock func() time.Time) (*Service, error) {
-	if root == "" || leases == nil || signer == nil {
+	registry := NewMemoryRegistryStore()
+	return NewServiceWithConfig(ServiceConfig{
+		Root: root, Leases: leases, Submissions: store, Workspaces: registry,
+		ProjectRepositories: registry, Signer: signer, Clock: clock,
+	})
+}
+
+func NewServiceWithConfig(config ServiceConfig) (*Service, error) {
+	if config.Root == "" || config.Leases == nil || config.Signer == nil {
 		return nil, ErrInvalidRequest
 	}
-	absolute, err := filepath.Abs(root)
+	absolute, err := filepath.Abs(config.Root)
 	if err != nil {
 		return nil, ErrInvalidRequest
 	}
@@ -54,16 +76,31 @@ func NewService(root string, leases LeaseValidator, store SubmissionStore, signe
 	if info, statErr := os.Lstat(absolute); statErr != nil || !info.IsDir() || unsafePathInfo(info) {
 		return nil, ErrInvalidRequest
 	}
-	if store == nil {
-		store = NewMemorySubmissionStore()
+	if config.Submissions == nil {
+		config.Submissions = NewMemorySubmissionStore()
 	}
-	if clock == nil {
-		clock = time.Now
+	if config.Workspaces == nil || config.ProjectRepositories == nil {
+		registry := NewMemoryRegistryStore()
+		if config.Workspaces == nil {
+			config.Workspaces = registry
+		}
+		if config.ProjectRepositories == nil {
+			config.ProjectRepositories = registry
+		}
 	}
-	return &Service{root: absolute, leases: leases, store: store, signer: signer, clock: clock, workspaces: make(map[string]Workspace)}, nil
+	if config.Clock == nil {
+		config.Clock = time.Now
+	}
+	return &Service{
+		root: absolute, leases: config.Leases, store: config.Submissions,
+		workspaceStore: config.Workspaces, repositoryStore: config.ProjectRepositories,
+		signer: config.Signer, clock: config.Clock, workspaces: make(map[string]Workspace),
+	}, nil
 }
 
 func (s *Service) CreateWorkspace(ctx context.Context, request WorkspaceRequest) (Workspace, error) {
+	s.workspaceMu.Lock()
+	defer s.workspaceMu.Unlock()
 	if err := contextErr(ctx); err != nil {
 		return Workspace{}, err
 	}
@@ -75,13 +112,9 @@ func (s *Service) CreateWorkspace(ctx context.Context, request WorkspaceRequest)
 	}
 	id := workspaceID(request)
 	workspaceRoot := filepath.Join(s.root, ".aor-workspaces")
-	source := request.RepositoryPath
-	if source == "" {
-		source = s.root
-	}
-	source, err := filepath.Abs(source)
+	source, err := s.workspaceRepositoryPath(ctx, request)
 	if err != nil {
-		return Workspace{}, ErrInvalidRequest
+		return Workspace{}, err
 	}
 	directory := filepath.Join(workspaceRoot, cleanID(request.TenantID), cleanID(request.ProjectID), cleanID(request.TaskID), fmt.Sprintf("attempt-%d", request.Attempt))
 	gitDirectory := filepath.Join(s.root, ".aor-git", workspaceIDDigest(id))
@@ -103,6 +136,34 @@ func (s *Service) CreateWorkspace(ctx context.Context, request WorkspaceRequest)
 	if err := s.validateLease(ctx, validation); err != nil {
 		return Workspace{}, err
 	}
+	workspace := Workspace{ID: id, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, Attempt: request.Attempt, AttemptSeriesID: request.AttemptSeriesID, Path: directory, Branch: workspaceBranch(request), BaseCommit: request.BaseCommit, AllowedPaths: append([]string(nil), request.ModuleSpec.AllowedPaths...), ForbiddenPaths: effectiveForbiddenPaths(request.ModuleSpec.ForbiddenPaths), AcceptanceCriteria: append([]string(nil), request.ModuleSpec.AcceptanceCriteria...), ModuleSpecRef: moduleSpecRef, AgentIdentity: request.AgentIdentity, gitDir: gitDirectory, repositoryPath: source}
+	if prior, priorErr := s.workspace(ctx, id); priorErr == nil {
+		if !sameWorkspace(prior, workspace) {
+			return Workspace{}, ErrWorkspaceConflict
+		}
+		return prior, nil
+	} else if !errors.Is(priorErr, ErrWorkspaceNotFound) {
+		return Workspace{}, priorErr
+	}
+	if pathExists(directory) || pathExists(gitDirectory) {
+		recovered, err := readWorkspaceRegistration(gitDirectory)
+		if err != nil || !sameWorkspace(recovered, workspace) {
+			return Workspace{}, ErrWorkspaceConflict
+		}
+		if err := s.validateRecoveredWorkspace(ctx, recovered); err != nil {
+			return Workspace{}, err
+		}
+		if err := s.validateLease(ctx, validation); err != nil {
+			return Workspace{}, err
+		}
+		if err := s.workspaceStore.StoreWorkspace(ctx, recovered); err != nil {
+			return Workspace{}, err
+		}
+		s.mu.Lock()
+		s.workspaces[id] = recovered
+		s.mu.Unlock()
+		return cloneWorkspace(recovered), nil
+	}
 	if err := os.MkdirAll(filepath.Dir(directory), 0o700); err != nil {
 		return Workspace{}, err
 	}
@@ -110,23 +171,30 @@ func (s *Service) CreateWorkspace(ctx context.Context, request WorkspaceRequest)
 		return Workspace{}, err
 	}
 	if err := cloneRepository(ctx, source, directory, gitDirectory); err != nil {
+		cleanupWorkspace(directory, gitDirectory)
 		return Workspace{}, err
 	}
 	if err := configureWorkspaceVisibility(ctx, directory, request.ModuleSpec.AllowedPaths, request.ModuleSpec.ForbiddenPaths); err != nil {
-		_ = os.RemoveAll(gitDirectory)
+		cleanupWorkspace(directory, gitDirectory)
 		return Workspace{}, err
 	}
 	if _, err := git(ctx, directory, "rev-parse", "--verify", request.BaseCommit+"^{commit}"); err != nil {
-		_ = os.RemoveAll(gitDirectory)
+		cleanupWorkspace(directory, gitDirectory)
 		return Workspace{}, ErrInitialCommitNeeded
 	}
-	workspace := Workspace{ID: id, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, Attempt: request.Attempt, AttemptSeriesID: request.AttemptSeriesID, Path: directory, Branch: workspaceBranch(request), BaseCommit: request.BaseCommit, AllowedPaths: append([]string(nil), request.ModuleSpec.AllowedPaths...), ForbiddenPaths: effectiveForbiddenPaths(request.ModuleSpec.ForbiddenPaths), AcceptanceCriteria: append([]string(nil), request.ModuleSpec.AcceptanceCriteria...), ModuleSpecRef: moduleSpecRef, AgentIdentity: request.AgentIdentity, gitDir: gitDirectory}
 	if err := checkoutCommit(ctx, workspace, request.BaseCommit); err != nil {
-		_ = os.RemoveAll(gitDirectory)
+		cleanupWorkspace(directory, gitDirectory)
 		return Workspace{}, err
 	}
 	if err := s.validateLease(ctx, validation); err != nil {
-		_ = os.RemoveAll(gitDirectory)
+		cleanupWorkspace(directory, gitDirectory)
+		return Workspace{}, err
+	}
+	if err := writeWorkspaceRegistration(workspace); err != nil {
+		cleanupWorkspace(directory, gitDirectory)
+		return Workspace{}, err
+	}
+	if err := s.workspaceStore.StoreWorkspace(ctx, workspace); err != nil {
 		return Workspace{}, err
 	}
 	s.mu.Lock()
@@ -136,7 +204,7 @@ func (s *Service) CreateWorkspace(ctx context.Context, request WorkspaceRequest)
 }
 
 func (s *Service) WriteFile(ctx context.Context, request WriteRequest) error {
-	workspace, err := s.workspace(request.WorkspaceID)
+	workspace, err := s.workspace(ctx, request.WorkspaceID)
 	if err != nil {
 		return err
 	}
@@ -192,7 +260,7 @@ func (s *Service) WriteFile(ctx context.Context, request WriteRequest) error {
 }
 
 func (s *Service) DeleteFile(ctx context.Context, request DeleteRequest) error {
-	workspace, err := s.workspace(request.WorkspaceID)
+	workspace, err := s.workspace(ctx, request.WorkspaceID)
 	if err != nil {
 		return err
 	}
@@ -223,7 +291,7 @@ func (s *Service) DeleteFile(ctx context.Context, request DeleteRequest) error {
 }
 
 func (s *Service) ReadFile(ctx context.Context, workspaceID, name string) ([]byte, error) {
-	workspace, err := s.workspace(workspaceID)
+	workspace, err := s.workspace(ctx, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -256,7 +324,7 @@ func (s *Service) ReadFile(ctx context.Context, workspaceID, name string) ([]byt
 func (s *Service) Submit(ctx context.Context, request SubmissionRequest) (Submission, error) {
 	s.submitMu.Lock()
 	defer s.submitMu.Unlock()
-	workspace, err := s.workspace(request.WorkspaceID)
+	workspace, err := s.workspace(ctx, request.WorkspaceID)
 	if err != nil {
 		return Submission{}, err
 	}
@@ -295,7 +363,14 @@ func (s *Service) Submit(ctx context.Context, request SubmissionRequest) (Submis
 	if err != nil {
 		return Submission{}, ErrGitUnavailable
 	}
-	manifest := contracts.SubmissionManifest{SubmissionVersion: 1, ProjectID: workspace.ProjectID, ModuleTaskID: workspace.TaskID, AttemptSeriesID: workspace.AttemptSeriesID, Attempt: request.Attempt, ModuleSpecRef: workspace.ModuleSpecRef, BaseCommit: workspace.BaseCommit, HeadCommit: strings.TrimSpace(head), ChangedFiles: changed, DeletedFiles: deleted, CreatedFiles: created, ClaimedCriteria: append([]string(nil), request.ClaimedCriteria...), LocalTestEvidenceRefs: append([]string(nil), request.LocalTestEvidenceRefs...), AgentIdentity: workspace.AgentIdentity, CreatedAt: request.CreatedAt.UTC().Format(time.RFC3339)}
+	head = strings.TrimSpace(head)
+	if err := s.validateWorkspaceLease(ctx, workspace, request.Lease, LeaseActionSubmit, workspace.Path, requestDigest); err != nil {
+		return Submission{}, err
+	}
+	if err := s.publishWorkspaceCommit(ctx, workspace, head); err != nil {
+		return Submission{}, err
+	}
+	manifest := contracts.SubmissionManifest{SubmissionVersion: 1, ProjectID: workspace.ProjectID, ModuleTaskID: workspace.TaskID, AttemptSeriesID: workspace.AttemptSeriesID, Attempt: request.Attempt, ModuleSpecRef: workspace.ModuleSpecRef, BaseCommit: workspace.BaseCommit, HeadCommit: head, ChangedFiles: changed, DeletedFiles: deleted, CreatedFiles: created, ClaimedCriteria: append([]string(nil), request.ClaimedCriteria...), LocalTestEvidenceRefs: append([]string(nil), request.LocalTestEvidenceRefs...), AgentIdentity: workspace.AgentIdentity, CreatedAt: request.CreatedAt.UTC().Format(time.RFC3339)}
 	if err := fillManifestDigest(&manifest); err != nil {
 		return Submission{}, err
 	}
@@ -324,21 +399,121 @@ func (s *Service) Submit(ctx context.Context, request SubmissionRequest) (Submis
 }
 
 func (s *Service) Workspace(id string) (Workspace, bool) {
-	workspace, err := s.workspace(id)
+	workspace, err := s.workspace(context.Background(), id)
 	return workspace, err == nil
 }
 
-func (s *Service) workspace(id string) (Workspace, error) {
+func (s *Service) WorkspaceContext(ctx context.Context, id string) (Workspace, bool, error) {
+	workspace, err := s.workspace(ctx, id)
+	if errors.Is(err, ErrWorkspaceNotFound) {
+		return Workspace{}, false, nil
+	}
+	return workspace, err == nil, err
+}
+
+func (s *Service) workspace(ctx context.Context, id string) (Workspace, error) {
 	if id == "" {
 		return Workspace{}, ErrWorkspaceNotFound
 	}
 	s.mu.RLock()
 	workspace, found := s.workspaces[id]
 	s.mu.RUnlock()
+	if found {
+		return cloneWorkspace(workspace), nil
+	}
+	workspace, found, err := s.workspaceStore.LoadWorkspace(ctx, id)
+	if err != nil {
+		return Workspace{}, err
+	}
 	if !found {
 		return Workspace{}, ErrWorkspaceNotFound
 	}
+	if err := s.validateRecoveredWorkspace(ctx, workspace); err != nil {
+		return Workspace{}, err
+	}
+	s.mu.Lock()
+	if prior, registered := s.workspaces[id]; registered {
+		workspace = prior
+	} else {
+		s.workspaces[id] = workspace
+	}
+	s.mu.Unlock()
 	return cloneWorkspace(workspace), nil
+}
+
+func (s *Service) workspaceRepositoryPath(ctx context.Context, request WorkspaceRequest) (string, error) {
+	if request.RepositoryPath != "" {
+		absolute, err := filepath.Abs(request.RepositoryPath)
+		if err != nil {
+			return "", ErrInvalidRequest
+		}
+		return absolute, nil
+	}
+	repository, found, err := s.repositoryStore.LoadProjectRepository(ctx, request.TenantID, request.ProjectID)
+	if err != nil {
+		return "", err
+	}
+	if found {
+		if err := s.validateProjectRepository(ctx, repository); err != nil {
+			return "", err
+		}
+		return repository.Path, nil
+	}
+	return s.root, nil
+}
+
+func (s *Service) validateRecoveredWorkspace(ctx context.Context, workspace Workspace) error {
+	if !safeIDPattern.MatchString(workspace.TenantID) || !safeIDPattern.MatchString(workspace.ProjectID) || !safeIDPattern.MatchString(workspace.TaskID) || !safeIDPattern.MatchString(workspace.AttemptSeriesID) || workspace.Attempt < 1 || workspace.Attempt > 3 || workspace.ModuleSpecRef.Validate() != nil || workspace.AgentIdentity.AgentInstanceID == "" || workspace.AgentIdentity.Role != "EXECUTOR" || workspace.AgentIdentity.LeaseID == "" || len(workspace.AllowedPaths) == 0 || validateCommit(workspace.BaseCommit) != nil {
+		return ErrWorkspaceConflict
+	}
+	request := WorkspaceRequest{TenantID: workspace.TenantID, ProjectID: workspace.ProjectID, TaskID: workspace.TaskID, Attempt: workspace.Attempt}
+	if workspace.ID != workspaceID(request) || workspace.Branch != workspaceBranch(request) {
+		return ErrWorkspaceConflict
+	}
+	expectedPath := filepath.Join(s.root, ".aor-workspaces", cleanID(workspace.TenantID), cleanID(workspace.ProjectID), cleanID(workspace.TaskID), fmt.Sprintf("attempt-%d", workspace.Attempt))
+	expectedGitDirectory := filepath.Join(s.root, ".aor-git", workspaceIDDigest(workspace.ID))
+	if filepath.Clean(workspace.Path) != filepath.Clean(expectedPath) || filepath.Clean(workspace.gitDir) != filepath.Clean(expectedGitDirectory) || workspace.repositoryPath == "" {
+		return ErrWorkspaceConflict
+	}
+	for _, directory := range []string{workspace.Path, workspace.gitDir} {
+		if err := rejectSymlinkTree(s.root, directory); err != nil {
+			return ErrWorkspaceConflict
+		}
+		info, err := os.Lstat(directory)
+		if err != nil || !info.IsDir() || unsafePathInfo(info) {
+			return ErrWorkspaceConflict
+		}
+	}
+	gitDirectory, err := git(ctx, workspace.Path, "rev-parse", "--absolute-git-dir")
+	if err != nil || filepath.Clean(strings.TrimSpace(gitDirectory)) != filepath.Clean(workspace.gitDir) {
+		return ErrWorkspaceConflict
+	}
+	branch, err := git(ctx, workspace.Path, "symbolic-ref", "--short", "HEAD")
+	if err != nil || strings.TrimSpace(branch) != workspace.Branch {
+		return ErrWorkspaceConflict
+	}
+	if _, err := git(ctx, workspace.Path, "rev-parse", "--verify", workspace.BaseCommit+"^{commit}"); err != nil {
+		return ErrWorkspaceConflict
+	}
+	recorded, err := readWorkspaceRegistration(workspace.gitDir)
+	if err != nil || !sameWorkspace(recorded, workspace) {
+		return ErrWorkspaceConflict
+	}
+	return nil
+}
+
+func cleanupWorkspace(directory, gitDirectory string) {
+	if directory != "" {
+		_ = os.RemoveAll(directory)
+	}
+	if gitDirectory != "" {
+		_ = os.RemoveAll(gitDirectory)
+	}
+}
+
+func pathExists(name string) bool {
+	_, err := os.Lstat(name)
+	return err == nil || !errors.Is(err, os.ErrNotExist)
 }
 
 func (s *Service) validateWorkspaceLease(ctx context.Context, workspace Workspace, proof LeaseProof, action LeaseAction, resourcePath, parameterDigest string) error {
@@ -385,7 +560,7 @@ func (s *Service) commitWorkspace(ctx context.Context, workspace Workspace, leas
 		}
 		return classifyChanges(nameStatus)
 	}
-	status, err := git(ctx, workspace.Path, "status", "--porcelain=v1", "-z")
+	status, err := git(ctx, workspace.Path, "status", "--porcelain=v1", "--untracked-files=all", "-z")
 	if err != nil {
 		return nil, nil, nil, ErrGitUnavailable
 	}
@@ -420,6 +595,41 @@ func (s *Service) commitWorkspace(ctx context.Context, workspace Workspace, leas
 	return classifyChanges(nameStatus)
 }
 
+func (s *Service) publishWorkspaceCommit(ctx context.Context, workspace Workspace, head string) error {
+	if validateCommit(head) != nil || workspace.repositoryPath == "" || !validBranchName(workspace.Branch) {
+		return ErrInvalidRequest
+	}
+	targetGitDirectory, err := gitFrom(ctx, workspace.repositoryPath, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return ErrGitUnavailable
+	}
+	targetGitDirectory = strings.TrimSpace(targetGitDirectory)
+	if !filepath.IsAbs(targetGitDirectory) {
+		return ErrGitUnavailable
+	}
+	s.repositoryMu.Lock()
+	defer s.repositoryMu.Unlock()
+	disabledHooks := filepath.Join(s.root, ".aor-disabled-hooks")
+	if err := os.MkdirAll(disabledHooks, 0o700); err != nil {
+		return err
+	}
+	if _, err := gitFrom(ctx, targetGitDirectory, "--git-dir", targetGitDirectory, "-c", "core.hooksPath="+disabledHooks, "fetch", "--no-tags", "--no-write-fetch-head", workspace.gitDir, head); err != nil {
+		return ErrGitUnavailable
+	}
+	ref := "refs/heads/" + workspace.Branch
+	current, err := gitFrom(ctx, targetGitDirectory, "--git-dir", targetGitDirectory, "rev-parse", "--verify", ref+"^{commit}")
+	if err == nil {
+		if strings.TrimSpace(current) == head {
+			return nil
+		}
+		return ErrSubmissionConflict
+	}
+	if _, err := gitFrom(ctx, targetGitDirectory, "--git-dir", targetGitDirectory, "update-ref", ref, head, strings.Repeat("0", 40)); err != nil {
+		return ErrSubmissionConflict
+	}
+	return nil
+}
+
 func checkoutCommit(ctx context.Context, workspace Workspace, commit string) error {
 	if workspace.Branch == "" {
 		return ErrInvalidRequest
@@ -431,7 +641,14 @@ func checkoutCommit(ctx context.Context, workspace Workspace, commit string) err
 }
 
 func cloneRepository(ctx context.Context, source, directory, gitDirectory string) error {
-	if _, err := os.Stat(filepath.Join(source, ".git")); err != nil {
+	info, err := os.Lstat(source)
+	if err != nil || !info.IsDir() || unsafePathInfo(info) {
+		return ErrInitialCommitNeeded
+	}
+	if _, err := gitFrom(ctx, source, "rev-parse", "--git-dir"); err != nil {
+		return ErrInitialCommitNeeded
+	}
+	if _, err := gitFrom(ctx, source, "rev-parse", "--verify", "HEAD^{commit}"); err != nil {
 		return ErrInitialCommitNeeded
 	}
 	if gitDirectory == "" || filepath.Clean(gitDirectory) == filepath.Clean(directory) || strings.HasPrefix(filepath.Clean(gitDirectory), filepath.Clean(directory)+string(os.PathSeparator)) {
@@ -441,13 +658,13 @@ func cloneRepository(ctx context.Context, source, directory, gitDirectory string
 		return err
 	}
 	if _, err := gitFrom(ctx, filepath.Dir(directory), "clone", "--no-local", "--separate-git-dir", gitDirectory, source, directory); err != nil {
-		_ = os.RemoveAll(gitDirectory)
+		cleanupWorkspace(directory, gitDirectory)
 		return ErrGitUnavailable
 	}
 	// Disable repository-provided hooks and file-system monitors before the
 	// untrusted checkout is materialized.
 	if _, err := git(ctx, directory, "config", "core.hooksPath", filepath.Join(gitDirectory, "disabled-hooks")); err != nil {
-		_ = os.RemoveAll(gitDirectory)
+		cleanupWorkspace(directory, gitDirectory)
 		return ErrGitUnavailable
 	}
 	return nil
@@ -556,12 +773,17 @@ func git(ctx context.Context, directory string, args ...string) (string, error) 
 }
 
 func gitFrom(ctx context.Context, directory string, args ...string) (string, error) {
+	return gitFromWithEnvironment(ctx, directory, nil, args...)
+}
+
+func gitFromWithEnvironment(ctx context.Context, directory string, environment []string, args ...string) (string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	command := exec.CommandContext(ctx, "git", args...)
 	command.Dir = directory
 	command.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "GIT_AUTHOR_NAME=AOR Repository Service", "GIT_AUTHOR_EMAIL=repository-service@aor.invalid", "GIT_COMMITTER_NAME=AOR Repository Service", "GIT_COMMITTER_EMAIL=repository-service@aor.invalid")
+	command.Env = append(command.Env, environment...)
 	output, err := command.CombinedOutput()
 	if err != nil {
 		return string(output), err

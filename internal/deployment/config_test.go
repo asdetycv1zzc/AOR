@@ -28,7 +28,7 @@ func TestDeploymentProfilesFailClosed(t *testing.T) {
 		"AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON", "AOR_SANDBOX_SHARED_ROOT",
 		"AOR_LEASE_SIGNING_KEY_REF: secret://lease_signing_key",
 		"000010_outbox_tenant_discovery.up.sql", "000012_artifact_project_uri_scope.up.sql",
-		"000017_relational_projection_sync.up.sql", "000018_repository_submissions.up.sql",
+		"000017_relational_projection_sync.up.sql", "000018_repository_submissions.up.sql", "000020_repository_registry.up.sql",
 		"target: tool-broker-runtime", "AOR_REPOSITORY_ROOT: /var/lib/aor/repositories", "repository-data:/var/lib/aor/repositories",
 	} {
 		if !strings.Contains(composeText, value) {
