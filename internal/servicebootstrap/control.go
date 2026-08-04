@@ -110,10 +110,15 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	if err != nil {
 		return nil, err
 	}
+	goalPlanServices, err := configuredGoalPlanServices(config, lifecycleStore, leaseService, authorizer)
+	if err != nil {
+		return nil, err
+	}
 	domain, err := controlapi.New(controlapi.Config{
 		Store: lifecycleStore, Authenticator: authenticator, Authorizer: authorizer,
 		Database: clients.Database(), Artifacts: artifactCatalog, Knowledge: knowledgeService,
-		Eraser: artifactProjectEraser{catalog: artifactCatalog}, Leases: leaseService, Clock: time.Now,
+		Eraser: artifactProjectEraser{catalog: artifactCatalog}, Leases: leaseService,
+		GoalPlan: goalPlanServices, Clock: time.Now,
 	})
 	if err != nil {
 		return nil, err
