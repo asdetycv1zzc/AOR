@@ -162,7 +162,7 @@ type NetworkToolExecutor interface {
 }
 
 type ArtifactStore interface {
-	Put(ctx context.Context, data []byte, mediaType string) (ArtifactRef, error)
+	Put(ctx context.Context, request ToolRequest, data []byte, mediaType string) (ArtifactRef, error)
 }
 
 type InvocationRecorder interface {

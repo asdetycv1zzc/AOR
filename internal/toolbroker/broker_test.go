@@ -81,11 +81,13 @@ func (r *testRecorder) Record(context.Context, Invocation) error { r.calls++; re
 type testArtifacts struct {
 	called    bool
 	mediaType string
+	request   ToolRequest
 }
 
-func (a *testArtifacts) Put(_ context.Context, data []byte, mediaType string) (ArtifactRef, error) {
+func (a *testArtifacts) Put(_ context.Context, request ToolRequest, data []byte, mediaType string) (ArtifactRef, error) {
 	a.called = true
 	a.mediaType = mediaType
+	a.request = request
 	return ArtifactRef{URI: "artifact://out", SHA256: "sha256:out", Size: int64(len(data))}, nil
 }
 
@@ -138,7 +140,7 @@ func TestBrokerSpillsLargeOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := broker.Invoke(context.Background(), request())
-	if err != nil || result.Artifact == nil || !artifacts.called || artifacts.mediaType != "application/json" {
+	if err != nil || result.Artifact == nil || !artifacts.called || artifacts.mediaType != "application/json" || artifacts.request.RequestID != request().RequestID {
 		t.Fatalf("artifact result = %#v err=%v", result, err)
 	}
 }

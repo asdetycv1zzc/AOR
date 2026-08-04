@@ -279,7 +279,7 @@ func (b *Broker) Invoke(ctx context.Context, request ToolRequest) (result ToolRe
 		if b.artifacts == nil {
 			return ToolResult{}, ErrOutputTooLarge
 		}
-		artifact, artifactErr := b.artifacts.Put(ctx, output, "application/json")
+		artifact, artifactErr := b.artifacts.Put(ctx, request, output, "application/json")
 		if artifactErr != nil {
 			return ToolResult{}, artifactErr
 		}
