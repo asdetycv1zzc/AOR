@@ -32,6 +32,30 @@ func TestInitialGoalProposalDoesNotRequireNonexistentGoalSpec(t *testing.T) {
 	}
 }
 
+func TestPlanProposalDoesNotRequireNonexistentPlanSpec(t *testing.T) {
+	envelope := validEnvelope(IntentProposePlan)
+	if envelope.PlanSpec != nil {
+		t.Fatal("plan proposal fixture unexpectedly contains a PlanSpec")
+	}
+	if err := envelope.Validate(time.Now().UTC()); err != nil {
+		t.Fatalf("initial plan proposal rejected: %v", err)
+	}
+}
+
+func TestModuleDefinitionUsesTaskScopeWithoutNonexistentModuleSpec(t *testing.T) {
+	envelope := validEnvelope(IntentDefineModule)
+	if envelope.ModuleSpec != nil || envelope.TaskID == "" || envelope.Scope != ScopeTask {
+		t.Fatal("module definition fixture has an invalid pre-ModuleSpec scope")
+	}
+	if err := envelope.Validate(time.Now().UTC()); err != nil {
+		t.Fatalf("module definition rejected: %v", err)
+	}
+	envelope.TaskID = ""
+	if err := envelope.Validate(time.Now().UTC()); err == nil {
+		t.Fatal("module definition accepted without its assigned task")
+	}
+}
+
 func TestSubmissionRequiresAllImmutableReferences(t *testing.T) {
 	envelope := validEnvelope(IntentSubmitImplementation)
 	envelope.PlanSpec = nil
@@ -76,6 +100,8 @@ func validEnvelope(intent Intent) Envelope {
 		}
 		if requirements.module {
 			envelope.ModuleSpec = validSpecRef()
+		}
+		if requirements.module || requirements.task {
 			envelope.TaskID = "task_1"
 			envelope.Scope = ScopeTask
 		}

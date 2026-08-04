@@ -711,8 +711,20 @@ func contextMatchesEnvelope(declaration Declaration) bool {
 		}
 	}
 	switch declaration.Role {
-	case RoleModulePlanner, RoleExecutor, RoleModuleAuditor:
+	case RoleExecutor, RoleModuleAuditor:
 		if counts[ContextModuleReference] != 1 {
+			return false
+		}
+	}
+	if declaration.Role == RoleModulePlanner {
+		hasTaskAssignment := false
+		for _, item := range declaration.ContextManifest.Items {
+			if item.Kind == ContextTaskState {
+				hasTaskAssignment = true
+				break
+			}
+		}
+		if !hasTaskAssignment {
 			return false
 		}
 	}

@@ -101,6 +101,7 @@ type referenceRequirements struct {
 	goal    bool
 	plan    bool
 	module  bool
+	task    bool
 	attempt bool
 	global  bool
 	dynamic bool
@@ -111,8 +112,8 @@ var intentRequirements = map[Intent]referenceRequirements{
 	IntentChallengeGoal:            {goal: true},
 	IntentRequestUserReview:        {goal: true},
 	IntentApproveGoalRequested:     {goal: true},
-	IntentProposePlan:              {goal: true, plan: true},
-	IntentDefineModule:             {goal: true, plan: true, module: true},
+	IntentProposePlan:              {goal: true},
+	IntentDefineModule:             {goal: true, plan: true, task: true},
 	IntentRequestAgent:             {goal: true, dynamic: true},
 	IntentAssignModule:             {goal: true, plan: true, module: true},
 	IntentRequestKnowledge:         {goal: true, dynamic: true},
@@ -183,7 +184,7 @@ func (e Envelope) Validate(now time.Time) *aorerrors.Error {
 	if e.PlanSpec != nil && e.PlanSpec.Validate() != nil || e.ModuleSpec != nil && e.ModuleSpec.Validate() != nil {
 		return invalid("spec reference digest")
 	}
-	if requirements.module {
+	if requirements.module || requirements.task {
 		if e.TaskID == "" || e.Scope != ScopeTask {
 			return invalid("task scope")
 		}

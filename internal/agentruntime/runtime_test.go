@@ -125,6 +125,25 @@ func TestDeclarationRejectsExpiredAndMismatchedAOPEnvelope(t *testing.T) {
 	}
 }
 
+func TestModulePlannerDeclarationPrecedesModuleSpec(t *testing.T) {
+	clock := &mutableClock{now: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)}
+	runtime := newTestRuntime(t, clock, &fakeAuthority{clock: clock}, &fakeGateway{}, &fakeBroker{})
+	declaration := testDeclaration(RoleModulePlanner)
+	declaration.Envelope.Intent = aop.IntentDefineModule
+	declaration.Envelope.ModuleSpec = nil
+	items := declaration.ContextManifest.Items[:0]
+	for _, item := range declaration.ContextManifest.Items {
+		if item.Kind != ContextModuleReference {
+			items = append(items, item)
+		}
+	}
+	declaration.ContextManifest.Items = items
+	declaration.ContextManifest.SHA256 = DigestContextManifest(declaration.ContextManifest)
+	if err := runtime.Declare(declaration); err != nil {
+		t.Fatalf("pre-ModuleSpec declaration rejected: %v", err)
+	}
+}
+
 func TestExpiredLeaseRejectsProviderResult(t *testing.T) {
 	clock := &mutableClock{now: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)}
 	authority := &fakeAuthority{clock: clock}
@@ -364,11 +383,15 @@ func startRun(t *testing.T, runtime *Runtime, declaration Declaration, lease Age
 
 func testDeclaration(role Role) Declaration {
 	bundle := testPromptBundle(role)
-	manifest := testManifest(role, []ContextItem{
+	items := []ContextItem{
 		testContextItem("goal", ContextGoalReference, "artifact://goal", TrustProjectApproved, "goal"),
 		testContextItem("plan", ContextPlanReference, "artifact://plan", TrustProjectApproved, "plan"),
 		testContextItem("module", ContextModuleReference, "artifact://module", TrustProjectApproved, "module"),
-	})
+	}
+	if role == RoleModulePlanner {
+		items = append(items, testContextItem("assignment", ContextTaskState, "aor://task/task_test", TrustGeneratedUnreviewed, "planned module assignment"))
+	}
+	manifest := testManifest(role, items)
 	tool := modelgateway.ToolDefinition{Name: "repo.read", Description: "read one repository file", Schema: json.RawMessage(`{"type":"object"}`)}
 	declaration := Declaration{
 		RunID: "run_test", TenantID: "tenant_test", ProjectID: "project_test", AgentInstanceID: "agent_test", Role: role,
