@@ -7,6 +7,17 @@ import (
 )
 
 func (ledger *PostgresBudgetLedger) FinalizeModelCall(ctx context.Context, finalization ModelCallFinalization) (Reservation, error) {
+	return ledger.finalizeModelCall(ctx, finalization, nil)
+}
+
+func (ledger *PostgresBudgetLedger) FinalizeModelCallWithReplay(ctx context.Context, finalization ModelCallFinalization, replay ModelReplay) (Reservation, error) {
+	if !ledger.ReplayEnabled() || validateModelReplay(finalization, replay) != nil {
+		return Reservation{}, ErrInvalidRequest
+	}
+	return ledger.finalizeModelCall(ctx, finalization, &replay)
+}
+
+func (ledger *PostgresBudgetLedger) finalizeModelCall(ctx context.Context, finalization ModelCallFinalization, replay *ModelReplay) (Reservation, error) {
 	if err := contextError(ctx); err != nil {
 		return Reservation{}, err
 	}
@@ -43,6 +54,11 @@ func (ledger *PostgresBudgetLedger) FinalizeModelCall(ctx context.Context, final
 		if !sameModelCall(existing, finalization.Call) {
 			return Reservation{}, ErrReservationConflict
 		}
+		if replay != nil {
+			if err := ledger.insertModelReplayTx(ctx, tx, finalization.Call.TenantID, finalization.Call.RequestID, *replay); err != nil {
+				return Reservation{}, err
+			}
+		}
 		if err := tx.Commit(); err != nil {
 			return Reservation{}, err
 		}
@@ -60,6 +76,11 @@ func (ledger *PostgresBudgetLedger) FinalizeModelCall(ctx context.Context, final
 		existing, found, err = loadModelCall(ctx, tx, finalization.Call.TenantID, finalization.Call.RequestID)
 		if err != nil || !found || !sameModelCall(existing, finalization.Call) {
 			return Reservation{}, ErrReservationConflict
+		}
+	}
+	if replay != nil {
+		if err := ledger.insertModelReplayTx(ctx, tx, finalization.Call.TenantID, finalization.Call.RequestID, *replay); err != nil {
+			return Reservation{}, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -229,3 +250,4 @@ WHERE tenant_id = $1::uuid AND request_id = $2`, tenantID, requestID).Scan(
 }
 
 var _ ModelCallFinalizer = (*PostgresBudgetLedger)(nil)
+var _ ModelCallReplayFinalizer = (*PostgresBudgetLedger)(nil)

@@ -107,12 +107,20 @@ type BudgetLedgerBackend interface {
 	RequireReconciliation(context.Context, string, string) (Reservation, error)
 }
 
+// BudgetReservationClaimer lets a gateway distinguish a newly-created
+// reservation from an idempotent lookup of an already-open reservation. Only
+// the process that creates the reservation may start an external model call.
+type BudgetReservationClaimer interface {
+	ClaimReservation(context.Context, string, string, string, string, int64) (Reservation, bool, error)
+}
+
 type BudgetLedger struct {
 	mu             sync.Mutex
 	accounts       map[string]BudgetAccount
 	reservations   map[string]Reservation
 	adjustments    map[string]memoryBudgetAdjustment
 	modelCalls     map[string]ModelCall
+	modelReplays   map[string]ModelReplay
 	clock          func() time.Time
 	reservationTTL time.Duration
 }
@@ -126,7 +134,7 @@ func NewBudgetLedger(clock func() time.Time) *BudgetLedger {
 	if clock == nil {
 		clock = time.Now
 	}
-	return &BudgetLedger{accounts: make(map[string]BudgetAccount), reservations: make(map[string]Reservation), adjustments: make(map[string]memoryBudgetAdjustment), modelCalls: make(map[string]ModelCall), clock: clock, reservationTTL: defaultReservationTTL}
+	return &BudgetLedger{accounts: make(map[string]BudgetAccount), reservations: make(map[string]Reservation), adjustments: make(map[string]memoryBudgetAdjustment), modelCalls: make(map[string]ModelCall), modelReplays: make(map[string]ModelReplay), clock: clock, reservationTTL: defaultReservationTTL}
 }
 
 func (l *BudgetLedger) CreateAccount(ctx context.Context, account BudgetAccount) error {
@@ -162,11 +170,20 @@ func (l *BudgetLedger) CreateAccount(ctx context.Context, account BudgetAccount)
 }
 
 func (l *BudgetLedger) Reserve(ctx context.Context, tenantID, accountID, reservationID, requestID string, amountMicros int64) (Reservation, error) {
+	reservation, _, err := l.reserve(ctx, tenantID, accountID, reservationID, requestID, amountMicros, false)
+	return reservation, err
+}
+
+func (l *BudgetLedger) ClaimReservation(ctx context.Context, tenantID, accountID, reservationID, requestID string, amountMicros int64) (Reservation, bool, error) {
+	return l.reserve(ctx, tenantID, accountID, reservationID, requestID, amountMicros, true)
+}
+
+func (l *BudgetLedger) reserve(ctx context.Context, tenantID, accountID, reservationID, requestID string, amountMicros int64, claim bool) (Reservation, bool, error) {
 	if err := contextError(ctx); err != nil {
-		return Reservation{}, err
+		return Reservation{}, false, err
 	}
 	if tenantID == "" || accountID == "" || reservationID == "" || requestID == "" || amountMicros < 0 {
-		return Reservation{}, ErrInvalidRequest
+		return Reservation{}, false, ErrInvalidRequest
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -175,23 +192,34 @@ func (l *BudgetLedger) Reserve(ctx context.Context, tenantID, accountID, reserva
 		if existing.State == ReservationOpen && !l.clock().UTC().Before(existing.ExpiresAt) {
 			existing.State = ReservationReconcile
 			l.reservations[reservationKey] = existing
-			return Reservation{}, ErrReconciliationRequired
+			return Reservation{}, false, ErrReconciliationRequired
 		}
 		if existing.AccountID == accountID && existing.RequestID == requestID && existing.ReservedMicros == amountMicros && existing.State == ReservationOpen {
-			return existing, nil
+			return existing, !claim, nil
 		}
 		if existing.State == ReservationReconcile {
-			return Reservation{}, ErrReconciliationRequired
+			return Reservation{}, false, ErrReconciliationRequired
 		}
-		return Reservation{}, ErrReservationConflict
+		return Reservation{}, false, ErrReservationConflict
+	}
+	if claim {
+		for _, existing := range l.reservations {
+			if existing.TenantID != tenantID || existing.RequestID != requestID {
+				continue
+			}
+			if existing.State == ReservationReconcile || existing.State == ReservationOpen && !l.clock().UTC().Before(existing.ExpiresAt) {
+				return Reservation{}, false, ErrReconciliationRequired
+			}
+			return Reservation{}, false, ErrRequestConflict
+		}
 	}
 	accountKey := budgetKey(tenantID, accountID)
 	account, exists := l.accounts[accountKey]
 	if !exists {
-		return Reservation{}, ErrBudgetExceeded
+		return Reservation{}, false, ErrBudgetExceeded
 	}
 	if !budgetPeriodOpen(l.clock().UTC(), account) || amountMicros > account.LimitMicros-account.ReservedMicros-account.SpentMicros {
-		return Reservation{}, ErrBudgetExceeded
+		return Reservation{}, false, ErrBudgetExceeded
 	}
 	account.ReservedMicros += amountMicros
 	account.Version++
@@ -199,7 +227,7 @@ func (l *BudgetLedger) Reserve(ctx context.Context, tenantID, accountID, reserva
 	createdAt := l.clock().UTC()
 	reservation := Reservation{ID: reservationID, TenantID: tenantID, AccountID: accountID, RequestID: requestID, ReservedMicros: amountMicros, State: ReservationOpen, CreatedAt: createdAt, ExpiresAt: createdAt.Add(l.reservationTTL)}
 	l.reservations[reservationKey] = reservation
-	return reservation, nil
+	return reservation, true, nil
 }
 
 func (l *BudgetLedger) Settle(ctx context.Context, tenantID, reservationID string, actualMicros int64) (Reservation, error) {
@@ -588,3 +616,5 @@ func contextError(ctx context.Context) error {
 	}
 	return ctx.Err()
 }
+
+var _ BudgetReservationClaimer = (*BudgetLedger)(nil)

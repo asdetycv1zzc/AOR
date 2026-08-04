@@ -99,6 +99,13 @@
       "file": "000014_project_initialization_selection.up.sql",
       "sha256": "sha256:25535a4d4f45dad164bf2bcb20d514dbfb66c1ce4a8635db94e7e72872cad0e0",
       "destructive": false
+    },
+    {
+      "version": 15,
+      "mode": "EXPAND",
+      "file": "000015_model_call_replays.up.sql",
+      "sha256": "sha256:f28ad09a2f6140e793e10e8e8a1a268dd90d57f73eb9374af19e2b8aa83dc936",
+      "destructive": false
     }
   ]
 }

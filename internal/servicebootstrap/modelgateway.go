@@ -46,15 +46,32 @@ func ModelGateway(config runtimeconfig.Config, clients *runtimeclient.Clients) (
 	if err != nil {
 		return nil, err
 	}
-	ledger, err := modelgateway.NewPostgresBudgetLedger(clients.Database(), time.Now, modelGatewayReservationTTL)
-	if err != nil {
-		return nil, err
-	}
-	gateway := modelgateway.NewGateway(ledger, time.Now)
-	allowed := make(map[string]map[string]struct{}, len(config.ModelGateway.Providers))
 	resolver := credentials.NewSecretResolver(os.Getenv("AOR_SECRET_ROOT"))
 	resolveContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	replayKey, err := resolver.Resolve(resolveContext, config.ModelGateway.ReplayKeyRef)
+	if err != nil {
+		return nil, runtimeclient.ErrDependencyUnavailable
+	}
+	ledger, ledgerErr := modelgateway.NewPostgresBudgetLedgerWithReplay(clients.Database(), time.Now, modelGatewayReservationTTL, modelgateway.ReplayStoreConfig{
+		KeyID:         config.ModelGateway.ReplayKeyID,
+		EncryptionKey: replayKey,
+		TTL:           time.Duration(config.ModelGateway.ReplayTTLHours) * time.Hour,
+	})
+	clearBytes(replayKey)
+	if ledgerErr != nil {
+		return nil, ledgerErr
+	}
+	allowed := make(map[string]map[string]struct{}, len(config.ModelGateway.Providers))
+	var authorizer *modelGatewayAuthorizer
+	gateway := modelgateway.NewGatewayWithConfig(ledger, time.Now, modelgateway.GatewayConfig{
+		ProviderPolicies: map[string]modelgateway.ProviderPolicy{
+			"default": configuredProviderPolicy(config.ModelGateway.Providers),
+		},
+		ProviderEligibility: func(ctx context.Context, input modelgateway.ProviderEligibilityInput) error {
+			return authorizeProviderCandidate(ctx, authorizer, input)
+		},
+	})
 	for _, provider := range config.ModelGateway.Providers {
 		credential, resolveErr := resolver.Resolve(resolveContext, provider.APIKeyRef)
 		if resolveErr != nil {
@@ -85,7 +102,7 @@ func ModelGateway(config runtimeconfig.Config, clients *runtimeclient.Clients) (
 			}
 		}
 	}
-	authorizer := &modelGatewayAuthorizer{
+	authorizer = &modelGatewayAuthorizer{
 		db: clients.Database(), opa: opaClient, allowed: allowed, clock: time.Now,
 		allowHuman:        config.Environment == runtimeconfig.EnvironmentDevelopment || config.Environment == runtimeconfig.EnvironmentTest,
 		deploymentProfile: deploymentProfileForEnvironment(config.Environment),
@@ -99,6 +116,36 @@ func ModelGateway(config runtimeconfig.Config, clients *runtimeclient.Clients) (
 		return nil, err
 	}
 	return protected, nil
+}
+
+func configuredProviderPolicy(providers []runtimeconfig.ProviderConfig) modelgateway.ProviderPolicy {
+	candidates := make([]modelgateway.ProviderCandidate, 0)
+	for _, provider := range providers {
+		for _, model := range provider.Models {
+			candidates = append(candidates, modelgateway.ProviderCandidate{
+				Provider: provider.ID, Model: model, CapabilityRank: 100,
+			})
+		}
+	}
+	return modelgateway.ProviderPolicy{Candidates: candidates, MinimumCapabilityRank: 100}
+}
+
+func authorizeProviderCandidate(ctx context.Context, authorizer *modelGatewayAuthorizer, input modelgateway.ProviderEligibilityInput) error {
+	if authorizer == nil {
+		return modelgateway.ErrAuthorizationDenied
+	}
+	authorization, err := authorizer.AuthorizeModel(ctx, modelgateway.ModelAuthorizationRequest{
+		Operation: input.Operation, Provider: input.Candidate.Provider, Model: input.Candidate.Model,
+		RequestID: input.Request.RequestID, AccountID: input.AccountID, ReservationID: input.ReservationID,
+		ProjectID: input.Request.ProjectID, TaskID: input.Request.TaskID,
+		AgentInstanceID: input.Request.AgentInstanceID, Role: input.Request.Role,
+	})
+	if err != nil || authorization.TenantID != input.Request.TenantID || authorization.ProjectID != input.Request.ProjectID ||
+		authorization.TaskID != input.Request.TaskID || authorization.AgentInstanceID != input.Request.AgentInstanceID ||
+		authorization.Role != input.Request.Role || authorization.Provider != input.Candidate.Provider || authorization.AccountID != input.AccountID {
+		return modelgateway.ErrAuthorizationDenied
+	}
+	return nil
 }
 
 func newConfiguredAdapter(provider runtimeconfig.ProviderConfig, credential []byte) (modelgateway.ModelAdapter, error) {
@@ -225,10 +272,12 @@ func (authorizer *modelGatewayAuthorizer) AuthorizeModel(ctx context.Context, re
 	if err != nil {
 		return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
 	}
-	if request.Operation != "capabilities" && (request.AccountID == "" || !account.Available) {
+	reservationAvailable := account.ID == request.AccountID && modelAccountScopeMatches(account.ScopeType, account.ScopeID, projectID, request.TaskID) && reservation.AccountID == request.AccountID && reservation.RequestID == request.RequestID && reservation.State == string(modelgateway.ReservationOpen)
+	budgetAvailable := account.Available || reservationAvailable
+	if request.Operation != "capabilities" && (request.AccountID == "" || !budgetAvailable) {
 		return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
 	}
-	if request.Operation == "cancel" && (request.ProviderRequestID == "" || reservation.AccountID != request.AccountID || reservation.RequestID != request.RequestID) {
+	if request.Operation == "cancel" && (request.ProviderRequestID == "" || reservation.AccountID != request.AccountID || reservation.RequestID != request.RequestID || reservation.State != string(modelgateway.ReservationOpen)) {
 		return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
 	}
 	if request.Operation == "cancel" && request.RequestID == "" {
@@ -249,7 +298,7 @@ func (authorizer *modelGatewayAuthorizer) AuthorizeModel(ctx context.Context, re
 		Action:          action,
 		Resource:        authz.Resource{Type: "model", ID: request.Provider + "/" + request.Model, Attributes: map[string]string{"operation": request.Operation, "provider": request.Provider, "model": request.Model}},
 		ParameterDigest: digest,
-		Budget:          authz.BudgetScope{AccountID: request.AccountID, Available: account.Available},
+		Budget:          authz.BudgetScope{AccountID: request.AccountID, Available: budgetAvailable},
 	}
 	if task.ID != "" {
 		input.Task = task
@@ -292,6 +341,7 @@ type modelAccountProjection struct {
 type modelReservationProjection struct {
 	AccountID string
 	RequestID string
+	State     string
 }
 
 func (authorizer *modelGatewayAuthorizer) loadScope(ctx context.Context, tenantID, projectID, taskID, accountID, reservationID, requestID string) (modelProjectProjection, authz.TaskScope, modelAccountProjection, modelReservationProjection, error) {
@@ -336,7 +386,7 @@ func (authorizer *modelGatewayAuthorizer) loadScope(ctx context.Context, tenantI
 	}
 	var reservation modelReservationProjection
 	if reservationID != "" {
-		if err := tx.QueryRowContext(ctx, `SELECT account_id, request_id FROM budget_reservations WHERE tenant_id = $1::uuid AND id = $2`, tenantID, reservationID).Scan(&reservation.AccountID, &reservation.RequestID); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT account_id, request_id, state FROM budget_reservations WHERE tenant_id = $1::uuid AND id = $2`, tenantID, reservationID).Scan(&reservation.AccountID, &reservation.RequestID, &reservation.State); err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return modelProjectProjection{}, authz.TaskScope{}, modelAccountProjection{}, modelReservationProjection{}, err
 		}
 	}

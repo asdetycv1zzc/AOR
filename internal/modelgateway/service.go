@@ -381,6 +381,8 @@ func stableError(err error) httpError {
 		return httpError{Status: http.StatusBadRequest, Code: "AOR_INVALID_ARGUMENT", Message: "invalid model request"}
 	case errors.Is(err, ErrBudgetExceeded):
 		return httpError{Status: http.StatusConflict, Code: "AOR_BUDGET_EXCEEDED", Message: "model budget exceeded"}
+	case errors.Is(err, ErrRequestConflict), errors.Is(err, ErrReplayUnavailable):
+		return httpError{Status: http.StatusConflict, Code: "AOR_IDEMPOTENCY_CONFLICT", Message: "model request id conflicts with a previous request"}
 	case errors.Is(err, ErrReservationConflict), errors.Is(err, ErrReservationNotFound), errors.Is(err, ErrReconciliationRequired):
 		return httpError{Status: http.StatusConflict, Code: "AOR_BUDGET_RESERVATION_FAILED", Message: "model budget reservation failed"}
 	case errors.Is(err, ErrProviderNotAllowed):

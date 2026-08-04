@@ -68,6 +68,43 @@ func TestModelGatewayRequiresTwoProviderFamilies(t *testing.T) {
 	}
 }
 
+func TestModelGatewayValidatesReplayEncryptionConfiguration(t *testing.T) {
+	base := map[string]string{
+		"AOR_DATABASE_PASSWORD_REF": "secret://postgres/password",
+		"AOR_MODEL_PROVIDERS_JSON": `[
+			{"id":"primary","provider":"openai","baseUrl":"https://api.openai.example/v1","apiKeyRef":"secret://model/openai","models":["model-a"]},
+			{"id":"audit","provider":"anthropic","baseUrl":"https://api.anthropic.example/v1","apiKeyRef":"secret://model/anthropic","models":["model-b"]}
+		]`,
+	}
+	config, err := Load("aor-model-gateway", environment(base))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.ModelGateway.ReplayKeyRef != "secret://model/replay-key" || config.ModelGateway.ReplayKeyID != "model-replay-v1" || config.ModelGateway.ReplayTTLHours != 24 {
+		t.Fatalf("replay defaults = %#v", config.ModelGateway)
+	}
+
+	for _, invalid := range []struct {
+		key   string
+		value string
+	}{
+		{key: "AOR_MODEL_REPLAY_KEY_REF", value: "plaintext-key"},
+		{key: "AOR_MODEL_REPLAY_KEY_REF", value: "secret://model/../key"},
+		{key: "AOR_MODEL_REPLAY_KEY_ID", value: "key\nversion"},
+		{key: "AOR_MODEL_REPLAY_TTL_HOURS", value: "0"},
+		{key: "AOR_MODEL_REPLAY_TTL_HOURS", value: "721"},
+	} {
+		values := make(map[string]string, len(base)+1)
+		for key, value := range base {
+			values[key] = value
+		}
+		values[invalid.key] = invalid.value
+		if _, err := Load("aor-model-gateway", environment(values)); !errors.Is(err, ErrInvalidConfiguration) {
+			t.Fatalf("%s=%q error = %v", invalid.key, invalid.value, err)
+		}
+	}
+}
+
 func TestLoadRejectsSecretValuesAndUnsafeReferences(t *testing.T) {
 	for _, reference := range []string{"plain-password", "secret:///absolute", "secret://postgres/../password", "secret://postgres/password?version=1"} {
 		_, err := Load("aor-server", environment(map[string]string{

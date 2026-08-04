@@ -17,7 +17,8 @@ func TestDeploymentProfilesFailClosed(t *testing.T) {
 	composeText := string(compose)
 	for _, value := range []string{
 		"AOR_DATABASE_USER: aor_app", "AOR_DATABASE_PASSWORD_REF: secret://postgres_app_password",
-		"postgres_app_password", "000003_runtime_app_role.up.sql", "000004_model_authorizer_reads.up.sql", "model_provider_deepseek_key",
+		"postgres_app_password", "000003_runtime_app_role.up.sql", "000004_model_authorizer_reads.up.sql", "000013_workflow_activity_results.up.sql", "000014_project_initialization_selection.up.sql", "000015_model_call_replays.up.sql", "model_provider_deepseek_key",
+		"AOR_MODEL_REPLAY_KEY_REF: secret://model_replay_key", "model_replay_key",
 		"provider\":\"deepseek", "ghcr.io/dexidp/dex:v2.45.1@sha256:",
 		"AOR_OIDC_JWKS_URL: http://identity:5556/dex/keys", "AOR_OIDC_DEFAULT_ROLE: USER",
 		"AOR_OPA_URL: http://opa:8181",

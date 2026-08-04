@@ -177,6 +177,8 @@ func TestHTTPServiceMapsStableErrorsAndBoundsBodies(t *testing.T) {
 		code string
 	}{
 		{err: ErrBudgetExceeded, code: "AOR_BUDGET_EXCEEDED"},
+		{err: ErrRequestConflict, code: "AOR_IDEMPOTENCY_CONFLICT"},
+		{err: ErrReplayUnavailable, code: "AOR_IDEMPOTENCY_CONFLICT"},
 		{err: ErrProviderNotAllowed, code: "AOR_MODEL_NOT_ALLOWED"},
 		{err: &ProviderFailure{OutcomeKnown: false, Retryable: true}, code: "AOR_PROVIDER_RESULT_UNKNOWN"},
 	} {

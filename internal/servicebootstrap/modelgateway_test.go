@@ -46,6 +46,26 @@ func TestNewConfiguredAdapterCarriesProviderCapabilities(t *testing.T) {
 	}
 }
 
+func TestConfiguredProviderPolicyUsesExplicitRoutesWithoutDowngrade(t *testing.T) {
+	policy := configuredProviderPolicy([]runtimeconfig.ProviderConfig{
+		{ID: "openai-primary", Models: []string{"model-a", "model-b"}},
+		{ID: "deepseek-audit", Models: []string{"model-c"}},
+	})
+	if policy.AllowDowngrade || policy.MinimumCapabilityRank != 100 || len(policy.Candidates) != 3 {
+		t.Fatalf("policy = %#v", policy)
+	}
+	want := []struct{ provider, model string }{
+		{provider: "openai-primary", model: "model-a"},
+		{provider: "openai-primary", model: "model-b"},
+		{provider: "deepseek-audit", model: "model-c"},
+	}
+	for index, candidate := range policy.Candidates {
+		if candidate.Provider != want[index].provider || candidate.Model != want[index].model || candidate.CapabilityRank != 100 {
+			t.Fatalf("candidate %d = %#v", index, candidate)
+		}
+	}
+}
+
 func TestModelGatewayFactoryFailsClosedWithoutRuntimeClients(t *testing.T) {
 	_, err := ModelGateway(runtimeconfig.Config{ModelGateway: runtimeconfig.ModelGatewayConfig{Providers: []runtimeconfig.ProviderConfig{{ID: "one"}, {ID: "two"}}}}, nil)
 	if !errors.Is(err, runtimeclient.ErrInvalidClientConfig) {

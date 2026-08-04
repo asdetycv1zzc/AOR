@@ -1,9 +1,11 @@
 package modelgateway
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -62,6 +64,10 @@ type ModelCallFinalization struct {
 
 type ModelCallFinalizer interface {
 	FinalizeModelCall(context.Context, ModelCallFinalization) (Reservation, error)
+}
+
+type ModelCallReplayFinalizer interface {
+	FinalizeModelCallWithReplay(context.Context, ModelCallFinalization, ModelReplay) (Reservation, error)
 }
 
 func (finalization ModelCallFinalization) validate() error {
@@ -139,6 +145,17 @@ func equalOptionalInt64(left, right *int64) bool {
 }
 
 func (ledger *BudgetLedger) FinalizeModelCall(ctx context.Context, finalization ModelCallFinalization) (Reservation, error) {
+	return ledger.finalizeModelCall(ctx, finalization, nil)
+}
+
+func (ledger *BudgetLedger) FinalizeModelCallWithReplay(ctx context.Context, finalization ModelCallFinalization, replay ModelReplay) (Reservation, error) {
+	if validateModelReplay(finalization, replay) != nil {
+		return Reservation{}, ErrInvalidRequest
+	}
+	return ledger.finalizeModelCall(ctx, finalization, &replay)
+}
+
+func (ledger *BudgetLedger) finalizeModelCall(ctx context.Context, finalization ModelCallFinalization, replay *ModelReplay) (Reservation, error) {
 	if err := contextError(ctx); err != nil {
 		return Reservation{}, err
 	}
@@ -162,6 +179,11 @@ func (ledger *BudgetLedger) FinalizeModelCall(ctx context.Context, finalization 
 		reservation, found := ledger.reservations[budgetKey(finalization.Call.TenantID, finalization.ReservationID)]
 		if !found {
 			return Reservation{}, ErrReservationNotFound
+		}
+		if replay != nil {
+			if err := ledger.storeModelReplayLocked(finalization.Call.TenantID, finalization.Call.RequestID, *replay); err != nil {
+				return Reservation{}, err
+			}
 		}
 		return reservation, nil
 	}
@@ -218,7 +240,33 @@ func (ledger *BudgetLedger) FinalizeModelCall(ctx context.Context, finalization 
 		}
 	}
 	ledger.modelCalls[callKey] = finalization.Call
+	if replay != nil {
+		if err := ledger.storeModelReplayLocked(finalization.Call.TenantID, finalization.Call.RequestID, *replay); err != nil {
+			return Reservation{}, err
+		}
+	}
 	return reservation, nil
+}
+
+func validateModelReplay(finalization ModelCallFinalization, replay ModelReplay) error {
+	call := finalization.Call
+	if finalization.Disposition != ReservationDispositionSettle || call.Status != ModelCallSucceeded || replay.InputSHA256 != call.InputSHA256 || replay.Response.RequestID != call.RequestID || len(replay.Response.Content) == 0 || len(replay.Response.Content) > MaximumResponseBytes || !json.Valid(replay.Response.Content) || containsCredentialLike(string(replay.Response.Content)) || call.OutputSHA256 != digestBytes(replay.Response.Content) {
+		return ErrInvalidRequest
+	}
+	return nil
+}
+
+func (ledger *BudgetLedger) storeModelReplayLocked(tenantID, requestID string, replay ModelReplay) error {
+	key := budgetKey(tenantID, requestID)
+	if existing, found := ledger.modelReplays[key]; found {
+		if existing.InputSHA256 != replay.InputSHA256 || !sameNormalizedResponse(existing.Response, replay.Response) {
+			return ErrRequestConflict
+		}
+		return nil
+	}
+	replay.Response = cloneNormalizedResponse(replay.Response)
+	ledger.modelReplays[key] = replay
+	return nil
 }
 
 func (ledger *BudgetLedger) ModelCall(tenantID, requestID string) (ModelCall, bool) {
@@ -231,4 +279,68 @@ func (ledger *BudgetLedger) ModelCall(tenantID, requestID string) (ModelCall, bo
 	return call, found
 }
 
+func (ledger *BudgetLedger) LookupModelCall(ctx context.Context, tenantID, requestID string) (ModelCall, bool, error) {
+	if err := contextError(ctx); err != nil {
+		return ModelCall{}, false, err
+	}
+	call, found := ledger.ModelCall(tenantID, requestID)
+	return call, found, nil
+}
+
+func (*BudgetLedger) ReplayEnabled() bool { return true }
+
+func (ledger *BudgetLedger) LoadModelReplay(ctx context.Context, tenantID, requestID string) (ModelReplay, bool, error) {
+	if err := contextError(ctx); err != nil {
+		return ModelReplay{}, false, err
+	}
+	if ledger == nil || tenantID == "" || requestID == "" {
+		return ModelReplay{}, false, ErrInvalidRequest
+	}
+	ledger.mu.Lock()
+	defer ledger.mu.Unlock()
+	replay, found := ledger.modelReplays[budgetKey(tenantID, requestID)]
+	if !found {
+		return ModelReplay{}, false, nil
+	}
+	replay.Response = cloneNormalizedResponse(replay.Response)
+	return replay, true, nil
+}
+
+func (ledger *BudgetLedger) StoreModelReplay(ctx context.Context, tenantID, requestID string, replay ModelReplay) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	if ledger == nil || tenantID == "" || requestID == "" || !validModelDigest(replay.InputSHA256) || replay.Response.RequestID != requestID || len(replay.Response.Content) == 0 || len(replay.Response.Content) > MaximumResponseBytes || !json.Valid(replay.Response.Content) {
+		return ErrInvalidRequest
+	}
+	ledger.mu.Lock()
+	defer ledger.mu.Unlock()
+	key := budgetKey(tenantID, requestID)
+	if existing, found := ledger.modelReplays[key]; found {
+		if existing.InputSHA256 != replay.InputSHA256 || !sameNormalizedResponse(existing.Response, replay.Response) {
+			return ErrRequestConflict
+		}
+		return nil
+	}
+	call, found := ledger.modelCalls[key]
+	if !found || call.Status != ModelCallSucceeded || call.InputSHA256 != replay.InputSHA256 || call.OutputSHA256 != digestBytes(replay.Response.Content) {
+		return ErrRequestConflict
+	}
+	return ledger.storeModelReplayLocked(tenantID, requestID, replay)
+}
+
+func cloneNormalizedResponse(response NormalizedResponse) NormalizedResponse {
+	response.Content = append(json.RawMessage(nil), response.Content...)
+	return response
+}
+
+func sameNormalizedResponse(left, right NormalizedResponse) bool {
+	leftJSON, leftErr := json.Marshal(left)
+	rightJSON, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftJSON, rightJSON)
+}
+
 var _ ModelCallFinalizer = (*BudgetLedger)(nil)
+var _ ModelCallReplayFinalizer = (*BudgetLedger)(nil)
+var _ ModelReplayStore = (*BudgetLedger)(nil)
+var _ ModelCallLookup = (*BudgetLedger)(nil)

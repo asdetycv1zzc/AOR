@@ -78,6 +78,71 @@ type ResponseStream interface {
 	Close() error
 }
 
+// UsageAwareStream is implemented by adapters that can report authoritative
+// provider usage after a stream reaches its terminal event. A stream that
+// cannot provide this information must remain in RECONCILE state; callers must
+// never infer that an interrupted stream was free.
+type UsageAwareStream interface {
+	ResponseStream
+	FinalUsage() (Usage, bool)
+}
+
+// ProviderCandidate describes one explicitly approved route in a provider
+// policy. Model is optional and defaults to the logical model in the request.
+// CapabilityRank is an organization-defined quality floor; larger values are
+// stronger and a lower-ranked route is a downgrade.
+type ProviderCandidate struct {
+	Provider                   string   `json:"provider"`
+	Model                      string   `json:"model,omitempty"`
+	CapabilityRank             int      `json:"capabilityRank"`
+	AllowedDataClassifications []string `json:"allowedDataClassifications,omitempty"`
+}
+
+type ProviderPolicy struct {
+	Candidates            []ProviderCandidate `json:"candidates"`
+	AllowDowngrade        bool                `json:"allowDowngrade"`
+	MinimumCapabilityRank int                 `json:"minimumCapabilityRank"`
+}
+
+// ProviderEligibility is called for every candidate, including a fallback.
+// Implementations should re-evaluate tenant policy, data classification and
+// residency instead of assuming that the primary provider's authorization
+// applies to a fallback.
+type ProviderEligibilityInput struct {
+	Operation     string
+	Request       NormalizedRequest
+	Candidate     ProviderCandidate
+	Capabilities  ModelCapabilities
+	AccountID     string
+	ReservationID string
+}
+
+type ProviderEligibility func(context.Context, ProviderEligibilityInput) error
+
+type ModelReplay struct {
+	InputSHA256 string
+	Response    NormalizedResponse
+}
+
+// ModelReplayStore is an optional durable response store. Implementations must
+// make Load and Store idempotent by (tenantID, requestID), and must reject a
+// different input digest for an existing request ID.
+type ModelReplayStore interface {
+	LoadModelReplay(context.Context, string, string) (ModelReplay, bool, error)
+	StoreModelReplay(context.Context, string, string, ModelReplay) error
+}
+
+type EnabledModelReplayStore interface {
+	ModelReplayStore
+	ReplayEnabled() bool
+}
+
+// ModelCallLookup lets the gateway fail closed after a process restart when a
+// request was durably finalized but its response payload was not retained.
+type ModelCallLookup interface {
+	LookupModelCall(context.Context, string, string) (ModelCall, bool, error)
+}
+
 type ModelAdapter interface {
 	Capabilities(ctx context.Context, model string) (ModelCapabilities, error)
 	CountTokens(ctx context.Context, req NormalizedRequest) (TokenEstimate, error)

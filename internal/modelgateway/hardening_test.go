@@ -1,0 +1,518 @@
+package modelgateway
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"sync"
+	"testing"
+	"time"
+)
+
+func TestGatewayDeduplicatesConcurrentAndRestartedRequestIDs(t *testing.T) {
+	ledger := NewBudgetLedger(time.Now)
+	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "account", TenantID: "tenant", LimitMicros: 10_000}); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &hardeningAdapter{response: NormalizedResponse{Content: json.RawMessage(`{"ok":true}`), Usage: Usage{InputTokens: 2, OutputTokens: 1, CostMicros: 3}}}
+	gateway := NewGateway(ledger, time.Now)
+	if err := gateway.Register("primary", "model", adapter, Pricing{InputMicrosPerToken: 1, OutputMicrosPerToken: 1}); err != nil {
+		t.Fatal(err)
+	}
+	request := hardeningRequest("deduplicated")
+	options := GenerateOptions{Provider: "primary", AccountID: "account", ReservationID: "reservation", MaxAttempts: 1}
+
+	const callers = 32
+	var wait sync.WaitGroup
+	errorsSeen := make(chan error, callers)
+	for index := 0; index < callers; index++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			response, err := gateway.Generate(context.Background(), request, options)
+			if err != nil {
+				errorsSeen <- err
+				return
+			}
+			if response.RequestID != request.RequestID || string(response.Content) != `{"ok":true}` {
+				errorsSeen <- errors.New("unexpected replay response")
+			}
+		}()
+	}
+	wait.Wait()
+	close(errorsSeen)
+	for err := range errorsSeen {
+		t.Fatal(err)
+	}
+	if adapter.Calls() != 1 {
+		t.Fatalf("provider calls = %d", adapter.Calls())
+	}
+
+	restarted := NewGateway(ledger, time.Now)
+	if err := restarted.Register("primary", "model", adapter, Pricing{InputMicrosPerToken: 1, OutputMicrosPerToken: 1}); err != nil {
+		t.Fatal(err)
+	}
+	response, err := restarted.Generate(context.Background(), request, options)
+	if err != nil || response.RequestID != request.RequestID || adapter.Calls() != 1 {
+		t.Fatalf("restart replay response=%#v calls=%d error=%v", response, adapter.Calls(), err)
+	}
+	account, _ := ledger.Account("tenant", "account")
+	if account.SpentMicros != 3 || account.ReservedMicros != 0 {
+		t.Fatalf("account = %#v", account)
+	}
+}
+
+func TestGatewayClaimsExternalCallAcrossConcurrentInstances(t *testing.T) {
+	ledger := NewBudgetLedger(time.Now)
+	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "account", TenantID: "tenant", LimitMicros: 10_000}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "other-account", TenantID: "tenant", LimitMicros: 10_000}); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &hardeningAdapter{
+		response: NormalizedResponse{Content: json.RawMessage(`{"ok":true}`), Usage: Usage{CostMicros: 3}},
+		entered:  make(chan struct{}),
+		proceed:  make(chan struct{}),
+	}
+	gateways := []*Gateway{NewGateway(ledger, time.Now), NewGateway(ledger, time.Now)}
+	for _, gateway := range gateways {
+		if err := gateway.Register("primary", "model", adapter, Pricing{InputMicrosPerToken: 1, OutputMicrosPerToken: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := hardeningRequest("concurrent-instances")
+	options := GenerateOptions{Provider: "primary", AccountID: "account", ReservationID: "concurrent-reservation", MaxAttempts: 1}
+	firstResult := make(chan error, 1)
+	go func() {
+		_, err := gateways[0].Generate(context.Background(), request, options)
+		firstResult <- err
+	}()
+	<-adapter.entered
+	if _, err := gateways[1].Generate(context.Background(), request, options); !errors.Is(err, ErrReconciliationRequired) {
+		t.Fatalf("duplicate instance error = %v", err)
+	}
+	otherOptions := GenerateOptions{Provider: "primary", AccountID: "other-account", ReservationID: "other-concurrent-reservation", MaxAttempts: 1}
+	if _, err := gateways[1].Generate(context.Background(), request, otherOptions); !errors.Is(err, ErrRequestConflict) {
+		t.Fatalf("rebound request error = %v", err)
+	}
+	close(adapter.proceed)
+	if err := <-firstResult; err != nil {
+		t.Fatal(err)
+	}
+	if adapter.Calls() != 1 {
+		t.Fatalf("provider calls = %d", adapter.Calls())
+	}
+}
+
+func TestGatewayRejectsChangedBodyForRequestID(t *testing.T) {
+	gateway, adapter, _ := newHardeningGateway(t, GatewayConfig{})
+	request := hardeningRequest("conflict")
+	options := GenerateOptions{Provider: "primary", AccountID: "account", ReservationID: "reservation", MaxAttempts: 1}
+	if _, err := gateway.Generate(context.Background(), request, options); err != nil {
+		t.Fatal(err)
+	}
+	request.Messages[0].Content = "different"
+	if _, err := gateway.Generate(context.Background(), request, options); !errors.Is(err, ErrRequestConflict) {
+		t.Fatalf("conflict error = %v", err)
+	}
+	if adapter.Calls() != 1 {
+		t.Fatalf("provider calls = %d", adapter.Calls())
+	}
+}
+
+func TestGatewayRetriesOnlyKnownRetryableProviderFailuresWithJitter(t *testing.T) {
+	var delays []time.Duration
+	config := GatewayConfig{
+		InitialProviderBackoff: time.Second,
+		MaximumProviderBackoff: 4 * time.Second,
+		BackoffJitterRatio:     0.25,
+		Sleep: func(_ context.Context, delay time.Duration) error {
+			delays = append(delays, delay)
+			return nil
+		},
+	}
+	gateway, adapter, _ := newHardeningGateway(t, config)
+	adapter.failures = []error{
+		&ProviderFailure{Cause: errors.New("rate limited"), Retryable: true, OutcomeKnown: true},
+		&ProviderFailure{Cause: errors.New("unavailable"), Retryable: true, OutcomeKnown: true},
+	}
+	request := hardeningRequest("retry")
+	response, err := gateway.Generate(context.Background(), request, GenerateOptions{Provider: "primary", AccountID: "account", ReservationID: "retry-reservation", MaxAttempts: 3})
+	if err != nil || string(response.Content) != `{"ok":true}` {
+		t.Fatalf("response=%#v error=%v", response, err)
+	}
+	if adapter.Calls() != 3 || len(delays) != 2 {
+		t.Fatalf("calls=%d delays=%v", adapter.Calls(), delays)
+	}
+	if delays[0] < 750*time.Millisecond || delays[0] > 1250*time.Millisecond || delays[1] < 1500*time.Millisecond || delays[1] > 2500*time.Millisecond || delays[0] == time.Second && delays[1] == 2*time.Second {
+		t.Fatalf("delays do not contain bounded jitter: %v", delays)
+	}
+}
+
+func TestGatewayReleasesReservationWhenGenerateRetryWaitIsCanceled(t *testing.T) {
+	gateway, adapter, ledger := newHardeningGateway(t, GatewayConfig{
+		ProviderPolicies: map[string]ProviderPolicy{"retry": {Candidates: []ProviderCandidate{{Provider: "primary", Model: "model", CapabilityRank: 100}}}},
+		Sleep: func(context.Context, time.Duration) error {
+			return context.Canceled
+		},
+	})
+	adapter.failures = []error{&ProviderFailure{Cause: errors.New("rate limited"), Retryable: true, OutcomeKnown: true}}
+	request := hardeningRequest("generate-canceled-wait")
+	request.ProviderPolicy = "retry"
+
+	if _, err := gateway.Generate(context.Background(), request, GenerateOptions{Provider: "primary", AccountID: "account", ReservationID: "generate-canceled-reservation", MaxAttempts: 2}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("generate error = %v", err)
+	}
+	reservation, found := ledger.Reservation("tenant", "generate-canceled-reservation")
+	if !found || reservation.State != ReservationReleased {
+		t.Fatalf("reservation=%#v found=%t", reservation, found)
+	}
+	call, found := ledger.ModelCall("tenant", "generate-canceled-wait")
+	if !found || call.Status != ModelCallFailedProvider {
+		t.Fatalf("call=%#v found=%t", call, found)
+	}
+}
+
+func TestGatewayFallbackRechecksPolicyAndBlocksUnapprovedDowngrade(t *testing.T) {
+	ledger := NewBudgetLedger(time.Now)
+	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "account", TenantID: "tenant", LimitMicros: 100_000}); err != nil {
+		t.Fatal(err)
+	}
+	primary := &hardeningAdapter{failures: []error{&ProviderFailure{Cause: errors.New("primary unavailable"), Retryable: true, OutcomeKnown: true}}}
+	fallback := &hardeningAdapter{response: NormalizedResponse{Content: json.RawMessage(`{"ok":true}`), Usage: Usage{CostMicros: 1}}}
+	var mu sync.Mutex
+	evaluations := map[string]int{}
+	config := GatewayConfig{
+		ProviderPolicies: map[string]ProviderPolicy{"resilient": {
+			Candidates: []ProviderCandidate{
+				{Provider: "primary", Model: "model", CapabilityRank: 100, AllowedDataClassifications: []string{"INTERNAL"}},
+				{Provider: "fallback", Model: "model", CapabilityRank: 100, AllowedDataClassifications: []string{"INTERNAL"}},
+			},
+		}},
+		ProviderEligibility: func(_ context.Context, input ProviderEligibilityInput) error {
+			mu.Lock()
+			evaluations[input.Candidate.Provider]++
+			mu.Unlock()
+			return nil
+		},
+	}
+	gateway := NewGatewayWithConfig(ledger, time.Now, config)
+	for provider, adapter := range map[string]*hardeningAdapter{"primary": primary, "fallback": fallback} {
+		if err := gateway.Register(provider, "model", adapter, Pricing{InputMicrosPerToken: 1, OutputMicrosPerToken: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := hardeningRequest("fallback")
+	request.ProviderPolicy = "resilient"
+	response, err := gateway.Generate(context.Background(), request, GenerateOptions{Provider: "primary", AccountID: "account", ReservationID: "fallback-reservation", MaxAttempts: 1})
+	if err != nil || string(response.Content) != `{"ok":true}` || primary.Calls() != 1 || fallback.Calls() != 1 {
+		t.Fatalf("response=%#v primary=%d fallback=%d error=%v", response, primary.Calls(), fallback.Calls(), err)
+	}
+	mu.Lock()
+	fallbackEvaluations := evaluations["fallback"]
+	mu.Unlock()
+	if fallbackEvaluations < 2 {
+		t.Fatalf("fallback policy evaluations = %d", fallbackEvaluations)
+	}
+	unlisted := &hardeningAdapter{response: NormalizedResponse{Content: json.RawMessage(`{"ok":true}`)}}
+	if err := gateway.Register("unlisted", "model", unlisted, Pricing{}); err != nil {
+		t.Fatal(err)
+	}
+	unlistedRequest := hardeningRequest("unlisted-provider")
+	unlistedRequest.ProviderPolicy = "resilient"
+	if _, err := gateway.Generate(context.Background(), unlistedRequest, GenerateOptions{Provider: "unlisted", AccountID: "account", ReservationID: "unlisted-reservation", MaxAttempts: 1}); !errors.Is(err, ErrProviderNotAllowed) {
+		t.Fatalf("unlisted provider error = %v", err)
+	}
+	if unlisted.Calls() != 0 {
+		t.Fatalf("unlisted provider calls = %d", unlisted.Calls())
+	}
+
+	blockedLedger := NewBudgetLedger(time.Now)
+	if err := blockedLedger.CreateAccount(context.Background(), BudgetAccount{ID: "account", TenantID: "tenant", LimitMicros: 100_000}); err != nil {
+		t.Fatal(err)
+	}
+	blockedFallback := &hardeningAdapter{response: NormalizedResponse{Content: json.RawMessage(`{"ok":true}`), Usage: Usage{CostMicros: 1}}}
+	blocked := NewGatewayWithConfig(blockedLedger, time.Now, GatewayConfig{ProviderPolicies: map[string]ProviderPolicy{"strict": {
+		Candidates: []ProviderCandidate{{Provider: "primary", Model: "model", CapabilityRank: 100}, {Provider: "fallback", Model: "model", CapabilityRank: 50}},
+	}}})
+	blockedPrimary := &hardeningAdapter{failures: []error{&ProviderFailure{Cause: errors.New("primary unavailable"), Retryable: true, OutcomeKnown: true}}}
+	if err := blocked.Register("primary", "model", blockedPrimary, Pricing{InputMicrosPerToken: 1, OutputMicrosPerToken: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := blocked.Register("fallback", "model", blockedFallback, Pricing{InputMicrosPerToken: 1, OutputMicrosPerToken: 1}); err != nil {
+		t.Fatal(err)
+	}
+	blockedRequest := hardeningRequest("blocked-downgrade")
+	blockedRequest.ProviderPolicy = "strict"
+	if _, err := blocked.Generate(context.Background(), blockedRequest, GenerateOptions{Provider: "primary", AccountID: "account", ReservationID: "blocked-reservation", MaxAttempts: 1}); err == nil {
+		t.Fatal("unapproved downgrade succeeded")
+	}
+	if blockedFallback.Calls() != 0 {
+		t.Fatalf("downgraded provider calls = %d", blockedFallback.Calls())
+	}
+}
+
+func TestGatewayDoesNotFallbackAfterKnownNonRetryableFailure(t *testing.T) {
+	ledger := NewBudgetLedger(time.Now)
+	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "account", TenantID: "tenant", LimitMicros: 10_000}); err != nil {
+		t.Fatal(err)
+	}
+	primary := &hardeningAdapter{failures: []error{&ProviderFailure{Cause: errors.New("invalid parameter"), OutcomeKnown: true}}}
+	fallback := &hardeningAdapter{response: NormalizedResponse{Content: json.RawMessage(`{"ok":true}`)}}
+	gateway := NewGatewayWithConfig(ledger, time.Now, GatewayConfig{ProviderPolicies: map[string]ProviderPolicy{"strict": {
+		Candidates: []ProviderCandidate{{Provider: "primary", Model: "model", CapabilityRank: 100}, {Provider: "fallback", Model: "model", CapabilityRank: 100}},
+	}}})
+	for provider, adapter := range map[string]*hardeningAdapter{"primary": primary, "fallback": fallback} {
+		if err := gateway.Register(provider, "model", adapter, Pricing{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := hardeningRequest("nonretryable")
+	request.ProviderPolicy = "strict"
+	if _, err := gateway.Generate(context.Background(), request, GenerateOptions{Provider: "primary", AccountID: "account", ReservationID: "nonretryable-reservation", MaxAttempts: 3}); err == nil {
+		t.Fatal("nonretryable provider failure succeeded")
+	}
+	if primary.Calls() != 1 || fallback.Calls() != 0 {
+		t.Fatalf("primary calls=%d fallback calls=%d", primary.Calls(), fallback.Calls())
+	}
+}
+
+func TestGatewayRetriesKnownStreamStartFailureWithBackoff(t *testing.T) {
+	ledger := NewBudgetLedger(time.Now)
+	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "account", TenantID: "tenant", LimitMicros: 10_000}); err != nil {
+		t.Fatal(err)
+	}
+	var delays []time.Duration
+	adapter := &hardeningAdapter{
+		streamFailures: []error{&ProviderFailure{Cause: errors.New("rate limited"), Retryable: true, OutcomeKnown: true}},
+		stream:         &hardeningUsageStream{usage: Usage{CostMicros: 1}},
+	}
+	gateway := NewGatewayWithConfig(ledger, time.Now, GatewayConfig{
+		ProviderPolicies: map[string]ProviderPolicy{"stream": {Candidates: []ProviderCandidate{{Provider: "primary", Model: "model", CapabilityRank: 100}}}},
+		Sleep: func(_ context.Context, delay time.Duration) error {
+			delays = append(delays, delay)
+			return nil
+		},
+	})
+	if err := gateway.Register("primary", "model", adapter, Pricing{}); err != nil {
+		t.Fatal(err)
+	}
+	request := hardeningRequest("stream-retry")
+	request.ProviderPolicy = "stream"
+	stream, err := gateway.Stream(context.Background(), request, GenerateOptions{Provider: "primary", AccountID: "account", ReservationID: "stream-retry-reservation", MaxAttempts: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stream.Recv(context.Background()); !errors.Is(err, io.EOF) {
+		t.Fatalf("stream terminal error = %v", err)
+	}
+	if adapter.StreamCalls() != 2 || len(delays) != 1 || delays[0] <= 0 {
+		t.Fatalf("stream calls=%d delays=%v", adapter.StreamCalls(), delays)
+	}
+}
+
+func TestGatewayReleasesReservationWhenStreamRetryWaitIsCanceled(t *testing.T) {
+	ledger := NewBudgetLedger(time.Now)
+	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "account", TenantID: "tenant", LimitMicros: 10_000}); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &hardeningAdapter{streamFailures: []error{&ProviderFailure{Cause: errors.New("rate limited"), Retryable: true, OutcomeKnown: true}}}
+	gateway := NewGatewayWithConfig(ledger, time.Now, GatewayConfig{
+		ProviderPolicies: map[string]ProviderPolicy{"retry": {Candidates: []ProviderCandidate{{Provider: "primary", Model: "model", CapabilityRank: 100}}}},
+		Sleep: func(context.Context, time.Duration) error {
+			return context.Canceled
+		},
+	})
+	if err := gateway.Register("primary", "model", adapter, Pricing{}); err != nil {
+		t.Fatal(err)
+	}
+	request := hardeningRequest("stream-canceled-wait")
+	request.ProviderPolicy = "retry"
+
+	if _, err := gateway.Stream(context.Background(), request, GenerateOptions{Provider: "primary", AccountID: "account", ReservationID: "stream-canceled-reservation", MaxAttempts: 2}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("stream error = %v", err)
+	}
+	reservation, found := ledger.Reservation("tenant", "stream-canceled-reservation")
+	if !found || reservation.State != ReservationReleased {
+		t.Fatalf("reservation=%#v found=%t", reservation, found)
+	}
+	call, found := ledger.ModelCall("tenant", "stream-canceled-wait")
+	if !found || call.Status != ModelCallFailedProvider {
+		t.Fatalf("call=%#v found=%t", call, found)
+	}
+}
+
+func TestGatewaySettlesAuthoritativeFinalStreamUsage(t *testing.T) {
+	ledger := NewBudgetLedger(time.Now)
+	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "account", TenantID: "tenant", LimitMicros: 1_000}); err != nil {
+		t.Fatal(err)
+	}
+	stream := &hardeningUsageStream{
+		events: []json.RawMessage{json.RawMessage(`{"delta":"hello"}`)},
+		usage:  Usage{InputTokens: 2, OutputTokens: 3, CostMicros: 5, ProviderRequestID: "provider-stream", ModelVersion: "model-v2"},
+	}
+	adapter := &hardeningAdapter{stream: stream}
+	gateway := NewGateway(ledger, time.Now)
+	if err := gateway.Register("primary", "model", adapter, Pricing{InputMicrosPerToken: 1, OutputMicrosPerToken: 1}); err != nil {
+		t.Fatal(err)
+	}
+	request := hardeningRequest("stream-final")
+	responseStream, err := gateway.Stream(context.Background(), request, GenerateOptions{Provider: "primary", AccountID: "account", ReservationID: "stream-reservation", MaxAttempts: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := responseStream.Recv(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := responseStream.Recv(context.Background()); !errors.Is(err, io.EOF) {
+		t.Fatalf("terminal error = %v", err)
+	}
+	if err := responseStream.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reservation, found := ledger.Reservation("tenant", "stream-reservation")
+	if !found || reservation.State != ReservationSettled || reservation.SettledMicros != 5 {
+		t.Fatalf("reservation=%#v found=%t", reservation, found)
+	}
+	call, found := ledger.ModelCall("tenant", "stream-final")
+	if !found || call.Status != ModelCallSucceeded || call.InputTokens != 2 || call.OutputTokens != 3 || call.CostMicros != 5 || call.ProviderRequestID != "provider-stream" || call.ActualModelVersion != "model-v2" {
+		t.Fatalf("call=%#v found=%t", call, found)
+	}
+}
+
+func newHardeningGateway(t *testing.T, config GatewayConfig) (*Gateway, *hardeningAdapter, *BudgetLedger) {
+	t.Helper()
+	ledger := NewBudgetLedger(time.Now)
+	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "account", TenantID: "tenant", LimitMicros: 100_000}); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &hardeningAdapter{response: NormalizedResponse{Content: json.RawMessage(`{"ok":true}`), Usage: Usage{InputTokens: 2, OutputTokens: 1, CostMicros: 3}}}
+	gateway := NewGatewayWithConfig(ledger, time.Now, config)
+	if err := gateway.Register("primary", "model", adapter, Pricing{InputMicrosPerToken: 1, OutputMicrosPerToken: 1}); err != nil {
+		t.Fatal(err)
+	}
+	return gateway, adapter, ledger
+}
+
+func hardeningRequest(requestID string) NormalizedRequest {
+	return NormalizedRequest{
+		RequestID: requestID, TenantID: "tenant", ProjectID: "project", TaskID: "task", AgentInstanceID: "agent", Role: "EXECUTOR",
+		Model: "model", PromptBundleVersion: "prompt-v1", Messages: []Message{{Role: "user", Content: "hello"}}, MaxOutputTokens: 4, DataClassification: "INTERNAL",
+	}
+}
+
+type hardeningAdapter struct {
+	mu             sync.Mutex
+	failures       []error
+	response       NormalizedResponse
+	stream         ResponseStream
+	streamFailures []error
+	calls          int
+	streamCalls    int
+	entered        chan struct{}
+	proceed        chan struct{}
+	once           sync.Once
+}
+
+func (adapter *hardeningAdapter) Capabilities(context.Context, string) (ModelCapabilities, error) {
+	return ModelCapabilities{SupportsStreaming: true, SupportsJSONSchema: true, SupportsToolCalls: true, MaxInputTokens: 1024, MaxOutputTokens: 128, ActualModelVersion: "model-v1"}, nil
+}
+
+func (adapter *hardeningAdapter) CountTokens(context.Context, NormalizedRequest) (TokenEstimate, error) {
+	return TokenEstimate{InputTokens: 2}, nil
+}
+
+func (adapter *hardeningAdapter) Generate(_ context.Context, request NormalizedRequest) (NormalizedResponse, error) {
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	adapter.calls++
+	if adapter.entered != nil {
+		adapter.once.Do(func() { close(adapter.entered) })
+	}
+	if adapter.proceed != nil {
+		<-adapter.proceed
+	}
+	if len(adapter.failures) != 0 {
+		err := adapter.failures[0]
+		adapter.failures = adapter.failures[1:]
+		return NormalizedResponse{}, err
+	}
+	response := cloneNormalizedResponse(adapter.response)
+	if response.RequestID == "" {
+		response.RequestID = request.RequestID
+	}
+	return response, nil
+}
+
+func (adapter *hardeningAdapter) Stream(context.Context, NormalizedRequest) (ResponseStream, error) {
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	adapter.streamCalls++
+	if len(adapter.streamFailures) != 0 {
+		err := adapter.streamFailures[0]
+		adapter.streamFailures = adapter.streamFailures[1:]
+		return nil, err
+	}
+	if adapter.stream == nil {
+		return nil, &ProviderFailure{Cause: errors.New("stream unavailable"), OutcomeKnown: true}
+	}
+	return adapter.stream, nil
+}
+
+func (adapter *hardeningAdapter) StreamCalls() int {
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	return adapter.streamCalls
+}
+
+func (*hardeningAdapter) Cancel(context.Context, string) error { return nil }
+
+func (*hardeningAdapter) NormalizeUsage(raw any) (Usage, error) {
+	usage, ok := raw.(Usage)
+	if !ok {
+		return Usage{}, ErrInvalidRequest
+	}
+	return usage, nil
+}
+
+func (adapter *hardeningAdapter) Calls() int {
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	return adapter.calls
+}
+
+type hardeningUsageStream struct {
+	mu     sync.Mutex
+	events []json.RawMessage
+	usage  Usage
+	closed bool
+}
+
+func (stream *hardeningUsageStream) Recv(context.Context) (json.RawMessage, error) {
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	if stream.closed || len(stream.events) == 0 {
+		return nil, io.EOF
+	}
+	event := append(json.RawMessage(nil), stream.events[0]...)
+	stream.events = stream.events[1:]
+	return event, nil
+}
+
+func (stream *hardeningUsageStream) Close() error {
+	stream.mu.Lock()
+	stream.closed = true
+	stream.mu.Unlock()
+	return nil
+}
+
+func (stream *hardeningUsageStream) FinalUsage() (Usage, bool) {
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	return stream.usage, len(stream.events) == 0
+}
+
+var _ ModelAdapter = (*hardeningAdapter)(nil)
+var _ UsageAwareStream = (*hardeningUsageStream)(nil)

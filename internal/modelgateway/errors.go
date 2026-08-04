@@ -15,6 +15,8 @@ var (
 	ErrBudgetLimitConflict       = errors.New("budget account limit conflicts with committed usage")
 	ErrBudgetPeriodClosed        = errors.New("budget account period is not active")
 	ErrBudgetIdempotencyConflict = errors.New("budget adjustment idempotency conflict")
+	ErrRequestConflict           = errors.New("model request id conflicts with a different request")
+	ErrReplayUnavailable         = errors.New("completed model request has no replayable response")
 	ErrInvalidRequest            = errors.New("invalid normalized model request")
 	ErrProviderNotAllowed        = errors.New("model provider or model is not allowed")
 	ErrProviderUnavailable       = errors.New("model provider is temporarily unavailable")

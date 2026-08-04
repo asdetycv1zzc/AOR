@@ -11,9 +11,22 @@ type PostgresBudgetLedger struct {
 	db             *sql.DB
 	clock          func() time.Time
 	reservationTTL time.Duration
+	replay         *postgresReplayCodec
 }
 
 func NewPostgresBudgetLedger(db *sql.DB, clock func() time.Time, reservationTTL time.Duration) (*PostgresBudgetLedger, error) {
+	return newPostgresBudgetLedger(db, clock, reservationTTL, nil)
+}
+
+func NewPostgresBudgetLedgerWithReplay(db *sql.DB, clock func() time.Time, reservationTTL time.Duration, replayConfig ReplayStoreConfig) (*PostgresBudgetLedger, error) {
+	replay, err := newPostgresReplayCodec(replayConfig)
+	if err != nil {
+		return nil, err
+	}
+	return newPostgresBudgetLedger(db, clock, reservationTTL, replay)
+}
+
+func newPostgresBudgetLedger(db *sql.DB, clock func() time.Time, reservationTTL time.Duration, replay *postgresReplayCodec) (*PostgresBudgetLedger, error) {
 	if db == nil || reservationTTL < 0 {
 		return nil, ErrInvalidRequest
 	}
@@ -23,7 +36,7 @@ func NewPostgresBudgetLedger(db *sql.DB, clock func() time.Time, reservationTTL 
 	if reservationTTL == 0 {
 		reservationTTL = defaultReservationTTL
 	}
-	return &PostgresBudgetLedger{db: db, clock: clock, reservationTTL: reservationTTL}, nil
+	return &PostgresBudgetLedger{db: db, clock: clock, reservationTTL: reservationTTL, replay: replay}, nil
 }
 
 func (ledger *PostgresBudgetLedger) CreateAccount(ctx context.Context, account BudgetAccount) error {
@@ -63,20 +76,29 @@ VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 1)`,
 }
 
 func (ledger *PostgresBudgetLedger) Reserve(ctx context.Context, tenantID, accountID, reservationID, requestID string, amountMicros int64) (Reservation, error) {
+	reservation, _, err := ledger.reserve(ctx, tenantID, accountID, reservationID, requestID, amountMicros, false)
+	return reservation, err
+}
+
+func (ledger *PostgresBudgetLedger) ClaimReservation(ctx context.Context, tenantID, accountID, reservationID, requestID string, amountMicros int64) (Reservation, bool, error) {
+	return ledger.reserve(ctx, tenantID, accountID, reservationID, requestID, amountMicros, true)
+}
+
+func (ledger *PostgresBudgetLedger) reserve(ctx context.Context, tenantID, accountID, reservationID, requestID string, amountMicros int64, claim bool) (Reservation, bool, error) {
 	if err := contextError(ctx); err != nil {
-		return Reservation{}, err
+		return Reservation{}, false, err
 	}
 	if tenantID == "" || accountID == "" || reservationID == "" || requestID == "" || amountMicros < 0 {
-		return Reservation{}, ErrInvalidRequest
+		return Reservation{}, false, ErrInvalidRequest
 	}
 	tx, err := ledger.begin(ctx, tenantID)
 	if err != nil {
-		return Reservation{}, err
+		return Reservation{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	existing, found, err := loadBudgetReservation(ctx, tx, tenantID, reservationID, true)
 	if err != nil {
-		return Reservation{}, err
+		return Reservation{}, false, err
 	}
 	if found {
 		if existing.State == ReservationOpen && !ledger.clock().UTC().Before(existing.ExpiresAt) {
@@ -84,43 +106,55 @@ func (ledger *PostgresBudgetLedger) Reserve(ctx context.Context, tenantID, accou
 UPDATE budget_reservations SET state = 'RECONCILE', updated_at = $3
 	WHERE tenant_id = $1::uuid AND id = $2 AND state = 'RESERVED'`, tenantID, reservationID, ledger.clock().UTC())
 			if updateErr != nil {
-				return Reservation{}, updateErr
+				return Reservation{}, false, updateErr
 			}
 			if updateErr = requireOneRow(result); updateErr != nil {
-				return Reservation{}, updateErr
+				return Reservation{}, false, updateErr
 			}
 			if updateErr = tx.Commit(); updateErr != nil {
-				return Reservation{}, updateErr
+				return Reservation{}, false, updateErr
 			}
-			return Reservation{}, ErrReconciliationRequired
+			return Reservation{}, false, ErrReconciliationRequired
 		}
 		if existing.AccountID == accountID && existing.RequestID == requestID && existing.ReservedMicros == amountMicros && existing.State == ReservationOpen {
 			if err := tx.Commit(); err != nil {
-				return Reservation{}, err
+				return Reservation{}, false, err
 			}
-			return existing, nil
+			return existing, !claim, nil
 		}
 		if existing.State == ReservationReconcile {
-			return Reservation{}, ErrReconciliationRequired
+			return Reservation{}, false, ErrReconciliationRequired
 		}
-		return Reservation{}, ErrReservationConflict
+		return Reservation{}, false, ErrReservationConflict
+	}
+	if claim {
+		existing, found, err = loadBudgetReservationByRequest(ctx, tx, tenantID, requestID, true)
+		if err != nil {
+			return Reservation{}, false, err
+		}
+		if found {
+			if existing.State == ReservationReconcile || existing.State == ReservationOpen && !ledger.clock().UTC().Before(existing.ExpiresAt) {
+				return Reservation{}, false, ErrReconciliationRequired
+			}
+			return Reservation{}, false, ErrRequestConflict
+		}
 	}
 	account, found, err := loadBudgetAccount(ctx, tx, tenantID, accountID, true)
 	if err != nil {
-		return Reservation{}, err
+		return Reservation{}, false, err
 	}
 	if !found || !budgetPeriodOpen(ledger.clock().UTC(), account) || amountMicros > account.LimitMicros-account.ReservedMicros-account.SpentMicros {
-		return Reservation{}, ErrBudgetExceeded
+		return Reservation{}, false, ErrBudgetExceeded
 	}
 	result, err := tx.ExecContext(ctx, `
 UPDATE budget_accounts
 SET reserved_micros = reserved_micros + $3, version = version + 1
 WHERE tenant_id = $1::uuid AND id = $2 AND version >= 1`, tenantID, accountID, amountMicros)
 	if err != nil {
-		return Reservation{}, err
+		return Reservation{}, false, err
 	}
 	if err := requireOneRow(result); err != nil {
-		return Reservation{}, err
+		return Reservation{}, false, err
 	}
 	createdAt := ledger.clock().UTC()
 	reservation := Reservation{ID: reservationID, TenantID: tenantID, AccountID: accountID, RequestID: requestID, ReservedMicros: amountMicros, State: ReservationOpen, CreatedAt: createdAt, ExpiresAt: createdAt.Add(ledger.reservationTTL)}
@@ -130,12 +164,12 @@ INSERT INTO budget_reservations
 VALUES ($1::uuid, $2, $3, $4, $5, 'RESERVED', $6, $7, $7)`,
 		tenantID, reservationID, accountID, requestID, amountMicros, createdAt.Add(ledger.reservationTTL), createdAt)
 	if err != nil {
-		return Reservation{}, mapBudgetSQLError(err)
+		return Reservation{}, false, mapBudgetSQLError(err)
 	}
 	if err := tx.Commit(); err != nil {
-		return Reservation{}, err
+		return Reservation{}, false, err
 	}
-	return reservation, nil
+	return reservation, true, nil
 }
 
 func (ledger *PostgresBudgetLedger) Settle(ctx context.Context, tenantID, reservationID string, actualMicros int64) (Reservation, error) {
@@ -496,6 +530,34 @@ WHERE tenant_id = $1::uuid AND id = $2`
 	return reservation, err == nil, err
 }
 
+func loadBudgetReservationByRequest(ctx context.Context, tx *sql.Tx, tenantID, requestID string, lock bool) (Reservation, bool, error) {
+	query := `
+	SELECT id, tenant_id::text, account_id, request_id, estimated_micros,
+	       COALESCE(actual_micros, 0), state, expires_at, created_at
+	FROM budget_reservations
+	WHERE tenant_id = $1::uuid AND request_id = $2
+	ORDER BY id
+	LIMIT 1`
+	if lock {
+		query += ` FOR UPDATE`
+	}
+	var reservation Reservation
+	err := tx.QueryRowContext(ctx, query, tenantID, requestID).Scan(
+		&reservation.ID, &reservation.TenantID, &reservation.AccountID, &reservation.RequestID,
+		&reservation.ReservedMicros, &reservation.SettledMicros, &reservation.State,
+		&reservation.ExpiresAt, &reservation.CreatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Reservation{}, false, nil
+	}
+	if err != nil {
+		return Reservation{}, false, err
+	}
+	reservation.CreatedAt = reservation.CreatedAt.UTC()
+	reservation.ExpiresAt = reservation.ExpiresAt.UTC()
+	return reservation, true, nil
+}
+
 func requireOneRow(result sql.Result) error {
 	rows, err := result.RowsAffected()
 	if err != nil {
@@ -520,3 +582,4 @@ func mapBudgetSQLError(err error) error {
 }
 
 var _ BudgetLedgerBackend = (*PostgresBudgetLedger)(nil)
+var _ BudgetReservationClaimer = (*PostgresBudgetLedger)(nil)

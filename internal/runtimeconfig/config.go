@@ -87,7 +87,10 @@ type IdentityConfig struct {
 }
 
 type ModelGatewayConfig struct {
-	Providers []ProviderConfig
+	Providers      []ProviderConfig
+	ReplayKeyRef   string
+	ReplayKeyID    string
+	ReplayTTLHours int
 }
 
 type ProviderConfig struct {
@@ -173,6 +176,10 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 			DefaultTenantID: value(lookup, "AOR_OIDC_DEFAULT_TENANT_ID", ""),
 			DefaultRole:     value(lookup, "AOR_OIDC_DEFAULT_ROLE", ""),
 		},
+		ModelGateway: ModelGatewayConfig{
+			ReplayKeyRef: value(lookup, "AOR_MODEL_REPLAY_KEY_REF", "secret://model/replay-key"),
+			ReplayKeyID:  value(lookup, "AOR_MODEL_REPLAY_KEY_ID", "model-replay-v1"),
+		},
 		Services: ServiceEndpoints{
 			API:          value(lookup, "AOR_API_URL", "http://aor-api:8080"),
 			ModelGateway: value(lookup, "AOR_MODEL_GATEWAY_URL", "http://aor-model-gateway:8080"),
@@ -201,6 +208,10 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 		return Config{}, err
 	}
 	config.Sandbox.AllowWindowsUntrusted, err = boolean(lookup, "AOR_ALLOW_WINDOWS_UNTRUSTED", false)
+	if err != nil {
+		return Config{}, err
+	}
+	config.ModelGateway.ReplayTTLHours, err = integer(lookup, "AOR_MODEL_REPLAY_TTL_HOURS", 24, 1, 30*24)
 	if err != nil {
 		return Config{}, err
 	}
@@ -278,6 +289,9 @@ func (config Config) Validate() error {
 		}
 	}
 	if config.Component == "aor-model-gateway" {
+		if !validSecretReference(config.ModelGateway.ReplayKeyRef) || config.ModelGateway.ReplayKeyID == "" || len(config.ModelGateway.ReplayKeyID) > 128 || strings.ContainsAny(config.ModelGateway.ReplayKeyID, "\r\n\x00") || config.ModelGateway.ReplayTTLHours < 1 || config.ModelGateway.ReplayTTLHours > 30*24 {
+			return ErrInvalidConfiguration
+		}
 		if err := validateProviders(config.ModelGateway.Providers); err != nil {
 			return err
 		}
