@@ -56,6 +56,14 @@ type inFlightInvocation struct {
 
 type invocationRequestIDContextKey struct{}
 
+func InvocationRequestIDFromContext(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	requestID, ok := ctx.Value(invocationRequestIDContextKey{}).(string)
+	return requestID, ok
+}
+
 type rateWindow struct {
 	started time.Time
 	count   int

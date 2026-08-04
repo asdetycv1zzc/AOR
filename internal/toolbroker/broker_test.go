@@ -71,11 +71,13 @@ type testExecutor struct {
 
 type authorizationCapturingExecutor struct {
 	validation LeaseValidation
+	requestID  string
 	found      bool
 }
 
 func (executor *authorizationCapturingExecutor) Execute(ctx context.Context, _ ToolDescriptor, _ []byte) ([]byte, error) {
 	executor.validation, executor.found = ExecutionAuthorizationFromContext(ctx)
+	executor.requestID, _ = InvocationRequestIDFromContext(ctx)
 	return []byte(`{"ok":true}`), nil
 }
 
@@ -139,7 +141,7 @@ func TestBrokerSuppliesValidatedAuthorizationOnlyDuringExecution(t *testing.T) {
 	if _, err := broker.Invoke(context.Background(), request()); err != nil {
 		t.Fatal(err)
 	}
-	if !executor.found || executor.validation.Lease.ID != request().Lease.ID || executor.validation.ToolID != request().ToolID || executor.validation.ParameterSHA256 == "" {
+	if !executor.found || executor.requestID != request().RequestID || executor.validation.Lease.ID != request().Lease.ID || executor.validation.ToolID != request().ToolID || executor.validation.ParameterSHA256 == "" {
 		t.Fatalf("execution authorization = %#v found=%t", executor.validation, executor.found)
 	}
 }

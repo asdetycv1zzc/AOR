@@ -16,6 +16,7 @@ import (
 	"github.com/akimisaka/aor/internal/authz"
 	"github.com/akimisaka/aor/internal/credentials"
 	"github.com/akimisaka/aor/internal/policy"
+	"github.com/akimisaka/aor/internal/repository"
 	"github.com/akimisaka/aor/internal/runtimeclient"
 	"github.com/akimisaka/aor/internal/runtimeconfig"
 	"github.com/akimisaka/aor/internal/toolbroker"
@@ -74,11 +75,16 @@ func ToolBroker(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	if err != nil {
 		return nil, runtimeconfig.ErrInvalidConfiguration
 	}
+	repositoryKey := deriveRepositorySigningKey(leaseKey)
 	leaseSigner, err := authz.NewHMACSigner(leaseKey)
+	repositorySigner, repositorySignerErr := repository.NewHMACSigner(repositoryKey)
 	for index := range leaseKey {
 		leaseKey[index] = 0
 	}
-	if err != nil {
+	for index := range repositoryKey {
+		repositoryKey[index] = 0
+	}
+	if err != nil || repositorySignerErr != nil {
 		return nil, runtimeconfig.ErrInvalidConfiguration
 	}
 	leaseStore, err := authz.NewPostgresLeaseStore(clients.Database())
@@ -128,8 +134,22 @@ func ToolBroker(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	if err != nil {
 		return nil, err
 	}
+	repositoryClient, err := newRepositoryMCPClient(config.RepositoryRoot, clients.Database(), leaseChecker, repositorySigner, time.Now)
+	if err != nil {
+		_ = host.Close()
+		return nil, err
+	}
+	repositoryLoadCtx, repositoryLoadCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	err = host.AddServerWithPolicies(repositoryLoadCtx, repositoryMCPServerID, repositoryMCPVersion, repositoryClient, repositoryMCPPolicies())
+	repositoryLoadCancel()
+	if err != nil {
+		_ = repositoryClient.Close()
+		_ = host.Close()
+		return nil, err
+	}
 	configured, err := loadMCPServerConfig(os.Getenv("AOR_MCP_SERVERS_JSON"))
 	if err != nil {
+		_ = host.Close()
 		return nil, err
 	}
 	for _, serverConfig := range configured {
