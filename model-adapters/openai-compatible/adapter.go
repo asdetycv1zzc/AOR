@@ -376,12 +376,15 @@ func (a *Adapter) do(ctx context.Context, payload []byte) (*http.Response, conte
 }
 
 func (a *Adapter) decodeResponse(request modelgateway.NormalizedRequest, capabilities modelgateway.ModelCapabilities, payload []byte) (modelgateway.NormalizedResponse, error) {
-	var response chatResponse
-	if !utf8.Valid(payload) || json.Unmarshal(payload, &response) != nil || len(response.Choices) != 1 || response.Usage == nil {
+	if !utf8.Valid(payload) {
 		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
 	}
 	if a.containsCredential(string(payload)) {
 		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrCredentialDetected)
+	}
+	var response chatResponse
+	if json.Unmarshal(payload, &response) != nil || len(response.Choices) != 1 || response.Usage == nil {
+		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
 	}
 	choice := response.Choices[0]
 	if strings.TrimSpace(response.ID) == "" || len(response.ID) > modelgateway.MaximumToolCallIDBytes || strings.ContainsAny(response.ID, "\r\n\x00") || strings.TrimSpace(choice.FinishReason) == "" || len(choice.FinishReason) > 128 || !utf8.ValidString(response.ID) || !utf8.ValidString(response.Model) || !utf8.ValidString(choice.FinishReason) {
