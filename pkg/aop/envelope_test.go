@@ -24,6 +24,14 @@ func TestGoalIntentRejectsPlanAndTaskReferences(t *testing.T) {
 	}
 }
 
+func TestInitialGoalProposalDoesNotRequireNonexistentGoalSpec(t *testing.T) {
+	envelope := validEnvelope(IntentProposeGoal)
+	envelope.GoalSpec = nil
+	if err := envelope.Validate(time.Now().UTC()); err != nil {
+		t.Fatalf("initial goal proposal rejected: %v", err)
+	}
+}
+
 func TestSubmissionRequiresAllImmutableReferences(t *testing.T) {
 	envelope := validEnvelope(IntentSubmitImplementation)
 	envelope.PlanSpec = nil

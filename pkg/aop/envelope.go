@@ -98,6 +98,7 @@ type Envelope struct {
 }
 
 type referenceRequirements struct {
+	goal    bool
 	plan    bool
 	module  bool
 	attempt bool
@@ -107,29 +108,29 @@ type referenceRequirements struct {
 
 var intentRequirements = map[Intent]referenceRequirements{
 	IntentProposeGoal:              {},
-	IntentChallengeGoal:            {},
-	IntentRequestUserReview:        {},
-	IntentApproveGoalRequested:     {},
-	IntentProposePlan:              {plan: true},
-	IntentDefineModule:             {plan: true, module: true},
-	IntentRequestAgent:             {dynamic: true},
-	IntentAssignModule:             {plan: true, module: true},
-	IntentRequestKnowledge:         {dynamic: true},
-	IntentReturnKnowledgeRefs:      {dynamic: true},
-	IntentRequestTool:              {dynamic: true},
-	IntentSubmitImplementation:     {plan: true, module: true, attempt: true},
-	IntentReportDeterministicAudit: {plan: true, module: true, attempt: true},
-	IntentReportLLMAudit:           {plan: true, module: true, attempt: true},
-	IntentRequestRework:            {plan: true, module: true, attempt: true},
-	IntentReportModuleComplete:     {plan: true, module: true, attempt: true},
-	IntentReportModuleBlocked:      {plan: true, module: true, attempt: true},
-	IntentReportPlanComplete:       {plan: true, global: true},
-	IntentRequestGlobalAudit:       {plan: true, global: true},
-	IntentReportGlobalAudit:        {plan: true, global: true},
-	IntentRequestUserDecision:      {plan: true, module: true, attempt: true},
-	IntentCancelTask:               {plan: true, module: true},
-	IntentPauseProject:             {},
-	IntentResumeProject:            {},
+	IntentChallengeGoal:            {goal: true},
+	IntentRequestUserReview:        {goal: true},
+	IntentApproveGoalRequested:     {goal: true},
+	IntentProposePlan:              {goal: true, plan: true},
+	IntentDefineModule:             {goal: true, plan: true, module: true},
+	IntentRequestAgent:             {goal: true, dynamic: true},
+	IntentAssignModule:             {goal: true, plan: true, module: true},
+	IntentRequestKnowledge:         {goal: true, dynamic: true},
+	IntentReturnKnowledgeRefs:      {goal: true, dynamic: true},
+	IntentRequestTool:              {goal: true, dynamic: true},
+	IntentSubmitImplementation:     {goal: true, plan: true, module: true, attempt: true},
+	IntentReportDeterministicAudit: {goal: true, plan: true, module: true, attempt: true},
+	IntentReportLLMAudit:           {goal: true, plan: true, module: true, attempt: true},
+	IntentRequestRework:            {goal: true, plan: true, module: true, attempt: true},
+	IntentReportModuleComplete:     {goal: true, plan: true, module: true, attempt: true},
+	IntentReportModuleBlocked:      {goal: true, plan: true, module: true, attempt: true},
+	IntentReportPlanComplete:       {goal: true, plan: true, global: true},
+	IntentRequestGlobalAudit:       {goal: true, plan: true, global: true},
+	IntentReportGlobalAudit:        {goal: true, plan: true, global: true},
+	IntentRequestUserDecision:      {goal: true, plan: true, module: true, attempt: true},
+	IntentCancelTask:               {goal: true, plan: true, module: true},
+	IntentPauseProject:             {goal: true},
+	IntentResumeProject:            {goal: true},
 }
 
 var traceparentPattern = regexp.MustCompile(`^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$`)
@@ -161,7 +162,7 @@ func (e Envelope) Validate(now time.Time) *aorerrors.Error {
 	if e.ExpectedAggregateVersion < 0 || e.Sender.AgentInstanceID == "" || e.Sender.Role == "" || e.Sender.LeaseID == "" {
 		return invalid("sender or aggregate version")
 	}
-	if e.GoalSpec == nil || e.GoalSpec.Validate() != nil {
+	if requirements.goal && e.GoalSpec == nil || e.GoalSpec != nil && e.GoalSpec.Validate() != nil {
 		return invalid("goalSpec")
 	}
 	if e.CreatedAt.IsZero() || e.ExpiresAt.IsZero() || !e.CreatedAt.Before(e.ExpiresAt) || !now.Before(e.ExpiresAt) {

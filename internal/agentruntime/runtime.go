@@ -662,7 +662,10 @@ func validateDeclaration(declaration Declaration, now time.Time) (AssembledPromp
 }
 
 func contextMatchesEnvelope(declaration Declaration) bool {
-	expected := map[ContextKind]string{ContextGoalReference: declaration.Envelope.GoalSpec.SHA256}
+	expected := make(map[ContextKind]string, 3)
+	if declaration.Envelope.GoalSpec != nil {
+		expected[ContextGoalReference] = declaration.Envelope.GoalSpec.SHA256
+	}
 	if declaration.Envelope.PlanSpec != nil {
 		expected[ContextPlanReference] = declaration.Envelope.PlanSpec.SHA256
 	}
@@ -683,8 +686,23 @@ func contextMatchesEnvelope(declaration Declaration) bool {
 			}
 		}
 	}
-	if counts[ContextGoalReference] != 1 {
+	if declaration.Envelope.GoalSpec != nil && counts[ContextGoalReference] != 1 {
 		return false
+	}
+	if declaration.Envelope.GoalSpec == nil {
+		if declaration.Role != RoleGoalProposer || declaration.Envelope.Intent != aop.IntentProposeGoal {
+			return false
+		}
+		hasUserInput := false
+		for _, item := range declaration.ContextManifest.Items {
+			if item.Kind == ContextUserInput {
+				hasUserInput = true
+				break
+			}
+		}
+		if !hasUserInput {
+			return false
+		}
 	}
 	switch declaration.Role {
 	case RoleModulePlanner, RoleExecutor, RoleGlobalAuditor:
@@ -724,12 +742,8 @@ func validateAgentOutput(schemaJSON json.RawMessage, output AgentOutput) error {
 	if err != nil {
 		return ErrOutputInvalid
 	}
-	encoded, err := json.Marshal(output)
-	if err != nil {
-		return ErrOutputInvalid
-	}
 	var instance any
-	if err := json.Unmarshal(encoded, &instance); err != nil || schema.Validate(instance) != nil {
+	if err := json.Unmarshal(output.Payload, &instance); err != nil || schema.Validate(instance) != nil {
 		return ErrOutputInvalid
 	}
 	return nil
