@@ -118,3 +118,23 @@ func TestCoreMigrationContainsAtomicityAndIsolationConstraints(t *testing.T) {
 		}
 	}
 }
+
+func TestProjectErasureMigrationIsTenantScopedAndResumable(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", "migrations", "postgres", "000016_project_erasure.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(content)
+	for _, required := range []string{
+		"ADD COLUMN deletion_status", "CREATE TABLE project_erasure_jobs", "CREATE TABLE project_erasure_items",
+		"CREATE TABLE project_key_revocations", "project_erasure_items_pending_idx", "FORCE ROW LEVEL SECURITY",
+		"status IN ('PREPARED', 'COMPLETE')", "records_deleted", "objects_deleted",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("project erasure migration missing %q", required)
+		}
+	}
+	if strings.Contains(sql, "DELETE FROM domain_events") || strings.Contains(sql, "DELETE FROM approvals") || strings.Contains(sql, "DELETE FROM submissions") {
+		t.Fatal("project erasure migration permits immutable evidence deletion")
+	}
+}

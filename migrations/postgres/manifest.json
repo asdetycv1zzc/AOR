@@ -106,6 +106,13 @@
       "file": "000015_model_call_replays.up.sql",
       "sha256": "sha256:f28ad09a2f6140e793e10e8e8a1a268dd90d57f73eb9374af19e2b8aa83dc936",
       "destructive": false
+    },
+    {
+      "version": 16,
+      "mode": "EXPAND",
+      "file": "000016_project_erasure.up.sql",
+      "sha256": "sha256:1d963347b0efa8f7416ac2e5190a47cf781031e8bf0683c44e06041346381098",
+      "destructive": false
     }
   ]
 }

@@ -464,12 +464,25 @@ func syncProjectRow(ctx context.Context, tx *sql.Tx, request TransactionRequest,
 		PromptBundleVersion  string   `json:"promptBundleVersion"`
 		RiskTolerance        string   `json:"riskTolerance"`
 		CreatedBy            string   `json:"createdBy"`
+		Deletion             *struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"deletion"`
 	}
 	if err := json.Unmarshal(update.State, &projection); err != nil {
 		return fmt.Errorf("decode project projection for relational sync: %w", err)
 	}
 	if projection.ID == "" || projection.ID != update.AggregateID || projection.State == "" {
 		return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "project relational projection"})
+	}
+	var deletionStatus any
+	var deletionID any
+	if projection.Deletion != nil {
+		if projection.Deletion.ID == "" || projection.Deletion.Status == "" {
+			return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "project deletion relational projection"})
+		}
+		deletionStatus = projection.Deletion.Status
+		deletionID = projection.Deletion.ID
 	}
 	if update.ExpectedVersion == 0 {
 		if projection.Name == "" {
@@ -494,9 +507,9 @@ func syncProjectRow(ctx context.Context, tx *sql.Tx, request TransactionRequest,
 		_, err = tx.ExecContext(ctx, `
 INSERT INTO projects
 	  (id, tenant_id, name, state, state_version, data_classification, deployment_targets_jsonb,
-	   risk_tolerance, goal_agent_count, created_by, created_at, updated_at)
-	VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, transaction_timestamp(), transaction_timestamp())`,
-			projection.ID, request.TenantID, projection.Name, projection.State, update.NextVersion, projection.DataClassification, deploymentTargets, projection.RiskTolerance, projection.GoalAgentCount, projection.CreatedBy)
+	   risk_tolerance, goal_agent_count, created_by, deletion_status, deletion_id, created_at, updated_at)
+	VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, transaction_timestamp(), transaction_timestamp())`,
+			projection.ID, request.TenantID, projection.Name, projection.State, update.NextVersion, projection.DataClassification, deploymentTargets, projection.RiskTolerance, projection.GoalAgentCount, projection.CreatedBy, deletionStatus, deletionID)
 		if err != nil {
 			return err
 		}
@@ -533,10 +546,11 @@ VALUES ($1, $2::uuid, $3::uuid, $4, 'UNASSIGNED', 'UNASSIGNED', 'UNASSIGNED', $5
 	result, err := tx.ExecContext(ctx, `
 UPDATE projects
 SET state = $3, state_version = $4,
-    archived_at = CASE WHEN $3 = 'ARCHIVED' THEN transaction_timestamp() ELSE archived_at END,
-    updated_at = transaction_timestamp()
+	deletion_status = $6, deletion_id = $7,
+	    archived_at = CASE WHEN $3 = 'ARCHIVED' THEN transaction_timestamp() ELSE archived_at END,
+	    updated_at = transaction_timestamp()
 WHERE tenant_id = $1::uuid AND id = $2::uuid AND state_version = $5`,
-		request.TenantID, projection.ID, projection.State, update.NextVersion, update.ExpectedVersion)
+		request.TenantID, projection.ID, projection.State, update.NextVersion, update.ExpectedVersion, deletionStatus, deletionID)
 	if err == nil {
 		rows, rowsErr := result.RowsAffected()
 		if rowsErr != nil {

@@ -28,6 +28,21 @@ type controlHandler struct {
 	closeErr   error
 }
 
+type artifactProjectEraser struct {
+	catalog *artifact.PostgresS3Catalog
+}
+
+func (eraser artifactProjectEraser) EraseProject(ctx context.Context, tenantID, projectID, deletionID string) (controlapi.ErasureReport, error) {
+	report, err := eraser.catalog.EraseProject(ctx, tenantID, projectID, deletionID)
+	if err != nil {
+		return controlapi.ErasureReport{}, err
+	}
+	return controlapi.ErasureReport{
+		Scopes: append([]string(nil), report.Scopes...), Records: report.Records,
+		Objects: report.Objects, CacheEntries: report.CacheEntries,
+	}, nil
+}
+
 func (handler *controlHandler) Ready() error {
 	if handler == nil || handler.dispatcher == nil {
 		return runtimeclient.ErrDependencyUnavailable
@@ -88,7 +103,8 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	}
 	domain, err := controlapi.New(controlapi.Config{
 		Store: lifecycleStore, Authenticator: authenticator, Authorizer: authorizer,
-		Database: clients.Database(), Artifacts: artifactCatalog, Knowledge: knowledgeService, Clock: time.Now,
+		Database: clients.Database(), Artifacts: artifactCatalog, Knowledge: knowledgeService,
+		Eraser: artifactProjectEraser{catalog: artifactCatalog}, Clock: time.Now,
 	})
 	if err != nil {
 		return nil, err

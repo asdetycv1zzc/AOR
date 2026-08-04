@@ -148,6 +148,10 @@ services:
         if [ "$$model_call_replays_installed" != "t" ]; then
           psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000015_model_call_replays.up.sql
         fi
+        project_erasure_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'projects' AND column_name = 'deletion_status')")"
+        if [ "$$project_erasure_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000016_project_erasure.up.sql
+        fi
         unset AOR_APP_PASSWORD
     secrets: [postgres_password, postgres_app_password]
     volumes:
@@ -166,6 +170,7 @@ services:
       - ../../migrations/postgres/000013_workflow_activity_results.up.sql:/migrations/000013_workflow_activity_results.up.sql:ro
       - ../../migrations/postgres/000014_project_initialization_selection.up.sql:/migrations/000014_project_initialization_selection.up.sql:ro
       - ../../migrations/postgres/000015_model_call_replays.up.sql:/migrations/000015_model_call_replays.up.sql:ro
+      - ../../migrations/postgres/000016_project_erasure.up.sql:/migrations/000016_project_erasure.up.sql:ro
       - ./postgres-app-password.sql:/migrations/postgres-app-password.sql:ro
     read_only: true
     tmpfs: [/tmp]

@@ -29,6 +29,16 @@ func TestArtifactURIRequiresCanonicalSHA256(t *testing.T) {
 	}
 }
 
+func TestCatalogObjectNamesAreProjectScoped(t *testing.T) {
+	tenantID := "11111111-1111-4111-8111-111111111111"
+	digest := "sha256:" + strings.Repeat("a", 64)
+	left := projectObjectName(tenantID, "22222222-2222-4222-8222-222222222222", digest)
+	right := projectObjectName(tenantID, "33333333-3333-4333-8333-333333333333", digest)
+	if left == right || !strings.HasPrefix(left, "tenants/"+tenantID+"/projects/") || !strings.HasSuffix(left, strings.Repeat("a", 64)) {
+		t.Fatalf("project-scoped object names left=%q right=%q", left, right)
+	}
+}
+
 func TestCatalogCursorIsProjectBoundAndStrict(t *testing.T) {
 	projectID := "11111111-1111-4111-8111-111111111111"
 	artifactID := "22222222-2222-4222-8222-222222222222"
