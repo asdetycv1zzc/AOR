@@ -387,7 +387,7 @@ func (a *Adapter) decodeResponse(request modelgateway.NormalizedRequest, capabil
 		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
 	}
 	choice := response.Choices[0]
-	if strings.TrimSpace(response.ID) == "" || len(response.ID) > modelgateway.MaximumToolCallIDBytes || strings.ContainsAny(response.ID, "\r\n\x00") || strings.TrimSpace(choice.FinishReason) == "" || len(choice.FinishReason) > 128 || !utf8.ValidString(response.ID) || !utf8.ValidString(response.Model) || !utf8.ValidString(choice.FinishReason) {
+	if strings.TrimSpace(response.ID) == "" || len(response.ID) > modelgateway.MaximumToolCallIDBytes || strings.ContainsAny(response.ID, "\r\n\x00") || strings.TrimSpace(choice.FinishReason) == "" || len(choice.FinishReason) > 128 || len(response.Model) > modelgateway.MaximumToolCallIDBytes || !utf8.ValidString(response.ID) || !utf8.ValidString(response.Model) || !utf8.ValidString(choice.FinishReason) {
 		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
 	}
 	if a.containsCredential(response.ID) || a.containsCredential(response.Model) || a.containsCredential(choice.FinishReason) {
