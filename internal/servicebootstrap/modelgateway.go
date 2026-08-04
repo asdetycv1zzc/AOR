@@ -286,7 +286,7 @@ func (authorizer *modelGatewayAuthorizer) AuthorizeModel(ctx context.Context, re
 		return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
 	}
 
-	project, task, account, reservation, err := authorizer.loadScope(ctx, principal.TenantID, projectID, request.TaskID, request.AccountID, request.ReservationID, request.RequestID, principal.ID, role, request.Operation)
+	project, task, account, reservation, err := authorizer.loadScope(ctx, principal.TenantID, projectID, request.TaskID, request.AccountID, request.ReservationID, request.RequestID, agentInstanceID, role, request.Operation)
 	if err != nil {
 		return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
 	}
@@ -313,6 +313,7 @@ func (authorizer *modelGatewayAuthorizer) AuthorizeModel(ctx context.Context, re
 	}
 
 	action := modelAction(request.Operation)
+	policyPrincipal := modelPolicyPrincipal(principal, principal.TenantID, projectID, agentInstanceID, role, request.Operation)
 	digest, err := canonicaljson.Digest(mustJSON(modelAuthorizationDigest{
 		Operation: request.Operation, Provider: request.Provider, Model: request.Model, RequestID: request.RequestID,
 		ProjectID: projectID, TaskID: request.TaskID, AgentInstanceID: agentInstanceID, Role: role, DataClassification: project.Classification,
@@ -322,7 +323,7 @@ func (authorizer *modelGatewayAuthorizer) AuthorizeModel(ctx context.Context, re
 		return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
 	}
 	input := authz.PolicyInput{
-		Principal:       principal,
+		Principal:       policyPrincipal,
 		Project:         authz.ProjectScope{TenantID: principal.TenantID, ID: projectID, State: project.State, StateVersion: project.Version, Classification: project.Classification},
 		Action:          action,
 		Resource:        authz.Resource{Type: "model", ID: request.Provider + "/" + request.Model, Attributes: map[string]string{"operation": request.Operation, "provider": request.Provider, "model": request.Model}},
@@ -379,7 +380,7 @@ type modelReservationProjection struct {
 	State     string
 }
 
-func (authorizer *modelGatewayAuthorizer) loadScope(ctx context.Context, tenantID, projectID, taskID, accountID, reservationID, requestID, principalID, role, operation string) (modelProjectProjection, authz.TaskScope, modelAccountProjection, modelReservationProjection, error) {
+func (authorizer *modelGatewayAuthorizer) loadScope(ctx context.Context, tenantID, projectID, taskID, accountID, reservationID, requestID, agentInstanceID, role, operation string) (modelProjectProjection, authz.TaskScope, modelAccountProjection, modelReservationProjection, error) {
 	tx, err := authorizer.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return modelProjectProjection{}, authz.TaskScope{}, modelAccountProjection{}, modelReservationProjection{}, err
@@ -391,6 +392,22 @@ func (authorizer *modelGatewayAuthorizer) loadScope(ctx context.Context, tenantI
 	var project modelProjectProjection
 	if err := tx.QueryRowContext(ctx, `SELECT state, state_version, data_classification FROM projects WHERE tenant_id = $1::uuid AND id = $2::uuid`, tenantID, projectID).Scan(&project.State, &project.Version, &project.Classification); err != nil {
 		return modelProjectProjection{}, authz.TaskScope{}, modelAccountProjection{}, modelReservationProjection{}, err
+	}
+	if operation != "capabilities" {
+		var authoritative bool
+		if err := tx.QueryRowContext(ctx, `
+SELECT EXISTS (
+  SELECT 1
+  FROM agent_instances
+  WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND id = $3 AND role = $4
+)`, tenantID, projectID, agentInstanceID, role).Scan(&authoritative); err != nil || !authoritative {
+			return modelProjectProjection{}, authz.TaskScope{}, modelAccountProjection{}, modelReservationProjection{}, modelgateway.ErrAuthorizationDenied
+		}
+	}
+	if role == authn.RolePlanSupervisor {
+		if agentInstanceID != projectID+":PLAN_SUPERVISOR" {
+			return modelProjectProjection{}, authz.TaskScope{}, modelAccountProjection{}, modelReservationProjection{}, modelgateway.ErrAuthorizationDenied
+		}
 	}
 	var task authz.TaskScope
 	if taskID != "" {
@@ -404,12 +421,12 @@ SELECT t.state, t.state_version, COALESCE(ms.content_sha256, plan.content_sha256
        ms.execution_platform, ms.isolation_level, ms.content_jsonb,
        t.module_spec_id IS NOT NULL, plan.status
 FROM module_tasks t
-JOIN plan_specs plan ON plan.tenant_id = t.tenant_id AND plan.id = t.planning_spec_id
 LEFT JOIN module_specs ms ON ms.tenant_id = t.tenant_id AND ms.id = t.module_spec_id
+JOIN plan_specs plan ON plan.tenant_id = t.tenant_id AND plan.id = COALESCE(t.planning_spec_id, ms.plan_spec_id)
 WHERE t.tenant_id = $1::uuid AND t.project_id = $2::uuid AND t.id = $3::uuid
   AND EXISTS (
     SELECT 1 FROM jsonb_array_elements(plan.content_jsonb->'modules') AS planned
-    WHERE planned->>'moduleId' = t.module_id
+    WHERE planned->>'moduleId' = COALESCE(t.module_id, ms.module_id)
   )`, tenantID, projectID, taskID).Scan(
 			&task.State, &task.StateVersion, &specDigest, &platform, &isolation, &moduleJSON,
 			&moduleSpecAttached, &planStatus,
@@ -418,16 +435,7 @@ WHERE t.tenant_id = $1::uuid AND t.project_id = $2::uuid AND t.id = $3::uuid
 		}
 		task.SpecDigest = specDigest
 		if role == authn.RoleModulePlanner {
-			if principalID != projectID+":MODULE_PLANNER:"+taskID {
-				return modelProjectProjection{}, authz.TaskScope{}, modelAccountProjection{}, modelReservationProjection{}, modelgateway.ErrAuthorizationDenied
-			}
-			var authoritative bool
-			if err := tx.QueryRowContext(ctx, `
-SELECT EXISTS (
-  SELECT 1
-  FROM agent_instances
-  WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND id = $3 AND role = 'MODULE_PLANNER'
-)`, tenantID, projectID, principalID).Scan(&authoritative); err != nil || !authoritative {
+			if agentInstanceID != projectID+":MODULE_PLANNER:"+taskID {
 				return modelProjectProjection{}, authz.TaskScope{}, modelAccountProjection{}, modelReservationProjection{}, modelgateway.ErrAuthorizationDenied
 			}
 		}
@@ -498,6 +506,16 @@ func modelAction(operation string) string {
 		return authz.ActionModelReconcile
 	default:
 		return authz.ActionModelCapabilities
+	}
+}
+
+func modelPolicyPrincipal(transport authn.Principal, tenantID, projectID, agentInstanceID, role, operation string) authn.Principal {
+	if operation == "capabilities" || operation == "reconcile" {
+		return transport
+	}
+	return authn.Principal{
+		ID: agentInstanceID, Type: authn.PrincipalAgentInstance, Role: role,
+		TenantID: tenantID, ProjectID: projectID,
 	}
 }
 

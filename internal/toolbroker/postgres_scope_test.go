@@ -48,6 +48,24 @@ func TestDetachedPlanningScopeOnlyAllowsModulePlannerModelGeneration(t *testing.
 	}
 }
 
+func TestPlanSupervisorIdentityIsProjectBound(t *testing.T) {
+	query := ToolAuthorizationScopeQuery{
+		ProjectID: "project-1", PrincipalID: "project-1:PLAN_SUPERVISOR", Role: authn.RolePlanSupervisor,
+	}
+	if !allowsPlanSupervisorIdentity(query) {
+		t.Fatal("valid PlanSupervisor identity was rejected")
+	}
+	query.PrincipalID = "other-project:PLAN_SUPERVISOR"
+	if allowsPlanSupervisorIdentity(query) {
+		t.Fatal("cross-project PlanSupervisor identity was accepted")
+	}
+	query.PrincipalID = "project-1:PLAN_SUPERVISOR"
+	query.Role = authn.RoleGoalProposer
+	if allowsPlanSupervisorIdentity(query) {
+		t.Fatal("non-supervisor role was accepted")
+	}
+}
+
 func TestToolBudgetScopeMatchesAuthoritativeDimensions(t *testing.T) {
 	query := ToolAuthorizationScopeQuery{ProjectID: "project-1", TaskID: "task-1", PrincipalID: "agent-1", Role: "EXECUTOR"}
 	for _, match := range []struct {

@@ -68,7 +68,7 @@ func (resolver *PostgresScopeResolver) ResolveToolAuthorizationScope(ctx context
 	} else {
 		project, taskRecord, err = resolver.loadProjectTask(ctx, tx, query.TenantID, query.ProjectID, query.TaskID)
 	}
-	if err != nil || query.TaskID != "" && query.Role == authn.RoleModulePlanner && !hasPlanningAgentAuthority(ctx, tx, query) || query.TaskID != "" && !taskRecord.moduleSpecAttached && !allowsDetachedPlanningScope(query) {
+	if err != nil || query.Role == authn.RolePlanSupervisor && !hasPlanSupervisorAuthority(ctx, tx, query) || query.TaskID != "" && query.Role == authn.RoleModulePlanner && !hasPlanningAgentAuthority(ctx, tx, query) || query.TaskID != "" && !taskRecord.moduleSpecAttached && !allowsDetachedPlanningScope(query) {
 		return ToolAuthorizationScope{}, ErrPolicyDenied
 	}
 	budget, err := loadToolBudget(ctx, tx, query)
@@ -101,6 +101,24 @@ SELECT EXISTS (
   WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND id = $3 AND role = 'MODULE_PLANNER'
 )`, query.TenantID, query.ProjectID, query.PrincipalID).Scan(&exists)
 	return err == nil && exists
+}
+
+func hasPlanSupervisorAuthority(ctx context.Context, tx *sql.Tx, query ToolAuthorizationScopeQuery) bool {
+	if !allowsPlanSupervisorIdentity(query) {
+		return false
+	}
+	var exists bool
+	err := tx.QueryRowContext(ctx, `
+SELECT EXISTS (
+  SELECT 1
+  FROM agent_instances
+  WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND id = $3 AND role = 'PLAN_SUPERVISOR'
+)`, query.TenantID, query.ProjectID, query.PrincipalID).Scan(&exists)
+	return err == nil && exists
+}
+
+func allowsPlanSupervisorIdentity(query ToolAuthorizationScopeQuery) bool {
+	return query.Role == authn.RolePlanSupervisor && query.PrincipalID == query.ProjectID+":PLAN_SUPERVISOR"
 }
 
 func allowsPlanningAgentIdentity(query ToolAuthorizationScopeQuery) bool {
@@ -143,13 +161,13 @@ SELECT p.state, p.state_version, p.data_classification,
 	       plan.status
 FROM projects p
 JOIN module_tasks t ON t.tenant_id = p.tenant_id AND t.project_id = p.id
-JOIN plan_specs plan ON plan.tenant_id = t.tenant_id AND plan.id = t.planning_spec_id
+LEFT JOIN module_specs ms ON ms.tenant_id = t.tenant_id AND ms.id = t.module_spec_id
+JOIN plan_specs plan ON plan.tenant_id = t.tenant_id AND plan.id = COALESCE(t.planning_spec_id, ms.plan_spec_id)
 JOIN LATERAL (
 	  SELECT module AS content_jsonb
 	  FROM jsonb_array_elements(plan.content_jsonb->'modules') AS module
-	  WHERE module->>'moduleId' = t.module_id
+	  WHERE module->>'moduleId' = COALESCE(t.module_id, ms.module_id)
 ) AS planned ON true
-LEFT JOIN module_specs ms ON ms.tenant_id = t.tenant_id AND ms.id = t.module_spec_id
 WHERE p.tenant_id = $1::uuid AND p.id = $2::uuid AND t.id = $3::uuid`, tenantID, projectID, taskID).Scan(
 		&project.State, &project.StateVersion, &project.Classification,
 		&task.State, &task.StateVersion, &task.SpecDigest, &platform,

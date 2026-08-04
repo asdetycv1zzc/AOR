@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/runtimeclient"
 	"github.com/akimisaka/aor/internal/runtimeconfig"
 )
@@ -87,5 +88,16 @@ func TestDeploymentProfileFollowsRuntimeEnvironment(t *testing.T) {
 		if actual := deploymentProfileForEnvironment(environment); actual != expected {
 			t.Fatalf("deploymentProfileForEnvironment(%q) = %q, want %q", environment, actual, expected)
 		}
+	}
+}
+
+func TestModelPolicyPrincipalUsesAuthoritativeDelegatedAgent(t *testing.T) {
+	transport := authn.Principal{ID: "model-gateway-service", Type: authn.PrincipalService, Role: authn.RoleService, TenantID: "tenant-1"}
+	delegated := modelPolicyPrincipal(transport, "tenant-1", "project-1", "project-1:PLAN_SUPERVISOR", authn.RolePlanSupervisor, "generate")
+	if delegated.ID != "project-1:PLAN_SUPERVISOR" || delegated.Type != authn.PrincipalAgentInstance || delegated.Role != authn.RolePlanSupervisor || delegated.TenantID != "tenant-1" || delegated.ProjectID != "project-1" {
+		t.Fatalf("delegated principal = %#v", delegated)
+	}
+	if reconciler := modelPolicyPrincipal(transport, "tenant-1", "project-1", "agent", authn.RoleExecutor, "reconcile"); reconciler.ID != transport.ID || reconciler.Type != transport.Type || reconciler.Role != transport.Role || reconciler.TenantID != transport.TenantID {
+		t.Fatalf("reconcile principal = %#v", reconciler)
 	}
 }

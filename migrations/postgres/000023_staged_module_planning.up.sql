@@ -4,27 +4,27 @@ ALTER TABLE module_tasks
   ADD COLUMN planning_spec_id uuid,
   ADD COLUMN module_id text;
 
-UPDATE module_tasks AS task
-SET planning_spec_id = spec.plan_spec_id,
-    module_id = spec.module_id
-FROM module_specs AS spec
-WHERE spec.tenant_id = task.tenant_id
-  AND spec.id = task.module_spec_id;
-
 ALTER TABLE module_tasks
-  ALTER COLUMN planning_spec_id SET NOT NULL,
-  ALTER COLUMN module_id SET NOT NULL,
   ALTER COLUMN module_spec_id DROP NOT NULL,
   ADD CONSTRAINT module_tasks_planning_spec_fk
-    FOREIGN KEY (tenant_id, planning_spec_id) REFERENCES plan_specs(tenant_id, id) ON DELETE RESTRICT,
+    FOREIGN KEY (tenant_id, planning_spec_id) REFERENCES plan_specs(tenant_id, id) ON DELETE RESTRICT NOT VALID,
   ADD CONSTRAINT module_tasks_planning_binding_check CHECK (
-    module_id <> ''
-    AND (
-      (state IN ('QUEUED_PLANNING', 'PLANNING') AND module_spec_id IS NULL AND active_attempt_series_id IS NULL AND attempt_count = 0)
-      OR
-      (state NOT IN ('QUEUED_PLANNING', 'PLANNING') AND module_spec_id IS NOT NULL)
+    (planning_spec_id IS NULL AND module_id IS NULL AND module_spec_id IS NOT NULL)
+    OR
+    (
+      planning_spec_id IS NOT NULL
+      AND module_id IS NOT NULL
+      AND module_id <> ''
+      AND (
+        (state IN ('QUEUED_PLANNING', 'PLANNING') AND module_spec_id IS NULL AND active_attempt_series_id IS NULL AND attempt_count = 0)
+        OR
+        (state NOT IN ('QUEUED_PLANNING', 'PLANNING') AND module_spec_id IS NOT NULL)
+      )
     )
-  );
+  ) NOT VALID;
+
+ALTER TABLE plan_specs
+  ADD COLUMN planning_agent_id text;
 
 INSERT INTO agent_instances
   (id, tenant_id, project_id, role, provider, logical_model, actual_model_version,
@@ -41,8 +41,8 @@ JOIN agent_instances AS proposer
 ON CONFLICT DO NOTHING;
 
 ALTER TABLE plan_specs
-  ADD CONSTRAINT plan_specs_created_by_agent_fk
-    FOREIGN KEY (tenant_id, created_by_agent_id) REFERENCES agent_instances(tenant_id, id) ON DELETE RESTRICT NOT VALID;
+  ADD CONSTRAINT plan_specs_planning_agent_fk
+    FOREIGN KEY (tenant_id, planning_agent_id) REFERENCES agent_instances(tenant_id, id) ON DELETE RESTRICT NOT VALID;
 
 ALTER TABLE module_specs
   ADD COLUMN created_by_agent_id text,

@@ -160,12 +160,17 @@ func TestStagedPlanningMigrationBindsPlanningAuthority(t *testing.T) {
 	sql := string(content)
 	for _, required := range []string{
 		"ADD COLUMN planning_spec_id uuid", "ALTER COLUMN module_spec_id DROP NOT NULL",
-		"module_tasks_planning_binding_check", "project.id::text || ':PLAN_SUPERVISOR'",
-		"plan_specs_created_by_agent_fk", "ADD COLUMN created_by_agent_id text",
+		"module_tasks_planning_binding_check", "NOT VALID", "project.id::text || ':PLAN_SUPERVISOR'",
+		"ADD COLUMN planning_agent_id text", "plan_specs_planning_agent_fk", "ADD COLUMN created_by_agent_id text",
 		"module_specs_created_by_agent_fk", "REFERENCES agent_instances(tenant_id, id)",
 	} {
 		if !strings.Contains(sql, required) {
 			t.Errorf("staged planning migration missing %q", required)
+		}
+	}
+	for _, incompatible := range []string{"ALTER COLUMN planning_spec_id SET NOT NULL", "ALTER COLUMN module_id SET NOT NULL", "plan_specs_created_by_agent_fk"} {
+		if strings.Contains(sql, incompatible) {
+			t.Errorf("staged planning EXPAND migration contains rolling-incompatible %q", incompatible)
 		}
 	}
 }

@@ -169,7 +169,8 @@ func loadTasks(ctx context.Context, tx *sql.Tx, tenantID string, snapshot *Snaps
 	rows, err := tx.QueryContext(ctx, `
 SELECT task.project_id::text, task.id::text, plan.id::text
 FROM module_tasks AS task
-JOIN plan_specs AS plan ON plan.tenant_id = task.tenant_id AND plan.id = task.planning_spec_id
+LEFT JOIN module_specs AS spec ON spec.tenant_id = task.tenant_id AND spec.id = task.module_spec_id
+JOIN plan_specs AS plan ON plan.tenant_id = task.tenant_id AND plan.id = COALESCE(task.planning_spec_id, spec.plan_spec_id)
 WHERE task.tenant_id = $1::uuid
 ORDER BY task.project_id, task.id`, tenantID)
 	if err != nil {

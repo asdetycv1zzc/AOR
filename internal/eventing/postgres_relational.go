@@ -543,8 +543,8 @@ FOR SHARE`, tenantID, projectID, plan.GoalSpecRef.Version, plan.GoalSpecRef.SHA2
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO plan_specs
   (id, tenant_id, project_id, goal_spec_id, version, status, schema_version,
-   content_jsonb, content_sha256, created_by_agent_id, created_at)
-VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, 'DRAFT', 1, $6::jsonb, $7, $8, $9)
+   content_jsonb, content_sha256, created_by_agent_id, planning_agent_id, created_at)
+VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, 'DRAFT', 1, $6::jsonb, $7, $8, $8, $9)
 ON CONFLICT DO NOTHING`, planID, tenantID, projectID, goalSpecID, plan.PlanSpecVersion,
 		[]byte(artifact.Content), plan.SHA256, artifact.CreatedBy, artifact.CreatedAt); err != nil {
 		return relationalPlanSpec{}, err
@@ -554,15 +554,16 @@ ON CONFLICT DO NOTHING`, planID, tenantID, projectID, goalSpecID, plan.PlanSpecV
 	var storedStatus string
 	var storedSHA string
 	var storedCreatedBy string
+	var storedPlanningAgent sql.NullString
 	err = tx.QueryRowContext(ctx, `
-SELECT goal_spec_id::text, version, status, content_sha256, created_by_agent_id
+SELECT goal_spec_id::text, version, status, content_sha256, created_by_agent_id, planning_agent_id
 FROM plan_specs
 WHERE tenant_id = $1::uuid AND id = $2::uuid
-FOR SHARE`, tenantID, planID).Scan(&storedGoalID, &storedVersion, &storedStatus, &storedSHA, &storedCreatedBy)
+FOR SHARE`, tenantID, planID).Scan(&storedGoalID, &storedVersion, &storedStatus, &storedSHA, &storedCreatedBy, &storedPlanningAgent)
 	if err != nil {
 		return relationalPlanSpec{}, err
 	}
-	if storedGoalID != goalSpecID || storedVersion != plan.PlanSpecVersion || storedSHA != plan.SHA256 || storedCreatedBy != artifact.CreatedBy || storedStatus != "DRAFT" && storedStatus != "PUBLISHED" {
+	if storedGoalID != goalSpecID || storedVersion != plan.PlanSpecVersion || storedSHA != plan.SHA256 || storedCreatedBy != artifact.CreatedBy || !storedPlanningAgent.Valid || storedPlanningAgent.String != artifact.CreatedBy || storedStatus != "DRAFT" && storedStatus != "PUBLISHED" {
 		return relationalPlanSpec{}, aorerrors.New(aorerrors.CodeSpecSuperseded, "", map[string]any{"scope": "PlanSpec relational projection"})
 	}
 	return relationalPlanSpec{ID: planID, Plan: plan}, nil
@@ -804,11 +805,11 @@ func validateRelationalTaskRow(ctx context.Context, tx *sql.Tx, tenantID string,
 	var blocked sql.NullString
 	err := tx.QueryRowContext(ctx, `
 SELECT task.state, task.state_version, spec.version, spec.content_sha256,
-       plan.version, plan.content_sha256, task.module_id,
+       plan.version, plan.content_sha256, COALESCE(task.module_id, spec.module_id),
        task.active_attempt_series_id::text, task.attempt_count, task.latest_fencing_token, task.blocked_reason
 FROM module_tasks AS task
-JOIN plan_specs AS plan ON plan.tenant_id = task.tenant_id AND plan.id = task.planning_spec_id
 LEFT JOIN module_specs AS spec ON spec.tenant_id = task.tenant_id AND spec.id = task.module_spec_id
+JOIN plan_specs AS plan ON plan.tenant_id = task.tenant_id AND plan.id = COALESCE(task.planning_spec_id, spec.plan_spec_id)
 WHERE task.tenant_id = $1::uuid AND task.project_id = $2::uuid AND task.id = $3::uuid
 FOR SHARE OF task, plan`, tenantID, task.ProjectID, task.ID).Scan(
 		&state, &version, &specVersion, &specSHA, &planVersion, &planSHA, &moduleID,
@@ -973,12 +974,12 @@ LIMIT 1`},
 WITH online AS (
 	  SELECT task.id::text AS id, task.project_id::text AS project_id, task.state, task.state_version,
 	         task.attempt_count, task.active_attempt_series_id::text AS active_attempt_series_id,
-	         task.latest_fencing_token, task.module_id, plan.version AS planning_version,
+	         task.latest_fencing_token, COALESCE(task.module_id, spec.module_id) AS module_id, plan.version AS planning_version,
 	         plan.content_sha256 AS planning_sha256, spec.version AS module_version,
 	         spec.content_sha256 AS module_sha256, spec.created_by_agent_id AS module_created_by
 	  FROM module_tasks AS task
-	  JOIN plan_specs AS plan ON plan.tenant_id = task.tenant_id AND plan.id = task.planning_spec_id
 	  LEFT JOIN module_specs AS spec ON spec.tenant_id = task.tenant_id AND spec.id = task.module_spec_id
+	  JOIN plan_specs AS plan ON plan.tenant_id = task.tenant_id AND plan.id = COALESCE(task.planning_spec_id, spec.plan_spec_id)
   WHERE task.tenant_id = $1::uuid
 ), authoritative AS (
   SELECT aggregate_id AS id, project_id::text AS project_id, aggregate_version, state_jsonb
@@ -1000,8 +1001,8 @@ WHERE online.id IS NULL OR authoritative.id IS NULL
 	   OR NULLIF(authoritative.state_jsonb->>'attemptSeriesId', '') IS DISTINCT FROM online.active_attempt_series_id
 	   OR COALESCE((authoritative.state_jsonb->>'fencingToken')::bigint, 0) <> online.latest_fencing_token
 	   OR (authoritative.state_jsonb ? 'moduleId' AND authoritative.state_jsonb->>'moduleId' <> online.module_id)
-	   OR COALESCE((authoritative.state_jsonb->'planningSpecRef'->>'version')::integer, online.planning_version) <> online.planning_version
-	   OR COALESCE(authoritative.state_jsonb->'planningSpecRef'->>'sha256', online.planning_sha256) <> online.planning_sha256
+	   OR COALESCE(NULLIF((authoritative.state_jsonb->'planningSpecRef'->>'version')::integer, 0), online.planning_version) <> online.planning_version
+	   OR COALESCE(NULLIF(authoritative.state_jsonb->'planningSpecRef'->>'sha256', ''), online.planning_sha256) <> online.planning_sha256
 	   OR COALESCE((authoritative.state_jsonb->'moduleSpecRef'->>'version')::integer, 0) <> COALESCE(online.module_version, 0)
 	   OR COALESCE(authoritative.state_jsonb->'moduleSpecRef'->>'sha256', '') <> COALESCE(online.module_sha256, '')
 	   OR (
@@ -1026,14 +1027,15 @@ WHERE plan.tenant_id = $1::uuid
 	         WHEN plan.status = 'DRAFT' AND project.state IN ('PLANNING', 'PAUSED') THEN 'DRAFT'
 	         ELSE 'SUPERSEDED'
 	       END
-	    OR (plan.status = 'DRAFT' AND plan.created_by_agent_id <> (plan.project_id::text || ':PLAN_SUPERVISOR'))
+	    OR (plan.status = 'DRAFT' AND plan.planning_agent_id IS NULL)
+	    OR (plan.planning_agent_id IS NOT NULL AND plan.planning_agent_id <> (plan.project_id::text || ':PLAN_SUPERVISOR'))
 	    OR (
-	      plan.created_by_agent_id = (plan.project_id::text || ':PLAN_SUPERVISOR')
+	      plan.planning_agent_id IS NOT NULL
 	      AND NOT EXISTS (
 	        SELECT 1
 	        FROM agent_instances AS creator
 	        WHERE creator.tenant_id = plan.tenant_id AND creator.project_id = plan.project_id
-	          AND creator.id = plan.created_by_agent_id AND creator.role = 'PLAN_SUPERVISOR'
+	          AND creator.id = plan.planning_agent_id AND creator.role = 'PLAN_SUPERVISOR'
 	      )
 	    )
     OR NOT EXISTS (

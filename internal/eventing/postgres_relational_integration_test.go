@@ -192,22 +192,22 @@ VALUES ($1, $2::uuid, $3::uuid, 'PLAN_SUPERVISOR', 'UNASSIGNED', 'UNASSIGNED', '
 		if _, err := store.LoadReconciliationSnapshot(ctx, tenantID); err != nil {
 			t.Fatalf("%s reconciliation: %v", stage.key, err)
 		}
-		var status, taskStateValue, createdBy string
+		var status, taskStateValue, createdBy, planningAgent string
 		var moduleSpecID, moduleCreatedBy, activeSeries sql.NullString
 		if err := admin.QueryRowContext(ctx, `
-SELECT plan.status, plan.created_by_agent_id, task.state, task.module_spec_id::text,
+SELECT plan.status, plan.created_by_agent_id, plan.planning_agent_id, task.state, task.module_spec_id::text,
        spec.created_by_agent_id, task.active_attempt_series_id::text
 FROM module_tasks task
 JOIN plan_specs plan ON plan.tenant_id = task.tenant_id AND plan.id = task.planning_spec_id
 LEFT JOIN module_specs spec ON spec.tenant_id = task.tenant_id AND spec.id = task.module_spec_id
 WHERE task.tenant_id = $1::uuid AND task.id = $2::uuid`, tenantID, taskID).Scan(
-			&status, &createdBy, &taskStateValue, &moduleSpecID, &moduleCreatedBy, &activeSeries,
+			&status, &createdBy, &planningAgent, &taskStateValue, &moduleSpecID, &moduleCreatedBy, &activeSeries,
 		); err != nil {
 			t.Fatal(err)
 		}
 		plannerID := projectID + ":MODULE_PLANNER:" + taskID
-		if status != "DRAFT" || createdBy != supervisorID || taskStateValue != []string{"QUEUED_PLANNING", "PLANNING", "DEFINED"}[index] || moduleSpecID.Valid != (index == 2) || moduleCreatedBy.Valid != (index == 2) || index == 2 && moduleCreatedBy.String != plannerID || activeSeries.Valid != (index == 2) {
-			t.Fatalf("%s plan=%q creator=%q task=%q module=%v module creator=%v series=%v", stage.key, status, createdBy, taskStateValue, moduleSpecID, moduleCreatedBy, activeSeries)
+		if status != "DRAFT" || createdBy != supervisorID || planningAgent != supervisorID || taskStateValue != []string{"QUEUED_PLANNING", "PLANNING", "DEFINED"}[index] || moduleSpecID.Valid != (index == 2) || moduleCreatedBy.Valid != (index == 2) || index == 2 && moduleCreatedBy.String != plannerID || activeSeries.Valid != (index == 2) {
+			t.Fatalf("%s plan=%q creator=%q planning agent=%q task=%q module=%v module creator=%v series=%v", stage.key, status, createdBy, planningAgent, taskStateValue, moduleSpecID, moduleCreatedBy, activeSeries)
 		}
 		if index == 0 {
 			var plannerProjectID, plannerRole string
@@ -247,6 +247,44 @@ WHERE tenant_id = $1::uuid AND id = $2`, tenantID, plannerID).Scan(&plannerProje
 		if len(event.ReplayState) == 0 || event.ReplayStateSHA256 == "" {
 			t.Fatalf("event has no immutable replay state: %#v", event)
 		}
+	}
+	var legacyTaskState map[string]any
+	if err := json.Unmarshal(taskState, &legacyTaskState); err != nil {
+		t.Fatal(err)
+	}
+	legacyTaskState["planningSpecRef"] = map[string]any{"version": 0, "sha256": ""}
+	legacyTaskJSON, err := json.Marshal(legacyTaskState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(ctx, `
+UPDATE module_tasks
+SET planning_spec_id = NULL, module_id = NULL
+WHERE tenant_id = $1::uuid AND id = $2::uuid`, tenantID, taskID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(ctx, `
+UPDATE aggregate_projections
+SET state_jsonb = $3::jsonb
+WHERE tenant_id = $1::uuid AND aggregate_type = 'task' AND aggregate_id = $2`, tenantID, taskID, legacyTaskJSON); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LoadReconciliationSnapshot(ctx, tenantID); err != nil {
+		t.Fatalf("legacy task columns reconciliation: %v", err)
+	}
+	if _, err := admin.ExecContext(ctx, `
+UPDATE module_tasks AS task
+SET planning_spec_id = spec.plan_spec_id, module_id = spec.module_id
+FROM module_specs AS spec
+WHERE task.tenant_id = $1::uuid AND task.id = $2::uuid
+  AND spec.tenant_id = task.tenant_id AND spec.id = task.module_spec_id`, tenantID, taskID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.ExecContext(ctx, `
+UPDATE aggregate_projections
+SET state_jsonb = $3::jsonb
+WHERE tenant_id = $1::uuid AND aggregate_type = 'task' AND aggregate_id = $2`, tenantID, taskID, taskState); err != nil {
+		t.Fatal(err)
 	}
 	var planCount, moduleCount, taskCount, seriesCount, dependencyCount int
 	if err := admin.QueryRowContext(ctx, `SELECT count(*) FROM plan_specs WHERE tenant_id = $1::uuid AND project_id = $2::uuid`, tenantID, projectID).Scan(&planCount); err != nil {
