@@ -113,6 +113,13 @@
       "file": "000016_project_erasure.up.sql",
       "sha256": "sha256:1d963347b0efa8f7416ac2e5190a47cf781031e8bf0683c44e06041346381098",
       "destructive": false
+    },
+    {
+      "version": 17,
+      "mode": "EXPAND",
+      "file": "000017_relational_projection_sync.up.sql",
+      "sha256": "sha256:f6594a1eee5b5c55c0e1c70103439955e988055085d6e8f9071bebade7d83769",
+      "destructive": false
     }
   ]
 }

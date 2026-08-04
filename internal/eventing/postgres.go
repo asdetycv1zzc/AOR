@@ -269,6 +269,12 @@ FOR UPDATE`, request.TenantID, update.AggregateType, update.AggregateID).Scan(&v
 				return TransactionResult{}, err
 			}
 		}
+	}
+
+	// Persist the event-sourced projections before reconciling their relational
+	// counterparts. This lets a publication transaction include artifacts that
+	// were supplied in the same command while every failure still rolls back.
+	for _, update := range request.Updates {
 		if update.ExpectedVersion == 0 {
 			_, err = tx.ExecContext(ctx, `
 INSERT INTO aggregate_projections
@@ -296,6 +302,22 @@ WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND aggregate_type = $3 AND
 		}
 	}
 
+	publication, err := syncPublishedPlan(ctx, tx, request)
+	if err != nil {
+		return TransactionResult{}, err
+	}
+	taskUpdates := make([]relationalTaskProjection, 0)
+	for _, update := range request.Updates {
+		if update.AggregateType != "task" {
+			continue
+		}
+		task, syncErr := syncTaskRow(ctx, tx, request, update)
+		if syncErr != nil {
+			return TransactionResult{}, syncErr
+		}
+		taskUpdates = append(taskUpdates, task)
+	}
+
 	for _, approval := range request.Approvals {
 		_, err = tx.ExecContext(ctx, `
 INSERT INTO approvals
@@ -305,6 +327,32 @@ VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, $8, $9, $10, '{}'::jsonb, 
 			approval.PrincipalID, approval.Reason, approval.IssuedAt, approval.ExpiresAt, approval.RevokedAt, approval.Signature)
 		if err != nil {
 			return TransactionResult{}, err
+		}
+	}
+	for _, task := range taskUpdates {
+		if err := syncTaskAttemptSeries(ctx, tx, request, task); err != nil {
+			return TransactionResult{}, err
+		}
+	}
+	if publication != nil {
+		if err := validatePublishedPlanTasks(ctx, tx, request, *publication); err != nil {
+			return TransactionResult{}, err
+		}
+	} else {
+		for _, task := range taskUpdates {
+			if err := syncTaskDependencies(ctx, tx, request.TenantID, task); err != nil {
+				return TransactionResult{}, err
+			}
+			if err := validateRelationalTaskRow(ctx, tx, request.TenantID, task); err != nil {
+				return TransactionResult{}, err
+			}
+		}
+	}
+	for _, update := range request.Updates {
+		if update.AggregateType == "project" {
+			if err := syncProjectSpecBindings(ctx, tx, request, update); err != nil {
+				return TransactionResult{}, err
+			}
 		}
 	}
 
@@ -492,6 +540,7 @@ WHERE tenant_id = $1::uuid AND id = $2::uuid AND attempt_count = $3 AND publishe
 
 func syncProjectRow(ctx context.Context, tx *sql.Tx, request TransactionRequest, update ProjectionUpdate) error {
 	var projection struct {
+		TenantID             string   `json:"tenantId"`
 		ID                   string   `json:"id"`
 		State                string   `json:"state"`
 		Name                 string   `json:"name"`
@@ -512,7 +561,7 @@ func syncProjectRow(ctx context.Context, tx *sql.Tx, request TransactionRequest,
 	if err := json.Unmarshal(update.State, &projection); err != nil {
 		return fmt.Errorf("decode project projection for relational sync: %w", err)
 	}
-	if projection.ID == "" || projection.ID != update.AggregateID || projection.State == "" {
+	if projection.TenantID != request.TenantID || projection.ID == "" || projection.ID != update.AggregateID || projection.State == "" {
 		return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "project relational projection"})
 	}
 	var deletionStatus any
@@ -673,18 +722,21 @@ WHERE tenant_id = $1::uuid AND id = $2::uuid AND project_id = $3::uuid
 			return aorerrors.New(aorerrors.CodeStateVersionConflict, "", map[string]any{"scope": "GoalSpec relational projection"})
 		}
 	}
-	if projection.Spec.Status == "SUPERSEDED" {
+	if projection.Spec.Status == "APPROVED" {
+		_, err := tx.ExecContext(ctx, `
+UPDATE projects
+SET active_goal_spec_id = $3::uuid
+WHERE tenant_id = $1::uuid AND id = $2::uuid`, request.TenantID, projection.ProjectID, projection.RecordID)
+		return err
+	}
+	if projection.Spec.Status == "SUPERSEDED" || projection.Spec.Status == "REJECTED" {
 		_, err := tx.ExecContext(ctx, `
 UPDATE projects
 SET active_goal_spec_id = NULL
 WHERE tenant_id = $1::uuid AND id = $2::uuid AND active_goal_spec_id = $3::uuid`, request.TenantID, projection.ProjectID, projection.RecordID)
 		return err
 	}
-	_, err := tx.ExecContext(ctx, `
-UPDATE projects
-SET active_goal_spec_id = $3::uuid
-WHERE tenant_id = $1::uuid AND id = $2::uuid`, request.TenantID, projection.ProjectID, projection.RecordID)
-	return err
+	return nil
 }
 
 func lookupCommand(ctx context.Context, tx *sql.Tx, tenantID, principalID, idempotencyKey, requestSHA256 string) (TransactionResult, bool, error) {

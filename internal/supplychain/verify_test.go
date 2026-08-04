@@ -102,6 +102,21 @@ func TestVerifyRejectsNonProductionReleaseEvidence(t *testing.T) {
 	}
 }
 
+func TestVerifyRejectsUnverifiedReleaseEvidenceSignature(t *testing.T) {
+	bundle, publicKey := signedBundleFixture(t)
+	var evidence map[string]any
+	if err := json.Unmarshal(bundle.ReleaseEvidence, &evidence); err != nil {
+		t.Fatal(err)
+	}
+	signature := evidence["signature"].(map[string]any)
+	signature["value"] = strings.Repeat("A", 86)
+	bundle.ReleaseEvidence = mustJSON(evidence)
+	resignSpecialFixture(t, &bundle, publicKey, ReleaseEvidenceFile, bundle.ReleaseEvidence)
+	if _, err := Verify(context.Background(), bundle, Keyring{"release-1": publicKey}); !errors.Is(err, ErrInvalidManifest) {
+		t.Fatalf("unverified evidence signature result = %v", err)
+	}
+}
+
 func TestSignManifestRejectsUnsortedAndIncompleteArtifacts(t *testing.T) {
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -151,7 +166,12 @@ func signedBundleFixture(t *testing.T) (Bundle, ed25519.PublicKey) {
 		Materials:       []Material{{URI: "git+https://example.invalid/akimisaka/aor.git?path=go.mod", SHA256: ArtifactDigest([]byte("go.mod"))}, {URI: "git+https://example.invalid/akimisaka/aor.git?path=go.sum", SHA256: ArtifactDigest([]byte("go.sum"))}},
 		Artifacts:       artifacts,
 	}
-	evidence := releaseEvidenceFixture(t, manifest)
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixturePrivateKeys[string(publicKey)] = privateKey
+	evidence := releaseEvidenceFixture(t, manifest, privateKey)
 	artifacts = append(artifacts, artifactFixture(ReleaseEvidenceFile, ArtifactReleaseEvidence, "application/json", evidence))
 	sbom := spdxFixture(manifest, artifacts)
 	artifacts = append(artifacts, artifactFixture(SBOMFile, ArtifactSBOM, "application/spdx+json", sbom))
@@ -163,11 +183,6 @@ func signedBundleFixture(t *testing.T) (Bundle, ed25519.PublicKey) {
 	manifest.SBOMSHA256 = ArtifactDigest(sbom)
 	manifest.ProvenanceSHA256 = ArtifactDigest(provenance)
 	manifest.ReleaseEvidenceSHA256 = ArtifactDigest(evidence)
-	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fixturePrivateKeys[string(publicKey)] = privateKey
 	manifest, err = SignManifest(manifest, privateKey, "release-1")
 	if err != nil {
 		t.Fatal(err)
@@ -224,14 +239,21 @@ func provenanceFixture(manifest Manifest) []byte {
 	return mustJSON(map[string]any{"_type": "https://in-toto.io/Statement/v1", "subject": subjects, "predicateType": "https://slsa.dev/provenance/v1", "predicate": map[string]any{"buildDefinition": map[string]any{"buildType": manifest.BuildType, "externalParameters": map[string]any{"source": map[string]any{"uri": manifest.SourceURI, "digest": map[string]string{"gitCommit": manifest.SourceCommit}}}, "internalParameters": map[string]any{}, "resolvedDependencies": dependencies}, "runDetails": map[string]any{"builder": map[string]string{"id": manifest.BuilderIdentity}, "metadata": map[string]string{"invocationId": "build-01", "startedOn": "2026-08-04T00:00:00Z", "finishedOn": "2026-08-04T00:01:00Z"}}}})
 }
 
-func releaseEvidenceFixture(t *testing.T, manifest Manifest) []byte {
+func releaseEvidenceFixture(t *testing.T, manifest Manifest, privateKey ed25519.PrivateKey) []byte {
 	t.Helper()
-	evidence := map[string]any{"evidenceVersion": "1.0", "specVersion": "2.0.0", "releaseVersion": manifest.Version, "sourceCommit": manifest.SourceCommit, "buildDigest": ArtifactDigest([]byte("build")), "startedAt": time.Date(2026, 8, 4, 0, 0, 0, 0, time.UTC).Format(time.RFC3339), "completedAt": time.Date(2026, 8, 4, 0, 1, 0, 0, time.UTC).Format(time.RFC3339), "environment": "production", "target": "https://preprod.example.invalid", "results": []map[string]any{{"requirementId": "AOR-ACC-050", "status": "PASS", "tool": "aor-conformance", "toolVersion": "2.0.0"}}, "exceptions": []string{}, "evidenceDigest": "", "signature": map[string]string{"type": "kms-signature", "kid": "release-approver", "value": "fixture-signature"}}
+	evidence := map[string]any{"evidenceVersion": "1.0", "specVersion": "2.0.0", "releaseVersion": manifest.Version, "sourceCommit": manifest.SourceCommit, "buildDigest": ArtifactDigest([]byte("build")), "startedAt": time.Date(2026, 8, 4, 0, 0, 0, 0, time.UTC).Format(time.RFC3339), "completedAt": time.Date(2026, 8, 4, 0, 1, 0, 0, time.UTC).Format(time.RFC3339), "environment": "production", "target": "https://preprod.example.invalid", "results": []map[string]any{{"requirementId": "AOR-ACC-050", "status": "PASS", "tool": "aor-conformance", "toolVersion": "2.0.0"}}, "exceptions": []string{}, "evidenceDigest": ""}
 	digest, err := canonicaljson.DigestObjectWithoutFields(mustJSON(evidence), "evidenceDigest", "signature")
 	if err != nil {
 		t.Fatal(err)
 	}
 	evidence["evidenceDigest"] = digest
+	payload := make(map[string]any, len(evidence))
+	for key, value := range evidence {
+		payload[key] = value
+	}
+	delete(payload, "signature")
+	signature := signPayload(privateKey, "release-1", mustJSON(payload))
+	evidence["signature"] = map[string]string{"type": "Ed25519", "kid": signature.KID, "value": signature.Value}
 	return mustJSON(evidence)
 }
 

@@ -86,6 +86,23 @@ func TestCoreMigrationContainsAtomicityAndIsolationConstraints(t *testing.T) {
 	if !strings.Contains(string(goalGrantContent), "GRANT SELECT, INSERT, UPDATE ON TABLE public.goal_specs TO aor_app") {
 		t.Fatal("GoalSpec runtime migration is missing least-privilege table grants")
 	}
+	relationalPath := filepath.Join("..", "..", "migrations", "postgres", "000017_relational_projection_sync.up.sql")
+	relationalContent, err := os.ReadFile(relationalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{
+		"GRANT SELECT, INSERT, UPDATE ON TABLE public.plan_specs TO aor_app",
+		"GRANT SELECT, INSERT, UPDATE ON TABLE public.module_specs TO aor_app",
+		"GRANT SELECT, INSERT, UPDATE ON TABLE public.module_tasks TO aor_app",
+		"GRANT SELECT, INSERT, UPDATE ON TABLE public.attempt_series TO aor_app",
+		"GRANT SELECT, INSERT ON TABLE public.task_dependencies TO aor_app",
+		"CREATE INDEX relational_spec_artifact_lookup_idx",
+	} {
+		if !strings.Contains(string(relationalContent), value) {
+			t.Errorf("relational projection migration missing %q", value)
+		}
+	}
 	manifestContent, err := os.ReadFile(filepath.Join("..", "..", "migrations", "postgres", "manifest.json"))
 	if err != nil {
 		t.Fatal(err)

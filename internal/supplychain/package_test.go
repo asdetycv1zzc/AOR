@@ -147,11 +147,11 @@ func assembleRequestFixture(t *testing.T) (AssembleRequest, ed25519.PublicKey) {
 	licensePath := writePackageFixture(t, sources, "LICENSE", []byte("MIT License\n"))
 	noticePath := writePackageFixture(t, sources, "NOTICE", []byte("AOR notice\n"))
 	manifest := Manifest{Version: "2.0.0-rc.1", SourceCommit: "0123456789abcdef0123456789abcdef01234567"}
-	evidencePath := writePackageFixture(t, sources, "release-evidence.json", releaseEvidenceFixture(t, manifest))
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
+	evidencePath := writePackageFixture(t, sources, "release-evidence.json", releaseEvidenceFixture(t, manifest, privateKey))
 	return AssembleRequest{
 		OutputDir:       filepath.Join(t.TempDir(), "release"),
 		Version:         manifest.Version,

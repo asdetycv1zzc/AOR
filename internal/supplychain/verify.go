@@ -150,7 +150,7 @@ func Verify(ctx context.Context, bundle Bundle, keys Keyring) (Report, error) {
 	if err := validateProvenance(bundle.Provenance, bundle.Manifest); err != nil {
 		return Report{}, fmt.Errorf("%w: provenance: %v", ErrInvalidManifest, err)
 	}
-	if err := validateReleaseEvidence(bundle.ReleaseEvidence, bundle.Manifest); err != nil {
+	if err := validateReleaseEvidence(bundle.ReleaseEvidence, bundle.Manifest, keys); err != nil {
 		return Report{}, fmt.Errorf("%w: release evidence: %v", ErrInvalidManifest, err)
 	}
 	for _, artifact := range bundle.Manifest.Artifacts {
@@ -575,7 +575,7 @@ func validateProvenance(value []byte, manifest Manifest) error {
 	return nil
 }
 
-func validateReleaseEvidence(value []byte, manifest Manifest) error {
+func validateReleaseEvidence(value []byte, manifest Manifest, keys Keyring) error {
 	var document struct {
 		EvidenceVersion string `json:"evidenceVersion"`
 		SpecVersion     string `json:"specVersion"`
@@ -593,14 +593,18 @@ func validateReleaseEvidence(value []byte, manifest Manifest) error {
 			Tool          string   `json:"tool"`
 			ToolVersion   string   `json:"toolVersion"`
 		} `json:"results"`
-		Exceptions     []string       `json:"exceptions"`
-		EvidenceDigest string         `json:"evidenceDigest"`
-		Signature      map[string]any `json:"signature"`
+		Exceptions     []string `json:"exceptions"`
+		EvidenceDigest string   `json:"evidenceDigest"`
+		Signature      struct {
+			Type  string `json:"type"`
+			KID   string `json:"kid"`
+			Value string `json:"value"`
+		} `json:"signature"`
 	}
 	if err := decodeStrict(value, &document); err != nil {
 		return err
 	}
-	if document.EvidenceVersion == "" || document.SpecVersion == "" || document.ReleaseVersion != manifest.Version || document.SourceCommit != manifest.SourceCommit || !digestPattern.MatchString(document.BuildDigest) || document.Environment != "production" || len(document.Results) == 0 || len(document.Exceptions) != 0 || !digestPattern.MatchString(document.EvidenceDigest) || len(document.Signature) == 0 {
+	if document.EvidenceVersion == "" || document.SpecVersion == "" || document.ReleaseVersion != manifest.Version || document.SourceCommit != manifest.SourceCommit || !digestPattern.MatchString(document.BuildDigest) || document.Environment != "production" || len(document.Results) == 0 || len(document.Exceptions) != 0 || !digestPattern.MatchString(document.EvidenceDigest) || document.Signature.Type != "Ed25519" || document.Signature.KID == "" || document.Signature.Value == "" {
 		return errors.New("release evidence is not a signed production PASS report for this release")
 	}
 	for _, result := range document.Results {
@@ -611,6 +615,23 @@ func validateReleaseEvidence(value []byte, manifest Manifest) error {
 	computed, err := canonicaljson.DigestObjectWithoutFields(value, "evidenceDigest", "signature")
 	if err != nil || computed != document.EvidenceDigest {
 		return errors.New("release evidence digest is invalid")
+	}
+	key, found := keys[document.Signature.KID]
+	if !found || len(key) != ed25519.PublicKeySize {
+		return ErrKeyUnavailable
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal(value, &envelope); err != nil {
+		return err
+	}
+	delete(envelope, "signature")
+	encoded, err := json.Marshal(envelope)
+	if err != nil {
+		return err
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(document.Signature.Value)
+	if err != nil || len(signature) != ed25519.SignatureSize || !ed25519.Verify(key, encoded, signature) {
+		return ErrSignatureInvalid
 	}
 	return nil
 }
