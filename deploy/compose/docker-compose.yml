@@ -50,13 +50,18 @@ services:
     command:
       - |
         export PGPASSWORD="$$(cat /run/secrets/postgres_password)"
-        installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT to_regtype('aor_sha256') IS NOT NULL")"
-        if [ "$$installed" != "t" ]; then
+        core_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT to_regtype('aor_sha256') IS NOT NULL")"
+        if [ "$$core_installed" != "t" ]; then
           psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000001_core.up.sql
+        fi
+        claims_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'inbox' AND column_name = 'claim_token')")"
+        if [ "$$claims_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000002_inbox_claims.up.sql
         fi
     secrets: [postgres_password]
     volumes:
       - ../../migrations/postgres/000001_core.up.sql:/migrations/000001_core.up.sql:ro
+      - ../../migrations/postgres/000002_inbox_claims.up.sql:/migrations/000002_inbox_claims.up.sql:ro
     read_only: true
     tmpfs: [/tmp]
     security_opt: [no-new-privileges:true]
@@ -246,18 +251,23 @@ services:
       opa:
         condition: service_healthy
     environment:
+      AOR_ENVIRONMENT: test
       AOR_LISTEN_ADDR: :8080
-      AOR_REQUIRED_ENDPOINTS: postgres:5432,temporal:7233,nats:4222,minio:9000,opa:8181
       AOR_DATABASE_HOST: postgres
       AOR_DATABASE_PORT: "5432"
       AOR_DATABASE_NAME: aor
       AOR_DATABASE_USER: aor
+      AOR_DATABASE_PASSWORD_REF: secret://postgres_password
       AOR_TEMPORAL_ADDRESS: temporal:7233
       AOR_TEMPORAL_NAMESPACE: aor
       AOR_NATS_URL: nats://nats:4222
       AOR_S3_ENDPOINT: http://minio:9000
       AOR_S3_BUCKET: aor-artifacts
+      AOR_S3_REGION: us-east-1
+      AOR_S3_ACCESS_KEY_REF: secret://minio_root_user
+      AOR_S3_SECRET_KEY_REF: secret://minio_root_password
       AOR_OPA_URL: http://opa:8181
+    secrets: [postgres_password, minio_root_user, minio_root_password]
     ports:
       - 127.0.0.1:8090:8080
 
@@ -278,14 +288,17 @@ services:
       nats:
         condition: service_healthy
     environment:
+      AOR_ENVIRONMENT: test
       AOR_LISTEN_ADDR: :8080
-      AOR_REQUIRED_ENDPOINTS: postgres:5432,nats:4222
       AOR_DATABASE_HOST: postgres
       AOR_DATABASE_PORT: "5432"
       AOR_DATABASE_NAME: aor
       AOR_DATABASE_USER: aor
+      AOR_DATABASE_PASSWORD_REF: secret://postgres_password
       AOR_NATS_URL: nats://nats:4222
-      AOR_MODEL_KEY_REF: secret://model-gateway/provider
+      AOR_MODEL_PROVIDERS_JSON: >-
+        [{"id":"openai-primary","provider":"openai","baseUrl":"${AOR_OPENAI_BASE_URL:-https://api.openai.com/v1}","apiKeyRef":"secret://model_provider_openai_key","models":["${AOR_OPENAI_MODEL:-gpt-4o-mini}"],"inputMicrosPerToken":1,"outputMicrosPerToken":4},{"id":"anthropic-audit","provider":"anthropic","baseUrl":"${AOR_ANTHROPIC_BASE_URL:-https://api.anthropic.com/v1}","apiKeyRef":"secret://model_provider_anthropic_key","models":["${AOR_ANTHROPIC_MODEL:-claude-3-5-haiku-latest}"],"inputMicrosPerToken":1,"outputMicrosPerToken":4}]
+    secrets: [postgres_password, model_provider_openai_key, model_provider_anthropic_key]
     ports:
       - 127.0.0.1:8091:8080
 
@@ -304,8 +317,8 @@ services:
       opa:
         condition: service_healthy
     environment:
+      AOR_ENVIRONMENT: test
       AOR_LISTEN_ADDR: :8080
-      AOR_REQUIRED_ENDPOINTS: nats:4222,opa:8181
       AOR_NATS_URL: nats://nats:4222
       AOR_OPA_URL: http://opa:8181
     ports:
@@ -328,18 +341,29 @@ services:
       aor-tool-broker:
         condition: service_healthy
     environment:
+      AOR_ENVIRONMENT: test
       AOR_LISTEN_ADDR: :8080
-      AOR_REQUIRED_ENDPOINTS: aor-api:8080,aor-model-gateway:8080,aor-tool-broker:8080,temporal:7233,nats:4222,minio:9000,opa:8181
       AOR_DATABASE_HOST: postgres
       AOR_DATABASE_PORT: "5432"
       AOR_DATABASE_NAME: aor
       AOR_DATABASE_USER: aor
+      AOR_DATABASE_PASSWORD_REF: secret://postgres_password
       AOR_TEMPORAL_ADDRESS: temporal:7233
       AOR_TEMPORAL_NAMESPACE: aor
       AOR_NATS_URL: nats://nats:4222
+      AOR_S3_ENDPOINT: http://minio:9000
+      AOR_S3_BUCKET: aor-artifacts
+      AOR_S3_REGION: us-east-1
+      AOR_S3_ACCESS_KEY_REF: secret://minio_root_user
+      AOR_S3_SECRET_KEY_REF: secret://minio_root_password
+      AOR_OPA_URL: http://opa:8181
+      AOR_API_URL: http://aor-api:8080
+      AOR_MODEL_GATEWAY_URL: http://aor-model-gateway:8080
+      AOR_TOOL_BROKER_URL: http://aor-tool-broker:8080
       AOR_SANDBOX_LINUX_LEVEL: CONTAINER
       AOR_SANDBOX_WINDOWS_LEVEL: NONE
       AOR_ALLOW_WINDOWS_UNTRUSTED: "false"
+    secrets: [postgres_password, minio_root_user, minio_root_password]
     ports:
       - 127.0.0.1:8093:8080
 
@@ -359,3 +383,7 @@ secrets:
     file: ./secrets/minio_root_user
   minio_root_password:
     file: ./secrets/minio_root_password
+  model_provider_openai_key:
+    file: ./secrets/model_provider_openai_key
+  model_provider_anthropic_key:
+    file: ./secrets/model_provider_anthropic_key

@@ -10,6 +10,7 @@ COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY cmd ./cmd
 COPY internal ./internal
+COPY model-adapters ./model-adapters
 COPY pkg ./pkg
 ARG AOR_COMPONENT
 ARG AOR_VERSION=0.1.0-test

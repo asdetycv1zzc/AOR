@@ -7,6 +7,7 @@ This profile starts the complete local dependency set before any AOR process:
 - NATS with JetStream and persistent storage
 - MinIO with the private `aor-artifacts` bucket
 - Open Policy Agent with the repository policy and data
+- Two independently configured model-provider families for the Model Gateway
 
 All upstream images are pinned by version and multi-platform manifest digest. Host ports bind to `127.0.0.1`; this profile is for development and test only.
 
@@ -23,9 +24,15 @@ umask 077
 openssl rand -hex 32 > deploy/compose/secrets/postgres_password
 openssl rand -hex 16 > deploy/compose/secrets/minio_root_user
 openssl rand -hex 32 > deploy/compose/secrets/minio_root_password
+# Write the actual credentials issued by each provider, one value per file.
+# Do not generate placeholder keys: Compose checks that both files are nonempty.
+${EDITOR:-vi} deploy/compose/secrets/model_provider_openai_key
+${EDITOR:-vi} deploy/compose/secrets/model_provider_anthropic_key
 ```
 
-The secret values are mounted as files. They are not committed or placed in AOR container environment variables.
+The secret values are mounted as files. They are not committed or placed in AOR container environment variables. AOR refers to mounted files only through `secret://` references: PostgreSQL uses `secret://postgres_password`; API and worker use the MinIO root access and secret files for local S3 access; the Model Gateway uses one mounted file for each provider family.
+
+The Model Gateway defaults to OpenAI and Anthropic endpoints and models. Set `AOR_OPENAI_BASE_URL`, `AOR_OPENAI_MODEL`, `AOR_ANTHROPIC_BASE_URL`, or `AOR_ANTHROPIC_MODEL` in the host environment before `make compose-up` to select compatible endpoints or approved models. Provider credentials always remain in the two secret files.
 
 ## Start
 
@@ -39,9 +46,10 @@ The target performs these stages in order:
 
 1. Validate the Compose model and required secret files.
 2. Pull all dependency images.
-3. Start dependencies and wait for their health checks and initialization jobs.
-4. Build the four AOR images serially from the current source.
-5. Start AOR and wait for every process readiness endpoint.
+3. Start PostgreSQL, Temporal, NATS, MinIO, and OPA, then wait for their health checks and initialization jobs.
+4. Apply PostgreSQL migrations `000001_core.up.sql` and `000002_inbox_claims.up.sql` in order; reruns detect the installed schema and are idempotent.
+5. Build the four AOR images serially from the current source.
+6. Start AOR only after every dependency and initializer has completed successfully, then wait for every process readiness endpoint.
 
 Individual stages are available as `make compose-pull`, `make compose-deps-up`, `make compose-aor-up`, and `make compose-ps`.
 
