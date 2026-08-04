@@ -28,6 +28,42 @@ type Project struct {
 	Plan                    *contracts.SpecRef     `json:"plan,omitempty"`
 	ReleaseApprovalRecordID string                 `json:"releaseApprovalRecordId,omitempty"`
 	PausedFromState         contracts.ProjectState `json:"pausedFromState,omitempty"`
+	Deletion                *ProjectDeletion       `json:"deletion,omitempty"`
+	LegalHolds              []ProjectLegalHold     `json:"legalHolds,omitempty"`
+}
+
+type ProjectDeletionStatus string
+
+const (
+	ProjectDeletionBlocked   ProjectDeletionStatus = "BLOCKED_LEGAL_HOLD"
+	ProjectDeletionReady     ProjectDeletionStatus = "READY"
+	ProjectDeletionErasing   ProjectDeletionStatus = "ERASING"
+	ProjectDeletionCompleted ProjectDeletionStatus = "COMPLETED"
+)
+
+// ProjectDeletion contains only lifecycle metadata. A completed record is the
+// content-free proof index retained after project data has been erased.
+type ProjectDeletion struct {
+	ID                  string                `json:"id"`
+	Status              ProjectDeletionStatus `json:"status"`
+	RequestedBy         string                `json:"requestedBy"`
+	RequestedAt         time.Time             `json:"requestedAt"`
+	EarliestExecutionAt time.Time             `json:"earliestExecutionAt"`
+	StartedAt           *time.Time            `json:"startedAt,omitempty"`
+	CompletedAt         *time.Time            `json:"completedAt,omitempty"`
+	ProofSHA256         string                `json:"proofSha256,omitempty"`
+	ProofArtifactURI    string                `json:"proofArtifactUri,omitempty"`
+	BackupExpiresAt     *time.Time            `json:"backupExpiresAt,omitempty"`
+}
+
+type ProjectLegalHold struct {
+	ID            string     `json:"id"`
+	Reason        string     `json:"reason"`
+	PlacedBy      string     `json:"placedBy"`
+	PlacedAt      time.Time  `json:"placedAt"`
+	ReleasedBy    string     `json:"releasedBy,omitempty"`
+	ReleasedAt    *time.Time `json:"releasedAt,omitempty"`
+	ReleaseReason string     `json:"releaseReason,omitempty"`
 }
 
 type GoalRecord struct {
@@ -97,6 +133,11 @@ const (
 	ProjectCommandResume               ProjectCommandType = "RESUME_PROJECT"
 	ProjectCommandAbort                ProjectCommandType = "ABORT_PROJECT"
 	ProjectCommandArchive              ProjectCommandType = "ARCHIVE_PROJECT"
+	ProjectCommandRequestDeletion      ProjectCommandType = "REQUEST_PROJECT_DELETION"
+	ProjectCommandPlaceLegalHold       ProjectCommandType = "PLACE_PROJECT_LEGAL_HOLD"
+	ProjectCommandReleaseLegalHold     ProjectCommandType = "RELEASE_PROJECT_LEGAL_HOLD"
+	ProjectCommandBeginDeletion        ProjectCommandType = "BEGIN_PROJECT_DELETION"
+	ProjectCommandCompleteDeletion     ProjectCommandType = "COMPLETE_PROJECT_DELETION"
 )
 
 type ProjectCommand struct {
@@ -124,6 +165,10 @@ type ProjectCommand struct {
 	BudgetSoftLimitMinor int64
 	PromptBundleVersion  string
 	RiskTolerance        string
+	Deletion             *ProjectDeletion
+	LegalHold            *ProjectLegalHold
+	LegalHoldID          string
+	ReleaseReason        string
 	At                   time.Time
 }
 
@@ -140,6 +185,9 @@ func DecideProject(current Project, command ProjectCommand) (ProjectEvent, *aore
 	}
 	next := cloneProject(current)
 	eventType := ""
+	if current.Deletion != nil && current.Deletion.Status != ProjectDeletionCompleted && !projectLifecycleCommand(command.Type) {
+		return ProjectEvent{}, transitionProject(command, current.State)
+	}
 	switch command.Type {
 	case ProjectCommandCreate:
 		if current.Version != 0 || current.ID != "" || command.TenantID == "" || command.ProjectID == "" || command.GoalAgentCount < 1 || command.GoalAgentCount > 2 {
@@ -354,6 +402,75 @@ func DecideProject(current Project, command ProjectCommand) (ProjectEvent, *aore
 		}
 		next.State = contracts.ProjectArchived
 		eventType = "io.aor.project.archived.v1"
+	case ProjectCommandRequestDeletion:
+		if current.ID == "" || current.Deletion != nil || command.Deletion == nil || !validDeletionRequest(command.Deletion, command) {
+			return ProjectEvent{}, invalidProject(command, "deletion request")
+		}
+		deletion := *command.Deletion
+		deletion.Status = ProjectDeletionReady
+		if hasActiveLegalHold(current.LegalHolds) {
+			deletion.Status = ProjectDeletionBlocked
+		}
+		next.Deletion = &deletion
+		if !terminalProjectState(current.State) {
+			next.PausedFromState = current.State
+			next.State = contracts.ProjectPaused
+		} else if current.State != contracts.ProjectArchived {
+			next.State = contracts.ProjectArchived
+		}
+		eventType = "io.aor.project.deletion-requested.v1"
+	case ProjectCommandPlaceLegalHold:
+		if current.ID == "" || command.LegalHold == nil || !validLegalHold(command.LegalHold, command) || legalHoldIndex(current.LegalHolds, command.LegalHold.ID) >= 0 {
+			return ProjectEvent{}, invalidProject(command, "legal hold")
+		}
+		hold := *command.LegalHold
+		next.LegalHolds = append(next.LegalHolds, hold)
+		if next.Deletion != nil && next.Deletion.Status == ProjectDeletionReady {
+			next.Deletion.Status = ProjectDeletionBlocked
+		}
+		eventType = "io.aor.project.legal-hold-placed.v1"
+	case ProjectCommandReleaseLegalHold:
+		index := legalHoldIndex(current.LegalHolds, command.LegalHoldID)
+		if index < 0 || current.LegalHolds[index].ReleasedAt != nil || !safeLifecycleText(command.ReleaseReason, 1024) {
+			return ProjectEvent{}, invalidProject(command, "legal hold release")
+		}
+		releasedAt := command.At.UTC()
+		next.LegalHolds[index].ReleasedAt = &releasedAt
+		next.LegalHolds[index].ReleasedBy = command.ActorID
+		next.LegalHolds[index].ReleaseReason = command.ReleaseReason
+		if next.Deletion != nil && next.Deletion.Status == ProjectDeletionBlocked && !hasActiveLegalHold(next.LegalHolds) {
+			next.Deletion.Status = ProjectDeletionReady
+		}
+		eventType = "io.aor.project.legal-hold-released.v1"
+	case ProjectCommandBeginDeletion:
+		if current.Deletion == nil || current.Deletion.Status != ProjectDeletionReady || hasActiveLegalHold(current.LegalHolds) || command.At.Before(current.Deletion.EarliestExecutionAt) {
+			return ProjectEvent{}, transitionProject(command, current.State)
+		}
+		startedAt := command.At.UTC()
+		next.Deletion.Status = ProjectDeletionErasing
+		next.Deletion.StartedAt = &startedAt
+		eventType = "io.aor.project.deletion-started.v1"
+	case ProjectCommandCompleteDeletion:
+		if current.Deletion == nil || current.Deletion.Status != ProjectDeletionErasing || command.Deletion == nil || !validDeletionCompletion(command.Deletion, command.At) {
+			return ProjectEvent{}, transitionProject(command, current.State)
+		}
+		completedAt := command.At.UTC()
+		next.Deletion.Status = ProjectDeletionCompleted
+		next.Deletion.CompletedAt = &completedAt
+		next.Deletion.ProofSHA256 = command.Deletion.ProofSHA256
+		next.Deletion.ProofArtifactURI = command.Deletion.ProofArtifactURI
+		if command.Deletion.BackupExpiresAt != nil {
+			value := command.Deletion.BackupExpiresAt.UTC()
+			next.Deletion.BackupExpiresAt = &value
+		}
+		next.State = contracts.ProjectArchived
+		next.PausedFromState = ""
+		next.Goal = nil
+		next.Plan = nil
+		next.DeploymentTargets = nil
+		next.PromptBundleVersion = ""
+		next.ReleaseApprovalRecordID = ""
+		eventType = "io.aor.project.deletion-completed.v1"
 	default:
 		return ProjectEvent{}, invalidProject(command, "unknown command")
 	}
@@ -447,7 +564,72 @@ func cloneProject(project Project) Project {
 		plan := *project.Plan
 		next.Plan = &plan
 	}
+	if project.Deletion != nil {
+		deletion := *project.Deletion
+		deletion.StartedAt = cloneTimePointer(project.Deletion.StartedAt)
+		deletion.CompletedAt = cloneTimePointer(project.Deletion.CompletedAt)
+		deletion.BackupExpiresAt = cloneTimePointer(project.Deletion.BackupExpiresAt)
+		next.Deletion = &deletion
+	}
+	next.LegalHolds = append([]ProjectLegalHold(nil), project.LegalHolds...)
+	for index := range next.LegalHolds {
+		next.LegalHolds[index].ReleasedAt = cloneTimePointer(next.LegalHolds[index].ReleasedAt)
+	}
 	return next
+}
+
+func projectLifecycleCommand(command ProjectCommandType) bool {
+	switch command {
+	case ProjectCommandPlaceLegalHold, ProjectCommandReleaseLegalHold, ProjectCommandBeginDeletion, ProjectCommandCompleteDeletion:
+		return true
+	default:
+		return false
+	}
+}
+
+func validDeletionRequest(deletion *ProjectDeletion, command ProjectCommand) bool {
+	return deletion != nil && safeLifecycleText(deletion.ID, 128) && deletion.RequestedBy == command.ActorID && deletion.RequestedAt.Equal(command.At) && !deletion.EarliestExecutionAt.IsZero() && !deletion.EarliestExecutionAt.Before(command.At) && deletion.Status == "" && deletion.StartedAt == nil && deletion.CompletedAt == nil && deletion.ProofSHA256 == "" && deletion.ProofArtifactURI == ""
+}
+
+func validDeletionCompletion(deletion *ProjectDeletion, at time.Time) bool {
+	if deletion == nil || !validDigest(deletion.ProofSHA256) || deletion.ProofArtifactURI != "artifact://sha256/"+strings.TrimPrefix(deletion.ProofSHA256, "sha256:") {
+		return false
+	}
+	return deletion.BackupExpiresAt == nil || !deletion.BackupExpiresAt.Before(at)
+}
+
+func validLegalHold(hold *ProjectLegalHold, command ProjectCommand) bool {
+	return hold != nil && safeLifecycleText(hold.ID, 128) && safeLifecycleText(hold.Reason, 1024) && hold.PlacedBy == command.ActorID && hold.PlacedAt.Equal(command.At) && hold.ReleasedBy == "" && hold.ReleasedAt == nil && hold.ReleaseReason == ""
+}
+
+func legalHoldIndex(holds []ProjectLegalHold, id string) int {
+	for index := range holds {
+		if holds[index].ID == id {
+			return index
+		}
+	}
+	return -1
+}
+
+func hasActiveLegalHold(holds []ProjectLegalHold) bool {
+	for index := range holds {
+		if holds[index].ReleasedAt == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func safeLifecycleText(value string, limit int) bool {
+	return value != "" && len(value) <= limit && strings.TrimSpace(value) == value && !strings.ContainsAny(value, "\r\n\x00")
+}
+
+func cloneTimePointer(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	cloned := value.UTC()
+	return &cloned
 }
 
 func validProjectCurrency(value string) bool {

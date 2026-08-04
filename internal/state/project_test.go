@@ -101,6 +101,62 @@ func TestProjectArchiveRequiresTerminalOutcome(t *testing.T) {
 	}
 }
 
+func TestProjectDeletionStopsWorkAndRequiresLegalHoldRelease(t *testing.T) {
+	project := createProject(t)
+	hold := ProjectLegalHold{ID: "hold_1", Reason: "active litigation", PlacedBy: "compliance_1", PlacedAt: testTime()}
+	project = applyProject(t, project, ProjectCommand{Type: ProjectCommandPlaceLegalHold, ActorID: "compliance_1", LegalHold: &hold, At: testTime()})
+	deletion := ProjectDeletion{ID: "deletion_1", RequestedBy: "usr_1", RequestedAt: testTime(), EarliestExecutionAt: testTime()}
+	project = applyProject(t, project, ProjectCommand{Type: ProjectCommandRequestDeletion, ActorID: "usr_1", Deletion: &deletion, At: testTime()})
+	if project.State != contracts.ProjectPaused || project.Deletion == nil || project.Deletion.Status != ProjectDeletionBlocked {
+		t.Fatalf("blocked deletion = %#v", project)
+	}
+	if _, err := DecideProject(project, ProjectCommand{Type: ProjectCommandResume, ActorID: "usr_1", At: testTime()}); err == nil || err.Code != aorerrors.CodeInvalidStateTransition {
+		t.Fatalf("resume after deletion request = %#v", err)
+	}
+	if _, err := DecideProject(project, ProjectCommand{Type: ProjectCommandBeginDeletion, ActorID: "svc_retention", At: testTime()}); err == nil || err.Code != aorerrors.CodeInvalidStateTransition {
+		t.Fatalf("deletion under legal hold = %#v", err)
+	}
+	project = applyProject(t, project, ProjectCommand{Type: ProjectCommandReleaseLegalHold, ActorID: "compliance_2", LegalHoldID: hold.ID, ReleaseReason: "matter closed", At: testTime()})
+	if project.Deletion.Status != ProjectDeletionReady || project.LegalHolds[0].ReleasedAt == nil {
+		t.Fatalf("released hold = %#v", project)
+	}
+	project = applyProject(t, project, ProjectCommand{Type: ProjectCommandBeginDeletion, ActorID: "svc_retention", At: testTime()})
+	if project.Deletion.Status != ProjectDeletionErasing || project.Deletion.StartedAt == nil {
+		t.Fatalf("started deletion = %#v", project.Deletion)
+	}
+}
+
+func TestProjectDeletionCompletionKeepsOnlyContentFreeLifecycleIndex(t *testing.T) {
+	project := createProject(t)
+	project.DeploymentTargets = []string{"production"}
+	project.PromptBundleVersion = "1.0.0"
+	deletion := ProjectDeletion{ID: "deletion_1", RequestedBy: "usr_1", RequestedAt: testTime(), EarliestExecutionAt: testTime()}
+	project = applyProject(t, project, ProjectCommand{Type: ProjectCommandRequestDeletion, ActorID: "usr_1", Deletion: &deletion, At: testTime()})
+	project = applyProject(t, project, ProjectCommand{Type: ProjectCommandBeginDeletion, ActorID: "svc_retention", At: testTime()})
+	backupExpiry := testTime().Add(35 * 24 * time.Hour)
+	proof := ProjectDeletion{ProofSHA256: digestOne(), ProofArtifactURI: "artifact://sha256/" + digestOne()[len("sha256:"):], BackupExpiresAt: &backupExpiry}
+	project = applyProject(t, project, ProjectCommand{Type: ProjectCommandCompleteDeletion, ActorID: "svc_retention", Deletion: &proof, At: testTime()})
+	if project.State != contracts.ProjectArchived || project.Deletion.Status != ProjectDeletionCompleted || project.Deletion.CompletedAt == nil || project.Deletion.ProofSHA256 != digestOne() {
+		t.Fatalf("completed deletion = %#v", project)
+	}
+	if project.Goal != nil || project.Plan != nil || len(project.DeploymentTargets) != 0 || project.PromptBundleVersion != "" || project.PausedFromState != "" {
+		t.Fatalf("online projection retained project content: %#v", project)
+	}
+}
+
+func TestProjectDeletionCannotBeginBeforeRetentionDeadline(t *testing.T) {
+	project := createProject(t)
+	deletion := ProjectDeletion{ID: "deletion_1", RequestedBy: "usr_1", RequestedAt: testTime(), EarliestExecutionAt: testTime().Add(time.Hour)}
+	project = applyProject(t, project, ProjectCommand{Type: ProjectCommandRequestDeletion, ActorID: "usr_1", Deletion: &deletion, At: testTime()})
+	if _, err := DecideProject(project, ProjectCommand{Type: ProjectCommandBeginDeletion, ActorID: "svc_retention", At: testTime()}); err == nil || err.Code != aorerrors.CodeInvalidStateTransition {
+		t.Fatalf("early deletion = %#v", err)
+	}
+	project = applyProject(t, project, ProjectCommand{Type: ProjectCommandBeginDeletion, ActorID: "svc_retention", At: testTime().Add(time.Hour)})
+	if project.Deletion.Status != ProjectDeletionErasing {
+		t.Fatalf("eligible deletion = %#v", project.Deletion)
+	}
+}
+
 func TestOneHundredGoalRoundsNeverAutoApproveOrPlan(t *testing.T) {
 	project := createProject(t)
 	for version := 1; version <= 100; version++ {
