@@ -49,6 +49,7 @@ type Config struct {
 	TaskHistory   TaskHistoryReader
 	Eraser        ProjectEraser
 	Leases        LeaseAuthority
+	GoalPlan      GoalPlanServices
 	Clock         func() time.Time
 }
 
@@ -87,6 +88,7 @@ type Handler struct {
 	taskHistory   TaskHistoryReader
 	eraser        ProjectEraser
 	leases        LeaseAuthority
+	goalPlan      GoalPlanServices
 	autoBudget    bool
 	clock         func() time.Time
 }
@@ -233,6 +235,9 @@ func New(config Config) (*Handler, error) {
 	if config.Store == nil || config.Authenticator == nil || config.Authorizer == nil {
 		return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "control api configuration"})
 	}
+	if config.GoalPlan.Negotiator == nil != (config.GoalPlan.Planner == nil) {
+		return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "goal plan configuration"})
+	}
 	if config.Clock == nil {
 		config.Clock = time.Now
 	}
@@ -270,6 +275,7 @@ func New(config Config) (*Handler, error) {
 		taskHistory:   config.TaskHistory,
 		eraser:        config.Eraser,
 		leases:        config.Leases,
+		goalPlan:      config.GoalPlan,
 		autoBudget:    autoBudget,
 		clock:         config.Clock,
 	}
@@ -1463,6 +1469,15 @@ func (handler *Handler) submitGoalMessage(response http.ResponseWriter, request 
 		writeError(response, request, err)
 		return
 	}
+	if handler.goalPlan.Negotiator != nil {
+		project, negotiateErr := handler.negotiateGoal(request.Context(), principal, projectID, body, idempotencyKey)
+		if negotiateErr != nil {
+			writeError(response, request, normalizeGoalPlanError(negotiateErr))
+			return
+		}
+		writeProject(response, http.StatusAccepted, project)
+		return
+	}
 	outcome, err := handler.orchestrator.HandleProject(request.Context(), orchestrator.ProjectRequest{
 		TenantID: principal.TenantID, ProjectID: projectID, PrincipalID: principal.ID, IdempotencyKey: idempotencyKey, ExpectedVersion: body.ExpectedVersion,
 		Command: state.ProjectCommand{Type: state.ProjectCommandSubmitGoalMessage, GoalMessage: &state.GoalMessage{Kind: state.GoalMessageUser, Message: body.Message}},
@@ -1639,6 +1654,15 @@ func (handler *Handler) decideGoalSpec(response http.ResponseWriter, request *ht
 		reason := body.Comment
 		if reason == "" {
 			reason = "explicit GoalSpec approval"
+		}
+		if handler.goalPlan.Negotiator != nil {
+			project, approveErr := handler.approveGoalAndPlan(request.Context(), principal, projectID, projection, body, idempotencyKey, reason)
+			if approveErr != nil {
+				writeError(response, request, normalizeGoalPlanError(approveErr))
+				return
+			}
+			writeProject(response, http.StatusAccepted, project)
+			return
 		}
 		issuedAt := handler.clock().UTC()
 		command.Type = state.ProjectCommandApproveGoal
