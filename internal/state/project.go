@@ -25,12 +25,34 @@ type Project struct {
 }
 
 type GoalRecord struct {
-	ID               string   `json:"id"`
-	Version          int      `json:"version"`
-	SHA256           string   `json:"sha256"`
-	UnresolvedItems  []string `json:"unresolvedItems"`
-	ApprovedBy       string   `json:"approvedBy,omitempty"`
-	ApprovalRecordID string   `json:"approvalRecordId,omitempty"`
+	ID               string               `json:"id"`
+	Version          int                  `json:"version"`
+	SHA256           string               `json:"sha256"`
+	UnresolvedItems  []string             `json:"unresolvedItems"`
+	Status           contracts.GoalStatus `json:"status"`
+	ApprovedBy       string               `json:"approvedBy,omitempty"`
+	ApprovalRecordID string               `json:"approvalRecordId,omitempty"`
+}
+
+type GoalMessageKind string
+
+const (
+	GoalMessageUser          GoalMessageKind = "USER"
+	GoalMessageRejection     GoalMessageKind = "REJECTION"
+	GoalMessageChangeRequest GoalMessageKind = "CHANGE_REQUEST"
+)
+
+// GoalMessage is an immutable, content-addressed user input artifact.
+type GoalMessage struct {
+	ID            string          `json:"id"`
+	TenantID      string          `json:"tenantId"`
+	ProjectID     string          `json:"projectId"`
+	Kind          GoalMessageKind `json:"kind"`
+	Message       string          `json:"message"`
+	ContentSHA256 string          `json:"contentSha256"`
+	ArtifactURI   string          `json:"artifactUri"`
+	CreatedAt     time.Time       `json:"createdAt"`
+	CreatedBy     string          `json:"createdBy"`
 }
 
 type CompletionFacts struct {
@@ -54,8 +76,11 @@ type ProjectCommandType string
 const (
 	ProjectCommandCreate               ProjectCommandType = "CREATE_PROJECT"
 	ProjectCommandStartGoalNegotiation ProjectCommandType = "START_GOAL_NEGOTIATION"
+	ProjectCommandSubmitGoalMessage    ProjectCommandType = "SUBMIT_GOAL_MESSAGE"
 	ProjectCommandProposeGoal          ProjectCommandType = "PROPOSE_GOAL"
 	ProjectCommandApproveGoal          ProjectCommandType = "APPROVE_GOAL"
+	ProjectCommandRejectGoal           ProjectCommandType = "REJECT_GOAL"
+	ProjectCommandRequestGoalChange    ProjectCommandType = "REQUEST_GOAL_CHANGE"
 	ProjectCommandSupersedeGoal        ProjectCommandType = "SUPERSEDE_GOAL"
 	ProjectCommandPublishPlan          ProjectCommandType = "PUBLISH_PLAN"
 	ProjectCommandBeginIntegration     ProjectCommandType = "BEGIN_INTEGRATION"
@@ -75,6 +100,8 @@ type ProjectCommand struct {
 	ActorID            string
 	GoalAgentCount     int
 	Goal               *GoalRecord
+	GoalSpec           *contracts.GoalSpec
+	GoalMessage        *GoalMessage
 	Plan               *contracts.SpecRef
 	GoalSpecRef        *contracts.SpecRef
 	DAG                map[string][]string
@@ -126,6 +153,15 @@ func DecideProject(current Project, command ProjectCommand) (ProjectEvent, *aore
 		}
 		next.State = contracts.ProjectGoalNegotiating
 		eventType = "io.aor.goal.negotiation-started.v1"
+	case ProjectCommandSubmitGoalMessage:
+		if current.State != contracts.ProjectCreated && current.State != contracts.ProjectGoalNegotiating {
+			return ProjectEvent{}, transitionProject(command, current.State)
+		}
+		if !validGoalMessage(command.GoalMessage, current, command) {
+			return ProjectEvent{}, invalidProject(command, "goal message artifact")
+		}
+		next.State = contracts.ProjectGoalNegotiating
+		eventType = "io.aor.goal.message-received.v1"
 	case ProjectCommandProposeGoal:
 		if current.State != contracts.ProjectGoalNegotiating || command.Goal == nil || command.Goal.ID == "" || command.Goal.Version < 1 || command.Goal.SHA256 == "" {
 			return ProjectEvent{}, transitionProject(command, current.State)
@@ -135,6 +171,9 @@ func DecideProject(current Project, command ProjectCommand) (ProjectEvent, *aore
 		}
 		goal := *command.Goal
 		goal.UnresolvedItems = append([]string(nil), command.Goal.UnresolvedItems...)
+		goal.Status = contracts.GoalDraft
+		goal.ApprovedBy = ""
+		goal.ApprovalRecordID = ""
 		next.Goal = &goal
 		eventType = "io.aor.goal.proposed.v1"
 	case ProjectCommandApproveGoal:
@@ -152,8 +191,36 @@ func DecideProject(current Project, command ProjectCommand) (ProjectEvent, *aore
 		}
 		next.Goal.ApprovedBy = command.ActorID
 		next.Goal.ApprovalRecordID = command.Approval.RecordID
+		next.Goal.Status = contracts.GoalApproved
 		next.State = contracts.ProjectPlanning
 		eventType = "io.aor.goal.approved.v1"
+	case ProjectCommandRejectGoal:
+		if current.State != contracts.ProjectGoalNegotiating || current.Goal == nil || command.Goal == nil || current.Goal.ApprovedBy != "" {
+			return ProjectEvent{}, transitionProject(command, current.State)
+		}
+		if current.Goal.ID != command.Goal.ID || current.Goal.Version != command.Goal.Version || current.Goal.SHA256 != command.Goal.SHA256 {
+			return ProjectEvent{}, aorerrors.New(aorerrors.CodeGoalHashMismatch, "", nil)
+		}
+		if command.GoalMessage != nil && !validGoalMessage(command.GoalMessage, current, command) {
+			return ProjectEvent{}, invalidProject(command, "goal rejection message artifact")
+		}
+		next.Goal.Status = contracts.GoalRejected
+		eventType = "io.aor.goal.rejected.v1"
+	case ProjectCommandRequestGoalChange:
+		if !goalChangeAllowedState(current.State) || current.Goal == nil || current.Goal.ApprovedBy == "" || command.Goal == nil {
+			return ProjectEvent{}, transitionProject(command, current.State)
+		}
+		if current.Goal.ID != command.Goal.ID || current.Goal.Version != command.Goal.Version || current.Goal.SHA256 != command.Goal.SHA256 {
+			return ProjectEvent{}, aorerrors.New(aorerrors.CodeGoalHashMismatch, "", nil)
+		}
+		if hasDuplicateStrings(command.ImpactedTaskIDs) || !validGoalMessage(command.GoalMessage, current, command) {
+			return ProjectEvent{}, invalidProject(command, "goal change request")
+		}
+		next.Goal.Status = contracts.GoalSuperseded
+		next.Plan = nil
+		next.ReleaseApprovalRecordID = ""
+		next.State = contracts.ProjectGoalNegotiating
+		eventType = "io.aor.goal.change-requested.v1"
 	case ProjectCommandSupersedeGoal:
 		if terminalProjectState(current.State) || current.Goal == nil || current.Goal.ApprovedBy == "" || command.Goal == nil || command.Goal.Version <= current.Goal.Version || command.Goal.SHA256 == "" {
 			return ProjectEvent{}, transitionProject(command, current.State)
@@ -163,6 +230,7 @@ func DecideProject(current Project, command ProjectCommand) (ProjectEvent, *aore
 		}
 		goal := *command.Goal
 		goal.UnresolvedItems = append([]string(nil), command.Goal.UnresolvedItems...)
+		goal.Status = contracts.GoalDraft
 		goal.ApprovedBy = ""
 		goal.ApprovalRecordID = ""
 		next.Goal = &goal
@@ -313,6 +381,18 @@ func hasDuplicateStrings(values []string) bool {
 	return false
 }
 
+func validGoalMessage(message *GoalMessage, current Project, command ProjectCommand) bool {
+	if message == nil || message.ID == "" || message.TenantID != current.TenantID || message.ProjectID != current.ID || message.CreatedBy != command.ActorID || message.CreatedAt.IsZero() || !message.CreatedAt.Equal(command.At) || message.Message == "" || message.ContentSHA256 == "" || message.ArtifactURI == "" {
+		return false
+	}
+	switch message.Kind {
+	case GoalMessageUser, GoalMessageRejection, GoalMessageChangeRequest:
+		return validDigest(message.ContentSHA256) && message.ArtifactURI == "artifact://sha256/"+message.ContentSHA256[len("sha256:"):]
+	default:
+		return false
+	}
+}
+
 func ApplyProject(current Project, event ProjectEvent) (Project, error) {
 	if event.AggregateVersion != current.Version+1 || event.Projection.Version != event.AggregateVersion || event.Projection.ID == "" || event.OccurredAt.IsZero() {
 		return Project{}, fmt.Errorf("project event version or projection is invalid")
@@ -344,6 +424,15 @@ func validDigest(value string) bool {
 
 func terminalProjectState(state contracts.ProjectState) bool {
 	return state == contracts.ProjectCompleted || state == contracts.ProjectAborted || state == contracts.ProjectArchived
+}
+
+func goalChangeAllowedState(value contracts.ProjectState) bool {
+	switch value {
+	case contracts.ProjectPlanning, contracts.ProjectExecuting, contracts.ProjectIntegrating, contracts.ProjectGlobalAudit, contracts.ProjectBlockedUserDecision:
+		return true
+	default:
+		return false
+	}
 }
 
 func invalidProject(command ProjectCommand, reason string) *aorerrors.Error {

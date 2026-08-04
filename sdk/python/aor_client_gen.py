@@ -3,7 +3,7 @@ import json
 from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
-OPENAPI_SHA256 = "sha256:93376a9dac67faf738c31761b7f37fcbc2dd82ffe9e492af773c5c067af79431"
+OPENAPI_SHA256 = "sha256:3ced35556fd943649071ae3174715e4e04bab80cd3220ae25c4c8204b677766b"
 
 
 class AORClient:
@@ -107,6 +107,9 @@ class AORClient:
     def list_artifacts(self, options=None):
         return self._request("GET", "/v1/projects/{projectId}/artifacts", options)
 
+    def list_goal_messages(self, options=None):
+        return self._request("GET", "/v1/projects/{projectId}/goal/messages", options)
+
     def list_goal_specs(self, options=None):
         return self._request("GET", "/v1/projects/{projectId}/goal/specs", options)
 
@@ -154,4 +157,3 @@ class AORClient:
 
     def test_policies(self, options=None):
         return self._request("POST", "/v1/admin/policies:test", options)
-

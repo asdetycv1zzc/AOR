@@ -84,8 +84,36 @@ paths:
               schema: {type: object, additionalProperties: true}
         default: {$ref: '#/components/responses/Problem'}
   /v1/projects/{projectId}/goal/messages:
-    $ref: '#/components/pathItems/ProjectCommand'
-    x-operation-id: sendGoalMessage
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      tags: [Goals]
+      operationId: listGoalMessages
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Immutable user goal message artifacts
+          headers:
+            ETag: {$ref: '#/components/headers/ETag'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GoalMessagePage'}
+        default: {$ref: '#/components/responses/Problem'}
+    post:
+      tags: [Goals]
+      operationId: sendGoalMessage
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GoalMessageCommand'}
+      responses:
+        '202': {$ref: '#/components/responses/GoalCommandAccepted'}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/projects/{projectId}/goal/specs:
     parameters:
       - $ref: '#/components/parameters/ProjectId'
@@ -95,7 +123,13 @@ paths:
       parameters:
         - $ref: '#/components/parameters/Cursor'
       responses:
-        '200': {$ref: '#/components/responses/Page'}
+        '200':
+          description: Version-ordered GoalSpec page
+          headers:
+            ETag: {$ref: '#/components/headers/ETag'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GoalSpecPage'}
         default: {$ref: '#/components/responses/Problem'}
   /v1/projects/{projectId}/goal/specs/{version}:
     parameters:
@@ -114,14 +148,58 @@ paths:
               schema: {$ref: '../json-schema/goal-spec.v1.schema.json'}
         default: {$ref: '#/components/responses/Problem'}
   /v1/projects/{projectId}/goal/specs/{version}:approve:
-    $ref: '#/components/pathItems/VersionedProjectCommand'
-    x-operation-id: approveGoalSpec
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/Version'
+    post:
+      tags: [Goals]
+      operationId: approveGoalSpec
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GoalDecisionCommand'}
+      responses:
+        '202': {$ref: '#/components/responses/GoalCommandAccepted'}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/projects/{projectId}/goal/specs/{version}:reject:
-    $ref: '#/components/pathItems/VersionedProjectCommand'
-    x-operation-id: rejectGoalSpec
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - $ref: '#/components/parameters/Version'
+    post:
+      tags: [Goals]
+      operationId: rejectGoalSpec
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GoalDecisionCommand'}
+      responses:
+        '202': {$ref: '#/components/responses/GoalCommandAccepted'}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/projects/{projectId}/goal:change:
-    $ref: '#/components/pathItems/ProjectCommand'
-    x-operation-id: changeGoal
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    post:
+      tags: [Goals]
+      operationId: changeGoal
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/GoalChangeCommand'}
+      responses:
+        '202': {$ref: '#/components/responses/GoalCommandAccepted'}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/projects/{projectId}/plans:
     parameters:
       - $ref: '#/components/parameters/ProjectId'
@@ -396,6 +474,69 @@ components:
       properties:
         expectedVersion: {type: integer, minimum: 0}
         sha256: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+    GoalMessageCommand:
+      type: object
+      additionalProperties: false
+      required: [expectedVersion, message]
+      properties:
+        expectedVersion: {type: integer, format: int64, minimum: 1}
+        message: {type: string, minLength: 1, maxLength: 1048576}
+    GoalMessage:
+      type: object
+      additionalProperties: false
+      required: [id, tenantId, projectId, kind, message, contentSha256, artifactUri, createdAt, createdBy]
+      properties:
+        id: {type: string, minLength: 1, maxLength: 128}
+        tenantId: {type: string, format: uuid}
+        projectId: {type: string, format: uuid}
+        kind: {enum: [USER, REJECTION, CHANGE_REQUEST]}
+        message: {type: string, minLength: 1, maxLength: 1048576}
+        contentSha256: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        artifactUri: {type: string, pattern: '^artifact://sha256/[0-9a-f]{64}$'}
+        createdAt: {type: string, format: date-time}
+        createdBy: {type: string, minLength: 1, maxLength: 256}
+    GoalMessagePage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/GoalMessage'}
+        nextCursor: {type: string, maxLength: 512}
+    GoalSpecPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '../json-schema/goal-spec.v1.schema.json'}
+        nextCursor: {type: string, maxLength: 512}
+    GoalDecisionCommand:
+      type: object
+      additionalProperties: false
+      required: [expectedVersion, sha256]
+      properties:
+        expectedVersion: {type: integer, format: int64, minimum: 1}
+        sha256: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        decision: {enum: [APPROVE, REJECT]}
+        comment: {type: string, maxLength: 2048}
+        idempotencyKey: {type: string, minLength: 1, maxLength: 256}
+    GoalChangeCommand:
+      type: object
+      additionalProperties: false
+      required: [expectedVersion, version, sha256, message, impactedTaskIds]
+      properties:
+        expectedVersion: {type: integer, format: int64, minimum: 1}
+        version: {type: integer, minimum: 1}
+        sha256: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        message: {type: string, minLength: 1, maxLength: 1048576}
+        impactedTaskIds:
+          type: array
+          uniqueItems: true
+          maxItems: 10000
+          items: {type: string, minLength: 3, maxLength: 128}
     TaskDecision:
       type: object
       additionalProperties: false
@@ -496,6 +637,13 @@ components:
       content:
         application/json:
           schema: {type: object, required: [commandId], properties: {commandId: {type: string}}}
+    GoalCommandAccepted:
+      description: Goal command committed, audited, and enqueued exactly once
+      headers:
+        ETag: {$ref: '#/components/headers/ETag'}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Project'}
     Page:
       description: Opaque-cursor page
       content:

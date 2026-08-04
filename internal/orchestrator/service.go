@@ -76,7 +76,11 @@ func (s *Service) HandleProject(ctx context.Context, request ProjectRequest) (Pr
 	command.ProjectID = request.ProjectID
 	command.ActorID = request.PrincipalID
 	command.At = time.Time{}
-	digestCommand := command
+	command, err := prepareGoalCommand(request, command)
+	if err != nil {
+		return ProjectOutcome{}, err
+	}
+	digestCommand := goalDigestCommand(command)
 	if digestCommand.Type == state.ProjectCommandCreate {
 		// The server allocates a fresh unpredictable ID for every attempt. The
 		// principal-scoped idempotency record returns the first committed ID.
@@ -110,6 +114,7 @@ func (s *Service) HandleProject(ctx context.Context, request ProjectRequest) (Pr
 		return ProjectOutcome{}, versionConflict(request.ExpectedVersion, current.Version)
 	}
 	command.At = s.clock().UTC()
+	command = finalizeGoalCommand(command)
 	projectEvent, decideErr := state.DecideProject(current, command)
 	if decideErr != nil {
 		return ProjectOutcome{}, decideErr
@@ -120,11 +125,17 @@ func (s *Service) HandleProject(ctx context.Context, request ProjectRequest) (Pr
 	}
 	updates := []eventing.ProjectionUpdate{update}
 	events := []eventing.DomainEvent{domainEvent}
+	goalUpdates, goalEvents, goalErr := s.goalRelatedTransitions(ctx, request, current, command, digest)
+	if goalErr != nil {
+		return ProjectOutcome{}, goalErr
+	}
+	updates = append(updates, goalUpdates...)
+	events = append(events, goalEvents...)
 	var approvals []eventing.ApprovalRecord
 	if command.Type == state.ProjectCommandApproveGoal || command.Type == state.ProjectCommandApproveRelease {
 		approvals = approvalRecords(request.TenantID, request.ProjectID, command.Approval)
 	}
-	if command.Type == state.ProjectCommandSupersedeGoal {
+	if command.Type == state.ProjectCommandSupersedeGoal || command.Type == state.ProjectCommandRequestGoalChange {
 		for _, taskID := range command.ImpactedTaskIDs {
 			taskProjection, taskFound, loadErr := s.store.Load(ctx, request.TenantID, "task", taskID)
 			if loadErr != nil {

@@ -23,7 +23,7 @@ func TestGenerateProducesDeterministicClientsForEveryOperation(t *testing.T) {
 	if !bytes.Equal(first.Go, second.Go) || !bytes.Equal(first.TypeScript, second.TypeScript) || !bytes.Equal(first.Python, second.Python) {
 		t.Fatal("SDK generation is nondeterministic")
 	}
-	for _, operationID := range []string{"createProject", "pauseProject", "approveGoalSpec", "decideTask", "searchKnowledge", "runDoctor"} {
+	for _, operationID := range []string{"createProject", "pauseProject", "listGoalMessages", "approveGoalSpec", "decideTask", "searchKnowledge", "runDoctor"} {
 		if !strings.Contains(string(first.TypeScript), operationID+"(") || !strings.Contains(string(first.Go), exported(operationID)+"(") || !strings.Contains(string(first.Python), "def "+snake(operationID)+"(") {
 			t.Fatalf("operation %s missing from a generated client", operationID)
 		}

@@ -35,6 +35,11 @@ func TestCoreMigrationContainsAtomicityAndIsolationConstraints(t *testing.T) {
 	if strings.Contains(sql, "ACCEPT_RISK_AND_CONTINUE") || strings.Contains(sql, "ON DELETE CASCADE") {
 		t.Fatal("migration contains a forbidden completion bypass or cascading history deletion")
 	}
+	for _, value := range []string{"CREATE TABLE goal_specs", "ALTER TABLE goal_specs FORCE ROW LEVEL SECURITY", "CREATE POLICY goal_specs_tenant_policy"} {
+		if !strings.Contains(sql, value) {
+			t.Errorf("GoalSpec persistence missing %q", value)
+		}
+	}
 	claimPath := filepath.Join("..", "..", "migrations", "postgres", "000002_inbox_claims.up.sql")
 	claimContent, err := os.ReadFile(claimPath)
 	if err != nil {
@@ -72,6 +77,14 @@ func TestCoreMigrationContainsAtomicityAndIsolationConstraints(t *testing.T) {
 		if !strings.Contains(roleSQL, value) {
 			t.Errorf("runtime role migration missing %q", value)
 		}
+	}
+	goalGrantPath := filepath.Join("..", "..", "migrations", "postgres", "000011_goal_spec_runtime_grants.up.sql")
+	goalGrantContent, err := os.ReadFile(goalGrantPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(goalGrantContent), "GRANT SELECT, INSERT, UPDATE ON TABLE public.goal_specs TO aor_app") {
+		t.Fatal("GoalSpec runtime migration is missing least-privilege table grants")
 	}
 	manifestContent, err := os.ReadFile(filepath.Join("..", "..", "migrations", "postgres", "manifest.json"))
 	if err != nil {

@@ -16,6 +16,7 @@ import (
 	"github.com/akimisaka/aor/internal/authz"
 	"github.com/akimisaka/aor/internal/eventing"
 	"github.com/akimisaka/aor/internal/modelgateway"
+	"github.com/akimisaka/aor/internal/orchestrator"
 	"github.com/akimisaka/aor/internal/state"
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 	"github.com/akimisaka/aor/pkg/contracts"
@@ -284,6 +285,143 @@ func TestTaskListUsesStableOpaqueCursor(t *testing.T) {
 	}
 }
 
+func TestGoalAPIMessageSpecApprovalChangeAndRejectionLifecycle(t *testing.T) {
+	handler, store, authorizer := newTestHandler(t)
+	project := createTestProject(t, handler)
+	messageRoute := "/v1/projects/" + project.ID + "/goal/messages"
+	messageBody := []byte(`{"expectedVersion":1,"message":"build a production API"}`)
+	messageHeaders := map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json",
+		"Idempotency-Key": "goal-message-1", "If-Match": `"v1"`,
+	}
+	submitted := performRequest(handler, http.MethodPost, messageRoute, messageBody, messageHeaders)
+	if submitted.Code != http.StatusAccepted || submitted.Header().Get("ETag") != `"v2"` {
+		t.Fatalf("message status=%d etag=%q body=%s", submitted.Code, submitted.Header().Get("ETag"), submitted.Body.String())
+	}
+	replayedMessage := performRequest(handler, http.MethodPost, messageRoute, messageBody, messageHeaders)
+	if replayedMessage.Code != http.StatusAccepted || replayedMessage.Body.String() != submitted.Body.String() {
+		t.Fatalf("message replay status=%d body=%s", replayedMessage.Code, replayedMessage.Body.String())
+	}
+	messages := performRequest(handler, http.MethodGet, messageRoute, nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if messages.Code != http.StatusOK || messages.Header().Get("ETag") != `"v2"` || !strings.Contains(messages.Body.String(), "build a production API") || !strings.Contains(messages.Body.String(), `"kind":"USER"`) {
+		t.Fatalf("messages status=%d etag=%q body=%s", messages.Code, messages.Header().Get("ETag"), messages.Body.String())
+	}
+
+	draft := controlGoalSpec(t, project.ID, 1, nil)
+	seedGoalSpec(t, handler, project.ID, 2, state.ProjectCommandProposeGoal, draft)
+	specRoute := "/v1/projects/" + project.ID + "/goal/specs/1"
+	gotDraft := performRequest(handler, http.MethodGet, specRoute, nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if gotDraft.Code != http.StatusOK || gotDraft.Header().Get("ETag") != `"goal-v1-r1"` || !strings.Contains(gotDraft.Body.String(), `"status":"DRAFT"`) {
+		t.Fatalf("draft status=%d etag=%q body=%s", gotDraft.Code, gotDraft.Header().Get("ETag"), gotDraft.Body.String())
+	}
+	listed := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/goal/specs", nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if listed.Code != http.StatusOK || listed.Header().Get("ETag") != `"v3"` || !strings.Contains(listed.Body.String(), draft.ContentSHA256) {
+		t.Fatalf("listed status=%d etag=%q body=%s", listed.Code, listed.Header().Get("ETag"), listed.Body.String())
+	}
+
+	approveBody := []byte(`{"expectedVersion":3,"sha256":"` + draft.ContentSHA256 + `","decision":"APPROVE","comment":"requirements are correct","idempotencyKey":"approve-goal-1"}`)
+	approveHeaders := map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json",
+		"Idempotency-Key": "approve-goal-1", "If-Match": `"v3"`,
+	}
+	approved := performRequest(handler, http.MethodPost, specRoute+":approve", approveBody, approveHeaders)
+	if approved.Code != http.StatusAccepted || approved.Header().Get("ETag") != `"v4"` || !strings.Contains(approved.Body.String(), `"state":"PLANNING"`) {
+		t.Fatalf("approve status=%d etag=%q body=%s", approved.Code, approved.Header().Get("ETag"), approved.Body.String())
+	}
+	statsAfterApproval := store.Stats()
+	approvedAgain := performRequest(handler, http.MethodPost, specRoute+":approve", approveBody, approveHeaders)
+	if approvedAgain.Code != http.StatusAccepted || approvedAgain.Body.String() != approved.Body.String() || store.Stats() != statsAfterApproval {
+		t.Fatalf("approve replay status=%d body=%s stats=%#v", approvedAgain.Code, approvedAgain.Body.String(), store.Stats())
+	}
+	gotApproved := performRequest(handler, http.MethodGet, specRoute, nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if gotApproved.Code != http.StatusOK || gotApproved.Header().Get("ETag") != `"goal-v1-r2"` || !strings.Contains(gotApproved.Body.String(), `"status":"APPROVED"`) || !strings.Contains(gotApproved.Body.String(), `"actorId":"user-1"`) {
+		t.Fatalf("approved spec status=%d etag=%q body=%s", gotApproved.Code, gotApproved.Header().Get("ETag"), gotApproved.Body.String())
+	}
+	if statsAfterApproval.Approvals != 1 || statsAfterApproval.Events != statsAfterApproval.Outbox {
+		t.Fatalf("approval stats=%#v", statsAfterApproval)
+	}
+
+	changeBody := []byte(`{"expectedVersion":4,"version":1,"sha256":"` + draft.ContentSHA256 + `","message":"add a second deployment target","impactedTaskIds":[]}`)
+	changeHeaders := map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json",
+		"Idempotency-Key": "change-goal-1", "If-Match": `"v4"`,
+	}
+	changed := performRequest(handler, http.MethodPost, "/v1/projects/"+project.ID+"/goal:change", changeBody, changeHeaders)
+	if changed.Code != http.StatusAccepted || changed.Header().Get("ETag") != `"v5"` || !strings.Contains(changed.Body.String(), `"state":"GOAL_NEGOTIATING"`) {
+		t.Fatalf("change status=%d etag=%q body=%s", changed.Code, changed.Header().Get("ETag"), changed.Body.String())
+	}
+	gotSuperseded := performRequest(handler, http.MethodGet, specRoute, nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if gotSuperseded.Code != http.StatusOK || gotSuperseded.Header().Get("ETag") != `"goal-v1-r3"` || !strings.Contains(gotSuperseded.Body.String(), `"status":"SUPERSEDED"`) {
+		t.Fatalf("superseded status=%d etag=%q body=%s", gotSuperseded.Code, gotSuperseded.Header().Get("ETag"), gotSuperseded.Body.String())
+	}
+
+	draftTwo := controlGoalSpec(t, project.ID, 2, nil)
+	seedGoalSpec(t, handler, project.ID, 5, state.ProjectCommandSupersedeGoal, draftTwo)
+	rejectRoute := "/v1/projects/" + project.ID + "/goal/specs/2:reject"
+	rejectBody := []byte(`{"expectedVersion":6,"sha256":"` + draftTwo.ContentSHA256 + `","decision":"REJECT","comment":"deployment target is incomplete"}`)
+	rejected := performRequest(handler, http.MethodPost, rejectRoute, rejectBody, map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json",
+		"Idempotency-Key": "reject-goal-2", "If-Match": `"v6"`,
+	})
+	if rejected.Code != http.StatusAccepted || rejected.Header().Get("ETag") != `"v7"` {
+		t.Fatalf("reject status=%d etag=%q body=%s", rejected.Code, rejected.Header().Get("ETag"), rejected.Body.String())
+	}
+	gotRejected := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/goal/specs/2", nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if gotRejected.Code != http.StatusOK || !strings.Contains(gotRejected.Body.String(), `"status":"REJECTED"`) {
+		t.Fatalf("rejected spec status=%d body=%s", gotRejected.Code, gotRejected.Body.String())
+	}
+	if last := authorizer.inputs[len(authorizer.inputs)-1]; last.Action != authz.ActionGoalRead || last.Resource.Type != "goal-spec" {
+		t.Fatalf("last goal policy input=%#v", last)
+	}
+}
+
+func TestGoalAPIRejectsUnsafeHeadersBodiesHashesAndUnresolvedApproval(t *testing.T) {
+	handler, _, authorizer := newTestHandler(t)
+	project := createTestProject(t, handler)
+	route := "/v1/projects/" + project.ID + "/goal/messages"
+	missingMatch := performRequest(handler, http.MethodPost, route, []byte(`{"expectedVersion":1,"message":"goal"}`), map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "goal-no-match",
+	})
+	if missingMatch.Code != http.StatusConflict {
+		t.Fatalf("missing match status=%d body=%s", missingMatch.Code, missingMatch.Body.String())
+	}
+	duplicate := performRequest(handler, http.MethodPost, route, []byte(`{"expectedVersion":1,"message":"one","message":"two"}`), map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "goal-duplicate", "If-Match": `"v1"`,
+	})
+	if duplicate.Code != http.StatusBadRequest {
+		t.Fatalf("duplicate status=%d body=%s", duplicate.Code, duplicate.Body.String())
+	}
+	authorizer.deny = true
+	denied := performRequest(handler, http.MethodPost, route, []byte(`{"expectedVersion":1,"message":"denied"}`), map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "goal-denied", "If-Match": `"v1"`,
+	})
+	if denied.Code != http.StatusForbidden {
+		t.Fatalf("denied status=%d body=%s", denied.Code, denied.Body.String())
+	}
+	authorizer.deny = false
+	accepted := performRequest(handler, http.MethodPost, route, []byte(`{"expectedVersion":1,"message":"accepted"}`), map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "goal-accepted", "If-Match": `"v1"`,
+	})
+	if accepted.Code != http.StatusAccepted {
+		t.Fatalf("accepted status=%d body=%s", accepted.Code, accepted.Body.String())
+	}
+	draft := controlGoalSpec(t, project.ID, 1, []string{"choose a region"})
+	seedGoalSpec(t, handler, project.ID, 2, state.ProjectCommandProposeGoal, draft)
+	approveRoute := "/v1/projects/" + project.ID + "/goal/specs/1:approve"
+	unresolved := performRequest(handler, http.MethodPost, approveRoute, []byte(`{"expectedVersion":3,"sha256":"`+draft.ContentSHA256+`"}`), map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "approve-unresolved", "If-Match": `"v3"`,
+	})
+	if unresolved.Code != http.StatusConflict || !strings.Contains(unresolved.Body.String(), string(aorerrors.CodeGoalNotApproved)) {
+		t.Fatalf("unresolved status=%d body=%s", unresolved.Code, unresolved.Body.String())
+	}
+	wrongHash := performRequest(handler, http.MethodPost, approveRoute, []byte(`{"expectedVersion":3,"sha256":"sha256:`+strings.Repeat("f", 64)+`"}`), map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "approve-wrong-hash", "If-Match": `"v3"`,
+	})
+	if wrongHash.Code != http.StatusConflict || !strings.Contains(wrongHash.Body.String(), string(aorerrors.CodeGoalHashMismatch)) {
+		t.Fatalf("wrong hash status=%d body=%s", wrongHash.Code, wrongHash.Body.String())
+	}
+}
+
 func TestBudgetEndpointsReadAdjustAndReplayIdempotently(t *testing.T) {
 	handler, ledger, authorizer := newBudgetTestHandler(t)
 	project := createTestProject(t, handler)
@@ -452,6 +590,44 @@ func createTestProject(t *testing.T, handler http.Handler) state.Project {
 		t.Fatal(err)
 	}
 	return project
+}
+
+func seedGoalSpec(t *testing.T, handler *Handler, projectID string, expectedVersion int64, commandType state.ProjectCommandType, spec contracts.GoalSpec) {
+	t.Helper()
+	principal := authn.Principal{ID: "user-1", Type: authn.PrincipalUser, Role: authn.RoleUser, TenantID: testTenantID}
+	goal := &state.GoalRecord{ID: "22222222-2222-4222-8222-222222222222", Version: spec.Content.Version, SHA256: spec.ContentSHA256, UnresolvedItems: append([]string(nil), spec.Content.UnresolvedItems...)}
+	_, err := handler.orchestrator.HandleProject(contextWithPrincipal(context.Background(), principal), orchestrator.ProjectRequest{
+		TenantID: testTenantID, ProjectID: projectID, PrincipalID: principal.ID,
+		IdempotencyKey: fmt.Sprintf("seed-goal-%d", spec.Content.Version), ExpectedVersion: expectedVersion,
+		Command: state.ProjectCommand{Type: commandType, Goal: goal, GoalSpec: &spec},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func controlGoalSpec(t *testing.T, projectID string, version int, unresolved []string) contracts.GoalSpec {
+	t.Helper()
+	content := contracts.GoalContent{
+		GoalSpecVersion: 1, ProjectID: projectID, Version: version, Title: "Goal", Summary: "Summary", ProblemStatement: "Problem",
+		BusinessOutcomes: []contracts.Outcome{{ID: "outcome-1", Statement: "Outcome"}}, Scope: contracts.Scope{Included: []string{"api"}, Excluded: []string{}},
+		UserPersonas: []string{}, FunctionalRequirements: []string{"serve requests"},
+		NonFunctionalRequirements: contracts.NonFunctionalRequirements{Security: []string{}, Privacy: []string{}, Performance: []string{}, Reliability: []string{}, Operability: []string{}},
+		Constraints:               []string{}, Assumptions: []contracts.Assumption{}, Decisions: []string{}, UnresolvedItems: append([]string(nil), unresolved...),
+		AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "criterion-1", Statement: "passes", EvidenceType: "AUTOMATED"}},
+		RiskTolerance:      contracts.RiskLow, HumanApprovalPoints: []string{}, DataClassification: contracts.DataInternal,
+		DeploymentTargets: []string{"test"}, SourceReferences: []string{}, CreatedAt: controlAPITestTime.Format(time.RFC3339),
+		CreatedBy: contracts.AgentIdentity{AgentInstanceID: "agent-goal", Role: "GOAL_PROPOSER"},
+	}
+	encoded, err := json.Marshal(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := canonicaljson.Digest(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return contracts.GoalSpec{Content: content, Status: contracts.GoalDraft, ContentSHA256: digest}
 }
 
 func seedTaskProjection(t *testing.T, store *eventing.MemoryStore, projectID, taskID string) {

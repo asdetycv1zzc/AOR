@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-const OpenAPISHA256 = "sha256:93376a9dac67faf738c31761b7f37fcbc2dd82ffe9e492af773c5c067af79431"
+const OpenAPISHA256 = "sha256:3ced35556fd943649071ae3174715e4e04bab80cd3220ae25c4c8204b677766b"
 
 type TokenProvider func(context.Context) (string, error)
 
@@ -185,6 +185,10 @@ func (c *Client) GetUsage(ctx context.Context, options RequestOptions) (*http.Re
 
 func (c *Client) ListArtifacts(ctx context.Context, options RequestOptions) (*http.Response, error) {
 	return c.request(ctx, "GET", "/v1/projects/{projectId}/artifacts", options)
+}
+
+func (c *Client) ListGoalMessages(ctx context.Context, options RequestOptions) (*http.Response, error) {
+	return c.request(ctx, "GET", "/v1/projects/{projectId}/goal/messages", options)
 }
 
 func (c *Client) ListGoalSpecs(ctx context.Context, options RequestOptions) (*http.Response, error) {

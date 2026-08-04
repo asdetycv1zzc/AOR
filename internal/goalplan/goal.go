@@ -181,18 +181,18 @@ func (n *Negotiator) Approve(ctx context.Context, request ApprovalRequest) (orch
 		SubjectVersion: approval.SubjectVersion, SubjectSHA256: approval.SubjectSHA256, PrincipalID: approval.PrincipalID,
 		Reason: approval.Reason, IssuedAt: approval.IssuedAt, ExpiresAt: approval.ExpiresAt, RevokedAt: approval.RevokedAt, Signature: approval.Signature,
 	}
-	outcome, err := n.projects.HandleProject(ctx, orchestrator.ProjectRequest{
-		TenantID: request.TenantID, ProjectID: request.ProjectID, PrincipalID: request.UserPrincipalID,
-		IdempotencyKey: request.IdempotencyKey, ExpectedVersion: request.ExpectedProjectVersion,
-		Command: state.ProjectCommand{Type: state.ProjectCommandApproveGoal, Goal: &state.GoalRecord{ID: request.GoalSpecID, Version: request.GoalRef.Version, SHA256: request.GoalRef.SHA256}, Approval: binding},
-	})
-	if err != nil {
-		return orchestrator.ProjectOutcome{}, err
-	}
 	if _, err := n.artifacts.Put(ctx, SpecArtifact{
 		TenantID: request.TenantID, ProjectID: request.ProjectID, Kind: ArtifactGoalApproved, SpecID: request.GoalSpecID,
 		Version: request.GoalRef.Version, ContentSHA256: approved.ContentSHA256, Content: content, CreatedBy: request.UserPrincipalID,
 	}); err != nil {
+		return orchestrator.ProjectOutcome{}, err
+	}
+	outcome, err := n.projects.HandleProject(ctx, orchestrator.ProjectRequest{
+		TenantID: request.TenantID, ProjectID: request.ProjectID, PrincipalID: request.UserPrincipalID,
+		IdempotencyKey: request.IdempotencyKey, ExpectedVersion: request.ExpectedProjectVersion,
+		Command: state.ProjectCommand{Type: state.ProjectCommandApproveGoal, Goal: &state.GoalRecord{ID: request.GoalSpecID, Version: request.GoalRef.Version, SHA256: request.GoalRef.SHA256}, GoalSpec: &approved, Approval: binding},
+	})
+	if err != nil {
 		return orchestrator.ProjectOutcome{}, err
 	}
 	return outcome, nil
@@ -263,7 +263,7 @@ func (n *Negotiator) publishGoal(ctx context.Context, request NegotiationRequest
 	return n.projects.HandleProject(ctx, orchestrator.ProjectRequest{
 		TenantID: request.TenantID, ProjectID: request.ProjectID, PrincipalID: actor,
 		IdempotencyKey: request.IdempotencyKey, ExpectedVersion: request.ExpectedProjectVersion,
-		Command: state.ProjectCommand{Type: commandType, Goal: record, ImpactedTaskIDs: append([]string(nil), request.ImpactedTaskIDs...)},
+		Command: state.ProjectCommand{Type: commandType, Goal: record, GoalSpec: &goal, ImpactedTaskIDs: append([]string(nil), request.ImpactedTaskIDs...)},
 	})
 }
 

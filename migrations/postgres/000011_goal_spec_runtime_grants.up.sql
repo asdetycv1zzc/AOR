@@ -1,0 +1,5 @@
+BEGIN;
+
+GRANT SELECT, INSERT, UPDATE ON TABLE public.goal_specs TO aor_app;
+
+COMMIT;

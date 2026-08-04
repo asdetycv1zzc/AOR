@@ -24,6 +24,7 @@ import (
 	"github.com/akimisaka/aor/internal/orchestrator"
 	"github.com/akimisaka/aor/internal/state"
 	"github.com/akimisaka/aor/pkg/canonicaljson"
+	"github.com/akimisaka/aor/pkg/contracts"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
 	"github.com/google/uuid"
 )
@@ -69,6 +70,27 @@ type budgetAdjustmentBody struct {
 	SoftLimitMinor  int64  `json:"softLimitMinor"`
 	Currency        string `json:"currency"`
 	Reason          string `json:"reason"`
+}
+
+type goalMessageBody struct {
+	ExpectedVersion int64  `json:"expectedVersion"`
+	Message         string `json:"message"`
+}
+
+type goalDecisionBody struct {
+	ExpectedVersion int64  `json:"expectedVersion"`
+	SHA256          string `json:"sha256"`
+	Decision        string `json:"decision,omitempty"`
+	Comment         string `json:"comment,omitempty"`
+	IdempotencyKey  string `json:"idempotencyKey,omitempty"`
+}
+
+type goalChangeBody struct {
+	ExpectedVersion int64    `json:"expectedVersion"`
+	Version         int      `json:"version"`
+	SHA256          string   `json:"sha256"`
+	Message         string   `json:"message"`
+	ImpactedTaskIDs []string `json:"impactedTaskIds"`
 }
 
 type page struct {
@@ -223,6 +245,63 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 		}
 		if request.Method == http.MethodGet {
 			handler.projectEvents(response, request, principal, projectID)
+			return
+		}
+		writeMethodNotAllowed(response, request)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "goal:change" {
+		if !validProjectID(projectID) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		if request.Method == http.MethodPost {
+			handler.requestGoalChange(response, request, principal, projectID)
+			return
+		}
+		writeMethodNotAllowed(response, request)
+		return
+	}
+	if len(parts) == 3 && parts[1] == "goal" && parts[2] == "messages" {
+		if !validProjectID(projectID) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		switch request.Method {
+		case http.MethodGet:
+			handler.listGoalMessages(response, request, principal, projectID)
+		case http.MethodPost:
+			handler.submitGoalMessage(response, request, principal, projectID)
+		default:
+			writeMethodNotAllowed(response, request)
+		}
+		return
+	}
+	if len(parts) == 3 && parts[1] == "goal" && parts[2] == "specs" {
+		if !validProjectID(projectID) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		if request.Method == http.MethodGet {
+			handler.listGoalSpecs(response, request, principal, projectID)
+			return
+		}
+		writeMethodNotAllowed(response, request)
+		return
+	}
+	if len(parts) == 4 && parts[1] == "goal" && parts[2] == "specs" {
+		versionPart, action, hasAction := strings.Cut(parts[3], ":")
+		version, versionErr := strconv.Atoi(versionPart)
+		if !validProjectID(projectID) || versionErr != nil || version < 1 {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		if !hasAction && request.Method == http.MethodGet {
+			handler.getGoalSpec(response, request, principal, projectID, version)
+			return
+		}
+		if hasAction && request.Method == http.MethodPost && (action == "approve" || action == "reject") {
+			handler.decideGoalSpec(response, request, principal, projectID, version, action)
 			return
 		}
 		writeMethodNotAllowed(response, request)
@@ -495,6 +574,363 @@ func (handler *Handler) listTasks(response http.ResponseWriter, request *http.Re
 		result.NextCursor = taskPageCursor(projectID, items[len(items)-1].ID)
 	}
 	writeJSON(response, http.StatusOK, result)
+}
+
+func (handler *Handler) submitGoalMessage(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string) {
+	if len(request.URL.Query()) != 0 {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "goal message query"}))
+		return
+	}
+	idempotencyKey, err := requiredIdempotencyKey(request)
+	if err != nil {
+		writeError(response, request, err)
+		return
+	}
+	var body goalMessageBody
+	if err := decodeJSON(request, &body); err != nil || body.ExpectedVersion < 1 || strings.TrimSpace(body.Message) == "" || len(body.Message) > maximumRequestBytes || strings.ContainsRune(body.Message, '\x00') {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "goal message"}))
+		return
+	}
+	if err := validateGoalIfMatch(request, body.ExpectedVersion); err != nil {
+		writeError(response, request, err)
+		return
+	}
+	outcome, err := handler.orchestrator.HandleProject(request.Context(), orchestrator.ProjectRequest{
+		TenantID: principal.TenantID, ProjectID: projectID, PrincipalID: principal.ID, IdempotencyKey: idempotencyKey, ExpectedVersion: body.ExpectedVersion,
+		Command: state.ProjectCommand{Type: state.ProjectCommandSubmitGoalMessage, GoalMessage: &state.GoalMessage{Kind: state.GoalMessageUser, Message: body.Message}},
+	})
+	if err != nil {
+		writeError(response, request, normalizeError(err))
+		return
+	}
+	writeProject(response, http.StatusAccepted, outcome.Project)
+}
+
+func (handler *Handler) listGoalMessages(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string) {
+	cursor, err := goalCursor(request, "goal message")
+	if err != nil {
+		writeError(response, request, err)
+		return
+	}
+	project, err := handler.authorizeProjectResourceRead(request.Context(), principal, projectID, authz.ActionGoalRead, "goal-message-list", projectID)
+	if err != nil {
+		writeError(response, request, err)
+		return
+	}
+	messages, err := handler.orchestrator.GoalMessages(request.Context(), principal.TenantID, projectID)
+	if err != nil {
+		writeError(response, request, normalizeError(err))
+		return
+	}
+	start := 0
+	if cursor != "" {
+		found := false
+		for index := range messages {
+			if goalMessageCursor(projectID, messages[index].ID) == cursor {
+				start = index + 1
+				found = true
+				break
+			}
+		}
+		if !found {
+			writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "goal message cursor"}))
+			return
+		}
+	}
+	const pageSize = 100
+	end := start + pageSize
+	if end > len(messages) {
+		end = len(messages)
+	}
+	items := append([]state.GoalMessage(nil), messages[start:end]...)
+	result := page{Items: items}
+	if end < len(messages) {
+		result.NextCursor = goalMessageCursor(projectID, items[len(items)-1].ID)
+	}
+	response.Header().Set("ETag", entityTag(project.Version))
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (handler *Handler) listGoalSpecs(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string) {
+	cursor, err := goalCursor(request, "goal spec")
+	if err != nil {
+		writeError(response, request, err)
+		return
+	}
+	project, err := handler.authorizeProjectResourceRead(request.Context(), principal, projectID, authz.ActionGoalRead, "goal-spec-list", projectID)
+	if err != nil {
+		writeError(response, request, err)
+		return
+	}
+	projections, err := handler.orchestrator.GoalSpecs(request.Context(), principal.TenantID, projectID)
+	if err != nil {
+		writeError(response, request, normalizeError(err))
+		return
+	}
+	start := 0
+	if cursor != "" {
+		found := false
+		for index := range projections {
+			if goalSpecCursor(projectID, projections[index].Spec.Content.Version) == cursor {
+				start = index + 1
+				found = true
+				break
+			}
+		}
+		if !found {
+			writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "goal spec cursor"}))
+			return
+		}
+	}
+	const pageSize = 100
+	end := start + pageSize
+	if end > len(projections) {
+		end = len(projections)
+	}
+	items := make([]contracts.GoalSpec, 0, end-start)
+	for _, projection := range projections[start:end] {
+		items = append(items, projection.Spec)
+	}
+	result := page{Items: items}
+	if end < len(projections) {
+		result.NextCursor = goalSpecCursor(projectID, items[len(items)-1].Content.Version)
+	}
+	response.Header().Set("ETag", entityTag(project.Version))
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (handler *Handler) getGoalSpec(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string, version int) {
+	if len(request.URL.Query()) != 0 {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "goal spec query"}))
+		return
+	}
+	if _, err := handler.authorizeProjectResourceRead(request.Context(), principal, projectID, authz.ActionGoalRead, "goal-spec", strconv.Itoa(version)); err != nil {
+		writeError(response, request, err)
+		return
+	}
+	projection, found, err := handler.orchestrator.GoalSpec(request.Context(), principal.TenantID, projectID, version)
+	if err != nil {
+		writeError(response, request, normalizeError(err))
+		return
+	}
+	if !found {
+		writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+		return
+	}
+	response.Header().Set("ETag", goalSpecETag(version, projection.Revision))
+	writeJSON(response, http.StatusOK, projection.Spec)
+}
+
+func (handler *Handler) decideGoalSpec(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string, version int, action string) {
+	if len(request.URL.Query()) != 0 {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "goal decision query"}))
+		return
+	}
+	idempotencyKey, err := requiredIdempotencyKey(request)
+	if err != nil {
+		writeError(response, request, err)
+		return
+	}
+	var body goalDecisionBody
+	if err := decodeJSON(request, &body); err != nil || !validGoalDecisionBody(body, version, action, idempotencyKey) {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "goal decision"}))
+		return
+	}
+	if err := validateGoalIfMatch(request, body.ExpectedVersion); err != nil {
+		writeError(response, request, err)
+		return
+	}
+	if _, err := handler.authorizeProjectResourceRead(request.Context(), principal, projectID, authz.ActionGoalRead, "goal-spec", strconv.Itoa(version)); err != nil {
+		writeError(response, request, err)
+		return
+	}
+	projection, found, err := handler.orchestrator.GoalSpec(request.Context(), principal.TenantID, projectID, version)
+	if err != nil {
+		writeError(response, request, normalizeError(err))
+		return
+	}
+	if !found {
+		writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+		return
+	}
+	if projection.Spec.ContentSHA256 != body.SHA256 {
+		writeError(response, request, aorerrors.New(aorerrors.CodeGoalHashMismatch, "", nil))
+		return
+	}
+	goal := &state.GoalRecord{ID: projection.GoalSpecID, Version: version, SHA256: body.SHA256, UnresolvedItems: append([]string(nil), projection.Spec.Content.UnresolvedItems...)}
+	command := state.ProjectCommand{Goal: goal}
+	if action == "approve" {
+		if projection.Spec.Status != contracts.GoalDraft && !(projection.Spec.Status == contracts.GoalApproved && projection.Spec.ApprovedBy != nil && projection.Spec.ApprovedBy.ActorID == principal.ID) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeInvalidStateTransition, "", map[string]any{"scope": "goal approval"}))
+			return
+		}
+		if len(projection.Spec.Content.UnresolvedItems) != 0 {
+			writeError(response, request, aorerrors.New(aorerrors.CodeGoalNotApproved, "", nil))
+			return
+		}
+		reason := body.Comment
+		if reason == "" {
+			reason = "explicit GoalSpec approval"
+		}
+		issuedAt := handler.clock().UTC()
+		command.Type = state.ProjectCommandApproveGoal
+		command.Approval = &state.ApprovalBinding{
+			RecordID: goalApprovalRecordID(principal.TenantID, principal.ID, idempotencyKey), ApprovalType: "GOAL_APPROVAL", SubjectType: "GOAL_SPEC",
+			SubjectID: projection.GoalSpecID, SubjectVersion: version, SubjectSHA256: body.SHA256, PrincipalID: principal.ID,
+			Reason: reason, IssuedAt: issuedAt, Signature: goalApprovalSignature(principal.TenantID, projectID, projection.GoalSpecID, version, body.SHA256, principal.ID, reason, idempotencyKey),
+		}
+	} else {
+		if projection.Spec.Status != contracts.GoalDraft && projection.Spec.Status != contracts.GoalRejected {
+			writeError(response, request, aorerrors.New(aorerrors.CodeInvalidStateTransition, "", map[string]any{"scope": "goal rejection"}))
+			return
+		}
+		command.Type = state.ProjectCommandRejectGoal
+		command.GoalMessage = &state.GoalMessage{Kind: state.GoalMessageRejection, Message: body.Comment}
+	}
+	outcome, err := handler.orchestrator.HandleProject(request.Context(), orchestrator.ProjectRequest{
+		TenantID: principal.TenantID, ProjectID: projectID, PrincipalID: principal.ID, IdempotencyKey: idempotencyKey, ExpectedVersion: body.ExpectedVersion, Command: command,
+	})
+	if err != nil {
+		writeError(response, request, normalizeError(err))
+		return
+	}
+	writeProject(response, http.StatusAccepted, outcome.Project)
+}
+
+func (handler *Handler) requestGoalChange(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string) {
+	if len(request.URL.Query()) != 0 {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "goal change query"}))
+		return
+	}
+	idempotencyKey, err := requiredIdempotencyKey(request)
+	if err != nil {
+		writeError(response, request, err)
+		return
+	}
+	var body goalChangeBody
+	if err := decodeJSON(request, &body); err != nil || !validGoalChangeBody(body) {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "goal change"}))
+		return
+	}
+	if err := validateGoalIfMatch(request, body.ExpectedVersion); err != nil {
+		writeError(response, request, err)
+		return
+	}
+	if _, err := handler.authorizeProjectResourceRead(request.Context(), principal, projectID, authz.ActionGoalRead, "goal-spec", strconv.Itoa(body.Version)); err != nil {
+		writeError(response, request, err)
+		return
+	}
+	projection, found, err := handler.orchestrator.GoalSpec(request.Context(), principal.TenantID, projectID, body.Version)
+	if err != nil {
+		writeError(response, request, normalizeError(err))
+		return
+	}
+	if !found {
+		writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+		return
+	}
+	if projection.Spec.ContentSHA256 != body.SHA256 {
+		writeError(response, request, aorerrors.New(aorerrors.CodeGoalHashMismatch, "", nil))
+		return
+	}
+	if projection.Spec.Status != contracts.GoalApproved && projection.Spec.Status != contracts.GoalSuperseded {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidStateTransition, "", map[string]any{"scope": "goal change"}))
+		return
+	}
+	goal := &state.GoalRecord{ID: projection.GoalSpecID, Version: body.Version, SHA256: body.SHA256, UnresolvedItems: append([]string(nil), projection.Spec.Content.UnresolvedItems...)}
+	outcome, err := handler.orchestrator.HandleProject(request.Context(), orchestrator.ProjectRequest{
+		TenantID: principal.TenantID, ProjectID: projectID, PrincipalID: principal.ID, IdempotencyKey: idempotencyKey, ExpectedVersion: body.ExpectedVersion,
+		Command: state.ProjectCommand{Type: state.ProjectCommandRequestGoalChange, Goal: goal, GoalMessage: &state.GoalMessage{Kind: state.GoalMessageChangeRequest, Message: body.Message}, ImpactedTaskIDs: append([]string(nil), body.ImpactedTaskIDs...)},
+	})
+	if err != nil {
+		writeError(response, request, normalizeError(err))
+		return
+	}
+	writeProject(response, http.StatusAccepted, outcome.Project)
+}
+
+func validGoalDecisionBody(body goalDecisionBody, version int, action, headerKey string) bool {
+	if body.ExpectedVersion < 1 || (contracts.SpecRef{Version: version, SHA256: body.SHA256}).Validate() != nil || body.IdempotencyKey != "" && body.IdempotencyKey != headerKey || len(body.Comment) > 2048 || strings.ContainsRune(body.Comment, '\x00') {
+		return false
+	}
+	if action == "approve" {
+		return body.Decision == "" || body.Decision == "APPROVE"
+	}
+	return (body.Decision == "" || body.Decision == "REJECT") && strings.TrimSpace(body.Comment) != ""
+}
+
+func validGoalChangeBody(body goalChangeBody) bool {
+	if body.ExpectedVersion < 1 || body.Version < 1 || (contracts.SpecRef{Version: body.Version, SHA256: body.SHA256}).Validate() != nil || strings.TrimSpace(body.Message) == "" || len(body.Message) > maximumRequestBytes || strings.ContainsRune(body.Message, '\x00') || body.ImpactedTaskIDs == nil {
+		return false
+	}
+	seen := make(map[string]bool, len(body.ImpactedTaskIDs))
+	for _, taskID := range body.ImpactedTaskIDs {
+		if seen[taskID] || !validAPIIdentifier(taskID) && !validProjectID(taskID) {
+			return false
+		}
+		seen[taskID] = true
+	}
+	return true
+}
+
+func validateGoalIfMatch(request *http.Request, expectedVersion int64) error {
+	if len(request.Header.Values("If-Match")) != 1 {
+		return aorerrors.New(aorerrors.CodeStateVersionConflict, "", map[string]any{"expectedVersion": expectedVersion})
+	}
+	return validateIfMatch(request.Header.Get("If-Match"), expectedVersion)
+}
+
+func goalCursor(request *http.Request, scope string) (string, error) {
+	query := request.URL.Query()
+	if len(query) > 1 || len(query) == 1 && len(query["cursor"]) != 1 {
+		return "", aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": scope + " cursor"})
+	}
+	cursor := query.Get("cursor")
+	if len(cursor) > 512 || strings.ContainsAny(cursor, "\r\n\x00") {
+		return "", aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": scope + " cursor"})
+	}
+	return cursor, nil
+}
+
+func goalMessageCursor(projectID, messageID string) string {
+	digest := sha256.Sum256([]byte(projectID + "\x00message\x00" + messageID))
+	return hex.EncodeToString(digest[:])
+}
+
+func goalSpecCursor(projectID string, version int) string {
+	digest := sha256.Sum256([]byte(projectID + "\x00spec\x00" + strconv.Itoa(version)))
+	return hex.EncodeToString(digest[:])
+}
+
+func goalSpecETag(version int, revision int64) string {
+	return `"goal-v` + strconv.Itoa(version) + `-r` + strconv.FormatInt(revision, 10) + `"`
+}
+
+func goalApprovalRecordID(tenantID, principalID, idempotencyKey string) string {
+	value := sha256.Sum256([]byte(tenantID + "\x00" + principalID + "\x00" + idempotencyKey))
+	value[6] = value[6]&0x0f | 0x50
+	value[8] = value[8]&0x3f | 0x80
+	hexValue := hex.EncodeToString(value[:16])
+	return hexValue[0:8] + "-" + hexValue[8:12] + "-" + hexValue[12:16] + "-" + hexValue[16:20] + "-" + hexValue[20:32]
+}
+
+func goalApprovalSignature(tenantID, projectID, goalSpecID string, version int, digest, principalID, reason, idempotencyKey string) string {
+	value := sha256.Sum256([]byte(tenantID + "\x00" + projectID + "\x00" + goalSpecID + "\x00" + strconv.Itoa(version) + "\x00" + digest + "\x00" + principalID + "\x00" + reason + "\x00" + idempotencyKey))
+	return "oidc-sha256:" + hex.EncodeToString(value[:])
+}
+
+func (handler *Handler) authorizeProjectResourceRead(ctx context.Context, principal authn.Principal, projectID, action, resourceType, resourceID string) (state.Project, error) {
+	project, found, err := handler.orchestrator.Project(ctx, principal.TenantID, projectID)
+	if err != nil {
+		return state.Project{}, normalizeError(err)
+	}
+	if !found {
+		return state.Project{}, aorerrors.New(aorerrors.CodeNotFound, "", nil)
+	}
+	if err := authorizeRead(ctx, handler.authorizer, principal, projectID, action, resourceType, resourceID, string(project.State), project.Version, project.DataClassification); err != nil {
+		return state.Project{}, err
+	}
+	return project, nil
 }
 
 func (handler *Handler) getBudgets(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string) {

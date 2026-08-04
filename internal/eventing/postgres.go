@@ -2,7 +2,9 @@ package eventing
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -187,7 +189,7 @@ func (s *PostgresStore) Execute(ctx context.Context, request TransactionRequest)
 	if err := setTenant(ctx, tx, request.TenantID); err != nil {
 		return TransactionResult{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, request.TenantID+"\x00"+request.PrincipalID+"\x00"+request.IdempotencyKey); err != nil {
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, postgresAdvisoryLockKey(request.TenantID, request.PrincipalID, request.IdempotencyKey)); err != nil {
 		return TransactionResult{}, err
 	}
 	if prior, found, err := lookupCommand(ctx, tx, request.TenantID, request.PrincipalID, request.IdempotencyKey, request.RequestSHA256); err != nil {
@@ -219,6 +221,11 @@ FOR UPDATE`, request.TenantID, update.AggregateType, update.AggregateID).Scan(&v
 	for _, update := range request.Updates {
 		if update.AggregateType == "project" {
 			if err := syncProjectRow(ctx, tx, request, update); err != nil {
+				return TransactionResult{}, err
+			}
+		}
+		if update.AggregateType == "goal_spec" {
+			if err := syncGoalSpecRow(ctx, tx, request, update); err != nil {
 				return TransactionResult{}, err
 			}
 		}
@@ -507,6 +514,90 @@ WHERE tenant_id = $1::uuid AND id = $2::uuid AND state_version = $5`,
 	return err
 }
 
+func syncGoalSpecRow(ctx context.Context, tx *sql.Tx, request TransactionRequest, update ProjectionUpdate) error {
+	var projection struct {
+		TenantID   string `json:"tenantId"`
+		ProjectID  string `json:"projectId"`
+		GoalSpecID string `json:"goalSpecId"`
+		RecordID   string `json:"recordId"`
+		Spec       struct {
+			Content    json.RawMessage `json:"content"`
+			Status     string          `json:"status"`
+			ApprovedBy *struct {
+				ActorID    string `json:"actorId"`
+				ApprovedAt string `json:"approvedAt"`
+			} `json:"approvedBy"`
+			ContentSHA256 string `json:"contentSha256"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(update.State, &projection); err != nil {
+		return fmt.Errorf("decode GoalSpec projection for relational sync: %w", err)
+	}
+	var content struct {
+		GoalSpecVersion int    `json:"goalSpecVersion"`
+		Version         int    `json:"version"`
+		ProjectID       string `json:"projectId"`
+		CreatedBy       struct {
+			AgentInstanceID string `json:"agentInstanceId"`
+		} `json:"createdBy"`
+	}
+	if err := json.Unmarshal(projection.Spec.Content, &content); err != nil {
+		return fmt.Errorf("decode GoalSpec content for relational sync: %w", err)
+	}
+	if projection.TenantID != request.TenantID || projection.ProjectID != update.ProjectID || projection.ProjectID != content.ProjectID || projection.GoalSpecID == "" || projection.RecordID == "" || projection.Spec.ContentSHA256 == "" || content.GoalSpecVersion < 1 || content.Version < 1 || content.CreatedBy.AgentInstanceID == "" {
+		return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "GoalSpec relational projection"})
+	}
+	var approvedBy any
+	var approvedAt any
+	if projection.Spec.ApprovedBy != nil {
+		approvedBy = projection.Spec.ApprovedBy.ActorID
+		approvedAt = projection.Spec.ApprovedBy.ApprovedAt
+	}
+	if projection.Spec.Status == "APPROVED" && (approvedBy == nil || approvedAt == nil) || projection.Spec.Status != "APPROVED" && (approvedBy != nil || approvedAt != nil) {
+		return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "GoalSpec approval projection"})
+	}
+	if update.ExpectedVersion == 0 {
+		_, err := tx.ExecContext(ctx, `
+INSERT INTO goal_specs
+  (id, tenant_id, project_id, version, status, schema_version, content_jsonb, content_sha256, proposer_agent_id, approved_by, approved_at, created_at)
+VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, transaction_timestamp())`,
+			projection.RecordID, request.TenantID, projection.ProjectID, content.Version, projection.Spec.Status, content.GoalSpecVersion,
+			[]byte(projection.Spec.Content), projection.Spec.ContentSHA256, content.CreatedBy.AgentInstanceID, approvedBy, approvedAt)
+		if err != nil {
+			return err
+		}
+	} else {
+		result, err := tx.ExecContext(ctx, `
+UPDATE goal_specs
+SET status = $6, approved_by = $7, approved_at = $8
+WHERE tenant_id = $1::uuid AND id = $2::uuid AND project_id = $3::uuid
+  AND version = $4 AND content_sha256 = $5`,
+			request.TenantID, projection.RecordID, projection.ProjectID, content.Version, projection.Spec.ContentSHA256, projection.Spec.Status, approvedBy, approvedAt)
+		if err != nil {
+			return err
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if rows != 1 {
+			return aorerrors.New(aorerrors.CodeStateVersionConflict, "", map[string]any{"scope": "GoalSpec relational projection"})
+		}
+	}
+	if projection.Spec.Status == "SUPERSEDED" {
+		_, err := tx.ExecContext(ctx, `
+UPDATE projects
+SET active_goal_spec_id = NULL
+WHERE tenant_id = $1::uuid AND id = $2::uuid AND active_goal_spec_id = $3::uuid`, request.TenantID, projection.ProjectID, projection.RecordID)
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `
+UPDATE projects
+SET active_goal_spec_id = $3::uuid
+WHERE tenant_id = $1::uuid AND id = $2::uuid`, request.TenantID, projection.ProjectID, projection.RecordID)
+	return err
+}
+
 func lookupCommand(ctx context.Context, tx *sql.Tx, tenantID, principalID, idempotencyKey, requestSHA256 string) (TransactionResult, bool, error) {
 	var storedRequestSHA string
 	var resultJSON []byte
@@ -590,6 +681,11 @@ func setTenant(ctx context.Context, tx *sql.Tx, tenantID string) error {
 	}
 	_, err := tx.ExecContext(ctx, `SELECT set_config('aor.tenant_id', $1, true)`, tenantID)
 	return err
+}
+
+func postgresAdvisoryLockKey(tenantID, principalID, idempotencyKey string) string {
+	digest := sha256.Sum256([]byte(tenantID + "\x00" + principalID + "\x00" + idempotencyKey))
+	return hex.EncodeToString(digest[:])
 }
 
 func cloneEvents(events []DomainEvent) []DomainEvent {
