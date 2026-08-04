@@ -87,6 +87,10 @@ services:
         if [ "$$model_calls_project_scope_installed" != "t" ]; then
           psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000009_model_calls_project_scope.up.sql
         fi
+        outbox_tenant_discovery_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT to_regprocedure('public.aor_pending_outbox_tenants(timestamp with time zone,integer)') IS NOT NULL")"
+        if [ "$$outbox_tenant_discovery_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000010_outbox_tenant_discovery.up.sql
+        fi
         unset AOR_APP_PASSWORD
     secrets: [postgres_password, postgres_app_password]
     volumes:
@@ -99,6 +103,7 @@ services:
       - ../../migrations/postgres/000007_runtime_record_grants.up.sql:/migrations/000007_runtime_record_grants.up.sql:ro
       - ../../migrations/postgres/000008_budget_account_scope_unique.up.sql:/migrations/000008_budget_account_scope_unique.up.sql:ro
       - ../../migrations/postgres/000009_model_calls_project_scope.up.sql:/migrations/000009_model_calls_project_scope.up.sql:ro
+      - ../../migrations/postgres/000010_outbox_tenant_discovery.up.sql:/migrations/000010_outbox_tenant_discovery.up.sql:ro
       - ./postgres-app-password.sql:/migrations/postgres-app-password.sql:ro
     read_only: true
     tmpfs: [/tmp]

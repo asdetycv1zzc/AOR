@@ -150,6 +150,31 @@ ORDER BY aggregate_type, aggregate_id, aggregate_version, event_id`, tenantID)
 	return events, nil
 }
 
+func (s *PostgresStore) PendingOutboxTenants(ctx context.Context, now time.Time, limit int) ([]string, error) {
+	if s == nil || s.db == nil || ctx == nil || now.IsZero() || limit < 1 || limit > 1000 {
+		return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "pending outbox tenants"})
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT tenant_id::text
+FROM aor_pending_outbox_tenants($1, $2)`, now.UTC(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	tenants := make([]string, 0, limit)
+	for rows.Next() {
+		var tenantID string
+		if err := rows.Scan(&tenantID); err != nil {
+			return nil, err
+		}
+		tenants = append(tenants, tenantID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return tenants, nil
+}
+
 func (s *PostgresStore) Execute(ctx context.Context, request TransactionRequest) (TransactionResult, error) {
 	if err := validateTransaction(request); err != nil {
 		return TransactionResult{}, err
@@ -578,3 +603,4 @@ func cloneEvents(events []DomainEvent) []DomainEvent {
 var _ Store = (*PostgresStore)(nil)
 var _ OutboxStore = (*PostgresStore)(nil)
 var _ EventLog = (*PostgresStore)(nil)
+var _ OutboxTenantSource = (*PostgresStore)(nil)

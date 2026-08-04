@@ -64,6 +64,13 @@
       "file": "000009_model_calls_project_scope.up.sql",
       "sha256": "sha256:8f9e365782101929cc8a7da68bfbde543db47dee60e817a6eaf4986b02275c6e",
       "destructive": false
+    },
+    {
+      "version": 10,
+      "mode": "EXPAND",
+      "file": "000010_outbox_tenant_discovery.up.sql",
+      "sha256": "sha256:80376010081f08b15ab60d924037c13b0100d180f58ad37f1c86de9fc04a2b26",
+      "destructive": false
     }
   ]
 }
