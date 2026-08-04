@@ -82,6 +82,17 @@ func Assemble(ctx context.Context, request AssembleRequest) (Report, error) {
 		return Report{}, fmt.Errorf("%w: output directory must not exist", ErrInvalidManifest)
 	}
 	parent := filepath.Dir(output)
+	if info, err := os.Lstat(parent); errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(parent, 0o700); err != nil {
+			return Report{}, err
+		}
+		info, err = os.Lstat(parent)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return Report{}, ErrInvalidManifest
+		}
+	} else if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return Report{}, ErrInvalidManifest
+	}
 	temporary, err := os.MkdirTemp(parent, ".aor-release-")
 	if err != nil {
 		return Report{}, err

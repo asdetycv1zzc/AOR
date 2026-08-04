@@ -40,7 +40,7 @@ func TestAssembleCreatesDeterministicOfflineVerifiablePackage(t *testing.T) {
 	}
 
 	second := request
-	second.OutputDir = filepath.Join(t.TempDir(), "release")
+	second.OutputDir = filepath.Join(t.TempDir(), "nested", "release")
 	secondReport, err := Assemble(context.Background(), second)
 	if err != nil {
 		t.Fatal(err)
