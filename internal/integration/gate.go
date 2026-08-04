@@ -159,15 +159,16 @@ func (s EventTaskSource) Current(ctx context.Context, tenantID, projectID, taskI
 }
 
 type RepositorySubmissionSource struct {
-	Store repository.SubmissionStore
+	Store  repository.SubmissionStore
+	Signer repository.Signer
 }
 
 func (s RepositorySubmissionSource) Current(ctx context.Context, task state.ModuleTask) (repository.Submission, error) {
-	if s.Store == nil {
+	if s.Store == nil || s.Signer == nil {
 		return repository.Submission{}, ErrNotAudited
 	}
 	submission, found, err := s.Store.Get(ctx, task.TenantID, task.ID, task.AttemptSeriesID, task.Attempt)
-	if err != nil || !found {
+	if err != nil || !found || repository.VerifySubmission(ctx, submission, s.Signer) != nil {
 		return repository.Submission{}, ErrNotAudited
 	}
 	return submission, nil

@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -46,6 +47,19 @@ func (gateAuthorizer) Authorize(context.Context, AuthorizationRequest) (string, 
 	return digest("authorization"), nil
 }
 
+type gateRepositorySigner struct{ reject bool }
+
+func (signer gateRepositorySigner) Sign(context.Context, []byte) (*contracts.Signature, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (signer gateRepositorySigner) Verify(context.Context, []byte, *contracts.Signature) error {
+	if signer.reject {
+		return errors.New("invalid signature")
+	}
+	return nil
+}
+
 func TestAuthoritativeGateRejectsCallerSuppliedAuditFacts(t *testing.T) {
 	ref := contracts.SpecRef{Version: 1, SHA256: digest("module")}
 	task := state.ModuleTask{TenantID: "tenant-1", ProjectID: "project-1", ID: "task-1", State: contracts.TaskPassed, Version: 4, ModuleSpecRef: ref, AttemptSeriesID: "series-1", Attempt: 1}
@@ -74,5 +88,30 @@ func TestAuthoritativeGateRejectsNonPassedTask(t *testing.T) {
 	request := Request{TenantID: "tenant-1", ProjectID: "project-1", IntegrationID: "integration-1", IdempotencyKey: "merge-1", BaseCommit: commit(1), PolicyDigest: digest("policy"), ExpectedVersion: 7, CreatedAt: time.Now().UTC(), PrincipalID: "service-1", LeaseID: "lease-1", FencingToken: 1, Candidates: []Candidate{{TaskID: "task-1", ModuleID: "module-1", SubmissionCommit: commit(3), ModuleSpecRef: ref, OwnedPaths: []string{"owned/..."}, EvidenceSHA256: digest("evidence"), AuditPassed: true}}}
 	if _, err := gate.Validate(context.Background(), request); err == nil {
 		t.Fatal("non-passed task was accepted for merge")
+	}
+}
+
+func TestRepositorySubmissionSourceVerifiesServiceSignature(t *testing.T) {
+	ref := contracts.SpecRef{Version: 1, SHA256: digest("module")}
+	identity := contracts.AgentIdentity{AgentInstanceID: "agent-1", Role: "EXECUTOR", LeaseID: "lease-1"}
+	manifest := contracts.SubmissionManifest{SubmissionVersion: 1, ProjectID: "project-1", ModuleTaskID: "task-1", AttemptSeriesID: "series-1", Attempt: 1, ModuleSpecRef: ref, BaseCommit: commit(1), HeadCommit: commit(2), AgentIdentity: identity, CreatedAt: time.Now().UTC().Format(time.RFC3339)}
+	manifest.SHA256, _ = repository.DigestManifest(manifest)
+	manifest.Signature = &contracts.Signature{Type: "TEST", KID: "repository-test", JWS: "signed"}
+	submission := repository.Submission{
+		Manifest:       manifest,
+		Workspace:      repository.Workspace{TenantID: "tenant-1", ProjectID: "project-1", TaskID: "task-1", Attempt: 1, AttemptSeriesID: "series-1", BaseCommit: commit(1), ModuleSpecRef: ref, AgentIdentity: identity},
+		IdempotencyKey: "submission-1",
+		RequestSHA256:  digest("request"),
+	}
+	store := repository.NewMemorySubmissionStore()
+	if err := store.Put(context.Background(), submission); err != nil {
+		t.Fatal(err)
+	}
+	task := state.ModuleTask{TenantID: "tenant-1", ProjectID: "project-1", ID: "task-1", AttemptSeriesID: "series-1", Attempt: 1}
+	if _, err := (RepositorySubmissionSource{Store: store, Signer: gateRepositorySigner{}}).Current(context.Background(), task); err != nil {
+		t.Fatalf("valid signed submission rejected: %v", err)
+	}
+	if _, err := (RepositorySubmissionSource{Store: store, Signer: gateRepositorySigner{reject: true}}).Current(context.Background(), task); !errors.Is(err, ErrNotAudited) {
+		t.Fatalf("invalid signature error = %v", err)
 	}
 }
