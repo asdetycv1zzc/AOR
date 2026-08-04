@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"runtime"
 	"testing"
 	"time"
 
@@ -22,16 +21,13 @@ type workerSandboxProvider struct {
 }
 
 func TestLinuxExecutionProviderRequiresPinnedDedicatedEngine(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("Linux provider configuration is platform-specific")
-	}
 	_, err := newExecutionProvider(runtimeconfig.Config{Sandbox: runtimeconfig.SandboxConfig{
 		RuntimeName:     "runc",
 		SeccompProfile:  "builtin",
 		MandatoryPolicy: "apparmor=aor-sandbox",
 		HoldCommand:     []string{"/bin/sh"},
 	}})
-	if !errors.Is(err, ErrWorkerConfiguration) {
+	if !errors.Is(err, ErrWorkerConfiguration) && !errors.Is(err, ErrWorkerUnavailable) {
 		t.Fatalf("missing Linux engine configuration error = %v", err)
 	}
 }

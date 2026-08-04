@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/url"
 	"os/exec"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -268,6 +269,19 @@ type dockerInspection struct {
 		Devices        []json.RawMessage `json:"Devices"`
 		Binds          []string          `json:"Binds"`
 	} `json:"HostConfig"`
+	Mounts []dockerMount `json:"Mounts"`
+}
+
+// dockerMount is the daemon's effective mount table. HostConfig.Binds only
+// describes legacy bind syntax; --mount entries (the syntax used by AOR) are
+// represented here. Attestation must inspect both views so a daemon or
+// runtime cannot add a mount that was absent from the requested spec.
+type dockerMount struct {
+	Type        string `json:"Type"`
+	Source      string `json:"Source"`
+	Destination string `json:"Destination"`
+	Mode        string `json:"Mode"`
+	RW          bool   `json:"RW"`
 }
 
 func (b *DockerBackend) inspectEngine(ctx context.Context) (dockerInfo, error) {
@@ -372,7 +386,7 @@ func (b *DockerBackend) attest(spec SandboxSpec, imageID string, info dockerInfo
 	expectedNanoCPUs := int64(expectedCPUs * 1_000_000_000)
 	nonRoot := inspection.Config.User != "" && inspection.Config.User != "0" && inspection.Config.User != "root" && !strings.HasPrefix(inspection.Config.User, "0:")
 	security := inspection.HostConfig.SecurityOpt
-	valid := inspection.Image == imageID && inspection.Config.WorkingDir == "/workspace" && nonRoot && inspection.HostConfig.ReadonlyRootfs && !inspection.HostConfig.Privileged && inspection.HostConfig.NetworkMode == "none" && inspection.HostConfig.PidMode == "" && includesExactFold(inspection.HostConfig.CapDrop, "ALL") && includesFold(security, "no-new-privileges") && includesFold(security, "seccomp="+b.seccomp) && includesFold(security, b.mandatoryPolicy) && inspection.HostConfig.PidsLimit == int64(spec.PIDsLimit) && inspection.HostConfig.Memory == spec.MemoryBytes && inspection.HostConfig.NanoCPUs == expectedNanoCPUs && len(inspection.HostConfig.Devices) == 0 && hasTmpfs(inspection.HostConfig.Tmpfs, "/tmp") && hasTmpfs(inspection.HostConfig.Tmpfs, "/workspace") && !containsRuntimeSocket(inspection.HostConfig.Binds)
+	valid := inspection.Image == imageID && inspection.Config.WorkingDir == "/workspace" && nonRoot && inspection.HostConfig.ReadonlyRootfs && !inspection.HostConfig.Privileged && inspection.HostConfig.NetworkMode == "none" && inspection.HostConfig.PidMode == "" && includesExactFold(inspection.HostConfig.CapDrop, "ALL") && includesFold(security, "no-new-privileges") && includesFold(security, "seccomp="+b.seccomp) && includesFold(security, b.mandatoryPolicy) && inspection.HostConfig.PidsLimit == int64(spec.PIDsLimit) && inspection.HostConfig.Memory == spec.MemoryBytes && inspection.HostConfig.NanoCPUs == expectedNanoCPUs && len(inspection.HostConfig.Devices) == 0 && validateTmpfsOptions(spec, inspection.HostConfig.Tmpfs) && validateDockerMounts(spec, inspection)
 	if !valid {
 		return Attestation{}, ErrBackendDrift
 	}
@@ -381,6 +395,110 @@ func (b *DockerBackend) attest(spec SandboxSpec, imageID string, info dockerInfo
 		return Attestation{}, err
 	}
 	return Attestation{SecurityProfileSHA256: digest, ImageDigest: spec.ImageDigest, Runtime: info.DefaultRuntime, NonRoot: true, Rootless: true, ReadOnlyRootFS: true, CapabilitiesDropped: true, SeccompEnabled: true, MandatoryPolicy: true, CgroupsV2: true, Tmpfs: true, WorkdirReadWrite: true}, nil
+}
+
+// validateTmpfsOptions checks the effective daemon options, rather than only
+// checking that the two expected destinations exist. Extra options such as
+// exec, suid, or dev would weaken the sandbox's temporary filesystems.
+func validateTmpfsOptions(spec SandboxSpec, values map[string]string) bool {
+	if len(values) != 2 {
+		return false
+	}
+	tmpOptions, ok := values["/tmp"]
+	if !ok || !hasTmpfsOption(tmpOptions, "rw") || !hasTmpfsOption(tmpOptions, "noexec") || !hasTmpfsOption(tmpOptions, "nosuid") || !hasTmpfsOption(tmpOptions, "nodev") || hasTmpfsOption(tmpOptions, "exec") || hasTmpfsOption(tmpOptions, "suid") || hasTmpfsOption(tmpOptions, "dev") {
+		return false
+	}
+	workspaceOptions, ok := values["/workspace"]
+	if !ok || !hasTmpfsOption(workspaceOptions, "rw") || !hasTmpfsOption(workspaceOptions, "nosuid") || !hasTmpfsOption(workspaceOptions, "nodev") || hasTmpfsOption(workspaceOptions, "suid") || hasTmpfsOption(workspaceOptions, "dev") || !hasTmpfsSize(workspaceOptions, spec.DiskBytes) {
+		return false
+	}
+	return true
+}
+
+func hasTmpfsOption(options, wanted string) bool {
+	for _, option := range strings.Split(strings.ToLower(options), ",") {
+		if strings.TrimSpace(option) == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func hasTmpfsSize(options string, expected int64) bool {
+	wanted := "size=" + strconv.FormatInt(expected, 10)
+	for _, option := range strings.Split(strings.ToLower(options), ",") {
+		if strings.TrimSpace(option) == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+// validateDockerMounts compares the daemon's complete effective mount table
+// with the requested spec. HostConfig.Binds is rejected outright because AOR
+// creates all user mounts with --mount and must never accept an unaccounted
+// legacy bind. The two internal tmpfs mounts and every requested read-only
+// bind must appear exactly once; volumes, tmpfs destinations, and bind
+// sources not in the spec fail closed.
+func validateDockerMounts(spec SandboxSpec, inspection dockerInspection) bool {
+	if len(inspection.HostConfig.Binds) != 0 || containsRuntimeSocket(inspection.HostConfig.Binds) {
+		return false
+	}
+	type expectedMount struct {
+		kind   string
+		source string
+	}
+	expected := map[string]expectedMount{
+		"/tmp":       {kind: "tmpfs"},
+		"/workspace": {kind: "tmpfs"},
+	}
+	for _, requested := range spec.Mounts {
+		target := path.Clean(strings.ReplaceAll(requested.Target, "\\", "/"))
+		if target == "." || target == "/" {
+			return false
+		}
+		if _, duplicate := expected[target]; duplicate || requested.Mode != "RO" {
+			return false
+		}
+		expected[target] = expectedMount{kind: "bind", source: requested.Source}
+	}
+	if len(inspection.Mounts) != len(expected) {
+		return false
+	}
+	seen := make(map[string]struct{}, len(inspection.Mounts))
+	for _, actual := range inspection.Mounts {
+		target := path.Clean(strings.ReplaceAll(actual.Destination, "\\", "/"))
+		if target == "." || actual.Destination == "" {
+			return false
+		}
+		if _, duplicate := seen[target]; duplicate {
+			return false
+		}
+		seen[target] = struct{}{}
+		requirement, found := expected[target]
+		if !found || !strings.EqualFold(actual.Type, requirement.kind) || containsRuntimeSocket([]string{actual.Source, actual.Destination}) {
+			return false
+		}
+		if requirement.kind == "tmpfs" {
+			if !actual.RW {
+				return false
+			}
+			continue
+		}
+		if actual.Source != requirement.source || actual.RW || !hasMountOption(actual.Mode, "ro") {
+			return false
+		}
+	}
+	return len(seen) == len(expected)
+}
+
+func hasMountOption(options, wanted string) bool {
+	for _, option := range strings.Split(strings.ToLower(options), ",") {
+		if strings.TrimSpace(option) == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func (b *DockerBackend) captureJSON(ctx context.Context, args []string, target any) error {

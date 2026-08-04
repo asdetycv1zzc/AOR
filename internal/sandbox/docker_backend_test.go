@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -168,6 +169,54 @@ func TestDockerBackendCleansUpAttestationDrift(t *testing.T) {
 	}
 }
 
+func TestDockerBackendAttestsExactlyConfiguredMounts(t *testing.T) {
+	spec := linuxSpec()
+	spec.Mounts = []Mount{{Source: "/var/lib/aor/workspaces/project", Target: "/workspace/inputs/repository", Mode: "RO"}}
+	backend, err := NewDockerBackend(DockerBackendOptions{RuntimeName: "runc", SeccompProfile: "/etc/aor/seccomp.json", MandatoryPolicy: "apparmor=aor-sandbox", Runner: &scriptedRunner{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspection := hardenedInspection(spec, spec.ImageDigest, false)
+	if _, err := backend.attest(spec, spec.ImageDigest, hardenedDockerInfo(), inspection); err != nil {
+		t.Fatalf("configured mounts rejected: %v", err)
+	}
+
+	mutations := []func(*dockerInspection){
+		func(value *dockerInspection) {
+			value.Mounts = append(value.Mounts, dockerMount{Type: "bind", Source: "/etc", Destination: "/etc/extra", Mode: "ro"})
+		},
+		func(value *dockerInspection) {
+			value.Mounts[0].Type = "bind"
+		},
+		func(value *dockerInspection) {
+			value.HostConfig.Binds = []string{"/run/aor-sandbox/engine.sock:/run/aor-sandbox/engine.sock:ro"}
+		},
+		func(value *dockerInspection) {
+			value.Mounts[len(value.Mounts)-1].Source = "/run/containerd/containerd.sock"
+		},
+	}
+	for index, mutate := range mutations {
+		candidate := hardenedInspection(spec, spec.ImageDigest, false)
+		mutate(&candidate)
+		if _, err := backend.attest(spec, spec.ImageDigest, hardenedDockerInfo(), candidate); !errors.Is(err, ErrBackendDrift) {
+			t.Fatalf("mount mutation %d accepted: %v", index, err)
+		}
+	}
+}
+
+func TestDockerBackendRejectsWeakTmpfsOptions(t *testing.T) {
+	spec := linuxSpec()
+	inspection := hardenedInspection(spec, spec.ImageDigest, false)
+	inspection.HostConfig.Tmpfs["/tmp"] = "rw,nosuid,nodev"
+	backend, err := NewDockerBackend(DockerBackendOptions{RuntimeName: "runc", SeccompProfile: "/etc/aor/seccomp.json", MandatoryPolicy: "apparmor=aor-sandbox", Runner: &scriptedRunner{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.attest(spec, spec.ImageDigest, hardenedDockerInfo(), inspection); !errors.Is(err, ErrBackendDrift) {
+		t.Fatalf("weak tmpfs options accepted: %v", err)
+	}
+}
+
 func hardenedDockerScript(t *testing.T, spec SandboxSpec, privileged bool) *scriptedRunner {
 	t.Helper()
 	info := hardenedDockerInfo()
@@ -194,7 +243,14 @@ func hardenedInspection(spec SandboxSpec, imageID string, privileged bool) docke
 	inspection.HostConfig.PidsLimit = int64(spec.PIDsLimit)
 	inspection.HostConfig.Memory = spec.MemoryBytes
 	inspection.HostConfig.NanoCPUs = 2_000_000_000
-	inspection.HostConfig.Tmpfs = map[string]string{"/tmp": "rw", "/workspace": "rw"}
+	inspection.HostConfig.Tmpfs = map[string]string{"/tmp": "rw,noexec,nosuid,nodev", "/workspace": "rw,nosuid,nodev,size=" + strconv.FormatInt(spec.DiskBytes, 10)}
+	inspection.Mounts = []dockerMount{
+		{Type: "tmpfs", Source: "tmpfs", Destination: "/tmp", Mode: "rw,noexec,nosuid,nodev", RW: true},
+		{Type: "tmpfs", Source: "tmpfs", Destination: "/workspace", Mode: "rw,nosuid,nodev,size=" + strconv.FormatInt(spec.DiskBytes, 10), RW: true},
+	}
+	for _, mount := range spec.Mounts {
+		inspection.Mounts = append(inspection.Mounts, dockerMount{Type: "bind", Source: mount.Source, Destination: mount.Target, Mode: "ro", RW: false})
+	}
 	return inspection
 }
 
