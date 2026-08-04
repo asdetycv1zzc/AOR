@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -55,7 +56,9 @@ type BlobStore interface {
 
 type DockerBackendOptions struct {
 	Binary               string
+	Endpoint             string
 	RuntimeName          string
+	ImageReference       string
 	SeccompProfile       string
 	MandatoryPolicy      string
 	HoldCommand          []string
@@ -66,7 +69,10 @@ type DockerBackendOptions struct {
 
 type DockerBackend struct {
 	binary          string
+	endpoint        string
 	runtime         string
+	imageReference  string
+	imageDigest     string
 	seccomp         string
 	mandatoryPolicy string
 	holdCommand     []string
@@ -79,19 +85,30 @@ func NewDockerBackend(options DockerBackendOptions) (*DockerBackend, error) {
 	if options.Binary == "" {
 		options.Binary = "docker"
 	}
-	if options.RuntimeName == "" || options.SeccompProfile == "" || options.MandatoryPolicy == "" || options.MandatoryPolicy == "unconfined" || strings.ContainsAny(options.MandatoryPolicy, "\r\n") {
+	if options.Endpoint != "" && !validDockerEndpoint(options.Endpoint) {
+		return nil, ErrInvalidSpec
+	}
+	imageDigest := ""
+	if options.ImageReference != "" {
+		var valid bool
+		imageDigest, valid = immutableImageDigest(options.ImageReference)
+		if !valid {
+			return nil, ErrInvalidSpec
+		}
+	}
+	if len(options.HoldCommand) == 0 {
+		options.HoldCommand = []string{"/aor/runtime/hold"}
+	}
+	if !validRuntimeName(options.RuntimeName) || options.SeccompProfile == "" || strings.EqualFold(options.SeccompProfile, "unconfined") || strings.ContainsAny(options.SeccompProfile, "\r\n\x00") || !validMandatoryPolicy(options.MandatoryPolicy) || !validHoldCommand(options.HoldCommand) {
 		return nil, ErrInvalidSpec
 	}
 	if options.Runner == nil {
 		options.Runner = OSCommandRunner{}
 	}
-	if len(options.HoldCommand) == 0 {
-		options.HoldCommand = []string{"/aor/runtime/hold"}
-	}
 	if options.MaxInlineOutputBytes <= 0 || options.MaxInlineOutputBytes > maxCapturedOutput {
 		options.MaxInlineOutputBytes = maxCapturedOutput
 	}
-	return &DockerBackend{binary: options.Binary, runtime: options.RuntimeName, seccomp: options.SeccompProfile, mandatoryPolicy: options.MandatoryPolicy, holdCommand: append([]string(nil), options.HoldCommand...), runner: options.Runner, blobs: options.BlobStore, maxOutput: options.MaxInlineOutputBytes}, nil
+	return &DockerBackend{binary: options.Binary, endpoint: options.Endpoint, runtime: options.RuntimeName, imageReference: options.ImageReference, imageDigest: imageDigest, seccomp: options.SeccompProfile, mandatoryPolicy: options.MandatoryPolicy, holdCommand: append([]string(nil), options.HoldCommand...), runner: options.Runner, blobs: options.BlobStore, maxOutput: options.MaxInlineOutputBytes}, nil
 }
 
 // Ready performs a non-mutating engine and security capability probe. It does
@@ -100,8 +117,14 @@ func (b *DockerBackend) Ready(ctx context.Context) error {
 	if b == nil || ctx == nil {
 		return ErrBackendUnavailable
 	}
-	_, err := b.inspectEngine(ctx)
-	return err
+	if _, err := b.inspectEngine(ctx); err != nil {
+		return err
+	}
+	if b.imageReference != "" {
+		_, err := b.verifyImage(ctx, b.imageDigest)
+		return err
+	}
+	return nil
 }
 
 func (b *DockerBackend) Create(ctx context.Context, spec SandboxSpec) (attestation Attestation, err error) {
@@ -112,7 +135,8 @@ func (b *DockerBackend) Create(ctx context.Context, spec SandboxSpec) (attestati
 	if err != nil {
 		return Attestation{}, err
 	}
-	if err := b.verifyImage(ctx, spec.ImageDigest); err != nil {
+	imageID, err := b.verifyImage(ctx, spec.ImageDigest)
+	if err != nil {
 		return Attestation{}, err
 	}
 	args, err := b.createArgs(spec)
@@ -139,7 +163,7 @@ func (b *DockerBackend) Create(ctx context.Context, spec SandboxSpec) (attestati
 	if err != nil {
 		return Attestation{}, err
 	}
-	attestation, err = b.attest(spec, info, inspection)
+	attestation, err = b.attest(spec, imageID, info, inspection)
 	if err != nil {
 		return Attestation{}, err
 	}
@@ -158,7 +182,7 @@ func (b *DockerBackend) Exec(ctx context.Context, id string, request ExecRequest
 	stdout := newCappedBuffer(b.maxOutput)
 	stderr := newCappedBuffer(b.maxOutput)
 	started := time.Now().UTC()
-	exitCode, err := b.runner.Run(ctx, b.binary, args, stdout, stderr)
+	exitCode, err := b.runner.Run(ctx, b.binary, b.commandArgs(args), stdout, stderr)
 	finished := time.Now().UTC()
 	result := ExecResult{ExitCode: exitCode, Stdout: stdout.Bytes(), Stderr: stderr.Bytes(), StartedAt: started, FinishedAt: finished}
 	if ctx.Err() != nil {
@@ -219,6 +243,9 @@ type dockerInfo struct {
 	CgroupVersion   string   `json:"CgroupVersion"`
 	DefaultRuntime  string   `json:"DefaultRuntime"`
 	SecurityOptions []string `json:"SecurityOptions"`
+	MemoryLimit     bool     `json:"MemoryLimit"`
+	PidsLimit       bool     `json:"PidsLimit"`
+	CPUCfsQuota     bool     `json:"CPUCfsQuota"`
 }
 
 type dockerInspection struct {
@@ -249,24 +276,57 @@ func (b *DockerBackend) inspectEngine(ctx context.Context) (dockerInfo, error) {
 		return info, err
 	}
 	rootless := includesFold(info.SecurityOptions, "rootless")
-	mandatory := includesFold(info.SecurityOptions, "apparmor") || includesFold(info.SecurityOptions, "selinux")
-	if info.OSType != "linux" || info.CgroupVersion != "2" || info.DefaultRuntime != b.runtime || !rootless || !mandatory {
-		return info, ErrBackendDrift
+	if info.OSType != "linux" {
+		return info, backendDrift("Linux OCI engine required")
+	}
+	if info.CgroupVersion != "2" {
+		return info, backendDrift("cgroups v2 required")
+	}
+	if info.DefaultRuntime != b.runtime {
+		return info, backendDrift("configured OCI runtime is not the engine default")
+	}
+	if !rootless {
+		return info, backendDrift("rootless engine required")
+	}
+	if !mandatoryPolicyAvailable(info.SecurityOptions, b.mandatoryPolicy) {
+		return info, backendDrift("configured mandatory access-control policy is unavailable")
+	}
+	if !info.MemoryLimit || !info.PidsLimit || !info.CPUCfsQuota {
+		return info, backendDrift("memory, PID, and CPU limit enforcement required")
 	}
 	return info, nil
 }
 
-func (b *DockerBackend) verifyImage(ctx context.Context, digest string) error {
+func (b *DockerBackend) verifyImage(ctx context.Context, digest string) (string, error) {
 	var images []struct {
-		ID string `json:"Id"`
+		ID          string   `json:"Id"`
+		RepoDigests []string `json:"RepoDigests"`
 	}
-	if err := b.captureJSON(ctx, []string{"image", "inspect", digest}, &images); err != nil {
-		return err
+	target := digest
+	if b.imageReference != "" {
+		if digest != b.imageDigest {
+			return "", backendDrift("sandbox image digest does not match the configured immutable image")
+		}
+		target = b.imageReference
 	}
-	if len(images) != 1 || images[0].ID != digest {
-		return ErrBackendDrift
+	if err := b.captureJSON(ctx, []string{"image", "inspect", target}, &images); err != nil {
+		return "", err
 	}
-	return nil
+	if len(images) != 1 || !validDigest(images[0].ID) {
+		return "", backendDrift("sandbox image inspection is invalid")
+	}
+	if b.imageReference == "" {
+		if images[0].ID != digest {
+			return "", backendDrift("sandbox image content ID does not match the requested digest")
+		}
+		return images[0].ID, nil
+	}
+	for _, repoDigest := range images[0].RepoDigests {
+		if strings.HasSuffix(repoDigest, "@"+digest) {
+			return images[0].ID, nil
+		}
+	}
+	return "", backendDrift("configured sandbox image manifest digest is not installed")
 }
 
 func (b *DockerBackend) inspectContainer(ctx context.Context, id string) (dockerInspection, error) {
@@ -295,17 +355,24 @@ func (b *DockerBackend) createArgs(spec SandboxSpec) ([]string, error) {
 		}
 		args = append(args, "--mount", "type=bind,src="+mount.Source+",dst="+mount.Target+",readonly")
 	}
-	args = append(args, spec.ImageDigest)
+	image := spec.ImageDigest
+	if b.imageReference != "" {
+		if spec.ImageDigest != b.imageDigest {
+			return nil, ErrUnsafeWorkload
+		}
+		image = b.imageReference
+	}
+	args = append(args, image)
 	args = append(args, b.holdCommand...)
 	return args, nil
 }
 
-func (b *DockerBackend) attest(spec SandboxSpec, info dockerInfo, inspection dockerInspection) (Attestation, error) {
+func (b *DockerBackend) attest(spec SandboxSpec, imageID string, info dockerInfo, inspection dockerInspection) (Attestation, error) {
 	expectedCPUs, _ := strconv.ParseFloat(spec.CPULimit, 64)
 	expectedNanoCPUs := int64(expectedCPUs * 1_000_000_000)
 	nonRoot := inspection.Config.User != "" && inspection.Config.User != "0" && inspection.Config.User != "root" && !strings.HasPrefix(inspection.Config.User, "0:")
 	security := inspection.HostConfig.SecurityOpt
-	valid := inspection.Image == spec.ImageDigest && inspection.Config.WorkingDir == "/workspace" && nonRoot && inspection.HostConfig.ReadonlyRootfs && !inspection.HostConfig.Privileged && inspection.HostConfig.NetworkMode == "none" && inspection.HostConfig.PidMode == "" && includesExactFold(inspection.HostConfig.CapDrop, "ALL") && includesFold(security, "no-new-privileges") && includesFold(security, "seccomp="+b.seccomp) && includesFold(security, b.mandatoryPolicy) && inspection.HostConfig.PidsLimit == int64(spec.PIDsLimit) && inspection.HostConfig.Memory == spec.MemoryBytes && inspection.HostConfig.NanoCPUs == expectedNanoCPUs && len(inspection.HostConfig.Devices) == 0 && hasTmpfs(inspection.HostConfig.Tmpfs, "/tmp") && hasTmpfs(inspection.HostConfig.Tmpfs, "/workspace") && !containsRuntimeSocket(inspection.HostConfig.Binds)
+	valid := inspection.Image == imageID && inspection.Config.WorkingDir == "/workspace" && nonRoot && inspection.HostConfig.ReadonlyRootfs && !inspection.HostConfig.Privileged && inspection.HostConfig.NetworkMode == "none" && inspection.HostConfig.PidMode == "" && includesExactFold(inspection.HostConfig.CapDrop, "ALL") && includesFold(security, "no-new-privileges") && includesFold(security, "seccomp="+b.seccomp) && includesFold(security, b.mandatoryPolicy) && inspection.HostConfig.PidsLimit == int64(spec.PIDsLimit) && inspection.HostConfig.Memory == spec.MemoryBytes && inspection.HostConfig.NanoCPUs == expectedNanoCPUs && len(inspection.HostConfig.Devices) == 0 && hasTmpfs(inspection.HostConfig.Tmpfs, "/tmp") && hasTmpfs(inspection.HostConfig.Tmpfs, "/workspace") && !containsRuntimeSocket(inspection.HostConfig.Binds)
 	if !valid {
 		return Attestation{}, ErrBackendDrift
 	}
@@ -330,7 +397,7 @@ func (b *DockerBackend) captureJSON(ctx context.Context, args []string, target a
 func (b *DockerBackend) capture(ctx context.Context, args []string) (int, string, error) {
 	stdout := newCappedBuffer(maxCapturedOutput)
 	stderr := newCappedBuffer(4096)
-	exitCode, err := b.runner.Run(ctx, b.binary, args, stdout, stderr)
+	exitCode, err := b.runner.Run(ctx, b.binary, b.commandArgs(args), stdout, stderr)
 	if stdout.Truncated() || stderr.Truncated() {
 		return exitCode, "", ErrOutputLimit
 	}
@@ -342,7 +409,7 @@ func (b *DockerBackend) capture(ctx context.Context, args []string) (int, string
 
 func (b *DockerBackend) stream(ctx context.Context, args []string, destination io.Writer) error {
 	stderr := newCappedBuffer(4096)
-	exitCode, err := b.runner.Run(ctx, b.binary, args, destination, stderr)
+	exitCode, err := b.runner.Run(ctx, b.binary, b.commandArgs(args), destination, stderr)
 	if err != nil || exitCode != 0 || stderr.Truncated() {
 		return backendError(err)
 	}
@@ -364,6 +431,87 @@ func errOrBackend(err error) error {
 		return err
 	}
 	return ErrBackendUnavailable
+}
+
+func (b *DockerBackend) commandArgs(args []string) []string {
+	if b.endpoint == "" {
+		return args
+	}
+	result := make([]string, 0, len(args)+2)
+	result = append(result, "--host", b.endpoint)
+	return append(result, args...)
+}
+
+func immutableImageDigest(reference string) (string, bool) {
+	separator := strings.LastIndex(reference, "@")
+	if separator <= 0 || separator == len(reference)-1 || strings.ContainsAny(reference, "\r\n\x00") {
+		return "", false
+	}
+	digest := reference[separator+1:]
+	return digest, validDigest(digest)
+}
+
+func validDockerEndpoint(value string) bool {
+	if !strings.HasPrefix(value, "unix:///") || strings.ContainsAny(value, "\r\n\x00%") {
+		return false
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "unix" || parsed.Host != "" || parsed.RawQuery != "" || parsed.Fragment != "" || !strings.HasPrefix(parsed.Path, "/") || parsed.Path == "/" || strings.Contains(parsed.Path, "//") {
+		return false
+	}
+	for _, segment := range strings.Split(parsed.Path, "/") {
+		if segment == "." || segment == ".." {
+			return false
+		}
+	}
+	return parsed.Path != "/var/run/docker.sock" && parsed.Path != "/run/docker.sock"
+}
+
+func validRuntimeName(value string) bool {
+	if value == "" || len(value) > 128 || strings.ContainsAny(value, "\r\n\x00/\\") {
+		return false
+	}
+	for _, character := range value {
+		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '.' || character == '_' || character == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validHoldCommand(command []string) bool {
+	if len(command) == 0 || len(command) > 16 || !strings.HasPrefix(command[0], "/") {
+		return false
+	}
+	for _, argument := range command {
+		if argument == "" || len(argument) > 4096 || strings.ContainsAny(argument, "\r\n\x00") {
+			return false
+		}
+	}
+	return true
+}
+
+func validMandatoryPolicy(policy string) bool {
+	if policy == "" || strings.ContainsAny(policy, "\r\n\x00") || strings.Contains(strings.ToLower(policy), "unconfined") {
+		return false
+	}
+	return (strings.HasPrefix(policy, "apparmor=") && len(strings.TrimPrefix(policy, "apparmor=")) > 0) || (strings.HasPrefix(policy, "label=type:") && len(strings.TrimPrefix(policy, "label=type:")) > 0)
+}
+
+func mandatoryPolicyAvailable(securityOptions []string, policy string) bool {
+	switch {
+	case strings.HasPrefix(policy, "apparmor="):
+		return includesFold(securityOptions, "apparmor")
+	case strings.HasPrefix(policy, "label=type:"):
+		return includesFold(securityOptions, "selinux")
+	default:
+		return false
+	}
+}
+
+func backendDrift(reason string) error {
+	return fmt.Errorf("%w: %s", ErrBackendDrift, reason)
 }
 
 func includesFold(values []string, wanted string) bool {

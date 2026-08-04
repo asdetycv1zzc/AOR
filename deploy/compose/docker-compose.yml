@@ -16,6 +16,43 @@ x-aor-common: &aor-common
     start_period: 5s
 
 services:
+  aor-sandbox-runtime:
+    profiles: [aor]
+    image: golang:1.26.0-alpine3.23@sha256:d4c4845f5d60c6a974c6000ce58ae079328d03ab7f721a0734277e69905473e5
+    restart: "no"
+    user: "65532:65532"
+    entrypoint: [go]
+    command: [version]
+    network_mode: none
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
+  aor-sandbox-preflight:
+    profiles: [aor]
+    image: docker:29.6.1-cli@sha256:862099ada15c669000bef53aa4cb9d821262829f45b0dda2159ccb276443043b
+    restart: "no"
+    depends_on:
+      aor-sandbox-runtime:
+        condition: service_completed_successfully
+    user: "${AOR_SANDBOX_ENGINE_UID:?Set AOR_SANDBOX_ENGINE_UID to the non-root rootless-engine owner UID}:${AOR_SANDBOX_ENGINE_GID:?Set AOR_SANDBOX_ENGINE_GID to the rootless-engine socket GID}"
+    entrypoint: [/bin/sh, /usr/local/bin/aor-sandbox-preflight]
+    environment:
+      AOR_SANDBOX_ENGINE_ENDPOINT: unix:///run/aor-sandbox/engine.sock
+      AOR_SANDBOX_IMAGE_REFERENCE: golang:1.26.0-alpine3.23@sha256:d4c4845f5d60c6a974c6000ce58ae079328d03ab7f721a0734277e69905473e5
+      AOR_SANDBOX_RUNTIME: runc
+      AOR_SANDBOX_SECCOMP_PROFILE: builtin
+      AOR_SANDBOX_MANDATORY_POLICY: apparmor=aor-sandbox
+    volumes:
+      - "${AOR_SANDBOX_ENGINE_SOCKET:?Set AOR_SANDBOX_ENGINE_SOCKET to the rootless engine socket}:/run/aor-sandbox/engine.sock"
+      - ./sandbox-preflight.sh:/usr/local/bin/aor-sandbox-preflight:ro
+    network_mode: none
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
   postgres:
     image: postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
     restart: unless-stopped
@@ -433,6 +470,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/compose/Dockerfile
+      target: worker-runtime
       network: host
       args:
         AOR_COMPONENT: aor-worker
@@ -443,8 +481,12 @@ services:
         condition: service_healthy
       aor-tool-broker:
         condition: service_healthy
+      aor-sandbox-preflight:
+        condition: service_completed_successfully
+    user: "${AOR_SANDBOX_ENGINE_UID:?Set AOR_SANDBOX_ENGINE_UID to the non-root rootless-engine owner UID}:${AOR_SANDBOX_ENGINE_GID:?Set AOR_SANDBOX_ENGINE_GID to the rootless-engine socket GID}"
     environment:
       AOR_ENVIRONMENT: test
+      AOR_DEPLOYMENT_PROFILE: TEST
       AOR_LISTEN_ADDR: :8080
       AOR_DATABASE_HOST: postgres
       AOR_DATABASE_PORT: "5432"
@@ -464,9 +506,20 @@ services:
       AOR_MODEL_GATEWAY_URL: http://aor-model-gateway:8080
       AOR_TOOL_BROKER_URL: http://aor-tool-broker:8080
       AOR_SANDBOX_LINUX_LEVEL: CONTAINER
+      AOR_SANDBOX_LINUX_NETWORK_MODE: DENY_ALL
       AOR_SANDBOX_WINDOWS_LEVEL: NONE
+      AOR_SANDBOX_WINDOWS_NETWORK_ISOLATION: NONE
       AOR_ALLOW_WINDOWS_UNTRUSTED: "false"
+      AOR_SANDBOX_ENGINE_ENDPOINT: unix:///run/aor-sandbox/engine.sock
+      AOR_SANDBOX_IMAGE_REFERENCE: golang:1.26.0-alpine3.23@sha256:d4c4845f5d60c6a974c6000ce58ae079328d03ab7f721a0734277e69905473e5
+      AOR_SANDBOX_RUNTIME: runc
+      AOR_SANDBOX_SECCOMP_PROFILE: builtin
+      AOR_SANDBOX_MANDATORY_POLICY: apparmor=aor-sandbox
+      AOR_SANDBOX_HOLD_COMMAND_JSON: '["/bin/sh","-c","while :; do sleep 3600; done"]'
     secrets: [postgres_app_password, minio_root_user, minio_root_password]
+    volumes:
+      - "${AOR_SANDBOX_ENGINE_SOCKET:?Set AOR_SANDBOX_ENGINE_SOCKET to the rootless engine socket}:/run/aor-sandbox/engine.sock"
+    cap_drop: [ALL]
     ports:
       - 127.0.0.1:8093:8080
 

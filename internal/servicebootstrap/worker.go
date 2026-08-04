@@ -129,7 +129,7 @@ func Worker(config runtimeconfig.Config, clients *runtimeclient.Clients) (http.H
 	if config.Component != "aor-worker" || clients == nil || clients.Temporal() == nil {
 		return nil, ErrWorkerConfiguration
 	}
-	provider, err := newExecutionProvider()
+	provider, err := newExecutionProvider(config)
 	if err != nil {
 		return nil, err
 	}
@@ -152,19 +152,25 @@ func Worker(config runtimeconfig.Config, clients *runtimeclient.Clients) (http.H
 	return &workerHandler{runtime: runtimeWorker}, nil
 }
 
-func newExecutionProvider() (*sandbox.Provider, error) {
+func newExecutionProvider(config runtimeconfig.Config) (*sandbox.Provider, error) {
 	switch runtime.GOOS {
 	case "linux":
+		if config.Sandbox.EngineEndpoint == "" || config.Sandbox.ImageReference == "" {
+			return nil, ErrWorkerConfiguration
+		}
 		backend, err := sandbox.NewDockerBackend(sandbox.DockerBackendOptions{
-			Binary:          envOrDefault("AOR_SANDBOX_DOCKER_BINARY", "docker"),
-			RuntimeName:     envOrDefault("AOR_SANDBOX_RUNTIME", "runc"),
-			SeccompProfile:  envOrDefault("AOR_SANDBOX_SECCOMP_PROFILE", "/etc/aor/seccomp.json"),
-			MandatoryPolicy: envOrDefault("AOR_SANDBOX_MANDATORY_POLICY", "apparmor=aor-sandbox"),
+			Binary:          "docker",
+			Endpoint:        config.Sandbox.EngineEndpoint,
+			RuntimeName:     config.Sandbox.RuntimeName,
+			ImageReference:  config.Sandbox.ImageReference,
+			SeccompProfile:  config.Sandbox.SeccompProfile,
+			MandatoryPolicy: config.Sandbox.MandatoryPolicy,
+			HoldCommand:     append([]string(nil), config.Sandbox.HoldCommand...),
 		})
 		if err != nil {
 			return nil, errors.Join(ErrWorkerConfiguration, err)
 		}
-		return sandbox.NewLinuxProvider(backend, envOrDefault("AOR_SANDBOX_RUNTIME", "runc"), time.Now), nil
+		return sandbox.NewLinuxProvider(backend, config.Sandbox.RuntimeName, time.Now), nil
 	case "windows":
 		workRoot := strings.TrimSpace(os.Getenv("AOR_SANDBOX_WINDOWS_WORK_ROOT"))
 		if workRoot == "" {
@@ -178,11 +184,4 @@ func newExecutionProvider() (*sandbox.Provider, error) {
 	default:
 		return nil, ErrWorkerUnavailable
 	}
-}
-
-func envOrDefault(name, fallback string) string {
-	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
-		return value
-	}
-	return fallback
 }

@@ -9,10 +9,32 @@ This profile starts the complete local dependency set before any AOR process:
 - Open Policy Agent with the repository policy and data
 - Dex with a local OAuth 2.0/OIDC test issuer and rotating JWKS
 - Two independently configured model-provider families for the Model Gateway
+- A pinned Linux sandbox runtime image and a rootless OCI-engine preflight
 
 All upstream images are pinned by version and multi-platform manifest digest. Host ports bind to `127.0.0.1`; this profile is for development and test only.
 
 This profile requires the Docker Compose plugin with `--wait` and `--wait-timeout` support; legacy `docker-compose` v1 is not supported. Docker bridge networking also requires IPv4 forwarding on Linux. The Docker host must report `net.ipv4.ip_forward = 1`; enabling it is a host-administration step and is intentionally not performed by this repository. Trusted local AOR image builds use host networking while downloading Go modules, while every runtime container remains on the isolated Compose bridge network.
+
+## Linux Sandbox Host Prerequisites
+
+The worker controls a dedicated rootless Docker Engine through its Unix socket. It is separate from the engine that runs the trusted Compose control-plane services. The rootful `/var/run/docker.sock` is rejected. The sandbox engine must report Linux, cgroups v2, rootless mode, the configured `runc` default runtime, CPU/memory/PID enforcement, and AppArmor or SELinux. These are host security prerequisites and this repository does not enable or simulate them.
+
+Load the supplied AppArmor profile on the Linux host before starting Compose:
+
+```bash
+sudo install -m 0644 deploy/compose/aor-sandbox.apparmor /etc/apparmor.d/aor-sandbox
+sudo apparmor_parser -r /etc/apparmor.d/aor-sandbox
+```
+
+Expose the dedicated engine socket to Compose with the numeric owner and socket group from the host. Run the Compose control plane with an engine that preserves host ownership on bind mounts:
+
+```bash
+export AOR_SANDBOX_ENGINE_SOCKET="${XDG_RUNTIME_DIR}/docker.sock"
+export AOR_SANDBOX_ENGINE_UID="$(id -u)"
+export AOR_SANDBOX_ENGINE_GID="$(stat -c %g "${AOR_SANDBOX_ENGINE_SOCKET}")"
+```
+
+`compose-check` fails immediately when these values are absent. `compose-deps-up` then runs `sandbox-preflight.sh`, which validates the engine before pulling the immutable runtime image into it, then creates and executes a disposable probe container using a non-root identity, read-only root filesystem, cgroups v2 limits, capability drop, `network=none`, built-in seccomp, and the `aor-sandbox` mandatory policy. Missing or downgraded host capabilities produce a specific error and prevent any AOR process from starting. The worker's access to the engine socket is a controller channel; that socket is never mounted into an Executor or Auditor container.
 
 ## Secrets
 
@@ -48,11 +70,12 @@ make compose-up
 The target performs these stages in order:
 
 1. Validate the Compose model and required secret files.
-2. Pull all dependency images.
-3. Start PostgreSQL, Temporal, NATS, MinIO, OPA, and Dex, then wait for their health checks and initialization jobs.
-4. Apply PostgreSQL migrations `000001_core.up.sql` through `000010_outbox_tenant_discovery.up.sql` in order; reruns detect the installed schema, rotate the fixed `aor_app` password without revoking later grants, and keep permissions idempotent. The app password is supplied through the ignored secret file and is not printed.
-5. Build the four AOR images serially from the current source.
-6. Start AOR only after every dependency and initializer has completed successfully, then wait for every process readiness endpoint.
+2. Pull all Compose dependency images, including the pinned Docker CLI and Linux sandbox runtime image.
+3. Validate the dedicated rootless OCI engine, pull the pinned runtime into it, and execute the hardened sandbox probe.
+4. Start PostgreSQL, Temporal, NATS, MinIO, OPA, and Dex, then wait for their health checks and initialization jobs.
+5. Apply PostgreSQL migrations `000001_core.up.sql` through `000010_outbox_tenant_discovery.up.sql` in order; reruns detect the installed schema, rotate the fixed `aor_app` password without revoking later grants, and keep permissions idempotent. The app password is supplied through the ignored secret file and is not printed.
+6. Build the four AOR images serially from the current source. The worker image includes only the Docker CLI needed to reach the preflighted rootless engine; it does not contain or start a daemon.
+7. Start AOR only after every dependency, initializer, and sandbox preflight has completed successfully, then wait for every process readiness endpoint.
 
 Individual stages are available as `make compose-pull`, `make compose-deps-up`, `make compose-aor-up`, and `make compose-ps`.
 

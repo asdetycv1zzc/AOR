@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"runtime"
 	"testing"
 	"time"
 
+	"github.com/akimisaka/aor/internal/runtimeconfig"
 	"github.com/akimisaka/aor/internal/sandbox"
 	aorworkflow "github.com/akimisaka/aor/internal/workflow"
 	"go.temporal.io/sdk/activity"
@@ -17,6 +19,21 @@ import (
 type workerSandboxProvider struct {
 	created   bool
 	destroyed bool
+}
+
+func TestLinuxExecutionProviderRequiresPinnedDedicatedEngine(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux provider configuration is platform-specific")
+	}
+	_, err := newExecutionProvider(runtimeconfig.Config{Sandbox: runtimeconfig.SandboxConfig{
+		RuntimeName:     "runc",
+		SeccompProfile:  "builtin",
+		MandatoryPolicy: "apparmor=aor-sandbox",
+		HoldCommand:     []string{"/bin/sh"},
+	}})
+	if !errors.Is(err, ErrWorkerConfiguration) {
+		t.Fatalf("missing Linux engine configuration error = %v", err)
+	}
 }
 
 func (provider *workerSandboxProvider) Create(_ context.Context, spec sandbox.SandboxSpec) (sandbox.SandboxHandle, error) {

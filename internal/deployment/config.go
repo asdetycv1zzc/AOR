@@ -103,22 +103,30 @@ func collectConfigurationLeaves(prefix string, input json.RawMessage, leaves map
 func ValidateCompose(input []byte) error {
 	var document struct {
 		Services map[string]struct {
+			Image       string            `yaml:"image"`
 			NetworkMode string            `yaml:"network_mode"`
 			Privileged  bool              `yaml:"privileged"`
+			ReadOnly    bool              `yaml:"read_only"`
+			User        string            `yaml:"user"`
 			Volumes     []string          `yaml:"volumes"`
+			CapDrop     []string          `yaml:"cap_drop"`
+			SecurityOpt []string          `yaml:"security_opt"`
 			Environment map[string]string `yaml:"environment"`
+			Build       struct {
+				Target string `yaml:"target"`
+			} `yaml:"build"`
 		} `yaml:"services"`
 		Secrets map[string]struct{} `yaml:"secrets"`
 	}
 	if err := yaml.Unmarshal(input, &document); err != nil || len(document.Services) == 0 {
 		return ErrInvalidDeployment
 	}
-	for name, service := range document.Services {
+	for _, service := range document.Services {
 		if service.Privileged || service.NetworkMode == "host" {
 			return ErrInvalidDeployment
 		}
 		for _, volume := range service.Volumes {
-			if strings.Contains(volume, "/var/run/docker.sock") || strings.Contains(volume, "docker.sock") {
+			if strings.Contains(volume, "/var/run/docker.sock") || strings.Contains(volume, "containerd.sock") || strings.Contains(volume, "podman.sock") {
 				return ErrInvalidDeployment
 			}
 		}
@@ -127,9 +135,33 @@ func ValidateCompose(input []byte) error {
 				return ErrInvalidDeployment
 			}
 		}
-		if name == "aor-worker" && service.NetworkMode == "host" {
-			return ErrInvalidDeployment
-		}
+	}
+	worker, workerFound := document.Services["aor-worker"]
+	preflight, preflightFound := document.Services["aor-sandbox-preflight"]
+	runtimeImage, runtimeFound := document.Services["aor-sandbox-runtime"]
+	if !workerFound || !preflightFound || !runtimeFound || !worker.ReadOnly || !preflight.ReadOnly || !runtimeImage.ReadOnly || runtimeImage.NetworkMode != "none" || preflight.NetworkMode != "none" || worker.Build.Target != "worker-runtime" {
+		return ErrInvalidDeployment
+	}
+	if runtimeImage.User == "" || runtimeImage.User == "0" || runtimeImage.User == "root" {
+		return ErrInvalidDeployment
+	}
+	if !strings.Contains(worker.User, "AOR_SANDBOX_ENGINE_UID") || !strings.Contains(worker.User, "AOR_SANDBOX_ENGINE_GID") || !strings.Contains(preflight.User, "AOR_SANDBOX_ENGINE_UID") || !strings.Contains(preflight.User, "AOR_SANDBOX_ENGINE_GID") {
+		return ErrInvalidDeployment
+	}
+	if !containsString(worker.CapDrop, "ALL") || !containsString(preflight.CapDrop, "ALL") || !containsString(runtimeImage.CapDrop, "ALL") || !containsString(worker.SecurityOpt, "no-new-privileges:true") || !containsString(preflight.SecurityOpt, "no-new-privileges:true") || !containsString(runtimeImage.SecurityOpt, "no-new-privileges:true") {
+		return ErrInvalidDeployment
+	}
+	if !hasVolume(worker.Volumes, "AOR_SANDBOX_ENGINE_SOCKET", "/run/aor-sandbox/engine.sock") || !hasVolume(preflight.Volumes, "AOR_SANDBOX_ENGINE_SOCKET", "/run/aor-sandbox/engine.sock") || !hasVolume(preflight.Volumes, "sandbox-preflight.sh", "/usr/local/bin/aor-sandbox-preflight") {
+		return ErrInvalidDeployment
+	}
+	imageReference := worker.Environment["AOR_SANDBOX_IMAGE_REFERENCE"]
+	if !isImmutableSHA256Reference(imageReference) || !isImmutableSHA256Reference(preflight.Image) || imageReference != preflight.Environment["AOR_SANDBOX_IMAGE_REFERENCE"] || imageReference != runtimeImage.Image || worker.Environment["AOR_SANDBOX_ENGINE_ENDPOINT"] != "unix:///run/aor-sandbox/engine.sock" || preflight.Environment["AOR_SANDBOX_ENGINE_ENDPOINT"] != "unix:///run/aor-sandbox/engine.sock" {
+		return ErrInvalidDeployment
+	}
+	workerSeccomp := worker.Environment["AOR_SANDBOX_SECCOMP_PROFILE"]
+	workerMandatory := worker.Environment["AOR_SANDBOX_MANDATORY_POLICY"]
+	if workerSeccomp == "" || strings.EqualFold(workerSeccomp, "unconfined") || workerSeccomp != preflight.Environment["AOR_SANDBOX_SECCOMP_PROFILE"] || workerMandatory == "" || strings.Contains(strings.ToLower(workerMandatory), "unconfined") || workerMandatory != preflight.Environment["AOR_SANDBOX_MANDATORY_POLICY"] {
+		return ErrInvalidDeployment
 	}
 	for name := range document.Secrets {
 		if name == "" {
@@ -137,6 +169,38 @@ func ValidateCompose(input []byte) error {
 		}
 	}
 	return nil
+}
+
+func isImmutableSHA256Reference(value string) bool {
+	const marker = "@sha256:"
+	digestStart := strings.LastIndex(value, marker)
+	if digestStart <= 0 || digestStart+len(marker)+64 != len(value) {
+		return false
+	}
+	for _, character := range value[digestStart+len(marker):] {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func containsString(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func hasVolume(volumes []string, sourceFragment, target string) bool {
+	for _, volume := range volumes {
+		if strings.Contains(volume, sourceFragment) && strings.Contains(volume, ":"+target) {
+			return true
+		}
+	}
+	return false
 }
 
 func ValidateHelmValues(input []byte) error {

@@ -121,6 +121,12 @@ type SandboxConfig struct {
 	AllowWindowsUntrusted        bool
 	LinuxDefaultNetworkMode      string
 	WindowsNetworkIsolationLevel string
+	EngineEndpoint               string
+	RuntimeName                  string
+	ImageReference               string
+	SeccompProfile               string
+	MandatoryPolicy              string
+	HoldCommand                  []string
 }
 
 func Load(component string, lookup LookupEnv) (Config, error) {
@@ -174,6 +180,11 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 			WindowsLevel:                 value(lookup, "AOR_SANDBOX_WINDOWS_LEVEL", "NONE"),
 			LinuxDefaultNetworkMode:      value(lookup, "AOR_SANDBOX_LINUX_NETWORK_MODE", "DENY_ALL"),
 			WindowsNetworkIsolationLevel: value(lookup, "AOR_SANDBOX_WINDOWS_NETWORK_ISOLATION", "NONE"),
+			EngineEndpoint:               strictValue(lookup, "AOR_SANDBOX_ENGINE_ENDPOINT", ""),
+			RuntimeName:                  strictValue(lookup, "AOR_SANDBOX_RUNTIME", "runc"),
+			ImageReference:               strictValue(lookup, "AOR_SANDBOX_IMAGE_REFERENCE", ""),
+			SeccompProfile:               strictValue(lookup, "AOR_SANDBOX_SECCOMP_PROFILE", "builtin"),
+			MandatoryPolicy:              strictValue(lookup, "AOR_SANDBOX_MANDATORY_POLICY", "apparmor=aor-sandbox"),
 		},
 	}
 
@@ -189,6 +200,15 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 	config.Sandbox.AllowWindowsUntrusted, err = boolean(lookup, "AOR_ALLOW_WINDOWS_UNTRUSTED", false)
 	if err != nil {
 		return Config{}, err
+	}
+	if raw := value(lookup, "AOR_SANDBOX_HOLD_COMMAND_JSON", `["/bin/sh","-c","while :; do sleep 3600; done"]`); raw != "" {
+		decoder := json.NewDecoder(strings.NewReader(raw))
+		if err := decoder.Decode(&config.Sandbox.HoldCommand); err != nil {
+			return Config{}, configurationError("AOR_SANDBOX_HOLD_COMMAND_JSON")
+		}
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			return Config{}, configurationError("AOR_SANDBOX_HOLD_COMMAND_JSON")
+		}
 	}
 	if raw, found := lookup("AOR_MODEL_PROVIDERS_JSON"); found && strings.TrimSpace(raw) != "" {
 		decoder := json.NewDecoder(strings.NewReader(raw))
@@ -261,6 +281,10 @@ func (config Config) Validate() error {
 			return ErrInvalidConfiguration
 		}
 		if config.Sandbox.LinuxLevel != "CONTAINER" || config.Sandbox.WindowsLevel != "NONE" || config.Sandbox.AllowWindowsUntrusted || config.Sandbox.LinuxDefaultNetworkMode != "DENY_ALL" || config.Sandbox.WindowsNetworkIsolationLevel != "NONE" {
+			return ErrInvalidConfiguration
+		}
+		engineConfigured := config.Sandbox.EngineEndpoint != "" || config.Sandbox.ImageReference != ""
+		if engineConfigured && (!validSandboxEngineEndpoint(config.Sandbox.EngineEndpoint) || !validSandboxRuntimeName(config.Sandbox.RuntimeName) || !validImmutableImageReference(config.Sandbox.ImageReference) || !validSandboxSeccompProfile(config.Sandbox.SeccompProfile) || !validSandboxMandatoryPolicy(config.Sandbox.MandatoryPolicy) || !validSandboxHoldCommand(config.Sandbox.HoldCommand)) {
 			return ErrInvalidConfiguration
 		}
 	}
@@ -369,6 +393,13 @@ func value(lookup LookupEnv, key, fallback string) string {
 	return fallback
 }
 
+func strictValue(lookup LookupEnv, key, fallback string) string {
+	if current, found := lookup(key); found {
+		return current
+	}
+	return fallback
+}
+
 func integer(lookup LookupEnv, key string, fallback, minimum, maximum int) (int, error) {
 	raw, found := lookup(key)
 	if !found {
@@ -459,6 +490,75 @@ func knownComponent(component string) bool {
 
 func validDeploymentProfile(value string) bool {
 	return oneOf(value, "LOCAL", "TEST", "PREPRODUCTION", "PRODUCTION")
+}
+
+func validSandboxEngineEndpoint(value string) bool {
+	if !strings.HasPrefix(value, "unix:///") || strings.ContainsAny(value, "\r\n\x00%") {
+		return false
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "unix" || parsed.Host != "" || parsed.RawQuery != "" || parsed.Fragment != "" || !strings.HasPrefix(parsed.Path, "/") || parsed.Path == "/" || strings.Contains(parsed.Path, "//") {
+		return false
+	}
+	for _, segment := range strings.Split(parsed.Path, "/") {
+		if segment == "." || segment == ".." {
+			return false
+		}
+	}
+	return parsed.Path != "/var/run/docker.sock" && parsed.Path != "/run/docker.sock"
+}
+
+func validSandboxRuntimeName(value string) bool {
+	if value == "" || len(value) > 128 || strings.ContainsAny(value, "\r\n\x00/\\") {
+		return false
+	}
+	for _, character := range value {
+		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '.' || character == '_' || character == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validImmutableImageReference(value string) bool {
+	separator := strings.LastIndex(value, "@")
+	if separator <= 0 || separator == len(value)-1 || strings.ContainsAny(value, "\r\n\x00") {
+		return false
+	}
+	digest := value[separator+1:]
+	if len(digest) != len("sha256:")+64 || !strings.HasPrefix(digest, "sha256:") {
+		return false
+	}
+	for _, character := range strings.TrimPrefix(digest, "sha256:") {
+		if character < '0' || character > '9' && character < 'a' || character > 'f' {
+			return false
+		}
+	}
+	return true
+}
+
+func validSandboxSeccompProfile(value string) bool {
+	return value != "" && !strings.EqualFold(value, "unconfined") && !strings.ContainsAny(value, "\r\n\x00")
+}
+
+func validSandboxMandatoryPolicy(value string) bool {
+	if value == "" || strings.ContainsAny(value, "\r\n\x00") || strings.Contains(strings.ToLower(value), "unconfined") {
+		return false
+	}
+	return (strings.HasPrefix(value, "apparmor=") && len(strings.TrimPrefix(value, "apparmor=")) > 0) || (strings.HasPrefix(value, "label=type:") && len(strings.TrimPrefix(value, "label=type:")) > 0)
+}
+
+func validSandboxHoldCommand(command []string) bool {
+	if len(command) == 0 || len(command) > 16 || !strings.HasPrefix(command[0], "/") {
+		return false
+	}
+	for _, argument := range command {
+		if argument == "" || len(argument) > 4096 || strings.ContainsAny(argument, "\r\n\x00") {
+			return false
+		}
+	}
+	return true
 }
 
 func needsDatabase(component string) bool {

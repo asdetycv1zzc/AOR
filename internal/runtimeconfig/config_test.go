@@ -80,13 +80,57 @@ func TestProductionRequiresAuthenticatedEncryptedDependencies(t *testing.T) {
 }
 
 func TestWorkerRejectsUnsafeSandboxClaims(t *testing.T) {
-	_, err := Load("aor-worker", environment(map[string]string{
-		"AOR_DATABASE_PASSWORD_REF":      "secret://postgres/password",
-		"AOR_ALLOW_WINDOWS_UNTRUSTED":    "true",
-		"AOR_SANDBOX_LINUX_NETWORK_MODE": "DENY_ALL",
-	}))
+	values := validWorkerEnvironment()
+	values["AOR_ALLOW_WINDOWS_UNTRUSTED"] = "true"
+	_, err := Load("aor-worker", environment(values))
 	if !errors.Is(err, ErrInvalidConfiguration) {
 		t.Fatalf("unsafe worker error = %v", err)
+	}
+}
+
+func TestWorkerRequiresImmutableSandboxRuntimeAndDedicatedRootlessEndpoint(t *testing.T) {
+	values := validWorkerEnvironment()
+	config, err := Load("aor-worker", environment(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Sandbox.EngineEndpoint != "unix:///run/aor-sandbox/engine.sock" || len(config.Sandbox.HoldCommand) != 3 {
+		t.Fatalf("sandbox config = %#v", config.Sandbox)
+	}
+	for _, invalid := range []struct {
+		key   string
+		value string
+	}{
+		{key: "AOR_SANDBOX_ENGINE_ENDPOINT", value: "unix:///var/run/docker.sock"},
+		{key: "AOR_SANDBOX_ENGINE_ENDPOINT", value: ""},
+		{key: "AOR_SANDBOX_ENGINE_ENDPOINT", value: "unix:////var/run/docker.sock"},
+		{key: "AOR_SANDBOX_ENGINE_ENDPOINT", value: "unix:///run/aor-sandbox/engine.sock\n"},
+		{key: "AOR_SANDBOX_IMAGE_REFERENCE", value: "golang:latest"},
+		{key: "AOR_SANDBOX_IMAGE_REFERENCE", value: ""},
+		{key: "AOR_SANDBOX_SECCOMP_PROFILE", value: "unconfined"},
+		{key: "AOR_SANDBOX_SECCOMP_PROFILE", value: "Unconfined"},
+		{key: "AOR_SANDBOX_MANDATORY_POLICY", value: "apparmor=unconfined"},
+		{key: "AOR_SANDBOX_HOLD_COMMAND_JSON", value: `[]`},
+	} {
+		candidate := validWorkerEnvironment()
+		candidate[invalid.key] = invalid.value
+		if _, err := Load("aor-worker", environment(candidate)); !errors.Is(err, ErrInvalidConfiguration) {
+			t.Fatalf("%s=%q error = %v", invalid.key, invalid.value, err)
+		}
+	}
+}
+
+func TestWorkerConfigurationAllowsWindowsNativeBackendWithoutLinuxEngine(t *testing.T) {
+	config, err := Load("aor-worker", environment(map[string]string{
+		"AOR_DATABASE_PASSWORD_REF": "secret://postgres/password",
+		"AOR_S3_ACCESS_KEY_REF":     "secret://minio/access-key",
+		"AOR_S3_SECRET_KEY_REF":     "secret://minio/secret-key",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Sandbox.EngineEndpoint != "" || config.Sandbox.ImageReference != "" {
+		t.Fatalf("unexpected Linux engine config: %#v", config.Sandbox)
 	}
 }
 
@@ -126,5 +170,18 @@ func environment(values map[string]string) LookupEnv {
 	return func(key string) (string, bool) {
 		value, found := values[key]
 		return value, found
+	}
+}
+
+func validWorkerEnvironment() map[string]string {
+	return map[string]string{
+		"AOR_DATABASE_PASSWORD_REF":     "secret://postgres/password",
+		"AOR_S3_ACCESS_KEY_REF":         "secret://minio/access-key",
+		"AOR_S3_SECRET_KEY_REF":         "secret://minio/secret-key",
+		"AOR_SANDBOX_ENGINE_ENDPOINT":   "unix:///run/aor-sandbox/engine.sock",
+		"AOR_SANDBOX_IMAGE_REFERENCE":   "golang:1.26@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+		"AOR_SANDBOX_SECCOMP_PROFILE":   "builtin",
+		"AOR_SANDBOX_MANDATORY_POLICY":  "apparmor=aor-sandbox",
+		"AOR_SANDBOX_HOLD_COMMAND_JSON": `["/bin/sh","-c","while :; do sleep 3600; done"]`,
 	}
 }
