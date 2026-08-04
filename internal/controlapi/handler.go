@@ -1,6 +1,7 @@
 package controlapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -418,13 +419,77 @@ func decodeJSON(request *http.Request, target any) error {
 	if err != nil || contentType != "application/json" {
 		return aorerrors.New(aorerrors.CodeInvalidArgument, "", nil)
 	}
-	reader := http.MaxBytesReader(nil, request.Body, maximumRequestBytes)
-	decoder := json.NewDecoder(reader)
+	content, err := io.ReadAll(io.LimitReader(request.Body, maximumRequestBytes+1))
+	if err != nil || len(content) == 0 || len(content) > maximumRequestBytes || rejectDuplicateJSONMembers(content) != nil {
+		return aorerrors.New(aorerrors.CodeInvalidArgument, "", nil)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(content))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return err
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return aorerrors.New(aorerrors.CodeInvalidArgument, "", nil)
+	}
+	return nil
+}
+
+func rejectDuplicateJSONMembers(content []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(content))
+	decoder.UseNumber()
+	if err := walkJSONValue(decoder, 0); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return aorerrors.New(aorerrors.CodeInvalidArgument, "", nil)
+	}
+	return nil
+}
+
+func walkJSONValue(decoder *json.Decoder, depth int) error {
+	if depth > 64 {
+		return aorerrors.New(aorerrors.CodeInvalidArgument, "", nil)
+	}
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		members := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, keyErr := decoder.Token()
+			key, keyOK := keyToken.(string)
+			if keyErr != nil || !keyOK {
+				return aorerrors.New(aorerrors.CodeInvalidArgument, "", nil)
+			}
+			if _, duplicate := members[key]; duplicate {
+				return aorerrors.New(aorerrors.CodeInvalidArgument, "", nil)
+			}
+			members[key] = struct{}{}
+			if err := walkJSONValue(decoder, depth+1); err != nil {
+				return err
+			}
+		}
+		end, endErr := decoder.Token()
+		if endErr != nil || end != json.Delim('}') {
+			return aorerrors.New(aorerrors.CodeInvalidArgument, "", nil)
+		}
+	case '[':
+		for decoder.More() {
+			if err := walkJSONValue(decoder, depth+1); err != nil {
+				return err
+			}
+		}
+		end, endErr := decoder.Token()
+		if endErr != nil || end != json.Delim(']') {
+			return aorerrors.New(aorerrors.CodeInvalidArgument, "", nil)
+		}
+	default:
 		return aorerrors.New(aorerrors.CodeInvalidArgument, "", nil)
 	}
 	return nil

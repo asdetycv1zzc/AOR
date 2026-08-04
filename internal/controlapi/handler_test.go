@@ -190,6 +190,23 @@ func TestAuthenticationAndPolicyFailuresAreFailClosed(t *testing.T) {
 	}
 }
 
+func TestWriteRequestsRejectDuplicateJSONMembers(t *testing.T) {
+	handler, _, _ := newTestHandler(t)
+	duplicate := performRequest(handler, http.MethodPost, "/v1/projects", []byte(`{"name":"first","name":"second","goalAgentCount":1,"dataClassification":"INTERNAL"}`), map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "duplicate-json",
+	})
+	if duplicate.Code != http.StatusBadRequest {
+		t.Fatalf("duplicate member status=%d body=%s", duplicate.Code, duplicate.Body.String())
+	}
+	nested := []byte(`{"name":"project","goalAgentCount":1,"dataClassification":"INTERNAL","unknown":{"key":1,"key":2}}`)
+	duplicate = performRequest(handler, http.MethodPost, "/v1/projects", nested, map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "duplicate-nested-json",
+	})
+	if duplicate.Code != http.StatusBadRequest {
+		t.Fatalf("nested duplicate status=%d body=%s", duplicate.Code, duplicate.Body.String())
+	}
+}
+
 func TestProjectEventsResumeFromCursorAndRejectInvalidRoutes(t *testing.T) {
 	handler, store, _ := newTestHandler(t)
 	project := createTestProject(t, handler)
