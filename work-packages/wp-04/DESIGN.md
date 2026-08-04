@@ -1,3 +1,5 @@
 # WP-04 Design
 
 `Gateway` owns adapter lookup, request validation, reservation lifecycle and response normalization. `BudgetLedger` is mutex-protected in-memory infrastructure for tests and local mode; the same interface can be backed by PostgreSQL. Adapters receive an opaque provider credential only inside the gateway call. Cache keys are canonical JSON digests over all policy and model-version inputs.
+
+`HTTPService` is the internal transport boundary. It accepts only bounded JSON envelopes, rejects unknown or trailing values, validates W3C trace headers, and delegates caller identity and authorization to an injected fail-closed authorizer. The authorizer, rather than a tenant header, binds normalized request identity, provider, and budget account. Streaming responses use bounded SSE frames; opening a stream reserves budget and ending it requires reconciliation until usage is recovered. A cancellation request includes the authorized account and scoped reservation, which is moved to reconciliation before the provider cancellation is attempted.

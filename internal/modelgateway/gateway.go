@@ -81,10 +81,106 @@ func (g *Gateway) Register(provider, model string, adapter ModelAdapter, pricing
 }
 
 type GenerateOptions struct {
-	Provider      string
-	AccountID     string
-	ReservationID string
-	MaxAttempts   int
+	Provider      string `json:"provider"`
+	AccountID     string `json:"accountId"`
+	ReservationID string `json:"reservationId"`
+	MaxAttempts   int    `json:"maxAttempts"`
+}
+
+// Capabilities returns provider metadata only for a registered provider/model
+// pair. Callers cannot probe arbitrary adapters through the gateway.
+func (g *Gateway) Capabilities(ctx context.Context, provider, model string) (ModelCapabilities, error) {
+	if ctx == nil || provider == "" || model == "" {
+		return ModelCapabilities{}, ErrInvalidRequest
+	}
+	key := provider + "\x00" + model
+	adapter, _, allowed := g.provider(key, provider, model)
+	if adapter == nil || !allowed {
+		return ModelCapabilities{}, ErrProviderNotAllowed
+	}
+	if !g.providerReady(key, g.clock().UTC()) {
+		return ModelCapabilities{}, ErrProviderUnavailable
+	}
+	capabilities, err := adapter.Capabilities(ctx, model)
+	if err != nil {
+		g.recordProviderFailure(key, err)
+		return ModelCapabilities{}, redactError(err)
+	}
+	return capabilities, nil
+}
+
+// Stream reserves the worst-case model budget before opening a provider stream.
+// Since the normalized streaming contract has no final usage envelope, every
+// completed or interrupted stream is held for durable reconciliation.
+func (g *Gateway) Stream(ctx context.Context, request NormalizedRequest, options GenerateOptions) (ResponseStream, error) {
+	if ctx == nil {
+		return nil, ErrInvalidRequest
+	}
+	adapter, key, capabilities, reservation, err := g.prepare(ctx, request, options, true)
+	if err != nil {
+		return nil, err
+	}
+	stream, err := adapter.Stream(ctx, request)
+	if err != nil {
+		g.recordProviderFailure(key, err)
+		if failureErr := g.resolveStartFailure(ctx, request.TenantID, reservation, err); failureErr != nil {
+			return nil, failureErr
+		}
+		return nil, redactError(err)
+	}
+	if !capabilities.SupportsStreaming {
+		_ = stream.Close()
+		if err := g.releaseReservation(ctx, request.TenantID, reservation); err != nil {
+			return nil, err
+		}
+		return nil, ErrProviderNotAllowed
+	}
+	return &budgetedStream{stream: stream, ledger: g.ledger, tenantID: request.TenantID, reservationID: reservation, context: ctx}, nil
+}
+
+// Cancel forwards cancellation only to a registered provider/model adapter.
+func (g *Gateway) Cancel(ctx context.Context, provider, model, providerRequestID string) error {
+	if ctx == nil || provider == "" || model == "" || providerRequestID == "" {
+		return ErrInvalidRequest
+	}
+	key := provider + "\x00" + model
+	adapter, _, allowed := g.provider(key, provider, model)
+	if adapter == nil || !allowed {
+		return ErrProviderNotAllowed
+	}
+	if !g.providerReady(key, g.clock().UTC()) {
+		return ErrProviderUnavailable
+	}
+	if err := adapter.Cancel(ctx, providerRequestID); err != nil {
+		g.recordProviderFailure(key, err)
+		return redactError(err)
+	}
+	return nil
+}
+
+// CancelStream records the affected stream reservation for reconciliation
+// before attempting provider cancellation. The provider may already have
+// emitted usage when the cancellation request is processed.
+func (g *Gateway) CancelStream(ctx context.Context, tenantID, reservationID, provider, model, providerRequestID string) error {
+	if ctx == nil || tenantID == "" || reservationID == "" || provider == "" || model == "" || providerRequestID == "" {
+		return ErrInvalidRequest
+	}
+	key := provider + "\x00" + model
+	adapter, _, allowed := g.provider(key, provider, model)
+	if adapter == nil || !allowed {
+		return ErrProviderNotAllowed
+	}
+	if !g.providerReady(key, g.clock().UTC()) {
+		return ErrProviderUnavailable
+	}
+	if _, err := g.ledger.RequireReconciliation(context.WithoutCancel(ctx), tenantID, reservationID); err != nil {
+		return err
+	}
+	if err := adapter.Cancel(ctx, providerRequestID); err != nil {
+		g.recordProviderFailure(key, err)
+		return redactError(err)
+	}
+	return nil
 }
 
 func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, options GenerateOptions) (NormalizedResponse, error) {
@@ -215,6 +311,114 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 	}
 	return NormalizedResponse{}, ErrOutputSchema
 }
+
+func (g *Gateway) prepare(ctx context.Context, request NormalizedRequest, options GenerateOptions, requireStreaming bool) (ModelAdapter, string, ModelCapabilities, string, error) {
+	if err := validateRequest(request); err != nil {
+		return nil, "", ModelCapabilities{}, "", err
+	}
+	if options.MaxAttempts <= 0 {
+		options.MaxAttempts = 3
+	}
+	if options.MaxAttempts > 3 || options.Provider == "" || options.AccountID == "" || options.ReservationID == "" {
+		return nil, "", ModelCapabilities{}, "", ErrInvalidRequest
+	}
+	key := options.Provider + "\x00" + request.Model
+	adapter, pricing, allowed := g.provider(key, options.Provider, request.Model)
+	if adapter == nil || !allowed {
+		return nil, "", ModelCapabilities{}, "", ErrProviderNotAllowed
+	}
+	if !g.providerReady(key, g.clock().UTC()) {
+		return nil, "", ModelCapabilities{}, "", ErrProviderUnavailable
+	}
+	capabilities, err := adapter.Capabilities(ctx, request.Model)
+	if err != nil {
+		g.recordProviderFailure(key, err)
+		return nil, "", ModelCapabilities{}, "", redactError(err)
+	}
+	if request.MaxOutputTokens > capabilities.MaxOutputTokens || request.MaxOutputTokens <= 0 || requireStreaming && !capabilities.SupportsStreaming {
+		return nil, "", ModelCapabilities{}, "", ErrProviderNotAllowed
+	}
+	estimate, err := adapter.CountTokens(ctx, request)
+	if err != nil {
+		g.recordProviderFailure(key, err)
+		return nil, "", ModelCapabilities{}, "", redactError(err)
+	}
+	if estimate.InputTokens < 0 || estimate.InputTokens > int64(capabilities.MaxInputTokens) {
+		return nil, "", ModelCapabilities{}, "", ErrInvalidRequest
+	}
+	inputCost, err := multiplyCost(estimate.InputTokens, pricing.InputMicrosPerToken)
+	if err != nil {
+		return nil, "", ModelCapabilities{}, "", err
+	}
+	outputCost, err := multiplyCost(int64(request.MaxOutputTokens), pricing.OutputMicrosPerToken)
+	if err != nil {
+		return nil, "", ModelCapabilities{}, "", err
+	}
+	worst, err := addCost(inputCost, outputCost)
+	if err != nil {
+		return nil, "", ModelCapabilities{}, "", err
+	}
+	if request.WorstCaseCostMicros > worst {
+		worst = request.WorstCaseCostMicros
+	}
+	if worst < 0 || worst > math.MaxInt64/int64(options.MaxAttempts) {
+		return nil, "", ModelCapabilities{}, "", ErrInvalidRequest
+	}
+	if _, err := g.ledger.Reserve(ctx, request.TenantID, options.AccountID, options.ReservationID, request.RequestID, worst*int64(options.MaxAttempts)); err != nil {
+		return nil, "", ModelCapabilities{}, "", err
+	}
+	return adapter, key, capabilities, options.ReservationID, nil
+}
+
+func (g *Gateway) resolveStartFailure(ctx context.Context, tenantID, reservationID string, generateErr error) error {
+	var providerFailure *ProviderFailure
+	if errors.As(generateErr, &providerFailure) && providerFailure.OutcomeKnown {
+		return g.releaseReservation(ctx, tenantID, reservationID)
+	}
+	_, err := g.ledger.RequireReconciliation(context.WithoutCancel(ctx), tenantID, reservationID)
+	return err
+}
+
+func (g *Gateway) releaseReservation(ctx context.Context, tenantID, reservationID string) error {
+	return g.ledger.Release(context.WithoutCancel(ctx), tenantID, reservationID)
+}
+
+type budgetedStream struct {
+	stream        ResponseStream
+	ledger        BudgetLedgerBackend
+	tenantID      string
+	reservationID string
+	context       context.Context
+	once          sync.Once
+	finalizeErr   error
+}
+
+func (s *budgetedStream) Recv(ctx context.Context) (json.RawMessage, error) {
+	value, err := s.stream.Recv(ctx)
+	if err != nil {
+		if finalizeErr := s.finalize(); finalizeErr != nil {
+			return nil, finalizeErr
+		}
+	}
+	return value, err
+}
+
+func (s *budgetedStream) Close() error {
+	closeErr := s.stream.Close()
+	if finalizeErr := s.finalize(); finalizeErr != nil {
+		return finalizeErr
+	}
+	return closeErr
+}
+
+func (s *budgetedStream) finalize() error {
+	s.once.Do(func() {
+		_, s.finalizeErr = s.ledger.RequireReconciliation(context.WithoutCancel(s.context), s.tenantID, s.reservationID)
+	})
+	return s.finalizeErr
+}
+
+var _ ResponseStream = (*budgetedStream)(nil)
 
 func validateRequest(request NormalizedRequest) error {
 	if request.RequestID == "" || request.TenantID == "" || request.ProjectID == "" || request.AgentInstanceID == "" || request.Role == "" || request.Model == "" || request.PromptBundleVersion == "" || len(request.Messages) == 0 || request.MaxOutputTokens <= 0 || request.DataClassification == "" {
