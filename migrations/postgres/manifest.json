@@ -120,6 +120,13 @@
       "file": "000017_relational_projection_sync.up.sql",
       "sha256": "sha256:f6594a1eee5b5c55c0e1c70103439955e988055085d6e8f9071bebade7d83769",
       "destructive": false
+    },
+    {
+      "version": 18,
+      "mode": "EXPAND",
+      "file": "000018_repository_submissions.up.sql",
+      "sha256": "sha256:7ccf9fbc2028e3d13f7f58d97d122eb80bca6a74cc122c94dcb9f2d7d2527d7d",
+      "destructive": false
     }
   ]
 }
