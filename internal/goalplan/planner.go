@@ -2,6 +2,7 @@ package goalplan
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"slices"
 	"sort"
@@ -13,6 +14,7 @@ import (
 	"github.com/akimisaka/aor/internal/state"
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 	"github.com/akimisaka/aor/pkg/contracts"
+	"github.com/google/uuid"
 )
 
 const maximumPlanModules = 1000
@@ -114,6 +116,62 @@ func (p *Planner) BuildAndPublish(ctx context.Context, request PlanningRequest) 
 		return PlanningResult{}, err
 	}
 	return PlanningResult{Plan: plan, PlanArtifact: planArtifact, ModuleSpecs: moduleSpecs, ModuleArtifacts: moduleArtifacts, Analysis: analysis, AnalysisArtifact: analysisArtifact, Publication: publication}, nil
+}
+
+// BuildAndPublishAutomatic allocates production-safe task and attempt-series
+// identifiers after the PlanSupervisor has defined the module set. It is
+// intentionally limited to the first plan; replanning requires explicit retain
+// decisions and version assignments from impact analysis.
+func (p *Planner) BuildAndPublishAutomatic(ctx context.Context, request PlanningRequest) (PlanningResult, error) {
+	if p == nil || len(request.ModuleTaskIDs) != 0 || len(request.AttemptSeriesIDs) != 0 || len(request.ModuleSpecVersions) != 0 || len(request.RetainedModules) != 0 {
+		return PlanningResult{}, ErrInvalidRequest
+	}
+	project, found, err := p.projects.Project(ctx, request.TenantID, request.ProjectID)
+	if err != nil || !found {
+		if err != nil {
+			return PlanningResult{}, err
+		}
+		return PlanningResult{}, ErrInvalidRequest
+	}
+	if err := validateAutomaticPlanningRequest(request, project); err != nil {
+		return PlanningResult{}, err
+	}
+	if project.Version == request.ExpectedProjectVersion+1 {
+		artifact, planFound, lookupErr := p.artifacts.Get(ctx, request.TenantID, request.ProjectID, ArtifactPlanSpec, request.PlanSpecID, request.PlanVersion)
+		if lookupErr != nil {
+			return PlanningResult{}, lookupErr
+		}
+		if !planFound || project.Plan == nil {
+			return PlanningResult{}, ErrArtifactNotFound
+		}
+		storedPlan, decodeErr := decodePlanArtifact(artifact, request.GoalRef)
+		if decodeErr != nil || *project.Plan != (contracts.SpecRef{Version: storedPlan.PlanSpecVersion, SHA256: storedPlan.SHA256}) {
+			return PlanningResult{}, ErrInvalidRequest
+		}
+	}
+	goalArtifact, found, err := p.artifacts.Get(ctx, request.TenantID, request.ProjectID, ArtifactGoalApproved, request.GoalSpecID, request.GoalRef.Version)
+	if err != nil || !found {
+		if err != nil {
+			return PlanningResult{}, err
+		}
+		return PlanningResult{}, ErrArtifactNotFound
+	}
+	if _, err := decodeGoalArtifact(goalArtifact); err != nil {
+		return PlanningResult{}, err
+	}
+	plan, _, err := p.loadOrGeneratePlan(ctx, request, goalArtifact)
+	if err != nil {
+		return PlanningResult{}, err
+	}
+	request.ModuleTaskIDs = make(map[string]string, len(plan.Modules))
+	request.AttemptSeriesIDs = make(map[string]string, len(plan.Modules))
+	request.ModuleSpecVersions = make(map[string]int, len(plan.Modules))
+	for _, module := range plan.Modules {
+		request.ModuleTaskIDs[module.ModuleID] = planningUUID(request.TenantID, request.ProjectID, request.PlanSpecID, "task", module.ModuleID)
+		request.AttemptSeriesIDs[module.ModuleID] = planningUUID(request.TenantID, request.ProjectID, request.PlanSpecID, "series", module.ModuleID)
+		request.ModuleSpecVersions[module.ModuleID] = 1
+	}
+	return p.BuildAndPublish(ctx, request)
 }
 
 func (p *Planner) loadOrGeneratePlan(ctx context.Context, request PlanningRequest, goal SpecArtifact) (contracts.PlanSpec, SpecArtifact, error) {
@@ -369,6 +427,30 @@ func validatePlanningRequest(request PlanningRequest, projectVersion int64, proj
 		}
 	}
 	return nil
+}
+
+func validateAutomaticPlanningRequest(request PlanningRequest, project state.Project) error {
+	initial := project.Version == request.ExpectedProjectVersion && project.State == contracts.ProjectPlanning && project.Plan == nil
+	replay := project.Version == request.ExpectedProjectVersion+1 && project.State == contracts.ProjectExecuting && project.Plan != nil
+	if request.TenantID == "" || request.ProjectID == "" || request.GoalSpecID == "" || request.PlanSpecID == "" || request.PlanVersion < 1 || request.GoalRef.Validate() != nil || request.ExpectedProjectVersion < 1 || request.IdempotencyKey == "" || project.TenantID != request.TenantID || project.ID != request.ProjectID || !initial && !replay || project.Goal == nil || project.Goal.ID != request.GoalSpecID || project.Goal.Version != request.GoalRef.Version || project.Goal.SHA256 != request.GoalRef.SHA256 || project.Goal.ApprovedBy == "" {
+		return ErrInvalidRequest
+	}
+	return nil
+}
+
+func planningUUID(parts ...string) string {
+	input := make([]byte, 0)
+	for index, part := range parts {
+		if index != 0 {
+			input = append(input, 0)
+		}
+		input = append(input, part...)
+	}
+	digest := sha256.Sum256(input)
+	digest[6] = digest[6]&0x0f | 0x50
+	digest[8] = digest[8]&0x3f | 0x80
+	id, _ := uuid.FromBytes(digest[:16])
+	return id.String()
 }
 
 func validatePlanningAssignments(plan contracts.PlanSpec, request PlanningRequest) error {

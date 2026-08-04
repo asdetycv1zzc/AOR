@@ -7,6 +7,8 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/akimisaka/aor/internal/agentruntime"
 	"github.com/akimisaka/aor/internal/orchestrator"
 	"github.com/akimisaka/aor/pkg/contracts"
@@ -59,6 +61,43 @@ func TestPlannerPublishesValidatedPlanAndAllTasksAtomically(t *testing.T) {
 	}
 	if !replayed.Publication.Duplicate || len(invoker.invocations) != 3 {
 		t.Fatalf("replay = %#v invocations=%d", replayed.Publication, len(invoker.invocations))
+	}
+}
+
+func TestPlannerAutomaticallyAllocatesStableProductionTaskIdentities(t *testing.T) {
+	planner, invoker, request := approvedPlanningHarness(t)
+	request.ModuleTaskIDs = nil
+	request.AttemptSeriesIDs = nil
+	request.ModuleSpecVersions = nil
+	result, err := planner.BuildAndPublishAutomatic(context.Background(), request)
+	if err != nil {
+		project, _, _ := planner.projects.Project(context.Background(), request.TenantID, request.ProjectID)
+		t.Fatalf("automatic planning: %v project=%#v request=%#v", err, project, request)
+	}
+	if len(result.Publication.Tasks) != 2 || len(invoker.invocations) != 3 {
+		t.Fatalf("automatic planning result = %#v invocations=%d", result.Publication, len(invoker.invocations))
+	}
+	firstIDs := make(map[string]string, len(result.Publication.Tasks))
+	for _, task := range result.Publication.Tasks {
+		if _, err := uuid.Parse(task.ID); err != nil {
+			t.Fatalf("task ID %q is not a UUID: %v", task.ID, err)
+		}
+		if _, err := uuid.Parse(task.AttemptSeriesID); err != nil {
+			t.Fatalf("attempt series ID %q is not a UUID: %v", task.AttemptSeriesID, err)
+		}
+		firstIDs[task.ModuleSpecRef.SHA256] = task.ID + "/" + task.AttemptSeriesID
+	}
+	replayed, err := planner.BuildAndPublishAutomatic(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !replayed.Publication.Duplicate || len(invoker.invocations) != 3 {
+		t.Fatalf("automatic replay = %#v invocations=%d", replayed.Publication, len(invoker.invocations))
+	}
+	for _, task := range replayed.Publication.Tasks {
+		if firstIDs[task.ModuleSpecRef.SHA256] != task.ID+"/"+task.AttemptSeriesID {
+			t.Fatalf("automatic identity changed on replay: %#v", task)
+		}
 	}
 }
 
