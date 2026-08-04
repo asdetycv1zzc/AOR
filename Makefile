@@ -1,4 +1,4 @@
-.PHONY: build test lint schema cross-language sdk backup-restore supply-chain repository-check secret-scan security-corpus license-scan state-machine verify compose-check compose-check-secrets compose-pull compose-deps-up compose-aor-up compose-up compose-ps
+.PHONY: build test lint schema cross-language sdk backup-restore supply-chain release-tool release-package-check repository-check secret-scan security-corpus license-scan state-machine verify compose-check compose-check-secrets compose-pull compose-deps-up compose-aor-up compose-up compose-ps
 
 GOCACHE ?= $(CURDIR)/.cache/go-build
 GOMODCACHE ?= $(CURDIR)/.cache/go-mod
@@ -39,6 +39,14 @@ backup-restore:
 
 supply-chain:
 	go test ./internal/supplychain
+
+release-tool:
+	go build -trimpath -o bin/aor-release ./cmd/aor-release
+
+release-package-check:
+	test -n "$(AOR_RELEASE_PACKAGE)"
+	test -n "$(AOR_RELEASE_PUBLIC_KEY)"
+	go run ./cmd/aor-release verify --root "$(AOR_RELEASE_PACKAGE)" --public-key "$(AOR_RELEASE_PUBLIC_KEY)"
 
 repository-check:
 	go run ./cmd/aor-conformance repository
