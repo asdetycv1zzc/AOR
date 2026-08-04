@@ -169,6 +169,7 @@ func NewTemporalWorker(client temporalclient.Client, taskQueue, buildID string, 
 		DisableRegistrationAliasing:            true,
 	}
 	instance := temporalworker.New(client, taskQueue, workerOptions)
+	instance.RegisterWorkflowWithOptions(ProjectLifecycleWorkflow, temporalworkflow.RegisterOptions{Name: ProjectLifecycleWorkflowName})
 	instance.RegisterWorkflowWithOptions(ProjectExecutionWorkflow, temporalworkflow.RegisterOptions{Name: ProjectExecutionWorkflowName})
 	instance.RegisterActivityWithOptions(activities.Execute, activity.RegisterOptions{Name: ExecuteActivityName})
 	return &TemporalWorker{client: client, worker: instance}, nil
