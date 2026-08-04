@@ -129,8 +129,45 @@ func TestReconcileReportsDurableProjectionDriftDeterministically(t *testing.T) {
 	}
 }
 
+func TestVerifyDurableUsesAuthoritativeAtomicSnapshotAndFailsOnDrift(t *testing.T) {
+	ctx := context.Background()
+	store := eventing.NewMemoryStore()
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := store.Execute(ctx, rebuildTransaction(t, 1, now)); err != nil {
+		t.Fatal(err)
+	}
+	report, err := VerifyDurable(ctx, store, "tenant_1")
+	if err != nil || !report.Converged || report.EventCount != 1 {
+		t.Fatalf("durable report=%#v error=%v", report, err)
+	}
+	snapshot, err := store.LoadReconciliationSnapshot(ctx, "tenant_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Projections[0].State = json.RawMessage(`{"id":"prj_1","version":1,"state":"DRIFTED"}`)
+	report, err = VerifyDurable(ctx, staticReconciliationSource{snapshot: snapshot}, "tenant_1")
+	if !errors.Is(err, ErrProjectionDrift) || report.Converged || len(report.Drifts) != 1 || report.Drifts[0].Kind != DriftState {
+		t.Fatalf("drift report=%#v error=%v", report, err)
+	}
+	snapshot.Events[0].ReplayState = json.RawMessage(`{"id":"prj_1","version":1,"state":"TAMPERED"}`)
+	if _, err := ReconcileDurable(ctx, staticReconciliationSource{snapshot: snapshot}, "tenant_1"); err == nil {
+		t.Fatal("tampered immutable replay state was accepted")
+	}
+}
+
 type staticProjectionCatalog struct {
 	projections []eventing.Projection
+}
+
+type staticReconciliationSource struct {
+	snapshot eventing.ReconciliationSnapshot
+}
+
+func (source staticReconciliationSource) LoadReconciliationSnapshot(ctx context.Context, tenantID string) (eventing.ReconciliationSnapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return eventing.ReconciliationSnapshot{}, err
+	}
+	return source.snapshot, nil
 }
 
 func (catalog staticProjectionCatalog) ListTenantProjections(ctx context.Context, tenantID string) ([]eventing.Projection, error) {
@@ -155,6 +192,9 @@ type replayDeliveryBus struct {
 func (b *replayDeliveryBus) Publish(ctx context.Context, event eventing.DomainEvent) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if len(event.ReplayState) != 0 || event.ReplayStateSHA256 != "" {
+		return errors.New("event bus exposed internal replay state")
 	}
 	if b.failFirst[event.EventID] {
 		delete(b.failFirst, event.EventID)

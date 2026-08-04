@@ -3,6 +3,7 @@ package projection
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -10,6 +11,8 @@ import (
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
 )
+
+var ErrProjectionDrift = errors.New("durable projection reconciliation detected drift")
 
 type DriftKind string
 
@@ -109,15 +112,53 @@ func Reconcile(ctx context.Context, log eventing.EventLog, catalog eventing.Proj
 	if err != nil {
 		return ReconciliationReport{}, fmt.Errorf("list reconciliation events: %w", err)
 	}
-	rebuilt, err := rebuildEvents(events, tenantID, reducers)
-	if err != nil {
-		return ReconciliationReport{}, err
-	}
 	online, err := catalog.ListTenantProjections(ctx, tenantID)
 	if err != nil {
 		return ReconciliationReport{}, fmt.Errorf("list online projections: %w", err)
 	}
+	return reconcileLoaded(events, online, tenantID, reducers)
+}
 
+// ReconcileDurable obtains the immutable event history and complete online
+// projection catalogue from one repeatable-read storage snapshot. Replay uses
+// only state bound to the immutable event at commit time.
+func ReconcileDurable(ctx context.Context, source eventing.ReconciliationSource, tenantID string) (ReconciliationReport, error) {
+	if ctx == nil || source == nil || tenantID == "" {
+		return ReconciliationReport{}, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "durable projection reconciliation"})
+	}
+	snapshot, err := source.LoadReconciliationSnapshot(ctx, tenantID)
+	if err != nil {
+		return ReconciliationReport{}, fmt.Errorf("load durable reconciliation snapshot: %w", err)
+	}
+	reducers := make(map[string]Reducer)
+	for _, event := range snapshot.Events {
+		if event.AggregateType == "" {
+			return ReconciliationReport{}, aorerrors.New(aorerrors.CodeConflict, event.CorrelationID, map[string]any{"scope": "reconciliation aggregate type"})
+		}
+		reducers[event.AggregateType] = AuthoritativeStateReducer
+	}
+	return reconcileLoaded(snapshot.Events, snapshot.Projections, tenantID, reducers)
+}
+
+// VerifyDurable is a fail-closed operator gate. Repair is intentionally not a
+// projection-table mutation: relational read models must be corrected through
+// a new authoritative domain command and reconciled again.
+func VerifyDurable(ctx context.Context, source eventing.ReconciliationSource, tenantID string) (ReconciliationReport, error) {
+	report, err := ReconcileDurable(ctx, source, tenantID)
+	if err != nil {
+		return ReconciliationReport{}, err
+	}
+	if !report.Converged {
+		return report, fmt.Errorf("%w: report %s contains %d drift records", ErrProjectionDrift, report.ReportSHA256, len(report.Drifts))
+	}
+	return report, nil
+}
+
+func reconcileLoaded(events []eventing.DomainEvent, online []eventing.Projection, tenantID string, reducers map[string]Reducer) (ReconciliationReport, error) {
+	rebuilt, err := rebuildEvents(events, tenantID, reducers)
+	if err != nil {
+		return ReconciliationReport{}, err
+	}
 	rebuiltItems, rebuiltSnapshots, err := rebuiltInventory(events, rebuilt, tenantID)
 	if err != nil {
 		return ReconciliationReport{}, err

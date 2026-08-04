@@ -36,6 +36,10 @@ func TestOutOfOrderReplayMatchesOnlineProjectProjection(t *testing.T) {
 
 	projector := projection.New(map[string]projection.Reducer{"project": projection.StateReducer})
 	events := []eventing.DomainEvent{create.Events[0], start.Events[0], propose.Events[0], approve.Events[0]}
+	for index := range events {
+		events[index].ReplayState = nil
+		events[index].ReplayStateSHA256 = ""
+	}
 	for _, index := range []int{3, 0, 2, 1, 1} {
 		if _, err := projector.Apply(events[index]); err != nil {
 			t.Fatal(err)

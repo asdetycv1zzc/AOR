@@ -50,6 +50,11 @@ type DomainEvent struct {
 	TaskIDReason     string          `json:"taskIdReason,omitempty"`
 	AgentRunID       string          `json:"agentRunId,omitempty"`
 	AgentRunReason   string          `json:"agentRunReason,omitempty"`
+	// ReplayState is the authoritative projection state committed with this
+	// event. It is internal transport metadata and is never accepted from an
+	// external event payload.
+	ReplayState       json.RawMessage `json:"-"`
+	ReplayStateSHA256 string          `json:"-"`
 }
 
 type OutboxRecord struct {
@@ -118,4 +123,16 @@ type ProjectionList interface {
 // command paths do not gain broad enumeration authority by accident.
 type ProjectionCatalog interface {
 	ListTenantProjections(ctx context.Context, tenantID string) ([]Projection, error)
+}
+
+// ReconciliationSnapshot binds the immutable event history and online
+// projection catalogue to one storage snapshot. Production reconciliation
+// must use this surface so concurrent commands cannot create a torn read.
+type ReconciliationSnapshot struct {
+	Events      []DomainEvent
+	Projections []Projection
+}
+
+type ReconciliationSource interface {
+	LoadReconciliationSnapshot(ctx context.Context, tenantID string) (ReconciliationSnapshot, error)
 }

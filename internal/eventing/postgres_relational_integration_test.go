@@ -59,6 +59,13 @@ VALUES ($1::uuid, $2::uuid, 'relational test', 'PLANNING', 4, 'INTERNAL', '[]'::
         'MEDIUM', 1, 'test', $3, $3)`, projectID, tenantID, now); err != nil {
 		t.Fatal(err)
 	}
+	initialProjectState := relationalTestInitialProjectState(tenantID, projectID)
+	if _, err := admin.ExecContext(ctx, `
+INSERT INTO aggregate_projections
+  (tenant_id, project_id, aggregate_type, aggregate_id, aggregate_version, schema_version, state_jsonb, updated_at)
+VALUES ($1::uuid, $2::uuid, 'project', $2, 4, 1, $3::jsonb, $4)`, tenantID, projectID, initialProjectState, now); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := admin.ExecContext(ctx, `
 INSERT INTO goal_specs
   (id, tenant_id, project_id, version, status, schema_version, content_jsonb, content_sha256,
@@ -83,8 +90,25 @@ VALUES ($1::uuid, $2::uuid, $3::uuid, 1, 'APPROVED', 1, '{}'::jsonb, $4,
 		t.Fatal(err)
 	}
 	request := relationalTestTransaction(t, tenantID, projectID, taskID, projectState, taskState, result)
-	if _, err := NewPostgresStore(app).Execute(ctx, request); err != nil {
+	store := NewPostgresStore(app)
+	if _, err := store.Execute(ctx, request); err != nil {
 		t.Fatal(err)
+	}
+	events, err := store.ListEvents(ctx, tenantID)
+	if err != nil || len(events) != 2 {
+		t.Fatalf("stored event count=%d error=%v", len(events), err)
+	}
+	snapshot, err := store.LoadReconciliationSnapshot(ctx, tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Events) != 2 || len(snapshot.Projections) != 4 {
+		t.Fatalf("durable reconciliation event count=%d projection count=%d", len(snapshot.Events), len(snapshot.Projections))
+	}
+	for _, event := range snapshot.Events {
+		if len(event.ReplayState) == 0 || event.ReplayStateSHA256 == "" {
+			t.Fatalf("event has no immutable replay state: %#v", event)
+		}
 	}
 	var planCount, moduleCount, taskCount, seriesCount, dependencyCount int
 	if err := admin.QueryRowContext(ctx, `SELECT count(*) FROM plan_specs WHERE tenant_id = $1::uuid AND project_id = $2::uuid`, tenantID, projectID).Scan(&planCount); err != nil {
@@ -175,6 +199,14 @@ INSERT INTO aggregate_projections
   (tenant_id, project_id, aggregate_type, aggregate_id, aggregate_version, schema_version, state_jsonb, updated_at)
 VALUES ($1::uuid, $2::uuid, 'spec_artifact', $3, 1, 1, $4::jsonb, $5)`, tenantID, projectID, aggregateID, state, createdAt)
 	return err
+}
+
+func relationalTestInitialProjectState(tenantID, projectID string) []byte {
+	value := map[string]any{
+		"tenantId": tenantID, "id": projectID, "state": "PLANNING", "version": 4,
+	}
+	encoded, _ := json.Marshal(value)
+	return encoded
 }
 
 func relationalTestProjectState(tenantID, projectID string, planVersion int, planSHA, goalSHA string) []byte {

@@ -141,6 +141,13 @@
       "file": "000020_repository_registry.up.sql",
       "sha256": "sha256:c9eb9eb147e344edc8b177ec04dae20865b4c8148637fad957c97ca17fe409d3",
       "destructive": false
+    },
+    {
+      "version": 21,
+      "mode": "EXPAND",
+      "file": "000021_event_replay_state.up.sql",
+      "sha256": "sha256:cf0b23d4ffa7a8839deab398e2b6558ab1a61931b50d55849b3bca1d1c725873",
+      "destructive": false
     }
   ]
 }

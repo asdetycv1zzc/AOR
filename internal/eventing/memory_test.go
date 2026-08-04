@@ -28,6 +28,35 @@ func TestMemoryStoreDeduplicatesOneHundredIdenticalCommands(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreBindsReplayStateIntoAtomicSnapshot(t *testing.T) {
+	store := NewMemoryStore()
+	request := transactionRequest("replay-state")
+	result, err := store.Execute(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedDigest, err := canonicaljson.Digest(request.Updates[0].State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Events) != 1 || string(result.Events[0].ReplayState) != string(request.Updates[0].State) || result.Events[0].ReplayStateSHA256 != expectedDigest {
+		t.Fatalf("bound replay event = %#v", result.Events)
+	}
+	events, err := store.ListEvents(context.Background(), request.TenantID)
+	if err != nil || len(events) != 1 || len(events[0].ReplayState) != 0 || events[0].ReplayStateSHA256 != "" {
+		t.Fatalf("ordinary event log exposed replay state: %#v error=%v", events, err)
+	}
+	snapshot, err := store.LoadReconciliationSnapshot(context.Background(), request.TenantID)
+	if err != nil || len(snapshot.Events) != 1 || len(snapshot.Projections) != 1 {
+		t.Fatalf("snapshot = %#v error=%v", snapshot, err)
+	}
+	snapshot.Events[0].ReplayState[0] = '['
+	again, err := store.LoadReconciliationSnapshot(context.Background(), request.TenantID)
+	if err != nil || string(again.Events[0].ReplayState) != string(request.Updates[0].State) {
+		t.Fatalf("snapshot mutation escaped = %#v error=%v", again, err)
+	}
+}
+
 func TestMemoryStoreRejectsIdempotencyKeyWithDifferentBody(t *testing.T) {
 	store := NewMemoryStore()
 	request := transactionRequest("request-a")
@@ -127,6 +156,29 @@ func TestMemoryStoreRejectsMismatchedContentDigests(t *testing.T) {
 	_, err = store.Execute(context.Background(), request)
 	if !errors.As(err, &typed) || typed.Code != aorerrors.CodeArtifactHashMismatch {
 		t.Fatalf("result digest mismatch = %#v", err)
+	}
+}
+
+func TestMemoryStoreRequiresExactlyOneEventPerProjectionUpdate(t *testing.T) {
+	store := NewMemoryStore()
+	missing := transactionRequest("missing-event")
+	missing.Updates = append(missing.Updates, ProjectionUpdate{
+		TenantID: "tenant_1", ProjectID: "prj_1", AggregateType: "task", AggregateID: "task_1",
+		ExpectedVersion: 0, NextVersion: 1, State: []byte(`{"id":"task_1","version":1}`),
+	})
+	if _, err := store.Execute(context.Background(), missing); err == nil {
+		t.Fatal("projection update without an immutable event was accepted")
+	}
+
+	duplicate := transactionRequest("duplicate-event")
+	second := duplicate.Events[0]
+	second.EventID = "evt_2"
+	duplicate.Events = append(duplicate.Events, second)
+	if _, err := store.Execute(context.Background(), duplicate); err == nil {
+		t.Fatal("multiple events for one projection update were accepted")
+	}
+	if stats := store.Stats(); stats.Events != 0 || stats.Projections != 0 {
+		t.Fatalf("invalid transactions mutated state: %#v", stats)
 	}
 }
 

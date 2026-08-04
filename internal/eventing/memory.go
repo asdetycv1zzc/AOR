@@ -99,6 +99,47 @@ func (s *MemoryStore) ListTenantProjections(ctx context.Context, tenantID string
 	return projections, nil
 }
 
+func (s *MemoryStore) LoadReconciliationSnapshot(ctx context.Context, tenantID string) (ReconciliationSnapshot, error) {
+	if ctx == nil || tenantID == "" {
+		return ReconciliationSnapshot{}, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "reconciliation snapshot"})
+	}
+	if err := ctx.Err(); err != nil {
+		return ReconciliationSnapshot{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snapshot := ReconciliationSnapshot{Events: make([]DomainEvent, 0), Projections: make([]Projection, 0)}
+	for _, event := range s.events {
+		if event.TenantID == tenantID {
+			snapshot.Events = append(snapshot.Events, cloneEvent(event))
+		}
+	}
+	for _, projection := range s.projections {
+		if projection.TenantID == tenantID {
+			snapshot.Projections = append(snapshot.Projections, cloneProjection(projection))
+		}
+	}
+	sort.Slice(snapshot.Events, func(left, right int) bool {
+		if snapshot.Events[left].AggregateType != snapshot.Events[right].AggregateType {
+			return snapshot.Events[left].AggregateType < snapshot.Events[right].AggregateType
+		}
+		if snapshot.Events[left].AggregateID != snapshot.Events[right].AggregateID {
+			return snapshot.Events[left].AggregateID < snapshot.Events[right].AggregateID
+		}
+		if snapshot.Events[left].AggregateVersion != snapshot.Events[right].AggregateVersion {
+			return snapshot.Events[left].AggregateVersion < snapshot.Events[right].AggregateVersion
+		}
+		return snapshot.Events[left].EventID < snapshot.Events[right].EventID
+	})
+	sort.Slice(snapshot.Projections, func(left, right int) bool {
+		if snapshot.Projections[left].AggregateType != snapshot.Projections[right].AggregateType {
+			return snapshot.Projections[left].AggregateType < snapshot.Projections[right].AggregateType
+		}
+		return snapshot.Projections[left].AggregateID < snapshot.Projections[right].AggregateID
+	})
+	return snapshot, nil
+}
+
 func (s *MemoryStore) Lookup(_ context.Context, tenantID, principalID, idempotencyKey, requestSHA256 string) (TransactionResult, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -114,6 +155,11 @@ func (s *MemoryStore) Execute(_ context.Context, request TransactionRequest) (Tr
 	if err := validateTransaction(request); err != nil {
 		return TransactionResult{}, err
 	}
+	boundEvents, err := bindReplayStates(request.Events, request.Updates)
+	if err != nil {
+		return TransactionResult{}, err
+	}
+	request.Events = boundEvents
 	for _, update := range request.Updates {
 		current := s.projections[aggregateKey(request.TenantID, update.AggregateType, update.AggregateID)]
 		if current.Version != update.ExpectedVersion {
@@ -186,7 +232,10 @@ func (s *MemoryStore) ListEvents(ctx context.Context, tenantID string) ([]Domain
 	events := make([]DomainEvent, 0, len(s.events))
 	for _, event := range s.events {
 		if event.TenantID == tenantID {
-			events = append(events, cloneEvent(event))
+			event = cloneEvent(event)
+			event.ReplayState = nil
+			event.ReplayStateSHA256 = ""
+			events = append(events, event)
 		}
 	}
 	sort.Slice(events, func(left, right int) bool {
@@ -234,7 +283,10 @@ func (s *MemoryStore) ClaimOutbox(ctx context.Context, tenantID string, now time
 		record.Attempts++
 		record.NextAttempt = now.Add(lease)
 		s.outbox[record.ID] = cloneOutboxRecord(record)
-		claims[index] = OutboxClaim{Record: cloneOutboxRecord(record), Attempt: record.Attempts}
+		claimed := cloneOutboxRecord(record)
+		claimed.Event.ReplayState = nil
+		claimed.Event.ReplayStateSHA256 = ""
+		claims[index] = OutboxClaim{Record: claimed, Attempt: record.Attempts}
 	}
 	return claims, nil
 }
@@ -315,12 +367,18 @@ func validateTransaction(request TransactionRequest) error {
 		updates[key] = update
 	}
 	seenEvents := make(map[string]bool, len(request.Events))
+	seenAggregates := make(map[string]bool, len(request.Events))
 	for _, event := range request.Events {
-		update, found := updates[aggregateKey(request.TenantID, event.AggregateType, event.AggregateID)]
-		if !found || event.EventID == "" || seenEvents[event.EventID] || event.TenantID != update.TenantID || event.ProjectID != update.ProjectID || event.AggregateVersion != update.NextVersion || event.Type == "" || event.PayloadSHA256 == "" || event.OccurredAt.IsZero() || !json.Valid(event.Payload) {
+		key := aggregateKey(request.TenantID, event.AggregateType, event.AggregateID)
+		update, found := updates[key]
+		if !found || event.EventID == "" || seenEvents[event.EventID] || seenAggregates[key] || event.TenantID != update.TenantID || event.ProjectID != update.ProjectID || event.AggregateVersion != update.NextVersion || event.Type == "" || event.PayloadSHA256 == "" || event.OccurredAt.IsZero() || !json.Valid(event.Payload) {
 			return aorerrors.New(aorerrors.CodeInvalidArgument, event.CorrelationID, map[string]any{"scope": "domain event"})
 		}
 		seenEvents[event.EventID] = true
+		seenAggregates[key] = true
+	}
+	if len(seenAggregates) != len(updates) {
+		return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "projection event coverage"})
 	}
 	if !json.Valid(request.Result) {
 		return fmt.Errorf("transaction result is not JSON")
@@ -370,6 +428,7 @@ func cloneProjection(value Projection) Projection {
 
 func cloneEvent(value DomainEvent) DomainEvent {
 	value.Payload = cloneJSON(value.Payload)
+	value.ReplayState = cloneJSON(value.ReplayState)
 	return value
 }
 
@@ -409,3 +468,4 @@ func cloneJSON(value json.RawMessage) json.RawMessage {
 
 var _ OutboxStore = (*MemoryStore)(nil)
 var _ EventLog = (*MemoryStore)(nil)
+var _ ReconciliationSource = (*MemoryStore)(nil)

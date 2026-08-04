@@ -1,0 +1,33 @@
+package eventing
+
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/akimisaka/aor/pkg/canonicaljson"
+)
+
+func TestDeriveReplayStateSupportsLegacyImmutableEvents(t *testing.T) {
+	wrapped := json.RawMessage(`{"tenantId":"tenant-1","projectId":"project-1","aggregateVersion":1,"projection":{"tenantId":"tenant-1","projectId":"project-1","id":"project-1","version":1}}`)
+	event := DomainEvent{EventID: "event-1", TenantID: "tenant-1", ProjectID: "project-1", AggregateType: "project", AggregateID: "project-1", AggregateVersion: 1, Payload: wrapped}
+	derived, err := deriveReplayState(event, nil)
+	if err != nil || len(derived.ReplayState) == 0 || derived.ReplayStateSHA256 == "" {
+		t.Fatalf("wrapped replay state = %#v error=%v", derived, err)
+	}
+
+	payload := json.RawMessage(`{"tenantId":"tenant-1","projectId":"project-1","kind":"PLAN_SPEC","specId":"plan-1","version":1,"contentSha256":"sha256:1111111111111111111111111111111111111111111111111111111111111111","artifactSha256":"sha256:2222222222222222222222222222222222222222222222222222222222222222","uri":"artifact://sha256/2222222222222222222222222222222222222222222222222222222222222222"}`)
+	state := json.RawMessage(`{"tenantId":"tenant-1","projectId":"project-1","kind":"PLAN_SPEC","specId":"plan-1","version":1,"contentSha256":"sha256:1111111111111111111111111111111111111111111111111111111111111111","artifactSha256":"sha256:2222222222222222222222222222222222222222222222222222222222222222","uri":"artifact://sha256/2222222222222222222222222222222222222222222222222222222222222222","mediaType":"application/json","createdBy":"agent-plan"}`)
+	resultDigest, err := canonicaljson.Digest(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := DomainEvent{EventID: "event-2", TenantID: "tenant-1", ProjectID: "project-1", AggregateType: "spec_artifact", AggregateID: legacyArtifactAggregateID("project-1", "PLAN_SPEC", "plan-1", 1), AggregateVersion: 1, Payload: payload}
+	derived, err = deriveReplayState(artifact, []replayResultCandidate{{EventIDs: []string{"event-2"}, Result: state, ResultSHA256: resultDigest}})
+	if err != nil || string(derived.ReplayState) != string(state) {
+		t.Fatalf("artifact replay state = %#v error=%v", derived, err)
+	}
+	artifact.AggregateID = "wrong"
+	if _, err := deriveReplayState(artifact, []replayResultCandidate{{EventIDs: []string{"event-2"}, Result: state, ResultSHA256: resultDigest}}); err == nil {
+		t.Fatal("legacy artifact accepted a mismatched aggregate identity")
+	}
+}

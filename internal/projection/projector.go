@@ -20,14 +20,15 @@ type Snapshot struct {
 }
 
 type eventFingerprint struct {
-	EventID          string
-	TenantID         string
-	ProjectID        string
-	AggregateType    string
-	AggregateID      string
-	AggregateVersion int64
-	Type             string
-	PayloadSHA256    string
+	EventID           string
+	TenantID          string
+	ProjectID         string
+	AggregateType     string
+	AggregateID       string
+	AggregateVersion  int64
+	Type              string
+	PayloadSHA256     string
+	ReplayStateSHA256 string
 }
 
 type stream struct {
@@ -151,8 +152,17 @@ func validateEvent(event eventing.DomainEvent) (eventFingerprint, error) {
 	if err != nil || digest != event.PayloadSHA256 {
 		return eventFingerprint{}, aorerrors.New(aorerrors.CodeArtifactHashMismatch, event.CorrelationID, map[string]any{"scope": "event payload"})
 	}
+	if (len(event.ReplayState) == 0) != (event.ReplayStateSHA256 == "") {
+		return eventFingerprint{}, aorerrors.New(aorerrors.CodeArtifactHashMismatch, event.CorrelationID, map[string]any{"scope": "event replay state"})
+	}
+	if len(event.ReplayState) != 0 {
+		replayDigest, replayErr := canonicaljson.Digest(event.ReplayState)
+		if replayErr != nil || replayDigest != event.ReplayStateSHA256 {
+			return eventFingerprint{}, aorerrors.New(aorerrors.CodeArtifactHashMismatch, event.CorrelationID, map[string]any{"scope": "event replay state"})
+		}
+	}
 	return eventFingerprint{
-		EventID: event.EventID, TenantID: event.TenantID, ProjectID: event.ProjectID, AggregateType: event.AggregateType, AggregateID: event.AggregateID, AggregateVersion: event.AggregateVersion, Type: event.Type, PayloadSHA256: event.PayloadSHA256,
+		EventID: event.EventID, TenantID: event.TenantID, ProjectID: event.ProjectID, AggregateType: event.AggregateType, AggregateID: event.AggregateID, AggregateVersion: event.AggregateVersion, Type: event.Type, PayloadSHA256: event.PayloadSHA256, ReplayStateSHA256: event.ReplayStateSHA256,
 	}, nil
 }
 
@@ -162,6 +172,7 @@ func aggregateKey(tenantID, aggregateType, aggregateID string) string {
 
 func cloneEvent(event eventing.DomainEvent) eventing.DomainEvent {
 	event.Payload = cloneJSON(event.Payload)
+	event.ReplayState = cloneJSON(event.ReplayState)
 	return event
 }
 

@@ -122,6 +122,9 @@ func TestMemoryOutboxStoreFencesExpiredClaims(t *testing.T) {
 	if err != nil || len(first) != 1 {
 		t.Fatalf("first claim = %#v, %v", first, err)
 	}
+	if len(first[0].Record.Event.ReplayState) != 0 || first[0].Record.Event.ReplayStateSHA256 != "" {
+		t.Fatal("outbox claim exposed internal replay state")
+	}
 	second, err := store.ClaimOutbox(context.Background(), "tenant_1", now.Add(time.Second), 1, time.Second)
 	if err != nil || len(second) != 1 || second[0].Attempt != 2 {
 		t.Fatalf("second claim = %#v, %v", second, err)

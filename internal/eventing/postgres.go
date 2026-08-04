@@ -150,7 +150,7 @@ func (s *PostgresStore) Lookup(ctx context.Context, tenantID, principalID, idemp
 }
 
 func (s *PostgresStore) ListEvents(ctx context.Context, tenantID string) ([]DomainEvent, error) {
-	if tenantID == "" {
+	if s == nil || s.db == nil || ctx == nil || tenantID == "" {
 		return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "event log tenant"})
 	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
@@ -192,6 +192,54 @@ ORDER BY aggregate_type, aggregate_id, aggregate_version, event_id`, tenantID)
 	return events, nil
 }
 
+func (s *PostgresStore) LoadReconciliationSnapshot(ctx context.Context, tenantID string) (ReconciliationSnapshot, error) {
+	if s == nil || s.db == nil || ctx == nil || tenantID == "" {
+		return ReconciliationSnapshot{}, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "reconciliation snapshot"})
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return ReconciliationSnapshot{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := setTenant(ctx, tx, tenantID); err != nil {
+		return ReconciliationSnapshot{}, err
+	}
+	events, err := loadReplayEvents(ctx, tx, tenantID)
+	if err != nil {
+		return ReconciliationSnapshot{}, err
+	}
+	rows, err := tx.QueryContext(ctx, `
+SELECT tenant_id::text, project_id::text, aggregate_type, aggregate_id, aggregate_version, state_jsonb
+FROM aggregate_projections
+WHERE tenant_id = $1::uuid
+ORDER BY aggregate_type, aggregate_id`, tenantID)
+	if err != nil {
+		return ReconciliationSnapshot{}, err
+	}
+	projections := make([]Projection, 0)
+	for rows.Next() {
+		var projection Projection
+		var state []byte
+		if err := rows.Scan(&projection.TenantID, &projection.ProjectID, &projection.AggregateType, &projection.AggregateID, &projection.Version, &state); err != nil {
+			_ = rows.Close()
+			return ReconciliationSnapshot{}, err
+		}
+		projection.State = cloneJSON(state)
+		projections = append(projections, projection)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return ReconciliationSnapshot{}, err
+	}
+	if err := rows.Close(); err != nil {
+		return ReconciliationSnapshot{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ReconciliationSnapshot{}, err
+	}
+	return ReconciliationSnapshot{Events: events, Projections: projections}, nil
+}
+
 func (s *PostgresStore) PendingOutboxTenants(ctx context.Context, now time.Time, limit int) ([]string, error) {
 	if s == nil || s.db == nil || ctx == nil || now.IsZero() || limit < 1 || limit > 1000 {
 		return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "pending outbox tenants"})
@@ -221,6 +269,11 @@ func (s *PostgresStore) Execute(ctx context.Context, request TransactionRequest)
 	if err := validateTransaction(request); err != nil {
 		return TransactionResult{}, err
 	}
+	boundEvents, err := bindReplayStates(request.Events, request.Updates)
+	if err != nil {
+		return TransactionResult{}, err
+	}
+	request.Events = boundEvents
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return TransactionResult{}, err
@@ -364,9 +417,11 @@ VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, $8, $9, $10, '{}'::jsonb, 
 		}
 		_, err = tx.ExecContext(ctx, `
 INSERT INTO domain_events
-  (event_id, tenant_id, project_id, aggregate_type, aggregate_id, aggregate_version, event_type, schema_version, payload_jsonb, payload_sha256, metadata_jsonb, created_at)
-VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, 1, $8::jsonb, $9, $10::jsonb, $11)`,
-			event.EventID, request.TenantID, event.ProjectID, event.AggregateType, event.AggregateID, event.AggregateVersion, event.Type, []byte(event.Payload), event.PayloadSHA256, metadata, event.OccurredAt)
+  (event_id, tenant_id, project_id, aggregate_type, aggregate_id, aggregate_version, event_type, schema_version,
+   payload_jsonb, payload_sha256, replay_state_jsonb, replay_state_sha256, metadata_jsonb, created_at)
+VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, 1, $8::jsonb, $9, $10::jsonb, $11, $12::jsonb, $13)`,
+			event.EventID, request.TenantID, event.ProjectID, event.AggregateType, event.AggregateID, event.AggregateVersion, event.Type,
+			[]byte(event.Payload), event.PayloadSHA256, []byte(event.ReplayState), event.ReplayStateSHA256, metadata, event.OccurredAt)
 		if err != nil {
 			return TransactionResult{}, err
 		}
@@ -808,6 +863,148 @@ func scanEvent(scanner eventScanner) (DomainEvent, error) {
 	return event, nil
 }
 
+func loadReplayEvents(ctx context.Context, tx *sql.Tx, tenantID string) ([]DomainEvent, error) {
+	events, err := loadStoredEvents(ctx, tx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	legacy := false
+	for _, event := range events {
+		if len(event.ReplayState) == 0 {
+			legacy = true
+			break
+		}
+	}
+	if !legacy {
+		return events, nil
+	}
+	candidates, err := loadReplayResultCandidates(ctx, tx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	for index, event := range events {
+		if len(event.ReplayState) != 0 {
+			continue
+		}
+		events[index], err = deriveReplayState(event, candidates[event.EventID])
+		if err != nil {
+			return nil, err
+		}
+	}
+	return events, nil
+}
+
+func loadStoredEvents(ctx context.Context, tx *sql.Tx, tenantID string) ([]DomainEvent, error) {
+	rows, err := tx.QueryContext(ctx, `
+SELECT event_id::text, tenant_id::text, project_id::text, aggregate_type, aggregate_id,
+       aggregate_version, event_type, payload_jsonb, payload_sha256,
+       replay_state_jsonb, replay_state_sha256, metadata_jsonb, created_at
+FROM domain_events
+WHERE tenant_id = $1::uuid
+ORDER BY aggregate_type, aggregate_id, aggregate_version, event_id`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	events := make([]DomainEvent, 0)
+	for rows.Next() {
+		event, scanErr := scanReplayEvent(rows)
+		if scanErr != nil {
+			_ = rows.Close()
+			return nil, scanErr
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
+func scanReplayEvent(scanner eventScanner) (DomainEvent, error) {
+	var event DomainEvent
+	var payload, replayState, metadata []byte
+	var replayStateSHA256 sql.NullString
+	err := scanner.Scan(
+		&event.EventID, &event.TenantID, &event.ProjectID, &event.AggregateType, &event.AggregateID,
+		&event.AggregateVersion, &event.Type, &payload, &event.PayloadSHA256,
+		&replayState, &replayStateSHA256, &metadata, &event.OccurredAt,
+	)
+	if err != nil {
+		return DomainEvent{}, err
+	}
+	if (len(replayState) == 0) != !replayStateSHA256.Valid {
+		return DomainEvent{}, ErrReplayStateUnavailable
+	}
+	event.Payload = cloneJSON(payload)
+	if len(replayState) != 0 {
+		bound, err := bindReplayState(event, replayState)
+		if err != nil || bound.ReplayStateSHA256 != replayStateSHA256.String {
+			return DomainEvent{}, ErrReplayStateUnavailable
+		}
+		event.ReplayState = bound.ReplayState
+		event.ReplayStateSHA256 = bound.ReplayStateSHA256
+	}
+	if err := applyEventMetadata(&event, metadata); err != nil {
+		return DomainEvent{}, err
+	}
+	return event, nil
+}
+
+func loadReplayResultCandidates(ctx context.Context, tx *sql.Tx, tenantID string) (map[string][]replayResultCandidate, error) {
+	rows, err := tx.QueryContext(ctx, `
+SELECT result_jsonb, result_sha256, event_ids_jsonb
+FROM command_results
+WHERE tenant_id = $1::uuid
+ORDER BY principal_id, idempotency_key`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string][]replayResultCandidate)
+	for rows.Next() {
+		var rawResult, rawEventIDs []byte
+		var resultSHA256 string
+		if err := rows.Scan(&rawResult, &resultSHA256, &rawEventIDs); err != nil {
+			return nil, err
+		}
+		var eventIDs []string
+		if json.Unmarshal(rawEventIDs, &eventIDs) != nil || len(eventIDs) == 0 {
+			return nil, ErrReplayStateUnavailable
+		}
+		candidate := replayResultCandidate{EventIDs: append([]string(nil), eventIDs...), Result: cloneJSON(rawResult), ResultSHA256: resultSHA256}
+		for _, eventID := range eventIDs {
+			if eventID == "" {
+				return nil, ErrReplayStateUnavailable
+			}
+			result[eventID] = append(result[eventID], candidate)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func applyEventMetadata(event *DomainEvent, metadata []byte) error {
+	var values map[string]string
+	if err := json.Unmarshal(metadata, &values); err != nil {
+		return err
+	}
+	event.CorrelationID = values["correlationId"]
+	event.CausationID = values["causationId"]
+	event.Traceparent = values["traceparent"]
+	event.Tracestate = values["tracestate"]
+	event.TaskID = values["taskId"]
+	event.TaskIDReason = values["taskIdReason"]
+	event.AgentRunID = values["agentRunId"]
+	event.AgentRunReason = values["agentRunReason"]
+	return nil
+}
+
 func setTenant(ctx context.Context, tx *sql.Tx, tenantID string) error {
 	if tenantID == "" {
 		return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "tenant"})
@@ -841,3 +1038,4 @@ var _ Store = (*PostgresStore)(nil)
 var _ OutboxStore = (*PostgresStore)(nil)
 var _ EventLog = (*PostgresStore)(nil)
 var _ OutboxTenantSource = (*PostgresStore)(nil)
+var _ ReconciliationSource = (*PostgresStore)(nil)

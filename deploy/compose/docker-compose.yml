@@ -168,6 +168,10 @@ services:
         if [ "$$repository_registry_installed" != "t" ]; then
           psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000020_repository_registry.up.sql
         fi
+        event_replay_state_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'domain_events' AND column_name = 'replay_state_jsonb')")"
+        if [ "$$event_replay_state_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000021_event_replay_state.up.sql
+        fi
         unset AOR_APP_PASSWORD
     secrets: [postgres_password, postgres_app_password]
     volumes:
@@ -191,6 +195,7 @@ services:
       - ../../migrations/postgres/000018_repository_submissions.up.sql:/migrations/000018_repository_submissions.up.sql:ro
       - ../../migrations/postgres/000019_model_usage_reconciliation.up.sql:/migrations/000019_model_usage_reconciliation.up.sql:ro
       - ../../migrations/postgres/000020_repository_registry.up.sql:/migrations/000020_repository_registry.up.sql:ro
+      - ../../migrations/postgres/000021_event_replay_state.up.sql:/migrations/000021_event_replay_state.up.sql:ro
       - ./postgres-app-password.sql:/migrations/postgres-app-password.sql:ro
     read_only: true
     tmpfs: [/tmp]

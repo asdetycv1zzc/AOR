@@ -136,6 +136,22 @@ func TestCoreMigrationContainsAtomicityAndIsolationConstraints(t *testing.T) {
 	}
 }
 
+func TestEventReplayStateMigrationIsForwardOnlyAndPaired(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", "migrations", "postgres", "000021_event_replay_state.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(content)
+	for _, required := range []string{"replay_state_jsonb", "replay_state_sha256", "domain_events_replay_state_pair", "(replay_state_jsonb IS NULL) = (replay_state_sha256 IS NULL)", "jsonb_typeof"} {
+		if !strings.Contains(text, required) {
+			t.Errorf("event replay migration missing %q", required)
+		}
+	}
+	if strings.Contains(strings.ToUpper(text), "DROP ") || strings.Contains(strings.ToUpper(text), "DELETE ") {
+		t.Fatal("event replay migration is destructive")
+	}
+}
+
 func TestProjectErasureMigrationIsTenantScopedAndResumable(t *testing.T) {
 	content, err := os.ReadFile(filepath.Join("..", "..", "migrations", "postgres", "000016_project_erasure.up.sql"))
 	if err != nil {
