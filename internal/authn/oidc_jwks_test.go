@@ -141,6 +141,17 @@ func TestRemoteJWKSVerifierFailsClosedOnRedirectAndOversize(t *testing.T) {
 	}
 }
 
+func TestSecurityJSONDecodersRejectDuplicateMembers(t *testing.T) {
+	if err := decodeSingleJSON([]byte(`{"alg":"RS256","alg":"none","kid":"key"}`), &struct {
+		Algorithm string `json:"alg"`
+	}{}); err == nil {
+		t.Fatal("duplicate JWT header member accepted")
+	}
+	if _, err := decodeOIDCClaims([]byte(`{"iss":"issuer","sub":"user","aud":"aor","iat":1,"exp":2,"principalType":"USER","role":"USER","tenantId":"tenant","tenantId":"other"}`)); err == nil {
+		t.Fatal("duplicate claims member accepted")
+	}
+}
+
 func generateRSAKey(t *testing.T) *rsa.PrivateKey {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)

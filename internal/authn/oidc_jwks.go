@@ -1,6 +1,7 @@
 package authn
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/rsa"
@@ -249,6 +250,9 @@ func rsaKey(jwk remoteJWK, minimumBits int) (*rsa.PublicKey, error) {
 }
 
 func decodeOIDCClaims(content []byte) (OIDCClaims, error) {
+	if err := rejectDuplicateJSONMembers(content); err != nil {
+		return OIDCClaims{}, err
+	}
 	var raw struct {
 		Issuer        string            `json:"iss"`
 		Subject       string            `json:"sub"`
@@ -334,11 +338,82 @@ func decodeBase64URL(value string, maximum int) ([]byte, error) {
 }
 
 func decodeSingleJSON(content []byte, target any) error {
+	if err := rejectDuplicateJSONMembers(content); err != nil {
+		return err
+	}
 	decoder := json.NewDecoder(strings.NewReader(string(content)))
 	if err := decoder.Decode(target); err != nil {
 		return err
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return ErrOIDCProofInvalid
+	}
+	return nil
+}
+
+// rejectDuplicateJSONMembers prevents ambiguous security claims such as two
+// tenantId or alg members from being interpreted differently by different
+// JSON implementations. It also bounds nesting so malformed input cannot
+// consume unbounded stack space.
+func rejectDuplicateJSONMembers(content []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(content))
+	decoder.UseNumber()
+	if err := walkJSONValue(decoder, 0); err != nil {
+		return ErrOIDCProofInvalid
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return ErrOIDCProofInvalid
+	}
+	return nil
+}
+
+func walkJSONValue(decoder *json.Decoder, depth int) error {
+	if depth > 64 {
+		return ErrOIDCProofInvalid
+	}
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delim, isDelim := token.(json.Delim)
+	if !isDelim {
+		return nil
+	}
+	switch delim {
+	case '{':
+		members := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return ErrOIDCProofInvalid
+			}
+			if _, duplicate := members[key]; duplicate {
+				return ErrOIDCProofInvalid
+			}
+			members[key] = struct{}{}
+			if err := walkJSONValue(decoder, depth+1); err != nil {
+				return err
+			}
+		}
+		end, err := decoder.Token()
+		if err != nil || end != json.Delim('}') {
+			return ErrOIDCProofInvalid
+		}
+	case '[':
+		for decoder.More() {
+			if err := walkJSONValue(decoder, depth+1); err != nil {
+				return err
+			}
+		}
+		end, err := decoder.Token()
+		if err != nil || end != json.Delim(']') {
+			return ErrOIDCProofInvalid
+		}
+	default:
 		return ErrOIDCProofInvalid
 	}
 	return nil
