@@ -44,16 +44,19 @@ type NormalizedRequest struct {
 	Tools               []ToolDefinition `json:"tools,omitempty"`
 	ResponseSchemaRef   string           `json:"responseSchemaRef,omitempty"`
 	ResponseSchema      json.RawMessage  `json:"responseSchema,omitempty"`
-	MaxOutputTokens     int              `json:"maxOutputTokens"`
-	Temperature         float64          `json:"temperature"`
-	Seed                *int64           `json:"seed,omitempty"`
-	ProviderPolicy      string           `json:"providerPolicy"`
-	DataClassification  string           `json:"dataClassification"`
-	CachePolicy         string           `json:"cachePolicy"`
-	PromptDigest        string           `json:"promptDigest"`
-	ToolSchemaDigest    string           `json:"toolSchemaDigest"`
-	PolicyDigest        string           `json:"policyDigest"`
-	WorstCaseCostMicros int64            `json:"worstCaseCostMicros"`
+	// ResponseSemanticValidator is process-local policy code and is excluded
+	// from request digests. It runs only after the complete stream is assembled.
+	ResponseSemanticValidator func(json.RawMessage) error `json:"-"`
+	MaxOutputTokens           int                         `json:"maxOutputTokens"`
+	Temperature               float64                     `json:"temperature"`
+	Seed                      *int64                      `json:"seed,omitempty"`
+	ProviderPolicy            string                      `json:"providerPolicy"`
+	DataClassification        string                      `json:"dataClassification"`
+	CachePolicy               string                      `json:"cachePolicy"`
+	PromptDigest              string                      `json:"promptDigest"`
+	ToolSchemaDigest          string                      `json:"toolSchemaDigest"`
+	PolicyDigest              string                      `json:"policyDigest"`
+	WorstCaseCostMicros       int64                       `json:"worstCaseCostMicros"`
 }
 
 type Usage struct {

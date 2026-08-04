@@ -208,7 +208,7 @@ func (g *Gateway) Stream(ctx context.Context, request NormalizedRequest, options
 	return &budgetedStream{
 		stream: stream, tenantID: request.TenantID, reservationID: reservation, context: ctx,
 		call: call, startedAt: startedAt, finalizeCall: g.finalizeModelCall,
-		clock:            g.clock,
+		clock: g.clock, responseSchema: append(json.RawMessage(nil), request.ResponseSchema...), semanticValidator: request.ResponseSemanticValidator,
 		maxResponseBytes: MaximumResponseBytes,
 	}, nil
 }
@@ -266,7 +266,7 @@ func (g *Gateway) streamWithPolicy(ctx context.Context, request NormalizedReques
 			stream, streamErr := selection.adapter.Stream(ctx, selection.request)
 			if streamErr == nil {
 				g.providerSucceeded(selection.key)
-				return &budgetedStream{stream: stream, tenantID: request.TenantID, reservationID: options.ReservationID, context: ctx, call: call, startedAt: startedAt, finalizeCall: g.finalizeModelCall, clock: g.clock, maxResponseBytes: MaximumResponseBytes}, nil
+				return &budgetedStream{stream: stream, tenantID: request.TenantID, reservationID: options.ReservationID, context: ctx, call: call, startedAt: startedAt, finalizeCall: g.finalizeModelCall, clock: g.clock, responseSchema: append(json.RawMessage(nil), request.ResponseSchema...), semanticValidator: request.ResponseSemanticValidator, maxResponseBytes: MaximumResponseBytes}, nil
 			}
 			g.recordProviderFailure(selection.key, streamErr)
 			lastErr = streamErr
@@ -1209,18 +1209,20 @@ func (g *Gateway) releaseReservation(ctx context.Context, tenantID, reservationI
 }
 
 type budgetedStream struct {
-	stream           ResponseStream
-	tenantID         string
-	reservationID    string
-	context          context.Context
-	call             ModelCall
-	startedAt        time.Time
-	finalizeCall     func(context.Context, ModelCallFinalization) error
-	clock            func() time.Time
-	maxResponseBytes int
-	buffer           bytes.Buffer
-	once             sync.Once
-	finalizeErr      error
+	stream            ResponseStream
+	tenantID          string
+	reservationID     string
+	context           context.Context
+	call              ModelCall
+	startedAt         time.Time
+	finalizeCall      func(context.Context, ModelCallFinalization) error
+	clock             func() time.Time
+	maxResponseBytes  int
+	responseSchema    json.RawMessage
+	semanticValidator func(json.RawMessage) error
+	buffer            bytes.Buffer
+	once              sync.Once
+	finalizeErr       error
 }
 
 func (s *budgetedStream) Recv(ctx context.Context) (json.RawMessage, error) {
@@ -1263,7 +1265,6 @@ func (s *budgetedStream) finalizeTerminal() error {
 			return
 		}
 		call := s.call
-		call.Status = ModelCallSucceeded
 		call.InputTokens = usage.InputTokens
 		call.OutputTokens = usage.OutputTokens
 		call.CostMicros = usage.CostMicros
@@ -1275,12 +1276,50 @@ func (s *budgetedStream) finalizeTerminal() error {
 			call.OutputSHA256 = digestBytes(s.buffer.Bytes())
 		}
 		call.LatencyMilliseconds = elapsedMilliseconds(s.startedAt, s.clock().UTC())
+		if validationErr := validateStreamFinal(s.responseSchema, s.semanticValidator, s.buffer.Bytes()); validationErr != nil {
+			call.Status = ModelCallFailedOutputSchema
+			s.finalizeErr = s.finalizeCall(context.WithoutCancel(s.context), ModelCallFinalization{
+				ReservationID: s.reservationID, Disposition: ReservationDispositionSettle,
+				ActualMicros: usage.CostMicros, Call: call,
+			})
+			if s.finalizeErr == nil {
+				s.finalizeErr = validationErr
+			}
+			return
+		}
+		if containsCredentialLike(string(s.buffer.Bytes())) {
+			call.Status = ModelCallFailedCredential
+			s.finalizeErr = s.finalizeCall(context.WithoutCancel(s.context), ModelCallFinalization{
+				ReservationID: s.reservationID, Disposition: ReservationDispositionSettle,
+				ActualMicros: usage.CostMicros, Call: call,
+			})
+			if s.finalizeErr == nil {
+				s.finalizeErr = ErrCredentialDetected
+			}
+			return
+		}
+		call.Status = ModelCallSucceeded
 		s.finalizeErr = s.finalizeCall(context.WithoutCancel(s.context), ModelCallFinalization{
 			ReservationID: s.reservationID, Disposition: ReservationDispositionSettle,
 			ActualMicros: usage.CostMicros, Call: call,
 		})
 	})
 	return s.finalizeErr
+}
+
+func validateStreamFinal(schema json.RawMessage, semanticValidator func(json.RawMessage) error, content []byte) error {
+	if len(content) == 0 && len(schema) == 0 && semanticValidator == nil {
+		return nil
+	}
+	if err := validateResponse(schema, content); err != nil {
+		return err
+	}
+	if semanticValidator != nil {
+		if err := semanticValidator(append(json.RawMessage(nil), content...)); err != nil {
+			return ErrOutputSchema
+		}
+	}
+	return nil
 }
 
 func (s *budgetedStream) finalizeFailure(cause error) error {

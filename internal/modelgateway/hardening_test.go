@@ -382,6 +382,51 @@ func TestGatewaySettlesAuthoritativeFinalStreamUsage(t *testing.T) {
 	}
 }
 
+func TestGatewayValidatesAggregatedStreamAtEOFBeforeSuccess(t *testing.T) {
+	ledger := NewBudgetLedger(time.Now)
+	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "account", TenantID: "tenant", LimitMicros: 1_000}); err != nil {
+		t.Fatal(err)
+	}
+	stream := &hardeningUsageStream{
+		events: []json.RawMessage{json.RawMessage(`{"ok":false}`)},
+		usage:  Usage{InputTokens: 1, OutputTokens: 1, CostMicros: 4},
+	}
+	adapter := &hardeningAdapter{stream: stream}
+	gateway := NewGateway(ledger, time.Now)
+	if err := gateway.Register("primary", "model", adapter, Pricing{InputMicrosPerToken: 1, OutputMicrosPerToken: 1}); err != nil {
+		t.Fatal(err)
+	}
+	request := hardeningRequest("stream-final-schema")
+	request.ResponseSchema = json.RawMessage(`{"type":"object","required":["ok"],"properties":{"ok":{"const":true}}}`)
+	request.ResponseSemanticValidator = func(content json.RawMessage) error {
+		var value struct {
+			OK bool `json:"ok"`
+		}
+		if err := json.Unmarshal(content, &value); err != nil || !value.OK {
+			return errors.New("semantic output rejected")
+		}
+		return nil
+	}
+	responseStream, err := gateway.Stream(context.Background(), request, GenerateOptions{Provider: "primary", AccountID: "account", ReservationID: "stream-final-schema-reservation", MaxAttempts: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := responseStream.Recv(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := responseStream.Recv(context.Background()); !errors.Is(err, ErrOutputSchema) {
+		t.Fatalf("terminal schema error = %v", err)
+	}
+	reservation, found := ledger.Reservation("tenant", "stream-final-schema-reservation")
+	if !found || reservation.State != ReservationSettled || reservation.SettledMicros != 4 {
+		t.Fatalf("reservation=%#v found=%t", reservation, found)
+	}
+	call, found := ledger.ModelCall("tenant", "stream-final-schema")
+	if !found || call.Status != ModelCallFailedOutputSchema {
+		t.Fatalf("call=%#v found=%t", call, found)
+	}
+}
+
 func newHardeningGateway(t *testing.T, config GatewayConfig) (*Gateway, *hardeningAdapter, *BudgetLedger) {
 	t.Helper()
 	ledger := NewBudgetLedger(time.Now)
