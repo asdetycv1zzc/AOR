@@ -1,0 +1,11 @@
+{
+  "task": {
+    "id": "task_01HZXH4D1QK7B9C5F2Y8M3N6P0",
+    "status": {"state": "TASK_STATE_WORKING"}
+  },
+  "message": {
+    "messageId": "message_01HZXH4D1QK7B9C5F2Y8M3N6P0",
+    "role": "ROLE_AGENT",
+    "parts": [{"text": "working"}]
+  }
+}

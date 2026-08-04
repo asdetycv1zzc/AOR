@@ -1,0 +1,39 @@
+{
+  "name": "AOR Execution Agent Runtime",
+  "description": "Executes one versioned ModuleSpec under deterministic control.",
+  "version": "1.0.0",
+  "supportedInterfaces": [
+    {
+      "url": "https://aor.example.invalid/a2a/v1",
+      "protocolBinding": "HTTP+JSON",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": true,
+    "extensions": [
+      {
+        "uri": "urn:aor:aop:v1",
+        "description": "AOR project, budget, repository, and audit semantics",
+        "required": true
+      }
+    ]
+  },
+  "defaultInputModes": ["application/json"],
+  "defaultOutputModes": ["application/json"],
+  "skills": [
+    {
+      "id": "aor-executor-v1",
+      "name": "AOR Module Executor",
+      "description": "Implements exactly one ModuleSpec",
+      "tags": ["executor", "software-engineering"]
+    }
+  ],
+  "signatures": [
+    {
+      "protected": "eyJhbGciOiJIUzI1NiIsImtpZCI6ImtpZF8xIn0",
+      "signature": "KDb8deq_HSAzfnlD1hbSsRXOuOuXhfUhguIE4nUUphI"
+    }
+  ]
+}

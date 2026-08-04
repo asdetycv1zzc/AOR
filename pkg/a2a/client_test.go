@@ -24,7 +24,7 @@ func TestHTTPJSONClientSendsA2AOneWireRequest(t *testing.T) {
 			writer.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		_, _ = writer.Write([]byte(`{"task":{"id":"task_1"}}`))
+		_, _ = writer.Write([]byte(`{"task":{"id":"task_1","contextId":"context_1","status":{"state":"TASK_STATE_COMPLETED"}}}`))
 	}))
 	defer server.Close()
 	endpoint, err := url.Parse(server.URL)

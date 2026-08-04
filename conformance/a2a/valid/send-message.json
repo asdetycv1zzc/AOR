@@ -1,0 +1,18 @@
+{
+  "message": {
+    "messageId": "message_01HZXH4D1QK7B9C5F2Y8M3N6P0",
+    "role": "ROLE_USER",
+    "parts": [{"text": "Execute the approved ModuleSpec"}],
+    "extensions": ["urn:aor:aop:v1"],
+    "metadata": {
+      "urn:aor:aop:v1": {
+        "aopVersion": "1.0",
+        "idempotencyKey": "idem_01HZXH4D1QK7B9C5F2Y8M3N6P0"
+      }
+    }
+  },
+  "configuration": {
+    "acceptedOutputModes": ["application/json"],
+    "returnImmediately": true
+  }
+}

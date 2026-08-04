@@ -1,0 +1,272 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aor.local/a2a/a2a-http-json.v1.schema.json",
+  "title": "A2A 1.0 HTTP+JSON Protocol Objects",
+  "description": "AOR's pinned A2A 1.0 HTTP+JSON wire profile.",
+  "oneOf": [
+    {"$ref": "#/$defs/agentCard"},
+    {"$ref": "#/$defs/sendMessageRequest"},
+    {"$ref": "#/$defs/task"},
+    {"$ref": "#/$defs/streamResponse"},
+    {"$ref": "#/$defs/pushNotificationConfig"},
+    {"$ref": "#/$defs/errorResponse"}
+  ],
+  "$defs": {
+    "metadata": {"type": "object"},
+    "part": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "text": {"type": "string", "minLength": 1},
+        "raw": {"type": "string", "contentEncoding": "base64"},
+        "url": {"type": "string", "format": "uri"},
+        "data": true,
+        "metadata": {"$ref": "#/$defs/metadata"},
+        "filename": {"type": "string", "minLength": 1},
+        "mediaType": {"type": "string", "minLength": 1}
+      },
+      "oneOf": [
+        {"required": ["text"], "not": {"anyOf": [{"required": ["raw"]}, {"required": ["url"]}, {"required": ["data"]}]}},
+        {"required": ["raw"], "not": {"anyOf": [{"required": ["text"]}, {"required": ["url"]}, {"required": ["data"]}]}},
+        {"required": ["url"], "not": {"anyOf": [{"required": ["text"]}, {"required": ["raw"]}, {"required": ["data"]}]}},
+        {"required": ["data"], "not": {"anyOf": [{"required": ["text"]}, {"required": ["raw"]}, {"required": ["url"]}]}}
+      ]
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["messageId", "role", "parts"],
+      "properties": {
+        "messageId": {"type": "string", "minLength": 1, "maxLength": 256},
+        "contextId": {"type": "string", "minLength": 1, "maxLength": 256},
+        "taskId": {"type": "string", "minLength": 1, "maxLength": 256},
+        "role": {"enum": ["ROLE_USER", "ROLE_AGENT"]},
+        "parts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/part"}},
+        "metadata": {"$ref": "#/$defs/metadata"},
+        "extensions": {"type": "array", "uniqueItems": true, "items": {"type": "string", "format": "uri"}},
+        "referenceTaskIds": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "taskState": {
+      "enum": [
+        "TASK_STATE_UNSPECIFIED",
+        "TASK_STATE_SUBMITTED",
+        "TASK_STATE_WORKING",
+        "TASK_STATE_COMPLETED",
+        "TASK_STATE_FAILED",
+        "TASK_STATE_CANCELED",
+        "TASK_STATE_INPUT_REQUIRED",
+        "TASK_STATE_REJECTED",
+        "TASK_STATE_AUTH_REQUIRED"
+      ]
+    },
+    "taskStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": {"$ref": "#/$defs/taskState"},
+        "message": {"$ref": "#/$defs/message"},
+        "timestamp": {"type": "string", "format": "date-time"}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifactId", "parts"],
+      "properties": {
+        "artifactId": {"type": "string", "minLength": 1, "maxLength": 256},
+        "name": {"type": "string"},
+        "description": {"type": "string"},
+        "parts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/part"}},
+        "metadata": {"$ref": "#/$defs/metadata"},
+        "extensions": {"type": "array", "uniqueItems": true, "items": {"type": "string", "format": "uri"}}
+      }
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "status"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 256},
+        "contextId": {"type": "string", "minLength": 1, "maxLength": 256},
+        "status": {"$ref": "#/$defs/taskStatus"},
+        "artifacts": {"type": "array", "items": {"$ref": "#/$defs/artifact"}},
+        "history": {"type": "array", "items": {"$ref": "#/$defs/message"}},
+        "metadata": {"$ref": "#/$defs/metadata"},
+        "createdAt": {"type": "string", "format": "date-time"},
+        "lastModified": {"type": "string", "format": "date-time"}
+      }
+    },
+    "authenticationInfo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scheme"],
+      "properties": {
+        "scheme": {"type": "string", "minLength": 1},
+        "credentials": {"type": "string"}
+      }
+    },
+    "pushNotificationConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "taskId": {"type": "string", "minLength": 1},
+        "url": {"type": "string", "format": "uri", "pattern": "^https://"},
+        "token": {"type": "string"},
+        "authentication": {"$ref": "#/$defs/authenticationInfo"}
+      }
+    },
+    "sendMessageConfiguration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "acceptedOutputModes": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "historyLength": {"type": "integer", "minimum": 0},
+        "returnImmediately": {"type": "boolean"},
+        "taskPushNotificationConfig": {"$ref": "#/$defs/pushNotificationConfig"}
+      }
+    },
+    "sendMessageRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["message"],
+      "properties": {
+        "tenant": {"type": "string", "minLength": 1},
+        "message": {"$ref": "#/$defs/message"},
+        "configuration": {"$ref": "#/$defs/sendMessageConfiguration"},
+        "metadata": {"$ref": "#/$defs/metadata"}
+      }
+    },
+    "statusUpdate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["taskId", "contextId", "status"],
+      "properties": {
+        "taskId": {"type": "string", "minLength": 1},
+        "contextId": {"type": "string", "minLength": 1},
+        "status": {"$ref": "#/$defs/taskStatus"},
+        "metadata": {"$ref": "#/$defs/metadata"}
+      }
+    },
+    "artifactUpdate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["taskId", "contextId", "artifact"],
+      "properties": {
+        "taskId": {"type": "string", "minLength": 1},
+        "contextId": {"type": "string", "minLength": 1},
+        "artifact": {"$ref": "#/$defs/artifact"},
+        "append": {"type": "boolean"},
+        "lastChunk": {"type": "boolean"},
+        "metadata": {"$ref": "#/$defs/metadata"}
+      }
+    },
+    "streamResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "task": {"$ref": "#/$defs/task"},
+        "message": {"$ref": "#/$defs/message"},
+        "statusUpdate": {"$ref": "#/$defs/statusUpdate"},
+        "artifactUpdate": {"$ref": "#/$defs/artifactUpdate"}
+      },
+      "oneOf": [
+        {"required": ["task"], "maxProperties": 1},
+        {"required": ["message"], "maxProperties": 1},
+        {"required": ["statusUpdate"], "maxProperties": 1},
+        {"required": ["artifactUpdate"], "maxProperties": 1}
+      ]
+    },
+    "agentCardSignature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protected", "signature"],
+      "properties": {
+        "protected": {"type": "string", "minLength": 1},
+        "signature": {"type": "string", "minLength": 1},
+        "header": {"type": "object"}
+      }
+    },
+    "agentInterface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "protocolBinding", "protocolVersion"],
+      "properties": {
+        "url": {"type": "string", "format": "uri", "pattern": "^https://"},
+        "protocolBinding": {"const": "HTTP+JSON"},
+        "protocolVersion": {"const": "1.0"},
+        "tenant": {"type": "string", "minLength": 1}
+      }
+    },
+    "extension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uri"],
+      "properties": {
+        "uri": {"type": "string", "format": "uri"},
+        "description": {"type": "string"},
+        "required": {"type": "boolean"},
+        "params": {"type": "object"}
+      }
+    },
+    "skill": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "description", "tags"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "name": {"type": "string", "minLength": 1},
+        "description": {"type": "string", "minLength": 1},
+        "tags": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "examples": {"type": "array", "items": {"type": "string"}},
+        "inputModes": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "outputModes": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "securityRequirements": {"type": "array", "items": {"type": "object"}}
+      }
+    },
+    "agentCard": {
+      "type": "object",
+      "required": ["name", "description", "supportedInterfaces", "version", "capabilities", "defaultInputModes", "defaultOutputModes", "skills"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "description": {"type": "string", "minLength": 1},
+        "supportedInterfaces": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/agentInterface"}},
+        "provider": {"type": "object", "additionalProperties": false, "required": ["url", "organization"], "properties": {"url": {"type": "string", "format": "uri"}, "organization": {"type": "string", "minLength": 1}}},
+        "version": {"type": "string", "minLength": 1},
+        "documentationUrl": {"type": "string", "format": "uri"},
+        "capabilities": {"type": "object", "properties": {"streaming": {"type": "boolean"}, "pushNotifications": {"type": "boolean"}, "extendedAgentCard": {"type": "boolean"}, "extensions": {"type": "array", "items": {"$ref": "#/$defs/extension"}}}},
+        "securitySchemes": {"type": "object"},
+        "securityRequirements": {"type": "array", "items": {"type": "object"}},
+        "security": {"type": "array", "items": {"type": "object"}},
+        "defaultInputModes": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "defaultOutputModes": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "skills": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/skill"}},
+        "signatures": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/agentCardSignature"}},
+        "iconUrl": {"type": "string", "format": "uri"},
+        "kid": {"type": "string"},
+        "signature": {"type": "string"}
+      }
+    },
+    "errorResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["error"],
+      "properties": {
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "status", "message", "details"],
+          "properties": {
+            "code": {"type": "integer", "minimum": 400, "maximum": 599},
+            "status": {"type": "string", "minLength": 1},
+            "message": {"type": "string", "minLength": 1},
+            "details": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["@type", "reason", "domain"], "properties": {"@type": {"const": "type.googleapis.com/google.rpc.ErrorInfo"}, "reason": {"type": "string", "minLength": 1}, "domain": {"const": "a2a-protocol.org"}, "metadata": {"type": "object"}}}}
+          }
+        }
+      }
+    }
+  }
+}

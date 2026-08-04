@@ -8,6 +8,11 @@
     {"name": "goal AOP intent", "schema": "api/aop/aor-envelope.v1.schema.json", "instance": "conformance/aop/valid/goal.json", "valid": true},
     {"name": "unknown AOP intent", "schema": "api/aop/aor-envelope.v1.schema.json", "instance": "conformance/aop/invalid/unknown-intent.json", "valid": false},
     {"name": "AOR A2A Agent Card", "schema": "api/a2a/aor-agent-card-profile.v1.schema.json", "instance": "conformance/a2a/valid/agent-card.json", "valid": true},
+    {"name": "A2A 1.0 HTTP JSON Agent Card", "schema": "api/a2a/a2a-http-json.v1.schema.json", "instance": "conformance/a2a/valid/http-json-agent-card.json", "valid": true},
+    {"name": "A2A 1.0 SendMessage", "schema": "api/a2a/a2a-http-json.v1.schema.json", "instance": "conformance/a2a/valid/send-message.json", "valid": true},
+    {"name": "A2A 1.0 Task", "schema": "api/a2a/a2a-http-json.v1.schema.json", "instance": "conformance/a2a/valid/task.json", "valid": true},
+    {"name": "A2A 1.0 StreamResponse", "schema": "api/a2a/a2a-http-json.v1.schema.json", "instance": "conformance/a2a/valid/stream-response.json", "valid": true},
+    {"name": "A2A StreamResponse union", "schema": "api/a2a/a2a-http-json.v1.schema.json", "instance": "conformance/a2a/invalid/multiple-stream-payloads.json", "valid": false},
     {"name": "CloudEvents envelope", "schema": "api/json-schema/cloud-event.v1.schema.json", "instance": "conformance/cloudevents/valid/project-created.json", "valid": true}
   ]
 }

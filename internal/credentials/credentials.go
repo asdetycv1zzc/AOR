@@ -1,10 +1,24 @@
 package credentials
 
-import "regexp"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"regexp"
+	"strconv"
+)
 
 type Pattern struct {
 	Name string
 	RE   *regexp.Regexp
+}
+
+// Match identifies a credential-shaped span without retaining its value.
+// Offsets are byte offsets into the scanned UTF-8 string.
+type Match struct {
+	Name        string
+	Start       int
+	End         int
+	Fingerprint string
 }
 
 var patterns = []Pattern{
@@ -27,20 +41,54 @@ func Patterns() []Pattern {
 	return append([]Pattern(nil), patterns...)
 }
 
-func Contains(value string) bool {
+// Scan returns stable, content-free fingerprints for every credential-shaped
+// match. The fingerprint is useful for correlating security events while the
+// secret itself remains unavailable to callers.
+func Scan(value string) []Match {
+	return scanBytes([]byte(value))
+}
+
+// ScanBytes is the byte-oriented form used by repository scanners.
+func ScanBytes(value []byte) []Match {
+	return scanBytes(value)
+}
+
+func scanBytes(value []byte) []Match {
+	matches := make([]Match, 0)
+	seen := make(map[string]struct{})
 	for _, pattern := range patterns {
-		if pattern.RE.MatchString(value) {
-			return true
+		for _, index := range pattern.RE.FindAllIndex(value, -1) {
+			if len(index) != 2 || index[0] < 0 || index[1] <= index[0] || index[1] > len(value) {
+				continue
+			}
+			fingerprint := Fingerprint(string(value[index[0]:index[1]]))
+			key := pattern.Name + "\x00" + strconv.Itoa(index[0]) + "\x00" + strconv.Itoa(index[1]) + "\x00" + fingerprint
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			matches = append(matches, Match{Name: pattern.Name, Start: index[0], End: index[1], Fingerprint: fingerprint})
 		}
 	}
-	return false
+	return matches
+}
+
+// Fingerprint returns a one-way digest suitable for correlation and audit
+// records. It is deliberately not a reversible encoding of the value.
+func Fingerprint(value string) string {
+	digest := sha256.Sum256([]byte(value))
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
+func Contains(value string) bool {
+	return len(Scan(value)) > 0
 }
 
 func Redact(value, replacement string) (string, bool) {
 	redacted := value
 	changed := false
 	for _, pattern := range patterns {
-		next := pattern.RE.ReplaceAllString(redacted, replacement)
+		next := pattern.RE.ReplaceAllStringFunc(redacted, func(string) string { return replacement })
 		changed = changed || next != redacted
 		redacted = next
 	}

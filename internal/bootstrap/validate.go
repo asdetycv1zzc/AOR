@@ -53,9 +53,10 @@ type catalogRequirement struct {
 
 // Finding is a deterministic repository validation result.
 type Finding struct {
-	Code    string `json:"code"`
-	Path    string `json:"path,omitempty"`
-	Message string `json:"message"`
+	Code        string `json:"code"`
+	Path        string `json:"path,omitempty"`
+	Message     string `json:"message"`
+	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
 // DiscoverRequirementIDs returns the sorted, unique explicit AOR requirement IDs.
@@ -325,10 +326,8 @@ func ScanSecrets(root string) []Finding {
 		if err != nil || bytes.IndexByte(content, 0) >= 0 {
 			return nil
 		}
-		for _, pattern := range credentials.Patterns() {
-			if pattern.RE.Match(content) {
-				findings = append(findings, Finding{Code: "SECRET_PATTERN", Path: relativePath(root, path), Message: pattern.Name})
-			}
+		for _, match := range credentials.ScanBytes(content) {
+			findings = append(findings, Finding{Code: "SECRET_PATTERN", Path: relativePath(root, path), Message: match.Name, Fingerprint: match.Fingerprint})
 		}
 		return nil
 	})
@@ -477,8 +476,8 @@ func relativePath(root, path string) string {
 
 func sortedFindings(findings []Finding) []Finding {
 	sort.Slice(findings, func(i, j int) bool {
-		left := findings[i].Code + "\x00" + findings[i].Path + "\x00" + findings[i].Message
-		right := findings[j].Code + "\x00" + findings[j].Path + "\x00" + findings[j].Message
+		left := findings[i].Code + "\x00" + findings[i].Path + "\x00" + findings[i].Message + "\x00" + findings[i].Fingerprint
+		right := findings[j].Code + "\x00" + findings[j].Path + "\x00" + findings[j].Message + "\x00" + findings[j].Fingerprint
 		return left < right
 	})
 	return findings

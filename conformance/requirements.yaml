@@ -525,11 +525,23 @@ requirements:
     title: A2A 1.0 baseline interoperability suite passes
     implementation:
       - pkg/a2a/client.go
+      - pkg/a2a/client_ops.go
+      - pkg/a2a/server.go
+      - pkg/a2a/store.go
+      - pkg/a2a/types.go
+      - api/a2a/a2a-http-json.v1.schema.json
+      - api/a2a/README.md
     tests:
       - pkg/a2a/client_test.go
+      - pkg/a2a/server_test.go
+      - conformance/a2a/valid/http-json-agent-card.json
+      - conformance/a2a/valid/send-message.json
+      - conformance/a2a/valid/task.json
+      - conformance/a2a/valid/stream-response.json
+      - conformance/a2a/invalid/multiple-stream-payloads.json
     evidenceType: go-test+protocol-fixtures+external-interoperability-gate
     owner: protocol
-    status: planned
+    status: implemented
   - id: AOR-ACC-022
     title: AOP optional-field compatibility and required-capability rejection
     implementation:
