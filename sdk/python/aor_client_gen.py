@@ -3,7 +3,7 @@ import json
 from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
-OPENAPI_SHA256 = "sha256:f87e19ec80897927f73ef3cc48bab252d6752fa87b1b3988dd6f0ba1bb365c9d"
+OPENAPI_SHA256 = "sha256:93376a9dac67faf738c31761b7f37fcbc2dd82ffe9e492af773c5c067af79431"
 
 
 class AORClient:
@@ -73,6 +73,9 @@ class AORClient:
 
     def get_artifact(self, options=None):
         return self._request("GET", "/v1/projects/{projectId}/artifacts/{artifactId}", options)
+
+    def get_budget_usage(self, options=None):
+        return self._request("GET", "/v1/projects/{projectId}/budgets/usage", options)
 
     def get_budgets(self, options=None):
         return self._request("GET", "/v1/projects/{projectId}/budgets", options)

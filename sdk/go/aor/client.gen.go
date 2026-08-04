@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-const OpenAPISHA256 = "sha256:f87e19ec80897927f73ef3cc48bab252d6752fa87b1b3988dd6f0ba1bb365c9d"
+const OpenAPISHA256 = "sha256:93376a9dac67faf738c31761b7f37fcbc2dd82ffe9e492af773c5c067af79431"
 
 type TokenProvider func(context.Context) (string, error)
 
@@ -141,6 +141,10 @@ func (c *Client) ExportProject(ctx context.Context, options RequestOptions) (*ht
 
 func (c *Client) GetArtifact(ctx context.Context, options RequestOptions) (*http.Response, error) {
 	return c.request(ctx, "GET", "/v1/projects/{projectId}/artifacts/{artifactId}", options)
+}
+
+func (c *Client) GetBudgetUsage(ctx context.Context, options RequestOptions) (*http.Response, error) {
+	return c.request(ctx, "GET", "/v1/projects/{projectId}/budgets/usage", options)
 }
 
 func (c *Client) GetBudgets(ctx context.Context, options RequestOptions) (*http.Response, error) {

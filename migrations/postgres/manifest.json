@@ -50,6 +50,13 @@
       "file": "000007_runtime_record_grants.up.sql",
       "sha256": "sha256:3e58c6d68238a597890467cae57222b60d268cbe20fdab795bffb5684ba0e08f",
       "destructive": false
+    },
+    {
+      "version": 8,
+      "mode": "EXPAND",
+      "file": "000008_budget_account_scope_unique.up.sql",
+      "sha256": "sha256:a26a2263e343f66ad500bb5ed6b8229646bf3c0a60ed251b5b27c8f530a65a8f",
+      "destructive": false
     }
   ]
 }

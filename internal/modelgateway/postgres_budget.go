@@ -30,8 +30,20 @@ func (ledger *PostgresBudgetLedger) CreateAccount(ctx context.Context, account B
 	if err := contextError(ctx); err != nil {
 		return err
 	}
-	if account.ID == "" || account.TenantID == "" || account.LimitMicros < 0 || account.ReservedMicros < 0 || account.SpentMicros < 0 || account.ReservedMicros > account.LimitMicros-account.SpentMicros {
+	if account.ID == "" || account.TenantID == "" || account.LimitMicros < 0 || account.SoftLimitMicros < 0 || account.SoftLimitMicros > account.LimitMicros || account.ReservedMicros < 0 || account.SpentMicros < 0 || account.ReservedMicros > account.LimitMicros-account.SpentMicros {
 		return ErrInvalidRequest
+	}
+	if account.ScopeType == "" {
+		account.ScopeType = "PROJECT"
+	}
+	if account.ScopeID == "" {
+		account.ScopeID = account.ID
+	}
+	if account.Currency == "" {
+		account.Currency = "USD"
+	}
+	if account.PeriodStart.IsZero() {
+		account.PeriodStart = ledger.clock().UTC()
 	}
 	tx, err := ledger.begin(ctx, account.TenantID)
 	if err != nil {
@@ -41,9 +53,9 @@ func (ledger *PostgresBudgetLedger) CreateAccount(ctx context.Context, account B
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO budget_accounts
   (tenant_id, id, scope_type, scope_id, currency, hard_limit_micros, soft_limit_micros,
-   spent_micros, reserved_micros, period_start, version)
-VALUES ($1::uuid, $2, 'PROJECT', $2, 'USD', $3, $3, $4, $5, $6, 1)`,
-		account.TenantID, account.ID, account.LimitMicros, account.SpentMicros, account.ReservedMicros, ledger.clock().UTC())
+   spent_micros, reserved_micros, period_start, period_end, version)
+VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 1)`,
+		account.TenantID, account.ID, account.ScopeType, account.ScopeID, account.Currency, account.LimitMicros, account.SoftLimitMicros, account.SpentMicros, account.ReservedMicros, account.PeriodStart, account.PeriodEnd)
 	if err != nil {
 		return mapBudgetSQLError(err)
 	}
@@ -97,7 +109,7 @@ UPDATE budget_reservations SET state = 'RECONCILE', updated_at = $3
 	if err != nil {
 		return Reservation{}, err
 	}
-	if !found || amountMicros > account.LimitMicros-account.ReservedMicros-account.SpentMicros {
+	if !found || !budgetPeriodOpen(ledger.clock().UTC(), account) || amountMicros > account.LimitMicros-account.ReservedMicros-account.SpentMicros {
 		return Reservation{}, ErrBudgetExceeded
 	}
 	result, err := tx.ExecContext(ctx, `
@@ -379,7 +391,7 @@ func (ledger *PostgresBudgetLedger) begin(ctx context.Context, tenantID string) 
 }
 
 func (ledger *PostgresBudgetLedger) beginReadOnly(ctx context.Context, tenantID string) (*sql.Tx, error) {
-	tx, err := ledger.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := ledger.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}
@@ -408,18 +420,61 @@ func setBudgetTenant(ctx context.Context, tx *sql.Tx, tenantID string) error {
 
 func loadBudgetAccount(ctx context.Context, tx *sql.Tx, tenantID, accountID string, lock bool) (BudgetAccount, bool, error) {
 	query := `
-SELECT id, tenant_id::text, hard_limit_micros, reserved_micros, spent_micros
-FROM budget_accounts
+	SELECT id, tenant_id::text, scope_type, scope_id, currency, hard_limit_micros,
+	       soft_limit_micros, reserved_micros, spent_micros, period_start, period_end, version
+	FROM budget_accounts
 WHERE tenant_id = $1::uuid AND id = $2`
 	if lock {
 		query += ` FOR UPDATE`
 	}
 	var account BudgetAccount
-	err := tx.QueryRowContext(ctx, query, tenantID, accountID).Scan(&account.ID, &account.TenantID, &account.LimitMicros, &account.ReservedMicros, &account.SpentMicros)
+	err := tx.QueryRowContext(ctx, query, tenantID, accountID).Scan(
+		&account.ID, &account.TenantID, &account.ScopeType, &account.ScopeID, &account.Currency,
+		&account.LimitMicros, &account.SoftLimitMicros, &account.ReservedMicros, &account.SpentMicros,
+		&account.PeriodStart, &account.PeriodEnd, &account.Version,
+	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return BudgetAccount{}, false, nil
 	}
 	return account, err == nil, err
+}
+
+func loadProjectBudgetAccount(ctx context.Context, tx *sql.Tx, tenantID, projectID string, lock bool) (BudgetAccount, bool, error) {
+	query := `
+SELECT id, tenant_id::text, scope_type, scope_id, currency, hard_limit_micros,
+       soft_limit_micros, reserved_micros, spent_micros, period_start, period_end, version
+FROM budget_accounts
+WHERE tenant_id = $1::uuid AND scope_type = 'PROJECT' AND scope_id = $2
+ORDER BY id`
+	if lock {
+		query += ` FOR UPDATE`
+	}
+	rows, err := tx.QueryContext(ctx, query, tenantID, projectID)
+	if err != nil {
+		return BudgetAccount{}, false, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return BudgetAccount{}, false, err
+		}
+		return BudgetAccount{}, false, nil
+	}
+	var account BudgetAccount
+	if err := rows.Scan(
+		&account.ID, &account.TenantID, &account.ScopeType, &account.ScopeID, &account.Currency,
+		&account.LimitMicros, &account.SoftLimitMicros, &account.ReservedMicros, &account.SpentMicros,
+		&account.PeriodStart, &account.PeriodEnd, &account.Version,
+	); err != nil {
+		return BudgetAccount{}, false, err
+	}
+	if rows.Next() {
+		return BudgetAccount{}, false, ErrBudgetAccountConflict
+	}
+	if err := rows.Err(); err != nil {
+		return BudgetAccount{}, false, err
+	}
+	return account, true, nil
 }
 
 func loadBudgetReservation(ctx context.Context, tx *sql.Tx, tenantID, reservationID string, lock bool) (Reservation, bool, error) {

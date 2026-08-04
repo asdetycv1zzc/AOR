@@ -15,9 +15,11 @@ import (
 	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/authz"
 	"github.com/akimisaka/aor/internal/eventing"
+	"github.com/akimisaka/aor/internal/modelgateway"
 	"github.com/akimisaka/aor/internal/state"
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 	"github.com/akimisaka/aor/pkg/contracts"
+	aorerrors "github.com/akimisaka/aor/pkg/errors"
 )
 
 const (
@@ -75,6 +77,10 @@ func TestCreateProjectIsAuthenticatedAuthorizedAndIdempotent(t *testing.T) {
 	}
 	if !validProjectID(project.ID) || project.Version != 1 || first.Header().Get("ETag") != `"v1"` {
 		t.Fatalf("unexpected project response: %#v etag=%q", project, first.Header().Get("ETag"))
+	}
+	accounts, err := handler.budgets.ListAccounts(context.Background(), testTenantID, project.ID)
+	if err != nil || len(accounts) != 1 || accounts[0].ID != project.ID || accounts[0].Version != 1 {
+		t.Fatalf("default project budget = %#v err=%v", accounts, err)
 	}
 
 	second := performRequest(handler, http.MethodPost, "/v1/projects", body, map[string]string{
@@ -276,6 +282,143 @@ func TestTaskListUsesStableOpaqueCursor(t *testing.T) {
 	if unknown.Code != http.StatusBadRequest {
 		t.Fatalf("unknown cursor status=%d body=%s", unknown.Code, unknown.Body.String())
 	}
+}
+
+func TestBudgetEndpointsReadAdjustAndReplayIdempotently(t *testing.T) {
+	handler, ledger, authorizer := newBudgetTestHandler(t)
+	project := createTestProject(t, handler)
+	if err := ledger.CreateAccount(context.Background(), modelgateway.BudgetAccount{
+		ID: "budget-account-1", TenantID: testTenantID, ScopeType: "PROJECT", ScopeID: project.ID, Currency: "USD",
+		LimitMicros: 100, SoftLimitMicros: 80, SpentMicros: 10, ReservedMicros: 5,
+		PeriodStart: controlAPITestTime, Version: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	budgets := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/budgets", nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if budgets.Code != http.StatusOK || budgets.Header().Get("ETag") != `"v1"` {
+		t.Fatalf("budgets status=%d etag=%q body=%s", budgets.Code, budgets.Header().Get("ETag"), budgets.Body.String())
+	}
+	var collection budgetCollection
+	if err := json.Unmarshal(budgets.Body.Bytes(), &collection); err != nil {
+		t.Fatal(err)
+	}
+	if collection.ProjectID != project.ID || collection.Version != 1 || len(collection.Items) != 1 || collection.Items[0].RemainingMinor != 85 || strings.Contains(budgets.Body.String(), "tenantId") {
+		t.Fatalf("budget collection = %#v body=%s", collection, budgets.Body.String())
+	}
+
+	for _, route := range []string{"/usage", "/budgets/usage"} {
+		usage := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+route, nil, map[string]string{"Authorization": "Bearer " + testBearer})
+		if usage.Code != http.StatusOK || usage.Header().Get("ETag") != `"v1"` {
+			t.Fatalf("usage route=%s status=%d etag=%q body=%s", route, usage.Code, usage.Header().Get("ETag"), usage.Body.String())
+		}
+		var snapshot budgetUsageResource
+		if err := json.Unmarshal(usage.Body.Bytes(), &snapshot); err != nil || snapshot.ProjectID != project.ID || snapshot.SpentMinor != 10 || snapshot.ReservedMinor != 5 || snapshot.RemainingMinor != 85 {
+			t.Fatalf("usage route=%s snapshot=%#v error=%v", route, snapshot, err)
+		}
+	}
+
+	body := []byte(`{"expectedVersion":1,"hardLimitMinor":250,"softLimitMinor":200,"currency":"USD","reason":"approved project capacity increase"}`)
+	headers := map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json",
+		"Idempotency-Key": "budget-adjust-1", "If-Match": `"v1"`,
+	}
+	adjusted := performRequest(handler, http.MethodPost, "/v1/projects/"+project.ID+"/budgets:adjust", body, headers)
+	if adjusted.Code != http.StatusAccepted || adjusted.Header().Get("ETag") != `"v2"` {
+		t.Fatalf("adjust status=%d etag=%q body=%s", adjusted.Code, adjusted.Header().Get("ETag"), adjusted.Body.String())
+	}
+	var adjustment budgetAdjustmentResource
+	if err := json.Unmarshal(adjusted.Body.Bytes(), &adjustment); err != nil {
+		t.Fatal(err)
+	}
+	if adjustment.Account.HardLimitMinor != 250 || adjustment.Account.SoftLimitMinor != 200 || adjustment.Account.Version != 2 || adjustment.Usage.RemainingMinor != 235 {
+		t.Fatalf("adjustment = %#v", adjustment)
+	}
+	lastInput := authorizer.inputs[len(authorizer.inputs)-1]
+	if lastInput.Action != authz.ActionProjectCommand || lastInput.Resource.Type != "budget" || lastInput.Budget.AccountID != "budget-account-1" || !strings.HasPrefix(lastInput.ParameterDigest, "sha256:") {
+		t.Fatalf("budget policy input = %#v", lastInput)
+	}
+
+	replayed := performRequest(handler, http.MethodPost, "/v1/projects/"+project.ID+"/budgets:adjust", body, headers)
+	if replayed.Code != http.StatusAccepted || replayed.Header().Get("ETag") != `"v2"` || replayed.Body.String() != adjusted.Body.String() {
+		t.Fatalf("replay status=%d etag=%q body=%s", replayed.Code, replayed.Header().Get("ETag"), replayed.Body.String())
+	}
+	account, found := ledger.Account(testTenantID, "budget-account-1")
+	if !found || account.Version != 2 || account.LimitMicros != 250 {
+		t.Fatalf("replayed account = %#v found=%v", account, found)
+	}
+}
+
+func TestBudgetAdjustmentRejectsUnsafeOrConflictingCommands(t *testing.T) {
+	handler, ledger, authorizer := newBudgetTestHandler(t)
+	project := createTestProject(t, handler)
+	if err := ledger.CreateAccount(context.Background(), modelgateway.BudgetAccount{
+		ID: project.ID, TenantID: testTenantID, ScopeType: "PROJECT", ScopeID: project.ID, Currency: "USD",
+		LimitMicros: 100, SoftLimitMicros: 80, SpentMicros: 30, ReservedMicros: 20,
+		PeriodStart: controlAPITestTime, Version: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	route := "/v1/projects/" + project.ID + "/budgets:adjust"
+	body := []byte(`{"expectedVersion":1,"hardLimitMinor":120,"softLimitMinor":90,"currency":"USD","reason":"capacity review"}`)
+	baseHeaders := map[string]string{"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "budget-safe"}
+
+	missingMatch := performRequest(handler, http.MethodPost, route, body, baseHeaders)
+	if missingMatch.Code != http.StatusConflict {
+		t.Fatalf("missing If-Match status=%d body=%s", missingMatch.Code, missingMatch.Body.String())
+	}
+	invalid := performRequest(handler, http.MethodPost, route, []byte(`{"expectedVersion":1,"hardLimitMinor":49,"softLimitMinor":40,"currency":"USD","reason":"too low"}`), map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "budget-low", "If-Match": `"v1"`,
+	})
+	if invalid.Code != http.StatusConflict {
+		t.Fatalf("unsafe limit status=%d body=%s", invalid.Code, invalid.Body.String())
+	}
+
+	authorizer.deny = true
+	denied := performRequest(handler, http.MethodPost, route, body, map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "budget-denied", "If-Match": `"v1"`,
+	})
+	if denied.Code != http.StatusForbidden {
+		t.Fatalf("denied adjustment status=%d body=%s", denied.Code, denied.Body.String())
+	}
+	account, _ := ledger.Account(testTenantID, project.ID)
+	if account.Version != 1 || account.LimitMicros != 100 {
+		t.Fatalf("denied adjustment mutated account: %#v", account)
+	}
+	authorizer.deny = false
+
+	accepted := performRequest(handler, http.MethodPost, route, body, map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "budget-safe", "If-Match": `"v1"`,
+	})
+	if accepted.Code != http.StatusAccepted {
+		t.Fatalf("accepted adjustment status=%d body=%s", accepted.Code, accepted.Body.String())
+	}
+	collision := performRequest(handler, http.MethodPost, route, []byte(`{"expectedVersion":2,"hardLimitMinor":130,"softLimitMinor":100,"currency":"USD","reason":"different body"}`), map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "budget-safe", "If-Match": `"v2"`,
+	})
+	if collision.Code != http.StatusConflict || !strings.Contains(collision.Body.String(), string(aorerrors.CodeIdempotencyConflict)) {
+		t.Fatalf("idempotency collision status=%d body=%s", collision.Code, collision.Body.String())
+	}
+}
+
+func newBudgetTestHandler(t *testing.T) (*Handler, *modelgateway.BudgetLedger, *recordingAuthorizer) {
+	t.Helper()
+	store := eventing.NewMemoryStore()
+	ledger := modelgateway.NewBudgetLedger(func() time.Time { return controlAPITestTime })
+	authorizer := &recordingAuthorizer{}
+	handler, err := New(Config{
+		Store: store,
+		Authenticator: fixedAuthenticator{principal: authn.Principal{
+			ID: "user-1", Type: authn.PrincipalUser, Role: authn.RoleUser, TenantID: testTenantID,
+		}},
+		Authorizer: authorizer,
+		Budgets:    ledger,
+		Clock:      func() time.Time { return controlAPITestTime },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handler, ledger, authorizer
 }
 
 func newTestHandler(t *testing.T) (*Handler, *eventing.MemoryStore, *recordingAuthorizer) {

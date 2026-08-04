@@ -71,7 +71,7 @@ func Externalize(event DomainEvent, options CloudEventOptions) (cloudevents.Even
 		subject += "/audits/" + event.AggregateID
 	case "approval":
 		subject += "/approvals/" + event.AggregateID
-	case "project", "goal", "plan", "module", "spec_artifact", "":
+	case "project", "goal", "plan", "module", "spec_artifact", "budget", "":
 	default:
 		return cloudevents.Event{}, fmt.Errorf("%w: unsupported aggregate type", ErrExternalCorrelation)
 	}

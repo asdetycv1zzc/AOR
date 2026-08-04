@@ -19,8 +19,11 @@ import (
 	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/authz"
 	"github.com/akimisaka/aor/internal/eventing"
+	"github.com/akimisaka/aor/internal/modelgateway"
+	"github.com/akimisaka/aor/internal/observability"
 	"github.com/akimisaka/aor/internal/orchestrator"
 	"github.com/akimisaka/aor/internal/state"
+	"github.com/akimisaka/aor/pkg/canonicaljson"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
 	"github.com/google/uuid"
 )
@@ -34,6 +37,7 @@ type Config struct {
 	Authenticator authn.Authenticator
 	Authorizer    authz.PolicyEvaluator
 	Database      *sql.DB
+	Budgets       modelgateway.BudgetAdministration
 	Clock         func() time.Time
 }
 
@@ -44,6 +48,8 @@ type Handler struct {
 	authenticator authn.Authenticator
 	authorizer    authz.PolicyEvaluator
 	database      *sql.DB
+	budgets       modelgateway.BudgetAdministration
+	autoBudget    bool
 	clock         func() time.Time
 }
 
@@ -57,9 +63,61 @@ type commandBody struct {
 	ExpectedVersion int64 `json:"expectedVersion"`
 }
 
+type budgetAdjustmentBody struct {
+	ExpectedVersion int64  `json:"expectedVersion"`
+	HardLimitMinor  int64  `json:"hardLimitMinor"`
+	SoftLimitMinor  int64  `json:"softLimitMinor"`
+	Currency        string `json:"currency"`
+	Reason          string `json:"reason"`
+}
+
 type page struct {
 	Items      any    `json:"items"`
 	NextCursor string `json:"nextCursor,omitempty"`
+}
+
+type budgetAccountResource struct {
+	ID             string     `json:"id"`
+	ScopeType      string     `json:"scopeType"`
+	ScopeID        string     `json:"scopeId"`
+	Currency       string     `json:"currency"`
+	HardLimitMinor int64      `json:"hardLimitMinor"`
+	SoftLimitMinor int64      `json:"softLimitMinor"`
+	SpentMinor     int64      `json:"spentMinor"`
+	ReservedMinor  int64      `json:"reservedMinor"`
+	RemainingMinor int64      `json:"remainingMinor"`
+	PeriodStart    time.Time  `json:"periodStart"`
+	PeriodEnd      *time.Time `json:"periodEnd,omitempty"`
+	Version        int64      `json:"version"`
+}
+
+type budgetCollection struct {
+	ProjectID string                  `json:"projectId"`
+	Items     []budgetAccountResource `json:"items"`
+	Version   int64                   `json:"version"`
+}
+
+type budgetUsageResource struct {
+	ProjectID        string `json:"projectId"`
+	AccountID        string `json:"accountId"`
+	Currency         string `json:"currency"`
+	HardLimitMinor   int64  `json:"hardLimitMinor"`
+	SoftLimitMinor   int64  `json:"softLimitMinor"`
+	SpentMinor       int64  `json:"spentMinor"`
+	ReservedMinor    int64  `json:"reservedMinor"`
+	RemainingMinor   int64  `json:"remainingMinor"`
+	ReservationCount int64  `json:"reservationCount"`
+	CallCount        int64  `json:"callCount"`
+	InputTokens      int64  `json:"inputTokens"`
+	OutputTokens     int64  `json:"outputTokens"`
+	CostMinor        int64  `json:"costMinor"`
+	Version          int64  `json:"version"`
+}
+
+type budgetAdjustmentResource struct {
+	ProjectID string                `json:"projectId"`
+	Account   budgetAccountResource `json:"account"`
+	Usage     budgetUsageResource   `json:"usage"`
 }
 
 func New(config Config) (*Handler, error) {
@@ -68,6 +126,17 @@ func New(config Config) (*Handler, error) {
 	}
 	if config.Clock == nil {
 		config.Clock = time.Now
+	}
+	autoBudget := false
+	if config.Budgets == nil && config.Database != nil {
+		ledger, err := modelgateway.NewPostgresBudgetLedger(config.Database, config.Clock, 0)
+		if err != nil {
+			return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "budget ledger"})
+		}
+		config.Budgets = ledger
+	} else if config.Budgets == nil {
+		config.Budgets = modelgateway.NewBudgetLedger(config.Clock)
+		autoBudget = true
 	}
 	boundary, err := NewPolicyCommitBoundary(config.Authorizer)
 	if err != nil {
@@ -79,6 +148,8 @@ func New(config Config) (*Handler, error) {
 		authenticator: config.Authenticator,
 		authorizer:    config.Authorizer,
 		database:      config.Database,
+		budgets:       config.Budgets,
+		autoBudget:    autoBudget,
 		clock:         config.Clock,
 	}
 	handler.events, _ = config.Store.(eventing.EventLog)
@@ -169,6 +240,42 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 		writeMethodNotAllowed(response, request)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "budgets" {
+		if !validProjectID(projectID) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		if request.Method == http.MethodGet {
+			handler.getBudgets(response, request, principal, projectID)
+			return
+		}
+		writeMethodNotAllowed(response, request)
+		return
+	}
+	if (len(parts) == 2 && parts[1] == "usage") || (len(parts) == 3 && parts[1] == "budgets" && parts[2] == "usage") {
+		if !validProjectID(projectID) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		if request.Method == http.MethodGet {
+			handler.getBudgetUsage(response, request, principal, projectID)
+			return
+		}
+		writeMethodNotAllowed(response, request)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "budgets:adjust" {
+		if !validProjectID(projectID) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		if request.Method == http.MethodPost {
+			handler.adjustBudget(response, request, principal, projectID)
+			return
+		}
+		writeMethodNotAllowed(response, request)
+		return
+	}
 	if len(parts) == 3 && parts[1] == "tasks" {
 		if !validProjectID(projectID) || !validAPIIdentifier(parts[2]) {
 			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
@@ -229,6 +336,23 @@ func (handler *Handler) createProject(response http.ResponseWriter, request *htt
 		writeError(response, request, normalizeError(err))
 		return
 	}
+	if handler.autoBudget {
+		creator, ok := handler.budgets.(interface {
+			CreateAccount(context.Context, modelgateway.BudgetAccount) error
+		})
+		if !ok {
+			writeError(response, request, aorerrors.New(aorerrors.CodeInternalError, "", map[string]any{"scope": "budget account"}))
+			return
+		}
+		err := creator.CreateAccount(request.Context(), modelgateway.BudgetAccount{
+			ID: outcome.Project.ID, TenantID: principal.TenantID, ScopeType: "PROJECT", ScopeID: outcome.Project.ID,
+			Currency: "USD", PeriodStart: handler.clock().UTC(), Version: 1,
+		})
+		if err != nil && !errors.Is(err, modelgateway.ErrReservationConflict) {
+			writeError(response, request, normalizeBudgetError(err))
+			return
+		}
+	}
 	writeProject(response, http.StatusCreated, outcome.Project)
 }
 
@@ -258,6 +382,10 @@ func (handler *Handler) commandProject(response http.ResponseWriter, request *ht
 	var body commandBody
 	if err := decodeJSON(request, &body); err != nil || body.ExpectedVersion < 1 {
 		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "project command"}))
+		return
+	}
+	if len(request.Header.Values("If-Match")) != 1 {
+		writeError(response, request, aorerrors.New(aorerrors.CodeStateVersionConflict, "", map[string]any{"expectedVersion": body.ExpectedVersion}))
 		return
 	}
 	if err := validateIfMatch(request.Header.Get("If-Match"), body.ExpectedVersion); err != nil {
@@ -367,6 +495,275 @@ func (handler *Handler) listTasks(response http.ResponseWriter, request *http.Re
 		result.NextCursor = taskPageCursor(projectID, items[len(items)-1].ID)
 	}
 	writeJSON(response, http.StatusOK, result)
+}
+
+func (handler *Handler) getBudgets(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string) {
+	project, err := handler.authorizeBudgetRead(request, principal, projectID, "budget")
+	if err != nil {
+		writeError(response, request, err)
+		return
+	}
+	if handler.budgets == nil {
+		writeError(response, request, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "budget ledger"}))
+		return
+	}
+	accounts, err := handler.budgets.ListAccounts(request.Context(), principal.TenantID, project.ID)
+	if err != nil {
+		writeError(response, request, normalizeBudgetError(err))
+		return
+	}
+	if len(accounts) == 0 {
+		writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+		return
+	}
+	if len(accounts) > 1 {
+		writeError(response, request, normalizeBudgetError(modelgateway.ErrBudgetAccountConflict))
+		return
+	}
+	items := make([]budgetAccountResource, 0, len(accounts))
+	var version int64
+	for _, account := range accounts {
+		if account.TenantID != principal.TenantID || account.ScopeType != "PROJECT" || account.ScopeID != project.ID || account.Version < 1 {
+			writeError(response, request, aorerrors.New(aorerrors.CodeInternalError, "", map[string]any{"scope": "budget account"}))
+			return
+		}
+		items = append(items, budgetAccountView(account))
+		if account.Version > version {
+			version = account.Version
+		}
+	}
+	response.Header().Set("ETag", entityTag(version))
+	writeJSON(response, http.StatusOK, budgetCollection{ProjectID: project.ID, Items: items, Version: version})
+}
+
+func (handler *Handler) getBudgetUsage(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string) {
+	project, err := handler.authorizeBudgetRead(request, principal, projectID, "budget-usage")
+	if err != nil {
+		writeError(response, request, err)
+		return
+	}
+	if handler.budgets == nil {
+		writeError(response, request, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "budget ledger"}))
+		return
+	}
+	usage, err := handler.budgets.Usage(request.Context(), principal.TenantID, project.ID)
+	if err != nil {
+		writeError(response, request, normalizeBudgetError(err))
+		return
+	}
+	if usage.Version < 1 || usage.AccountID == "" {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInternalError, "", map[string]any{"scope": "budget usage"}))
+		return
+	}
+	response.Header().Set("ETag", entityTag(usage.Version))
+	writeJSON(response, http.StatusOK, budgetUsageView(project.ID, usage))
+}
+
+func (handler *Handler) adjustBudget(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string) {
+	if len(request.URL.Query()) != 0 {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "budget query"}))
+		return
+	}
+	idempotencyKey, err := requiredIdempotencyKey(request)
+	if err != nil {
+		writeError(response, request, err)
+		return
+	}
+	var body budgetAdjustmentBody
+	if err := decodeJSON(request, &body); err != nil || !validBudgetAdjustmentBody(body) {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "budget adjustment"}))
+		return
+	}
+	if len(request.Header.Values("If-Match")) != 1 {
+		writeError(response, request, aorerrors.New(aorerrors.CodeStateVersionConflict, "", map[string]any{"expectedVersion": body.ExpectedVersion}))
+		return
+	}
+	if err := validateIfMatch(request.Header.Get("If-Match"), body.ExpectedVersion); err != nil {
+		writeError(response, request, err)
+		return
+	}
+	traceparent, tracestate, err := budgetTraceHeaders(request)
+	if err != nil {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "trace context"}))
+		return
+	}
+	project, found, err := handler.orchestrator.Project(request.Context(), principal.TenantID, projectID)
+	if err != nil || !found {
+		if err == nil {
+			err = aorerrors.New(aorerrors.CodeNotFound, "", nil)
+		}
+		writeError(response, request, normalizeError(err))
+		return
+	}
+	if handler.budgets == nil {
+		writeError(response, request, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "budget ledger"}))
+		return
+	}
+	accounts, err := handler.budgets.ListAccounts(request.Context(), principal.TenantID, project.ID)
+	if err != nil {
+		writeError(response, request, normalizeBudgetError(err))
+		return
+	}
+	if len(accounts) == 0 {
+		writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+		return
+	}
+	if len(accounts) != 1 || accounts[0].ID == "" {
+		writeError(response, request, normalizeBudgetError(modelgateway.ErrBudgetAccountConflict))
+		return
+	}
+	digest, err := budgetAdjustmentDigest(body)
+	if err != nil {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "budget adjustment"}))
+		return
+	}
+	policyDecision, err := authorizeBudgetAdjustment(request.Context(), handler.authorizer, principal, project, accounts[0].ID, digest)
+	if err != nil {
+		writeError(response, request, err)
+		return
+	}
+	result, err := handler.budgets.Adjust(request.Context(), modelgateway.BudgetAdjustment{
+		TenantID: principal.TenantID, ProjectID: project.ID, PrincipalID: principal.ID,
+		IdempotencyKey: idempotencyKey, Traceparent: traceparent, Tracestate: tracestate,
+		PolicyVersion: policyDecision.PolicyVersion, PolicyRuleID: policyDecision.RuleID,
+		PolicyDecision: string(policyDecision.Decision), PolicyReasons: append([]string(nil), policyDecision.ReasonCodes...),
+		ParameterDigest: digest,
+		ProjectState:    string(project.State), ProjectVersion: project.Version,
+		ExpectedVersion: body.ExpectedVersion,
+		HardLimitMicros: body.HardLimitMinor, SoftLimitMicros: body.SoftLimitMinor,
+		Currency: body.Currency, Reason: body.Reason,
+	})
+	if err != nil {
+		writeError(response, request, normalizeBudgetError(err))
+		return
+	}
+	if result.Account.TenantID != principal.TenantID || result.Account.ScopeType != "PROJECT" || result.Account.ScopeID != project.ID || result.Account.Version < 1 || result.Usage.AccountID != result.Account.ID || result.Usage.Version != result.Account.Version {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInternalError, "", map[string]any{"scope": "budget adjustment result"}))
+		return
+	}
+	response.Header().Set("ETag", entityTag(result.Account.Version))
+	writeJSON(response, http.StatusAccepted, budgetAdjustmentResource{ProjectID: project.ID, Account: budgetAccountView(result.Account), Usage: budgetUsageView(project.ID, result.Usage)})
+}
+
+func (handler *Handler) authorizeBudgetRead(request *http.Request, principal authn.Principal, projectID, resourceType string) (state.Project, error) {
+	if len(request.URL.Query()) != 0 {
+		return state.Project{}, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "budget query"})
+	}
+	project, found, err := handler.orchestrator.Project(request.Context(), principal.TenantID, projectID)
+	if err != nil {
+		return state.Project{}, normalizeError(err)
+	}
+	if !found {
+		return state.Project{}, aorerrors.New(aorerrors.CodeNotFound, "", nil)
+	}
+	if err := authorizeRead(request.Context(), handler.authorizer, principal, projectID, authz.ActionProjectRead, resourceType, projectID, string(project.State), project.Version, project.DataClassification); err != nil {
+		return state.Project{}, err
+	}
+	return project, nil
+}
+
+func authorizeBudgetAdjustment(ctx context.Context, authorizer authz.PolicyEvaluator, principal authn.Principal, project state.Project, accountID, parameterDigest string) (authz.PolicyDecision, error) {
+	if authorizer == nil || parameterDigest == "" {
+		return authz.PolicyDecision{}, aorerrors.New(aorerrors.CodePolicyDenied, "", nil)
+	}
+	input := authz.PolicyInput{
+		Principal:       principal,
+		Project:         authz.ProjectScope{TenantID: project.TenantID, ID: project.ID, State: string(project.State), StateVersion: project.Version, Classification: project.DataClassification},
+		Action:          authz.ActionProjectCommand,
+		Resource:        authz.Resource{Type: "budget", ID: project.ID},
+		ParameterDigest: parameterDigest,
+		Budget:          authz.BudgetScope{AccountID: accountID, Available: true},
+	}
+	decision, err := authorizer.Evaluate(ctx, input)
+	if err != nil {
+		return authz.PolicyDecision{}, aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", err, nil)
+	}
+	if !decision.Decision.Allowed() {
+		return decision, aorerrors.New(aorerrors.CodePolicyDenied, "", map[string]any{"policyVersion": decision.PolicyVersion, "ruleId": decision.RuleID})
+	}
+	return decision, nil
+}
+
+func validBudgetAdjustmentBody(body budgetAdjustmentBody) bool {
+	return body.ExpectedVersion >= 1 && body.HardLimitMinor >= 0 && body.SoftLimitMinor >= 0 && body.SoftLimitMinor <= body.HardLimitMinor && validCurrency(body.Currency) && body.Reason != "" && len(body.Reason) <= 2048 && strings.TrimSpace(body.Reason) == body.Reason && !strings.ContainsAny(body.Reason, "\r\n\x00")
+}
+
+func budgetAdjustmentDigest(body budgetAdjustmentBody) (string, error) {
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return "", err
+	}
+	return canonicaljson.Digest(encoded)
+}
+
+func validCurrency(value string) bool {
+	return len(value) == 3 && value[0] >= 'A' && value[0] <= 'Z' && value[1] >= 'A' && value[1] <= 'Z' && value[2] >= 'A' && value[2] <= 'Z'
+}
+
+func budgetTraceHeaders(request *http.Request) (string, string, error) {
+	traceparents := request.Header.Values("traceparent")
+	tracestates := request.Header.Values("tracestate")
+	if len(traceparents) > 1 || len(tracestates) > 1 || len(traceparents) == 0 && len(tracestates) != 0 {
+		return "", "", errors.New("invalid trace headers")
+	}
+	if len(traceparents) == 0 {
+		return "", "", nil
+	}
+	traceparent := traceparents[0]
+	tracestate := ""
+	if len(tracestates) == 1 {
+		tracestate = tracestates[0]
+	}
+	if _, err := observability.ParseTraceParent(traceparent, tracestate); err != nil {
+		return "", "", err
+	}
+	return traceparent, tracestate, nil
+}
+
+func budgetAccountView(account modelgateway.BudgetAccount) budgetAccountResource {
+	remaining := account.LimitMicros - account.SpentMicros - account.ReservedMicros
+	if remaining < 0 {
+		remaining = 0
+	}
+	return budgetAccountResource{
+		ID: account.ID, ScopeType: account.ScopeType, ScopeID: account.ScopeID, Currency: account.Currency,
+		HardLimitMinor: account.LimitMicros, SoftLimitMinor: account.SoftLimitMicros,
+		SpentMinor: account.SpentMicros, ReservedMinor: account.ReservedMicros, RemainingMinor: remaining,
+		PeriodStart: account.PeriodStart, PeriodEnd: account.PeriodEnd, Version: account.Version,
+	}
+}
+
+func budgetUsageView(projectID string, usage modelgateway.BudgetUsage) budgetUsageResource {
+	return budgetUsageResource{
+		ProjectID: projectID, AccountID: usage.AccountID, Currency: usage.Currency,
+		HardLimitMinor: usage.HardLimitMicros, SoftLimitMinor: usage.SoftLimitMicros,
+		SpentMinor: usage.SpentMicros, ReservedMinor: usage.ReservedMicros, RemainingMinor: usage.RemainingMicros,
+		ReservationCount: usage.ReservationCount, CallCount: usage.CallCount,
+		InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, CostMinor: usage.CostMicros, Version: usage.Version,
+	}
+}
+
+func normalizeBudgetError(err error) error {
+	switch {
+	case errors.Is(err, modelgateway.ErrInvalidRequest):
+		return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "budget"})
+	case errors.Is(err, modelgateway.ErrBudgetAccountNotFound):
+		return aorerrors.New(aorerrors.CodeNotFound, "", nil)
+	case errors.Is(err, modelgateway.ErrBudgetAccountConflict):
+		return aorerrors.New(aorerrors.CodeConflict, "", map[string]any{"scope": "budget account"})
+	case errors.Is(err, modelgateway.ErrBudgetVersionConflict):
+		return aorerrors.New(aorerrors.CodeStateVersionConflict, "", map[string]any{"scope": "budget"})
+	case errors.Is(err, modelgateway.ErrBudgetProjectConflict):
+		return aorerrors.New(aorerrors.CodeStateVersionConflict, "", map[string]any{"scope": "project"})
+	case errors.Is(err, modelgateway.ErrBudgetIdempotencyConflict):
+		return aorerrors.New(aorerrors.CodeIdempotencyConflict, "", nil)
+	case errors.Is(err, modelgateway.ErrBudgetCurrencyConflict), errors.Is(err, modelgateway.ErrBudgetLimitConflict):
+		return aorerrors.New(aorerrors.CodeConflict, "", map[string]any{"scope": "budget"})
+	case errors.Is(err, modelgateway.ErrBudgetPeriodClosed):
+		return aorerrors.New(aorerrors.CodeConflict, "", map[string]any{"scope": "budget period"})
+	default:
+		return aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "budget ledger"})
+	}
 }
 
 func (handler *Handler) projectEvents(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string) {
@@ -581,6 +978,9 @@ func walkJSONValue(decoder *json.Decoder, depth int) error {
 }
 
 func requiredIdempotencyKey(request *http.Request) (string, error) {
+	if len(request.Header.Values("Idempotency-Key")) != 1 {
+		return "", aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "idempotency key"})
+	}
 	value := request.Header.Get("Idempotency-Key")
 	if value == "" || len(value) > 256 || strings.TrimSpace(value) != value || strings.ContainsAny(value, "\r\n\x00") {
 		return "", aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "idempotency key"})

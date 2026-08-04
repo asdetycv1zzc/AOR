@@ -79,6 +79,10 @@ services:
         if [ "$$runtime_record_grants_installed" != "t" ]; then
           psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000007_runtime_record_grants.up.sql
         fi
+        budget_scope_index_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT to_regclass('public.budget_accounts_project_scope_unique') IS NOT NULL")"
+        if [ "$$budget_scope_index_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000008_budget_account_scope_unique.up.sql
+        fi
         unset AOR_APP_PASSWORD
     secrets: [postgres_password, postgres_app_password]
     volumes:
@@ -89,6 +93,7 @@ services:
       - ../../migrations/postgres/000005_runtime_records.up.sql:/migrations/000005_runtime_records.up.sql:ro
       - ../../migrations/postgres/000006_lease_fencing_function.up.sql:/migrations/000006_lease_fencing_function.up.sql:ro
       - ../../migrations/postgres/000007_runtime_record_grants.up.sql:/migrations/000007_runtime_record_grants.up.sql:ro
+      - ../../migrations/postgres/000008_budget_account_scope_unique.up.sql:/migrations/000008_budget_account_scope_unique.up.sql:ro
       - ./postgres-app-password.sql:/migrations/postgres-app-password.sql:ro
     read_only: true
     tmpfs: [/tmp]

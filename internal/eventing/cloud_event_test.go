@@ -38,6 +38,17 @@ func TestExternalizeDerivesTaskSubjectAndRejectsMismatch(t *testing.T) {
 	}
 }
 
+func TestExternalizeBudgetEvent(t *testing.T) {
+	event := externalEvent("budget", "io.aor.budget.adjusted.v1", `{"projectId":"project-1","aggregateVersion":2}`)
+	external, err := Externalize(event, CloudEventOptions{Source: "urn:aor:service:control-api", Traceparent: "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if external.Subject != "projects/project-1" || external.DataSchema != "https://schemas.aor.local/events/budget-adjusted.v1.schema.json" {
+		t.Fatalf("budget event = %#v", external)
+	}
+}
+
 func externalEvent(aggregateType, eventType, payload string) DomainEvent {
 	payloadValue := json.RawMessage(payload)
 	digest, _ := canonicaljson.Digest(payloadValue)

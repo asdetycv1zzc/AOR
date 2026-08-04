@@ -267,7 +267,13 @@ paths:
       tags: [Budgets]
       operationId: getBudgets
       responses:
-        '200': {$ref: '#/components/responses/Entity'}
+        '200':
+          description: Project budget accounts
+          headers:
+            ETag: {$ref: '#/components/headers/ETag'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BudgetCollection'}
         default: {$ref: '#/components/responses/Problem'}
   /v1/projects/{projectId}/usage:
     parameters:
@@ -276,11 +282,52 @@ paths:
       tags: [Budgets]
       operationId: getUsage
       responses:
-        '200': {$ref: '#/components/responses/Entity'}
+        '200':
+          description: Project budget usage
+          headers:
+            ETag: {$ref: '#/components/headers/ETag'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BudgetUsage'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}/budgets/usage:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      tags: [Budgets]
+      operationId: getBudgetUsage
+      responses:
+        '200':
+          description: Project budget usage compatibility route
+          headers:
+            ETag: {$ref: '#/components/headers/ETag'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BudgetUsage'}
         default: {$ref: '#/components/responses/Problem'}
   /v1/projects/{projectId}/budgets:adjust:
-    $ref: '#/components/pathItems/ProjectCommand'
-    x-operation-id: adjustBudget
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    post:
+      tags: [Budgets]
+      operationId: adjustBudget
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/BudgetAdjustment'}
+      responses:
+        '202':
+          description: Budget adjustment committed and audited exactly once
+          headers:
+            ETag: {$ref: '#/components/headers/ETag'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/BudgetAdjustmentResult'}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/projects/{projectId}/events:
     parameters:
       - $ref: '#/components/parameters/ProjectId'
@@ -319,7 +366,7 @@ components:
       description: Opaque aggregate version tag.
       schema: {type: string, pattern: '^"[A-Za-z0-9._:-]+"$'}
   parameters:
-    ProjectId: {name: projectId, in: path, required: true, schema: {type: string, pattern: '^[A-Za-z][A-Za-z0-9_-]{2,127}$'}}
+    ProjectId: {name: projectId, in: path, required: true, schema: {type: string, format: uuid, pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'}}
     TaskId: {name: taskId, in: path, required: true, schema: {type: string, pattern: '^[A-Za-z][A-Za-z0-9_-]{2,127}$'}}
     ArtifactId: {name: artifactId, in: path, required: true, schema: {type: string, pattern: '^[A-Za-z][A-Za-z0-9_-]{2,127}$'}}
     Version: {name: version, in: path, required: true, schema: {type: integer, minimum: 1}}
@@ -356,6 +403,71 @@ components:
       properties:
         decision: {enum: [ABORT_PROJECT, ABORT_MODULE, REVISE_GOAL, REVISE_MODULE_SPEC, HAND_OFF_TO_HUMAN, AUTHORIZE_NEW_ATTEMPT_SERIES]}
         expectedVersion: {type: integer, minimum: 0}
+    BudgetAccount:
+      type: object
+      additionalProperties: false
+      required: [id, scopeType, scopeId, currency, hardLimitMinor, softLimitMinor, spentMinor, reservedMinor, remainingMinor, periodStart, version]
+      properties:
+        id: {type: string, minLength: 1, maxLength: 256}
+        scopeType: {enum: [PROJECT]}
+        scopeId: {type: string, format: uuid}
+        currency: {type: string, pattern: '^[A-Z]{3}$'}
+        hardLimitMinor: {type: integer, format: int64, minimum: 0}
+        softLimitMinor: {type: integer, format: int64, minimum: 0}
+        spentMinor: {type: integer, format: int64, minimum: 0}
+        reservedMinor: {type: integer, format: int64, minimum: 0}
+        remainingMinor: {type: integer, format: int64, minimum: 0}
+        periodStart: {type: string, format: date-time}
+        periodEnd: {type: string, format: date-time}
+        version: {type: integer, format: int64, minimum: 1}
+    BudgetCollection:
+      type: object
+      additionalProperties: false
+      required: [projectId, items, version]
+      properties:
+        projectId: {type: string, format: uuid}
+        items:
+          type: array
+          minItems: 1
+          items: {$ref: '#/components/schemas/BudgetAccount'}
+        version: {type: integer, format: int64, minimum: 1}
+    BudgetUsage:
+      type: object
+      additionalProperties: false
+      required: [projectId, accountId, currency, hardLimitMinor, softLimitMinor, spentMinor, reservedMinor, remainingMinor, reservationCount, callCount, inputTokens, outputTokens, costMinor, version]
+      properties:
+        projectId: {type: string, format: uuid}
+        accountId: {type: string, minLength: 1, maxLength: 256}
+        currency: {type: string, pattern: '^[A-Z]{3}$'}
+        hardLimitMinor: {type: integer, format: int64, minimum: 0}
+        softLimitMinor: {type: integer, format: int64, minimum: 0}
+        spentMinor: {type: integer, format: int64, minimum: 0}
+        reservedMinor: {type: integer, format: int64, minimum: 0}
+        remainingMinor: {type: integer, format: int64, minimum: 0}
+        reservationCount: {type: integer, format: int64, minimum: 0}
+        callCount: {type: integer, format: int64, minimum: 0}
+        inputTokens: {type: integer, format: int64, minimum: 0}
+        outputTokens: {type: integer, format: int64, minimum: 0}
+        costMinor: {type: integer, format: int64, minimum: 0}
+        version: {type: integer, format: int64, minimum: 1}
+    BudgetAdjustment:
+      type: object
+      additionalProperties: false
+      required: [expectedVersion, hardLimitMinor, softLimitMinor, currency, reason]
+      properties:
+        expectedVersion: {type: integer, format: int64, minimum: 1}
+        hardLimitMinor: {type: integer, format: int64, minimum: 0}
+        softLimitMinor: {type: integer, format: int64, minimum: 0}
+        currency: {type: string, pattern: '^[A-Z]{3}$'}
+        reason: {type: string, minLength: 1, maxLength: 2048}
+    BudgetAdjustmentResult:
+      type: object
+      additionalProperties: false
+      required: [projectId, account, usage]
+      properties:
+        projectId: {type: string, format: uuid}
+        account: {$ref: '#/components/schemas/BudgetAccount'}
+        usage: {$ref: '#/components/schemas/BudgetUsage'}
     Page:
       type: object
       required: [items]
