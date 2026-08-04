@@ -40,10 +40,6 @@ func (call ToolCall) Validate() error {
 	if !validToolProtocolString(call.ID, MaximumToolCallIDBytes) || !validToolProtocolString(call.Name, MaximumToolNameBytes) || len(call.Arguments) == 0 || len(call.Arguments) > MaximumToolArgumentsBytes || !utf8.Valid(call.Arguments) || !json.Valid(call.Arguments) {
 		return ErrInvalidRequest
 	}
-	var arguments map[string]json.RawMessage
-	if json.Unmarshal(call.Arguments, &arguments) != nil || arguments == nil {
-		return ErrInvalidRequest
-	}
 	return nil
 }
 
@@ -82,12 +78,6 @@ type ToolDefinition struct {
 func (definition ToolDefinition) Validate() error {
 	if !validToolProtocolString(definition.Name, MaximumToolNameBytes) || len(definition.Description) > MaximumToolDescriptionBytes || !utf8.ValidString(definition.Description) || len(definition.Schema) > MaximumToolSchemaBytes || len(definition.Schema) != 0 && (!utf8.Valid(definition.Schema) || !json.Valid(definition.Schema)) {
 		return ErrInvalidRequest
-	}
-	if len(definition.Schema) != 0 {
-		var schema map[string]json.RawMessage
-		if json.Unmarshal(definition.Schema, &schema) != nil || schema == nil {
-			return ErrInvalidRequest
-		}
 	}
 	return nil
 }
