@@ -755,7 +755,7 @@ requirements:
       - internal/eventing/postgres_relational_integration_test.go
     evidenceType: event-replay-digest+durable-full-reconciliation-required
     owner: persistence
-    status: implemented
+    status: planned
   - id: AOR-ACC-041
     title: Credentials are redacted and excluded from Agent-facing boundaries
     implementation:
