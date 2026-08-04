@@ -16,7 +16,8 @@ side_effect_actions := {
     "knowledge.write",
     "artifact.publish",
     "policy.write",
-    "deploy",
+	"deploy",
+	"sandbox.exec",
 }
 
 read_actions := {
@@ -130,6 +131,30 @@ repo_write_allowed if {
     glob.match(owned, ["/"], input.resource.path)
 }
 
+sandbox_exec_allowed if {
+	valid_task_scope
+	input.action == "sandbox.exec"
+	input.resource.type == "sandbox"
+	input.resource.id != ""
+	input.principal.type == "AGENT_INSTANCE"
+	input.principal.role == "EXECUTOR"
+	input.project.state == "EXECUTING"
+	input.task.state == "EXECUTING"
+	active_lease
+}
+
+sandbox_exec_allowed if {
+	valid_task_scope
+	input.action == "sandbox.exec"
+	input.resource.type == "sandbox"
+	input.resource.id != ""
+	input.principal.type == "AGENT_INSTANCE"
+	input.principal.role == "AUDITOR"
+	input.project.state in {"EXECUTING", "GLOBAL_AUDIT"}
+	input.task.state in {"DETERMINISTIC_AUDIT", "LLM_AUDIT"}
+	active_lease
+}
+
 decision := {
     "decision": "ALLOW",
     "policyVersion": data.aor.policy.version,
@@ -168,9 +193,19 @@ decision := {
         "expiresAt": input.lease.expiresAt,
     },
 } if {
-    repo_write_allowed
+	repo_write_allowed
     some owned in input.task.ownedPaths
     glob.match(owned, ["/"], input.resource.path)
+}
+
+decision := {
+	"decision": "ALLOW",
+	"policyVersion": data.aor.policy.version,
+	"reasonCodes": ["EXECUTION_ROLE_ALLOWED", "TASK_STATE_VALID", "LEASE_VALID"],
+	"ruleId": "aor.sandbox.exec",
+	"constraints": {"expiresAt": input.lease.expiresAt},
+} if {
+	sandbox_exec_allowed
 }
 
 decision := {
@@ -203,7 +238,11 @@ matched if {
 }
 
 matched if {
-    repo_write_allowed
+	repo_write_allowed
+}
+
+matched if {
+	sandbox_exec_allowed
 }
 
 matched if {

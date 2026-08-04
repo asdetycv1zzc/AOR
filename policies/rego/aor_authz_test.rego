@@ -35,3 +35,22 @@ test_owned_repo_write_with_current_lease_is_allowed if {
     result.decision == "ALLOW"
     result.constraints.pathGlob == "internal/auth/**"
 }
+
+test_sandbox_exec_requires_current_lease_and_execution_state if {
+	request := object.union(base_input, {
+		"action": "sandbox.exec",
+		"resource": {"type": "sandbox", "id": "sandbox_1"},
+		"lease": {
+			"id": "lease_1",
+			"policyVersion": data.aor.policy.version,
+			"fencingToken": 1,
+			"expiresAt": "2099-01-01T00:00:00Z",
+		},
+	})
+	result := authz.decision with input as request
+	result.decision == "ALLOW"
+
+	stale := object.union(request, {"task": object.union(request.task, {"state": "CANCELED"})})
+	stale_result := authz.decision with input as stale
+	stale_result.decision == "DENY"
+}

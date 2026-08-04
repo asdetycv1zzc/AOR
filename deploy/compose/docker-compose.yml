@@ -533,6 +533,7 @@ services:
       AOR_DATABASE_NAME: aor
       AOR_DATABASE_USER: aor_app
       AOR_DATABASE_PASSWORD_REF: secret://postgres_app_password
+      AOR_LEASE_SIGNING_KEY_REF: secret://lease_signing_key
       AOR_TEMPORAL_ADDRESS: temporal:7233
       AOR_TEMPORAL_NAMESPACE: aor
       AOR_NATS_URL: nats://nats:4222
@@ -557,7 +558,7 @@ services:
       AOR_SANDBOX_MANDATORY_POLICY: apparmor=aor-sandbox
       AOR_SANDBOX_HOLD_COMMAND_JSON: '["/bin/sh","-c","while :; do sleep 3600; done"]'
       AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON: '["${AOR_SANDBOX_SHARED_ROOT:?Set AOR_SANDBOX_SHARED_ROOT to an absolute host path shared with the rootless engine}"]'
-    secrets: [postgres_app_password, minio_root_user, minio_root_password]
+    secrets: [postgres_app_password, lease_signing_key, minio_root_user, minio_root_password]
     volumes:
       - "${AOR_SANDBOX_ENGINE_SOCKET:?Set AOR_SANDBOX_ENGINE_SOCKET to the rootless engine socket}:/run/aor-sandbox/engine.sock"
       - "${AOR_SANDBOX_SHARED_ROOT:?Set AOR_SANDBOX_SHARED_ROOT to an absolute host path shared with the rootless engine}:${AOR_SANDBOX_SHARED_ROOT:?Set AOR_SANDBOX_SHARED_ROOT to an absolute host path shared with the rootless engine}"

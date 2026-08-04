@@ -151,6 +151,12 @@ func (e *Error) Unwrap() error {
 	return e.cause
 }
 
+// NonRetryable lets workflow boundaries preserve the retry policy attached to
+// the stable wire error code without exposing internal causes.
+func (e *Error) NonRetryable() bool {
+	return e != nil && !MetadataFor(e.Code).Retryable
+}
+
 type Problem struct {
 	Type     string      `json:"type"`
 	Title    string      `json:"title"`

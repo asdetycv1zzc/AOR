@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/akimisaka/aor/internal/authz"
 	"github.com/akimisaka/aor/internal/runtimeconfig"
 	"github.com/akimisaka/aor/internal/sandbox"
 	aorworkflow "github.com/akimisaka/aor/internal/workflow"
@@ -16,8 +17,20 @@ import (
 )
 
 type workerSandboxProvider struct {
-	created   bool
-	destroyed bool
+	created    bool
+	destroyed  bool
+	exported   bool
+	destroyErr error
+}
+
+type workerSandboxAuthorizer struct {
+	calls int
+	err   error
+}
+
+func (authorizer *workerSandboxAuthorizer) Authorize(context.Context, aorworkflow.ExecutionInput, sandboxActivityInput) error {
+	authorizer.calls++
+	return authorizer.err
 }
 
 func TestLinuxExecutionProviderRequiresPinnedDedicatedEngine(t *testing.T) {
@@ -43,7 +56,8 @@ func (provider *workerSandboxProvider) Exec(_ context.Context, _ string, _ sandb
 }
 
 func (provider *workerSandboxProvider) Export(context.Context, string, []string) ([]sandbox.ArtifactRef, error) {
-	return nil, errors.New("unused")
+	provider.exported = true
+	return []sandbox.ArtifactRef{{Path: "result.json", URI: "artifact://sha256/0000000000000000000000000000000000000000000000000000000000000000", SHA256: "sha256:0000000000000000000000000000000000000000000000000000000000000000", Size: 2}}, nil
 }
 
 func (provider *workerSandboxProvider) Snapshot(context.Context, string) (sandbox.SnapshotRef, error) {
@@ -54,7 +68,7 @@ func (provider *workerSandboxProvider) Terminate(context.Context, string, string
 
 func (provider *workerSandboxProvider) Destroy(_ context.Context, _ string) error {
 	provider.destroyed = true
-	return nil
+	return provider.destroyErr
 }
 
 func validWorkerSandboxSpec() sandbox.SandboxSpec {
@@ -81,11 +95,12 @@ func validWorkerSandboxSpec() sandbox.SandboxSpec {
 
 func TestSandboxActivityEffectExecutesAndCleansUp(t *testing.T) {
 	provider := &workerSandboxProvider{}
-	payload, err := json.Marshal(sandboxActivityInput{Action: "sandbox.exec", Spec: validWorkerSandboxSpec(), Executable: "/bin/true", TimeoutSeconds: 5})
+	authorizer := &workerSandboxAuthorizer{}
+	payload, err := json.Marshal(sandboxActivityInput{Action: authz.ActionSandboxExec, Spec: validWorkerSandboxSpec(), Lease: authz.LeaseReference{ID: "lease_1", ExpiresAt: time.Now().Add(time.Hour), PolicyVersion: "sha256:0000000000000000000000000000000000000000000000000000000000000000", FencingToken: 1}, AgentInstanceID: "agent_1", BudgetAccountID: "budget_1", Executable: "/bin/true", TimeoutSeconds: 5, ExportPaths: []string{"result.json"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	activities, err := aorworkflow.NewActivities(sandboxActivityEffect{provider: provider})
+	activities, err := aorworkflow.NewActivities(sandboxActivityEffect{provider: provider, authorizer: authorizer})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +112,7 @@ func TestSandboxActivityEffectExecutesAndCleansUp(t *testing.T) {
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatal(err)
 	}
-	if !provider.created || !provider.destroyed {
+	if !provider.created || !provider.destroyed || !provider.exported || authorizer.calls != 3 {
 		t.Fatalf("sandbox lifecycle = created:%v destroyed:%v", provider.created, provider.destroyed)
 	}
 	var workflowOutput aorworkflow.ExecutionOutput
@@ -116,8 +131,29 @@ func TestSandboxActivityEffectExecutesAndCleansUp(t *testing.T) {
 
 func TestSandboxActivityEffectRejectsUnknownFields(t *testing.T) {
 	provider := &workerSandboxProvider{}
-	_, err := (sandboxActivityEffect{provider: provider}).Execute(context.Background(), "key", json.RawMessage(`{"action":"sandbox.exec","unknown":true}`))
+	_, err := (sandboxActivityEffect{provider: provider, authorizer: &workerSandboxAuthorizer{}}).Execute(context.Background(), "key", json.RawMessage(`{"action":"sandbox.exec","unknown":true}`))
 	if !errors.Is(err, aorworkflow.ErrInvalidExecution) {
 		t.Fatalf("unknown field error = %v", err)
+	}
+}
+
+func TestSandboxActivityEffectSurfacesDestroyFailure(t *testing.T) {
+	provider := &workerSandboxProvider{destroyErr: errors.New("destroy failed")}
+	input := sandboxActivityInput{Action: authz.ActionSandboxExec, Spec: validWorkerSandboxSpec(), Lease: authz.LeaseReference{ID: "lease_1", ExpiresAt: time.Now().Add(time.Hour), PolicyVersion: "sha256:0000000000000000000000000000000000000000000000000000000000000000", FencingToken: 1}, AgentInstanceID: "agent_1", BudgetAccountID: "budget_1", Executable: "/bin/true", TimeoutSeconds: 5}
+	payload, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution := aorworkflow.ExecutionInput{TenantID: "tenant_1", ProjectID: "project_1", TaskID: "task_1", ActivityID: "activity_1", Payload: payload}
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestActivityEnvironment()
+	activities, err := aorworkflow.NewActivities(sandboxActivityEffect{provider: provider, authorizer: &workerSandboxAuthorizer{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.RegisterActivityWithOptions(activities.Execute, activity.RegisterOptions{Name: aorworkflow.ExecuteActivityName})
+	_, err = env.ExecuteActivity(aorworkflow.ExecuteActivityName, execution)
+	if err == nil || !provider.destroyed {
+		t.Fatalf("destroy failure = %v, destroyed=%v", err, provider.destroyed)
 	}
 }

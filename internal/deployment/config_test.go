@@ -26,6 +26,7 @@ func TestDeploymentProfilesFailClosed(t *testing.T) {
 		"AOR_SANDBOX_ENGINE_ENDPOINT: unix:///run/aor-sandbox/engine.sock", "apparmor=aor-sandbox",
 		"sandbox-preflight.sh", "AOR_SANDBOX_ENGINE_SOCKET", "network_mode: none",
 		"AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON", "AOR_SANDBOX_SHARED_ROOT",
+		"AOR_LEASE_SIGNING_KEY_REF: secret://lease_signing_key",
 		"000010_outbox_tenant_discovery.up.sql", "000012_artifact_project_uri_scope.up.sql",
 	} {
 		if !strings.Contains(composeText, value) {

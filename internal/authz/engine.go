@@ -321,6 +321,8 @@ func (e *Engine) defaultDecision(input PolicyInput, lease CapabilityLease, now t
 			return e.constrainAllow(allowDecision(e.bundle.Version, "aor.tool.invoke", "ROLE_ALLOWED", "LEASE_VALID"), input, lease)
 		}
 		return denyDecision(e.bundle.Version, "ROLE_DENIED")
+	case ActionSandboxExec:
+		return e.sandboxExecDecision(input, lease)
 	case ActionKnowledgeWrite:
 		if input.Principal.Type != authn.PrincipalKnowledgeCurator && input.Principal.Role != authn.RoleKnowledgeCurator {
 			return denyDecision(e.bundle.Version, "CURATOR_REQUIRED")
@@ -353,6 +355,21 @@ func (e *Engine) defaultDecision(input PolicyInput, lease CapabilityLease, now t
 	default:
 		return denyDecision(e.bundle.Version, "UNKNOWN_ACTION")
 	}
+}
+
+func (e *Engine) sandboxExecDecision(input PolicyInput, lease CapabilityLease) PolicyDecision {
+	if input.Principal.Type != authn.PrincipalAgentInstance || !roleIn(input.Principal.Role, authn.RoleExecutor, authn.RoleAuditor) {
+		return denyDecision(e.bundle.Version, "EXECUTION_ROLE_REQUIRED")
+	}
+	if input.Resource.Type != "sandbox" || input.Resource.ID == "" {
+		return denyDecision(e.bundle.Version, "SANDBOX_RESOURCE_REQUIRED")
+	}
+	validState := input.Principal.Role == authn.RoleExecutor && input.Project.State == "EXECUTING" && input.Task.State == "EXECUTING"
+	validState = validState || input.Principal.Role == authn.RoleAuditor && roleIn(input.Project.State, "EXECUTING", "GLOBAL_AUDIT") && roleIn(input.Task.State, "DETERMINISTIC_AUDIT", "LLM_AUDIT")
+	if !validState {
+		return denyDecision(e.bundle.Version, "TASK_NOT_EXECUTABLE")
+	}
+	return e.constrainAllow(allowDecision(e.bundle.Version, "aor.sandbox.exec", "EXECUTION_ROLE_ALLOWED", "TASK_STATE_VALID", "LEASE_VALID"), input, lease)
 }
 
 func (e *Engine) repoWriteDecision(input PolicyInput, lease CapabilityLease) PolicyDecision {

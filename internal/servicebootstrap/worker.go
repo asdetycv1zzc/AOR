@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/akimisaka/aor/internal/authz"
+	"github.com/akimisaka/aor/internal/credentials"
 	"github.com/akimisaka/aor/internal/runtimeclient"
 	"github.com/akimisaka/aor/internal/runtimeconfig"
 	"github.com/akimisaka/aor/internal/sandbox"
@@ -26,20 +28,25 @@ var (
 // worker to execute a validated sandbox command. Network, model, repository,
 // and tool operations remain controlled by their dedicated services.
 type sandboxActivityInput struct {
-	Action         string              `json:"action"`
-	Spec           sandbox.SandboxSpec `json:"spec"`
-	Executable     string              `json:"executable"`
-	Arguments      []string            `json:"arguments,omitempty"`
-	WorkingDir     string              `json:"workingDir,omitempty"`
-	TimeoutSeconds int                 `json:"timeoutSeconds"`
+	Action          string               `json:"action"`
+	Spec            sandbox.SandboxSpec  `json:"spec"`
+	Lease           authz.LeaseReference `json:"lease"`
+	AgentInstanceID string               `json:"agentInstanceId"`
+	BudgetAccountID string               `json:"budgetAccountId"`
+	Executable      string               `json:"executable"`
+	Arguments       []string             `json:"arguments,omitempty"`
+	WorkingDir      string               `json:"workingDir,omitempty"`
+	TimeoutSeconds  int                  `json:"timeoutSeconds"`
+	ExportPaths     []string             `json:"exportPaths,omitempty"`
 }
 
 type sandboxActivityEffect struct {
-	provider sandbox.SandboxProvider
+	provider   sandbox.SandboxProvider
+	authorizer sandboxExecutionAuthorizer
 }
 
-func (effect sandboxActivityEffect) Execute(ctx context.Context, key string, payload json.RawMessage) (json.RawMessage, error) {
-	if effect.provider == nil || ctx == nil || strings.TrimSpace(key) == "" {
+func (effect sandboxActivityEffect) Execute(ctx context.Context, key string, payload json.RawMessage) (output json.RawMessage, resultErr error) {
+	if effect.provider == nil || effect.authorizer == nil || ctx == nil || strings.TrimSpace(key) == "" {
 		return nil, ErrWorkerUnavailable
 	}
 	var input sandboxActivityInput
@@ -52,7 +59,7 @@ func (effect sandboxActivityEffect) Execute(ctx context.Context, key string, pay
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return nil, aorworkflow.ErrInvalidExecution
 	}
-	if input.Action != "sandbox.exec" || input.TimeoutSeconds <= 0 || input.Executable == "" {
+	if input.Action != authz.ActionSandboxExec || input.TimeoutSeconds <= 0 || input.TimeoutSeconds > 24*60*60 || input.Executable == "" || input.Lease.ID == "" || input.Lease.PolicyVersion == "" || input.Lease.FencingToken < 1 || input.Lease.ExpiresAt.IsZero() || input.AgentInstanceID == "" || input.BudgetAccountID == "" || len(input.Arguments) > 256 || len(input.ExportPaths) > 256 {
 		return nil, aorworkflow.ErrInvalidExecution
 	}
 	execution, found := aorworkflow.ExecutionInputFromContext(ctx)
@@ -62,15 +69,28 @@ func (effect sandboxActivityEffect) Execute(ctx context.Context, key string, pay
 	if err := input.Spec.Validate(); err != nil {
 		return nil, err
 	}
+	if input.TimeoutSeconds > input.Spec.WallTimeSeconds {
+		return nil, aorworkflow.ErrInvalidExecution
+	}
+	if err := effect.authorizer.Authorize(ctx, execution, input); err != nil {
+		return nil, err
+	}
 	handle, err := effect.provider.Create(ctx, input.Spec)
 	if err != nil {
 		return nil, err
 	}
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		_ = effect.provider.Destroy(cleanupCtx, handle.ID)
+		cleanupErr := effect.provider.Destroy(cleanupCtx, handle.ID)
 		cancel()
+		if cleanupErr != nil {
+			output = nil
+			resultErr = errors.Join(resultErr, sandbox.ErrCleanupFailed, cleanupErr)
+		}
 	}()
+	if err := effect.authorizer.Authorize(ctx, execution, input); err != nil {
+		return nil, err
+	}
 	result, err := effect.provider.Exec(ctx, handle.ID, sandbox.ExecRequest{
 		Executable: input.Executable,
 		Arguments:  append([]string(nil), input.Arguments...),
@@ -80,15 +100,26 @@ func (effect sandboxActivityEffect) Execute(ctx context.Context, key string, pay
 	if err != nil {
 		return nil, err
 	}
+	var artifacts []sandbox.ArtifactRef
+	if len(input.ExportPaths) > 0 {
+		if err := effect.authorizer.Authorize(ctx, execution, input); err != nil {
+			return nil, err
+		}
+		artifacts, err = effect.provider.Export(ctx, handle.ID, input.ExportPaths)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return json.Marshal(struct {
-		Key        string                `json:"idempotencyKey"`
-		ExitCode   int                   `json:"exitCode"`
-		Stdout     []byte                `json:"stdout"`
-		Stderr     []byte                `json:"stderr"`
-		StartedAt  time.Time             `json:"startedAt"`
-		FinishedAt time.Time             `json:"finishedAt"`
-		Artifacts  []sandbox.ArtifactRef `json:"artifacts,omitempty"`
-	}{Key: key, ExitCode: result.ExitCode, Stdout: append([]byte(nil), result.Stdout...), Stderr: append([]byte(nil), result.Stderr...), StartedAt: result.StartedAt, FinishedAt: result.FinishedAt})
+		Key         string                `json:"idempotencyKey"`
+		ExitCode    int                   `json:"exitCode"`
+		Stdout      []byte                `json:"stdout"`
+		Stderr      []byte                `json:"stderr"`
+		StartedAt   time.Time             `json:"startedAt"`
+		FinishedAt  time.Time             `json:"finishedAt"`
+		Artifacts   []sandbox.ArtifactRef `json:"artifacts,omitempty"`
+		Attestation sandbox.Attestation   `json:"attestation"`
+	}{Key: key, ExitCode: result.ExitCode, Stdout: append([]byte(nil), result.Stdout...), Stderr: append([]byte(nil), result.Stderr...), StartedAt: result.StartedAt, FinishedAt: result.FinishedAt, Artifacts: append([]sandbox.ArtifactRef(nil), artifacts...), Attestation: handle.Attestation})
 }
 
 type workerHandler struct {
@@ -126,7 +157,7 @@ func (handler *workerHandler) Ready() error {
 // process. Provider readiness is checked first so an unsafe or unavailable
 // execution backend cannot result in a polling worker that fails open.
 func Worker(config runtimeconfig.Config, clients *runtimeclient.Clients) (http.Handler, error) {
-	if config.Component != "aor-worker" || clients == nil || clients.Temporal() == nil {
+	if config.Component != "aor-worker" || clients == nil || clients.Temporal() == nil || clients.Database() == nil {
 		return nil, ErrWorkerConfiguration
 	}
 	provider, err := newExecutionProvider(config)
@@ -138,11 +169,39 @@ func Worker(config runtimeconfig.Config, clients *runtimeclient.Clients) (http.H
 	if err := provider.Ready(probeCtx); err != nil {
 		return nil, errors.Join(ErrWorkerUnavailable, err)
 	}
+	secretResolver := credentials.NewSecretResolver(os.Getenv("AOR_SECRET_ROOT"))
+	leaseKey, err := secretResolver.Resolve(probeCtx, config.LeaseSigningKeyRef)
+	if err != nil {
+		return nil, ErrWorkerConfiguration
+	}
+	leaseSigner, err := authz.NewHMACSigner(leaseKey)
+	for index := range leaseKey {
+		leaseKey[index] = 0
+	}
+	if err != nil {
+		return nil, ErrWorkerConfiguration
+	}
+	leaseStore, err := authz.NewPostgresLeaseStore(clients.Database())
+	if err != nil {
+		return nil, ErrWorkerConfiguration
+	}
+	leaseManager, err := authz.NewLeaseManager(authz.LeaseManagerConfig{Store: leaseStore, Signer: leaseSigner, Clock: time.Now, HeartbeatInterval: 30 * time.Second})
+	if err != nil {
+		return nil, ErrWorkerConfiguration
+	}
+	scopes, err := newPostgresSandboxExecutionScopeResolver(clients.Database())
+	if err != nil {
+		return nil, err
+	}
+	authorizer, err := newLeaseBoundSandboxAuthorizer(config, scopes, leaseManager)
+	if err != nil {
+		return nil, err
+	}
 	activityResults, err := aorworkflow.NewPostgresActivityResultStore(clients.Database())
 	if err != nil {
 		return nil, err
 	}
-	activities, err := aorworkflow.NewActivitiesWithStore(sandboxActivityEffect{provider: provider}, activityResults)
+	activities, err := aorworkflow.NewActivitiesWithStore(sandboxActivityEffect{provider: provider, authorizer: authorizer}, activityResults)
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +218,7 @@ func Worker(config runtimeconfig.Config, clients *runtimeclient.Clients) (http.H
 func newExecutionProvider(config runtimeconfig.Config) (*sandbox.Provider, error) {
 	switch runtime.GOOS {
 	case "linux":
-		if config.Sandbox.EngineEndpoint == "" || config.Sandbox.ImageReference == "" {
+		if config.Sandbox.EngineEndpoint == "" || config.Sandbox.ImageReference == "" || len(config.Sandbox.AllowedMountRoots) == 0 {
 			return nil, ErrWorkerConfiguration
 		}
 		backend, err := sandbox.NewDockerBackend(sandbox.DockerBackendOptions{

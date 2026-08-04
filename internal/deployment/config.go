@@ -112,6 +112,7 @@ func ValidateCompose(input []byte) error {
 			CapDrop     []string          `yaml:"cap_drop"`
 			SecurityOpt []string          `yaml:"security_opt"`
 			Environment map[string]string `yaml:"environment"`
+			Secrets     []string          `yaml:"secrets"`
 			Build       struct {
 				Target string `yaml:"target"`
 			} `yaml:"build"`
@@ -145,6 +146,9 @@ func ValidateCompose(input []byte) error {
 		return ErrInvalidDeployment
 	}
 	if !workerFound || !preflightFound || !runtimeFound || !worker.ReadOnly || !preflight.ReadOnly || !runtimeImage.ReadOnly || runtimeImage.NetworkMode != "none" || preflight.NetworkMode != "none" || worker.Build.Target != "worker-runtime" {
+		return ErrInvalidDeployment
+	}
+	if worker.Environment["AOR_LEASE_SIGNING_KEY_REF"] != "secret://lease_signing_key" || !containsString(worker.Secrets, "lease_signing_key") {
 		return ErrInvalidDeployment
 	}
 	if runtimeImage.User == "" || runtimeImage.User == "0" || runtimeImage.User == "root" {

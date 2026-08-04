@@ -36,30 +36,30 @@ type Mount struct {
 }
 
 type SandboxSpec struct {
-	SandboxID                string
-	TenantID                 string
-	ProjectID                string
-	TaskID                   string
-	Role                     Role
-	Platform                 Platform
-	IsolationLevel           IsolationLevel
-	ImageDigest              string
-	CPULimit                 string
-	MemoryBytes              int64
-	PIDsLimit                int
-	DiskBytes                int64
-	WallTimeSeconds          int
-	NetworkPolicy            NetworkPolicy
-	Mounts                   []Mount
-	AllowedExecutables       []string
-	EnvironmentAllowlist     []string
-	WorkloadTrust            WorkloadTrust
-	DeploymentProfile        DeploymentProfile
-	RequiresHiddenTests      bool
-	RequiresNetworkIsolation bool
-	TrustedSingleTenant      bool
-	HostileMultiTenant       bool
-	RiskAcceptanceApprovalID string
+	SandboxID                string            `json:"sandboxId"`
+	TenantID                 string            `json:"tenantId"`
+	ProjectID                string            `json:"projectId"`
+	TaskID                   string            `json:"taskId"`
+	Role                     Role              `json:"role"`
+	Platform                 Platform          `json:"platform"`
+	IsolationLevel           IsolationLevel    `json:"isolationLevel"`
+	ImageDigest              string            `json:"imageDigest,omitempty"`
+	CPULimit                 string            `json:"cpuLimit"`
+	MemoryBytes              int64             `json:"memoryBytes"`
+	PIDsLimit                int               `json:"pidsLimit"`
+	DiskBytes                int64             `json:"diskBytes"`
+	WallTimeSeconds          int               `json:"wallTimeSeconds"`
+	NetworkPolicy            NetworkPolicy     `json:"networkPolicy"`
+	Mounts                   []Mount           `json:"mounts,omitempty"`
+	AllowedExecutables       []string          `json:"allowedExecutables"`
+	EnvironmentAllowlist     []string          `json:"environmentAllowlist,omitempty"`
+	WorkloadTrust            WorkloadTrust     `json:"workloadTrust"`
+	DeploymentProfile        DeploymentProfile `json:"deploymentProfile"`
+	RequiresHiddenTests      bool              `json:"requiresHiddenTests,omitempty"`
+	RequiresNetworkIsolation bool              `json:"requiresNetworkIsolation,omitempty"`
+	TrustedSingleTenant      bool              `json:"trustedSingleTenant,omitempty"`
+	HostileMultiTenant       bool              `json:"hostileMultiTenant,omitempty"`
+	RiskAcceptanceApprovalID string            `json:"riskAcceptanceApprovalId,omitempty"`
 }
 
 type SandboxHandle struct {

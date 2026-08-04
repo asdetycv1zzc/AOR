@@ -51,6 +51,7 @@ const (
 	ActionModelStream       = "model.stream"
 	ActionModelCancel       = "model.cancel"
 	ActionModelCapabilities = "model.capabilities"
+	ActionSandboxExec       = "sandbox.exec"
 )
 
 var (
@@ -415,7 +416,7 @@ func (f RuleFunc) Evaluate(input PolicyInput) (PolicyDecision, bool) { return f(
 func IsSideEffect(action string) bool {
 	switch action {
 	case ActionRepoWrite, ActionRepoApplyPatch, ActionToolInvoke, ActionKnowledgeWrite,
-		ActionArtifactPublish, ActionPolicyWrite, ActionDeploy:
+		ActionArtifactPublish, ActionPolicyWrite, ActionDeploy, ActionSandboxExec:
 		return true
 	default:
 		return false

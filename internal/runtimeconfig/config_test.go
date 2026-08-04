@@ -183,7 +183,9 @@ func TestWorkerRequiresImmutableSandboxRuntimeAndDedicatedRootlessEndpoint(t *te
 
 func TestWorkerConfigurationAllowsWindowsNativeBackendWithoutLinuxEngine(t *testing.T) {
 	config, err := Load("aor-worker", environment(map[string]string{
+		"AOR_DEPLOYMENT_PROFILE":    "TEST",
 		"AOR_DATABASE_PASSWORD_REF": "secret://postgres/password",
+		"AOR_LEASE_SIGNING_KEY_REF": "secret://authz/lease-signing-key",
 		"AOR_S3_ACCESS_KEY_REF":     "secret://minio/access-key",
 		"AOR_S3_SECRET_KEY_REF":     "secret://minio/secret-key",
 	}))
@@ -257,6 +259,8 @@ func environment(values map[string]string) LookupEnv {
 func validWorkerEnvironment() map[string]string {
 	return map[string]string{
 		"AOR_DATABASE_PASSWORD_REF":            "secret://postgres/password",
+		"AOR_DEPLOYMENT_PROFILE":               "TEST",
+		"AOR_LEASE_SIGNING_KEY_REF":            "secret://authz/lease-signing-key",
 		"AOR_S3_ACCESS_KEY_REF":                "secret://minio/access-key",
 		"AOR_S3_SECRET_KEY_REF":                "secret://minio/secret-key",
 		"AOR_SANDBOX_ENGINE_ENDPOINT":          "unix:///run/aor-sandbox/engine.sock",

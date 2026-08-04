@@ -153,6 +153,30 @@ func TestDefaultPolicyRoleOwnershipAndApproval(t *testing.T) {
 	}
 }
 
+func TestSandboxExecutionLeaseGrantBindsRoleAndState(t *testing.T) {
+	engine := testEngine(nil, func() time.Time { return authzTestNow })
+	input := testInput()
+	input.Action = ActionSandboxExec
+	input.Resource = Resource{Type: "sandbox", ID: "sandbox_1"}
+	decision, err := engine.EvaluateLeaseGrant(context.Background(), input)
+	if err != nil || decision.Decision != DecisionAllow || decision.Binding == nil || decision.Binding.Action != ActionSandboxExec {
+		t.Fatalf("sandbox lease grant = %#v, err=%v", decision, err)
+	}
+
+	input.Task.State = "CANCELED"
+	decision, err = engine.EvaluateLeaseGrant(context.Background(), input)
+	if err != nil || decision.Decision != DecisionDeny {
+		t.Fatalf("canceled task sandbox grant = %#v, err=%v", decision, err)
+	}
+
+	input.Task.State = "DETERMINISTIC_AUDIT"
+	input.Principal.Role = authn.RoleAuditor
+	decision, err = engine.EvaluateLeaseGrant(context.Background(), input)
+	if err != nil || decision.Decision != DecisionAllow {
+		t.Fatalf("auditor sandbox grant = %#v, err=%v", decision, err)
+	}
+}
+
 func TestProductionUntrustedExecutionRequiresLinuxContainer(t *testing.T) {
 	manager, _ := testManager(t, func() time.Time { return authzTestNow })
 	engine := testEngine(manager, func() time.Time { return authzTestNow })

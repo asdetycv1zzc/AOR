@@ -31,3 +31,9 @@ func TestEveryCodeHasPublicMetadata(t *testing.T) {
 		}
 	}
 }
+
+func TestErrorRetryabilityFollowsCodeMetadata(t *testing.T) {
+	if !New(CodePolicyDenied, "", nil).NonRetryable() || New(CodeDependencyUnavailable, "", nil).NonRetryable() {
+		t.Fatal("error retryability did not follow code metadata")
+	}
+}
