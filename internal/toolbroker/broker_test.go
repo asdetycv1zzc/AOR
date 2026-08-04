@@ -3,6 +3,8 @@ package toolbroker
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,6 +17,34 @@ type testLease struct {
 	validations    []LeaseValidation
 	expectedDigest string
 	failAt         int
+}
+
+type concurrentLease struct{}
+
+func (concurrentLease) Validate(context.Context, LeaseValidation) error { return nil }
+
+type concurrentExecutor struct {
+	calls atomic.Int64
+	gate  chan struct{}
+}
+
+func (executor *concurrentExecutor) Execute(ctx context.Context, _ ToolDescriptor, _ []byte) ([]byte, error) {
+	executor.calls.Add(1)
+	if executor.gate != nil {
+		select {
+		case <-executor.gate:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return []byte(`{"ok":true}`), nil
+}
+
+type concurrentRecorder struct{ calls atomic.Int64 }
+
+func (recorder *concurrentRecorder) Record(context.Context, Invocation) error {
+	recorder.calls.Add(1)
+	return nil
 }
 
 func (l *testLease) Validate(_ context.Context, validation LeaseValidation) error {
@@ -151,5 +181,98 @@ func TestBrokerRejectsAuditorWriteToolsAndParameterReplay(t *testing.T) {
 	replayed.Parameters = []byte(`{"path":"owned/two"}`)
 	if _, err := readBroker.Invoke(context.Background(), replayed); !errors.Is(err, ErrLeaseInvalid) {
 		t.Fatalf("changed parameter replay error = %v", err)
+	}
+}
+
+func TestBrokerCoalescesOneHundredConcurrentIdempotentCalls(t *testing.T) {
+	executor := &concurrentExecutor{gate: make(chan struct{})}
+	recorder := &concurrentRecorder{}
+	broker := New(concurrentLease{}, testPolicy{}, executor, nil, recorder, nil, func() time.Time { return brokerTestNow })
+	d := descriptor()
+	d.RateLimit = "1000/s"
+	if err := broker.Register(d); err != nil {
+		t.Fatal(err)
+	}
+	const calls = 100
+	results := make(chan error, calls)
+	var started sync.WaitGroup
+	started.Add(calls)
+	for range calls {
+		go func() {
+			started.Done()
+			_, err := broker.Invoke(context.Background(), request())
+			results <- err
+		}()
+	}
+	started.Wait()
+	close(executor.gate)
+	for range calls {
+		if err := <-results; err != nil {
+			t.Fatalf("idempotent call error = %v", err)
+		}
+	}
+	if executor.calls.Load() != 1 || recorder.calls.Load() != 1 {
+		t.Fatalf("executions=%d audit records=%d", executor.calls.Load(), recorder.calls.Load())
+	}
+}
+
+func TestBrokerRejectsChangedIdempotentBodyAndRateOverflow(t *testing.T) {
+	executor := &testExecutor{output: []byte(`{"ok":true}`)}
+	broker := New(&testLease{}, testPolicy{}, executor, nil, &testRecorder{}, nil, func() time.Time { return brokerTestNow })
+	d := descriptor()
+	d.RateLimit = "1/s"
+	if err := broker.Register(d); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.Invoke(context.Background(), request()); err != nil {
+		t.Fatal(err)
+	}
+	changed := request()
+	changed.Parameters = []byte(`{"changed":true}`)
+	if _, err := broker.Invoke(context.Background(), changed); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("idempotency error = %v", err)
+	}
+	second := request()
+	second.RequestID = "req-2"
+	if _, err := broker.Invoke(context.Background(), second); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("rate error = %v", err)
+	}
+}
+
+func TestBrokerReauthorizesCachedIdempotentResult(t *testing.T) {
+	lease := &testLease{failAt: 2}
+	executor := &testExecutor{output: []byte(`{"ok":true}`)}
+	broker := New(lease, testPolicy{}, executor, nil, &testRecorder{}, nil, func() time.Time { return brokerTestNow })
+	if err := broker.Register(descriptor()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.Invoke(context.Background(), request()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.Invoke(context.Background(), request()); !errors.Is(err, ErrLeaseInvalid) {
+		t.Fatalf("cached invocation with revoked lease error = %v", err)
+	}
+	if executor.calls != 1 {
+		t.Fatalf("executions = %d", executor.calls)
+	}
+}
+
+func TestBrokerPropagatesCancellationAndBoundsInput(t *testing.T) {
+	executor := &concurrentExecutor{gate: make(chan struct{})}
+	broker := New(concurrentLease{}, testPolicy{}, executor, nil, &concurrentRecorder{}, nil, time.Now)
+	if err := broker.Register(descriptor()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := broker.Invoke(ctx, request()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation error = %v", err)
+	}
+	oversized := request()
+	oversized.RequestID = "oversized"
+	oversized.Parameters = append([]byte(`{"value":"`), make([]byte, maxInputBytes)...)
+	oversized.Parameters = append(oversized.Parameters, []byte(`"}`)...)
+	if _, err := broker.Invoke(context.Background(), oversized); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("oversized input error = %v", err)
 	}
 }

@@ -26,13 +26,14 @@ openssl rand -hex 32 > deploy/compose/secrets/postgres_password
 openssl rand -hex 32 > deploy/compose/secrets/postgres_app_password
 openssl rand -hex 16 > deploy/compose/secrets/minio_root_user
 openssl rand -hex 32 > deploy/compose/secrets/minio_root_password
+openssl rand -hex 32 > deploy/compose/secrets/lease_signing_key
 # Write the actual credentials issued by each provider, one value per file.
 # Do not generate placeholder keys: Compose checks that both files are nonempty.
 ${EDITOR:-vi} deploy/compose/secrets/model_provider_openai_key
 ${EDITOR:-vi} deploy/compose/secrets/model_provider_deepseek_key
 ```
 
-The secret values are mounted as files. They are not committed or placed in AOR container environment variables. PostgreSQL migrations use the admin-only `postgres_password` to apply schema changes and configure the least-privilege `aor_app` role; API, Model Gateway, and worker use `secret://postgres_app_password`. AOR refers to mounted files only through `secret://` references. API and worker use the MinIO root access and secret files for local S3 access; the Model Gateway uses one mounted file for each provider family.
+The secret values are mounted as files. They are not committed or placed in AOR container environment variables. PostgreSQL migrations use the admin-only `postgres_password` to apply schema changes and configure the least-privilege `aor_app` role; API, Model Gateway, Tool Broker, and worker use `secret://postgres_app_password`. AOR refers to mounted files only through `secret://` references. API and worker use the MinIO root access and secret files for local S3 access; the Model Gateway uses one mounted file for each provider family. The Tool Broker uses the independent `lease_signing_key` only to verify and renew persistent capability leases.
 
 The Model Gateway defaults to OpenAI and DeepSeek OpenAI-compatible endpoints and models. Set `AOR_OPENAI_BASE_URL`, `AOR_OPENAI_MODEL`, `AOR_DEEPSEEK_BASE_URL`, or `AOR_DEEPSEEK_MODEL` in the host environment before `make compose-up` to select compatible endpoints or approved models. Provider credentials always remain in the two provider secret files.
 

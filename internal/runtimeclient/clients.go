@@ -352,7 +352,7 @@ func unavailable(name string) error {
 }
 
 func requiresDatabase(component string) bool {
-	return component == "aor-server" || component == "aor-model-gateway" || component == "aor-worker"
+	return component == "aor-server" || component == "aor-model-gateway" || component == "aor-tool-broker" || component == "aor-worker"
 }
 
 func requiresNATS(component string) bool {

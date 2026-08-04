@@ -178,8 +178,32 @@ type Invocation struct {
 	PrincipalID   string
 	ToolID        string
 	ToolVersion   string
+	Risk          Risk
+	InputSHA256   string
+	Decision      string
 	PolicyVersion string
 	OutputSHA256  string
 	TrustLevel    string
 	Redacted      bool
+	Status        string
+	StartedAt     time.Time
+	OccurredAt    time.Time
+}
+
+type InvocationAttempt struct {
+	InvocationID string
+	RequestID    string
+	TenantID     string
+	ProjectID    string
+	TaskID       string
+	PrincipalID  string
+	ToolID       string
+	ToolVersion  string
+	Status       string
+	ReasonCode   string
+	OccurredAt   time.Time
+}
+
+type InvocationAttemptRecorder interface {
+	RecordAttempt(context.Context, InvocationAttempt) error
 }

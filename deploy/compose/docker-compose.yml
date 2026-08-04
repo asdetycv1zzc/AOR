@@ -376,6 +376,10 @@ services:
       args:
         AOR_COMPONENT: aor-tool-broker
     depends_on:
+      postgres:
+        condition: service_healthy
+      postgres-migrate:
+        condition: service_completed_successfully
       nats:
         condition: service_healthy
       opa:
@@ -384,7 +388,14 @@ services:
         condition: service_healthy
     environment:
       AOR_ENVIRONMENT: test
+      AOR_DEPLOYMENT_PROFILE: TEST
       AOR_LISTEN_ADDR: :8080
+      AOR_DATABASE_HOST: postgres
+      AOR_DATABASE_PORT: "5432"
+      AOR_DATABASE_NAME: aor
+      AOR_DATABASE_USER: aor_app
+      AOR_DATABASE_PASSWORD_REF: secret://postgres_app_password
+      AOR_LEASE_SIGNING_KEY_REF: secret://lease_signing_key
       AOR_NATS_URL: nats://nats:4222
       AOR_OPA_URL: http://opa:8181
       AOR_OIDC_ISSUER: http://127.0.0.1:5556/dex
@@ -392,6 +403,7 @@ services:
       AOR_OIDC_AUDIENCE: aor-control-plane
       AOR_OIDC_DEFAULT_TENANT_ID: 11111111-1111-4111-8111-111111111111
       AOR_OIDC_DEFAULT_ROLE: USER
+    secrets: [postgres_app_password, lease_signing_key]
     ports:
       - 127.0.0.1:8092:8080
 
@@ -460,3 +472,5 @@ secrets:
     file: ./secrets/model_provider_openai_key
   model_provider_deepseek_key:
     file: ./secrets/model_provider_deepseek_key
+  lease_signing_key:
+    file: ./secrets/lease_signing_key

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/netip"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,18 +20,46 @@ import (
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 )
 
-const maxOutputBytes = 1 << 20
+const (
+	maxInputBytes  = 1 << 20
+	maxOutputBytes = 1 << 20
+	maxCachedCalls = 10000
+	maxRateWindows = 10000
+	cacheTTL       = 15 * time.Minute
+)
 
 var (
-	ErrUnknownTool      = errors.New("unknown tool")
-	ErrInvalidRequest   = errors.New("invalid tool request")
-	ErrPolicyDenied     = errors.New("tool policy denied")
-	ErrLeaseInvalid     = errors.New("tool lease invalid")
-	ErrApprovalRequired = errors.New("tool approval required")
-	ErrOutputTooLarge   = errors.New("tool output too large")
-	ErrNetworkDenied    = errors.New("tool network destination denied")
-	ErrInvocationRecord = errors.New("tool invocation could not be recorded")
+	ErrUnknownTool         = errors.New("unknown tool")
+	ErrInvalidRequest      = errors.New("invalid tool request")
+	ErrPolicyDenied        = errors.New("tool policy denied")
+	ErrLeaseInvalid        = errors.New("tool lease invalid")
+	ErrApprovalRequired    = errors.New("tool approval required")
+	ErrOutputTooLarge      = errors.New("tool output too large")
+	ErrNetworkDenied       = errors.New("tool network destination denied")
+	ErrInvocationRecord    = errors.New("tool invocation could not be recorded")
+	ErrIdempotencyConflict = errors.New("tool invocation idempotency conflict")
+	ErrRateLimited         = errors.New("tool invocation rate limited")
 )
+
+type cachedInvocation struct {
+	digest    string
+	result    ToolResult
+	createdAt time.Time
+}
+
+type inFlightInvocation struct {
+	digest string
+	done   chan struct{}
+	result ToolResult
+	err    error
+}
+
+type invocationRequestIDContextKey struct{}
+
+type rateWindow struct {
+	started time.Time
+	count   int
+}
 
 type Broker struct {
 	mu          sync.RWMutex
@@ -43,6 +72,9 @@ type Broker struct {
 	revalidate  func(context.Context, ToolRequest, ToolDescriptor) error
 	network     *NetworkBoundary
 	clock       func() time.Time
+	cache       map[string]cachedInvocation
+	inflight    map[string]*inFlightInvocation
+	rate        map[string]rateWindow
 }
 
 func New(lease LeaseChecker, policy PolicyEvaluator, executor ToolExecutor, artifacts ArtifactStore, recorder InvocationRecorder, revalidate func(context.Context, ToolRequest, ToolDescriptor) error, clock func() time.Time) *Broker {
@@ -59,20 +91,42 @@ func NewWithNetworkBoundary(lease LeaseChecker, policy PolicyEvaluator, executor
 	if network == nil {
 		network = NewNetworkBoundary(nil, nil)
 	}
-	return &Broker{descriptors: make(map[string]ToolDescriptor), lease: lease, policy: policy, executor: executor, artifacts: artifacts, recorder: recorder, revalidate: revalidate, network: network, clock: clock}
+	return &Broker{descriptors: make(map[string]ToolDescriptor), lease: lease, policy: policy, executor: executor, artifacts: artifacts, recorder: recorder, revalidate: revalidate, network: network, clock: clock, cache: make(map[string]cachedInvocation), inflight: make(map[string]*inFlightInvocation), rate: make(map[string]rateWindow)}
 }
 
 func (b *Broker) Register(descriptor ToolDescriptor) error {
-	if err := descriptor.Validate(); err != nil {
-		return err
+	return b.registerBatch([]ToolDescriptor{descriptor})
+}
+
+func (b *Broker) registerBatch(descriptors []ToolDescriptor) error {
+	if b == nil || len(descriptors) == 0 {
+		return ErrInvalidRequest
 	}
-	key := descriptor.ToolID + "\x00" + descriptor.Version
+	clones := make([]ToolDescriptor, len(descriptors))
+	keys := make([]string, len(descriptors))
+	seen := make(map[string]struct{}, len(descriptors))
+	for index, descriptor := range descriptors {
+		if err := descriptor.Validate(); err != nil {
+			return err
+		}
+		key := descriptor.ToolID + "\x00" + descriptor.Version
+		if _, duplicate := seen[key]; duplicate {
+			return fmt.Errorf("%w: %s", ErrPolicyDenied, key)
+		}
+		seen[key] = struct{}{}
+		keys[index] = key
+		clones[index] = cloneDescriptor(descriptor)
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if _, exists := b.descriptors[key]; exists {
-		return fmt.Errorf("%w: %s", ErrPolicyDenied, key)
+	for _, key := range keys {
+		if _, exists := b.descriptors[key]; exists {
+			return fmt.Errorf("%w: %s", ErrPolicyDenied, key)
+		}
 	}
-	b.descriptors[key] = cloneDescriptor(descriptor)
+	for index, key := range keys {
+		b.descriptors[key] = clones[index]
+	}
 	return nil
 }
 
@@ -92,14 +146,35 @@ func (b *Broker) List() []ToolDescriptor {
 	return result
 }
 
-func (b *Broker) Invoke(ctx context.Context, request ToolRequest) (ToolResult, error) {
-	if request.RequestID == "" || request.TenantID == "" || request.ProjectID == "" || request.TaskID == "" || request.Principal.ID == "" || request.Principal.Type == "" || request.Principal.Role == "" || request.ToolID == "" || request.Version == "" || request.PolicyVersion == "" || request.BudgetAccountID == "" || !json.Valid(request.Parameters) {
+func (b *Broker) Invoke(ctx context.Context, request ToolRequest) (result ToolResult, err error) {
+	if ctx == nil || !safeBrokerOpaque(request.RequestID, 512) || !safeBrokerID(request.TenantID) || !safeBrokerID(request.ProjectID) || !safeBrokerID(request.TaskID) || !safeBrokerOpaque(request.Principal.ID, 512) || !safeBrokerOpaque(request.Principal.Type, 128) || !safeBrokerOpaque(request.Principal.Role, 128) || !safeBrokerOpaque(request.ToolID, 128) || !safeBrokerOpaque(request.Version, 64) || !safeBrokerOpaque(request.PolicyVersion, 256) || !safeBrokerID(request.BudgetAccountID) || len(request.Parameters) > maxInputBytes || !json.Valid(request.Parameters) {
 		return ToolResult{}, ErrInvalidRequest
 	}
+	if err := ctx.Err(); err != nil {
+		return ToolResult{}, err
+	}
+	digestInput, err := json.Marshal(struct {
+		ToolID     string          `json:"toolId"`
+		Version    string          `json:"version"`
+		Parameters json.RawMessage `json:"parameters"`
+	}{ToolID: request.ToolID, Version: request.Version, Parameters: request.Parameters})
+	if err != nil {
+		return ToolResult{}, ErrInvalidRequest
+	}
+	digest, err := canonicaljson.Digest(digestInput)
+	if err != nil {
+		return ToolResult{}, ErrInvalidRequest
+	}
+	cacheKey := request.TenantID + "\x00" + request.ProjectID + "\x00" + request.TaskID + "\x00" + request.Principal.ID + "\x00" + request.RequestID
 	descriptor, found := b.descriptor(request.ToolID, request.Version)
 	if !found {
 		return ToolResult{}, ErrUnknownTool
 	}
+	defer func() {
+		if err != nil {
+			b.recordFailedAttempt(request, descriptor, err)
+		}
+	}()
 	if !containsRole(descriptor.AllowedRoles, request.Principal.Role) {
 		return ToolResult{}, ErrPolicyDenied
 	}
@@ -132,6 +207,31 @@ func (b *Broker) Invoke(ctx context.Context, request ToolRequest) (ToolResult, e
 	if err := validateSchema(descriptor.InputSchemaRef, descriptor.InputSchema, request.Parameters); err != nil {
 		return ToolResult{}, err
 	}
+	// Authorization is deliberately evaluated before serving an idempotency
+	// replay. A revoked lease or policy must not turn the cache into an access
+	// control bypass, even though the underlying side effect remains coalesced.
+	if result, cached, conflict := b.cached(cacheKey, digest); cached || conflict {
+		if conflict {
+			return ToolResult{}, ErrIdempotencyConflict
+		}
+		return result, nil
+	}
+	call, owner, conflict := b.beginInvocation(cacheKey, digest)
+	if conflict {
+		return ToolResult{}, ErrIdempotencyConflict
+	}
+	if !owner {
+		select {
+		case <-call.done:
+			return cloneResult(call.result), call.err
+		case <-ctx.Done():
+			return ToolResult{}, ctx.Err()
+		}
+	}
+	defer func() { b.finishInvocation(cacheKey, call, result, err) }()
+	if !b.allowRate(descriptor, request, b.clock().UTC()) {
+		return ToolResult{}, ErrRateLimited
+	}
 	if descriptor.SideEffect != SideEffectNone {
 		if b.revalidate == nil {
 			return ToolResult{}, ErrPolicyDenied
@@ -147,21 +247,30 @@ func (b *Broker) Invoke(ctx context.Context, request ToolRequest) (ToolResult, e
 	if b.executor == nil {
 		return ToolResult{}, ErrPolicyDenied
 	}
+	if descriptor.TimeoutSeconds <= 0 {
+		return ToolResult{}, ErrInvalidRequest
+	}
+	executionCtx, cancel := context.WithTimeout(ctx, time.Duration(descriptor.TimeoutSeconds)*time.Second)
+	defer cancel()
+	executionCtx = context.WithValue(executionCtx, invocationRequestIDContextKey{}, request.RequestID)
 	var output []byte
 	if descriptor.NetworkAccess != NetworkNone {
 		networkExecutor, ok := b.executor.(NetworkToolExecutor)
 		if !ok {
 			return ToolResult{}, ErrNetworkDenied
 		}
-		client, networkErr := b.network.Client(ctx, request.Parameters, descriptor.AllowedNetworkTargets)
+		client, networkErr := b.network.Client(executionCtx, request.Parameters, descriptor.AllowedNetworkTargets)
 		if networkErr != nil {
 			return ToolResult{}, networkErr
 		}
-		output, err = networkExecutor.ExecuteNetwork(ctx, descriptor, append([]byte(nil), request.Parameters...), client)
+		output, err = networkExecutor.ExecuteNetwork(executionCtx, descriptor, append([]byte(nil), request.Parameters...), client)
 	} else {
-		output, err = b.executor.Execute(ctx, descriptor, append([]byte(nil), request.Parameters...))
+		output, err = b.executor.Execute(executionCtx, descriptor, append([]byte(nil), request.Parameters...))
 	}
 	if err != nil {
+		if executionCtx.Err() != nil {
+			return ToolResult{}, executionCtx.Err()
+		}
 		return ToolResult{}, redactError(err)
 	}
 	redactedOutput, redacted := redact(output)
@@ -175,21 +284,159 @@ func (b *Broker) Invoke(ctx context.Context, request ToolRequest) (ToolResult, e
 			return ToolResult{}, artifactErr
 		}
 		output = nil
-		result := ToolResult{InvocationID: stableInvocationID(request), Artifact: &artifact, OutputSHA256: artifact.SHA256, TrustLevel: "UNTRUSTED", Redacted: redacted}
-		if err := b.record(ctx, request, descriptor, decision, result); err != nil {
+		result = ToolResult{InvocationID: stableInvocationID(request), Artifact: &artifact, OutputSHA256: artifact.SHA256, TrustLevel: "UNTRUSTED", Redacted: redacted}
+		if err := b.record(executionCtx, request, descriptor, decision, result); err != nil {
 			return ToolResult{}, err
 		}
+		b.storeCached(cacheKey, digest, result)
 		return result, nil
 	}
 	if err := validateSchema(descriptor.OutputSchemaRef, descriptor.OutputSchema, output); err != nil {
 		return ToolResult{}, err
 	}
 	sum := sha256.Sum256(output)
-	result := ToolResult{InvocationID: stableInvocationID(request), Output: output, OutputSHA256: "sha256:" + hex.EncodeToString(sum[:]), TrustLevel: "UNTRUSTED", Redacted: redacted}
-	if err := b.record(ctx, request, descriptor, decision, result); err != nil {
+	result = ToolResult{InvocationID: stableInvocationID(request), Output: output, OutputSHA256: "sha256:" + hex.EncodeToString(sum[:]), TrustLevel: "UNTRUSTED", Redacted: redacted}
+	if err := b.record(executionCtx, request, descriptor, decision, result); err != nil {
 		return ToolResult{}, err
 	}
+	b.storeCached(cacheKey, digest, result)
 	return result, nil
+}
+
+func (b *Broker) beginInvocation(key, digest string) (*inFlightInvocation, bool, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if existing, ok := b.inflight[key]; ok {
+		return existing, false, existing.digest != digest
+	}
+	call := &inFlightInvocation{digest: digest, done: make(chan struct{})}
+	b.inflight[key] = call
+	return call, true, false
+}
+
+func (b *Broker) finishInvocation(key string, call *inFlightInvocation, result ToolResult, err error) {
+	b.mu.Lock()
+	call.result = cloneResult(result)
+	call.err = err
+	delete(b.inflight, key)
+	close(call.done)
+	b.mu.Unlock()
+}
+
+func (b *Broker) cached(key, digest string) (ToolResult, bool, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	entry, ok := b.cache[key]
+	if !ok {
+		return ToolResult{}, false, false
+	}
+	if b.clock().UTC().Sub(entry.createdAt) > cacheTTL {
+		delete(b.cache, key)
+		return ToolResult{}, false, false
+	}
+	if entry.digest != digest {
+		return ToolResult{}, false, true
+	}
+	return cloneResult(entry.result), true, false
+}
+
+func (b *Broker) storeCached(key, digest string, result ToolResult) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.cache) >= maxCachedCalls {
+		var oldestKey string
+		var oldest time.Time
+		for candidate, entry := range b.cache {
+			if oldestKey == "" || entry.createdAt.Before(oldest) {
+				oldestKey, oldest = candidate, entry.createdAt
+			}
+		}
+		if oldestKey != "" {
+			delete(b.cache, oldestKey)
+		}
+	}
+	b.cache[key] = cachedInvocation{digest: digest, result: cloneResult(result), createdAt: b.clock().UTC()}
+}
+
+func cloneResult(result ToolResult) ToolResult {
+	result.Output = append([]byte(nil), result.Output...)
+	if result.Artifact != nil {
+		artifact := *result.Artifact
+		result.Artifact = &artifact
+	}
+	return result
+}
+
+func (b *Broker) allowRate(descriptor ToolDescriptor, request ToolRequest, now time.Time) bool {
+	limit, window, ok := parseRateLimit(descriptor.RateLimit)
+	if !ok || limit <= 0 || window <= 0 {
+		return false
+	}
+	key := request.TenantID + "\x00" + request.Principal.ID + "\x00" + descriptor.ToolID + "\x00" + descriptor.Version
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, exists := b.rate[key]; !exists && len(b.rate) >= maxRateWindows {
+		var oldestKey string
+		var oldest time.Time
+		for candidate, entry := range b.rate {
+			if oldestKey == "" || entry.started.Before(oldest) {
+				oldestKey, oldest = candidate, entry.started
+			}
+		}
+		if oldestKey != "" {
+			delete(b.rate, oldestKey)
+		}
+	}
+	current := b.rate[key]
+	if current.started.IsZero() || now.Sub(current.started) >= window {
+		current = rateWindow{started: now, count: 0}
+	}
+	if current.count >= limit {
+		b.rate[key] = current
+		return false
+	}
+	current.count++
+	b.rate[key] = current
+	return true
+}
+
+func parseRateLimit(value string) (int, time.Duration, bool) {
+	parts := strings.Split(strings.TrimSpace(value), "/")
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	limit, err := strconv.Atoi(parts[0])
+	if err != nil || limit < 1 || limit > 100000 {
+		return 0, 0, false
+	}
+	var window time.Duration
+	switch strings.ToLower(parts[1]) {
+	case "s", "sec", "second":
+		window = time.Second
+	case "m", "min", "minute":
+		window = time.Minute
+	case "h", "hour":
+		window = time.Hour
+	default:
+		return 0, 0, false
+	}
+	return limit, window, true
+}
+
+func safeBrokerID(value string) bool {
+	return safeBrokerOpaque(value, 256) && !strings.ContainsAny(value, "/\\")
+}
+
+func safeBrokerOpaque(value string, limit int) bool {
+	if value == "" || len(value) > limit || strings.ContainsAny(value, "\r\n\x00") {
+		return false
+	}
+	for _, character := range value {
+		if character < 0x20 || character == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 func (b *Broker) descriptor(toolID, version string) (ToolDescriptor, bool) {
@@ -206,14 +453,47 @@ func (b *Broker) record(ctx context.Context, request ToolRequest, descriptor Too
 		}
 		return nil
 	}
-	if err := b.recorder.Record(ctx, Invocation{InvocationID: result.InvocationID, RequestID: request.RequestID, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, PrincipalID: request.Principal.ID, ToolID: descriptor.ToolID, ToolVersion: descriptor.Version, PolicyVersion: decision.PolicyVersion, OutputSHA256: result.OutputSHA256, TrustLevel: result.TrustLevel, Redacted: result.Redacted}); err != nil {
+	inputDigest, err := canonicaljson.Digest(request.Parameters)
+	if err != nil {
+		return ErrInvocationRecord
+	}
+	occurredAt := b.clock().UTC()
+	if err := b.recorder.Record(ctx, Invocation{InvocationID: result.InvocationID, RequestID: request.RequestID, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, PrincipalID: request.Principal.ID, ToolID: descriptor.ToolID, ToolVersion: descriptor.Version, Risk: descriptor.Risk, InputSHA256: inputDigest, Decision: "ALLOW", PolicyVersion: decision.PolicyVersion, OutputSHA256: result.OutputSHA256, TrustLevel: result.TrustLevel, Redacted: result.Redacted, Status: "SUCCEEDED", StartedAt: occurredAt, OccurredAt: occurredAt}); err != nil {
 		return ErrInvocationRecord
 	}
 	return nil
 }
 
+func (b *Broker) recordFailedAttempt(request ToolRequest, descriptor ToolDescriptor, invocationErr error) {
+	recorder, ok := b.recorder.(InvocationAttemptRecorder)
+	if !ok {
+		return
+	}
+	reason := "EXECUTION_FAILED"
+	switch {
+	case errors.Is(invocationErr, ErrPolicyDenied):
+		reason = "POLICY_DENIED"
+	case errors.Is(invocationErr, ErrLeaseInvalid):
+		reason = "LEASE_INVALID"
+	case errors.Is(invocationErr, ErrApprovalRequired):
+		reason = "APPROVAL_REQUIRED"
+	case errors.Is(invocationErr, ErrRateLimited):
+		reason = "RATE_LIMITED"
+	case errors.Is(invocationErr, context.Canceled):
+		reason = "CANCELLED"
+	case errors.Is(invocationErr, context.DeadlineExceeded):
+		reason = "DEADLINE_EXCEEDED"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_ = recorder.RecordAttempt(ctx, InvocationAttempt{InvocationID: stableInvocationID(request), RequestID: request.RequestID, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, PrincipalID: request.Principal.ID, ToolID: descriptor.ToolID, ToolVersion: descriptor.Version, Status: "FAILED", ReasonCode: reason, OccurredAt: b.clock().UTC()})
+}
+
 func (d ToolDescriptor) Validate() error {
-	if d.ToolID == "" || d.Version == "" || d.MCPServerID == "" || d.InputSchemaRef == "" || d.OutputSchemaRef == "" || d.RateLimit == "" || d.TimeoutSeconds <= 0 || d.MaxOutputBytes <= 0 || len(d.AllowedRoles) == 0 {
+	if !safeBrokerOpaque(d.ToolID, 128) || !safeBrokerOpaque(d.Version, 64) || !safeBrokerID(d.MCPServerID) || !safeBrokerOpaque(d.InputSchemaRef, 1024) || !safeBrokerOpaque(d.OutputSchemaRef, 1024) || d.TimeoutSeconds <= 0 || d.TimeoutSeconds > 3600 || d.MaxOutputBytes <= 0 || d.MaxOutputBytes > maxOutputBytes || len(d.AllowedRoles) == 0 || len(d.AllowedRoles) > 64 || len(d.InputSchema) == 0 || len(d.InputSchema) > MaxSchemaBytes || len(d.OutputSchema) == 0 || len(d.OutputSchema) > MaxSchemaBytes || !json.Valid(d.InputSchema) || !json.Valid(d.OutputSchema) {
+		return ErrInvalidRequest
+	}
+	if _, _, ok := parseRateLimit(d.RateLimit); !ok {
 		return ErrInvalidRequest
 	}
 	if d.Risk != RiskLow && d.Risk != RiskMedium && d.Risk != RiskHigh && d.Risk != RiskCritical {
@@ -223,6 +503,12 @@ func (d ToolDescriptor) Validate() error {
 		return ErrInvalidRequest
 	}
 	if d.NetworkAccess != NetworkNone && d.NetworkAccess != NetworkAllowlist {
+		return ErrInvalidRequest
+	}
+	if d.FilesystemAccess != FilesystemNone && d.FilesystemAccess != FilesystemRead && d.FilesystemAccess != FilesystemScopedWrite {
+		return ErrInvalidRequest
+	}
+	if d.RequiresApproval != ApprovalNever && d.RequiresApproval != ApprovalPolicy && d.RequiresApproval != ApprovalAlways {
 		return ErrInvalidRequest
 	}
 	if d.NetworkAccess == NetworkNone && len(d.AllowedNetworkTargets) != 0 || d.NetworkAccess == NetworkAllowlist && len(d.AllowedNetworkTargets) == 0 {
@@ -239,6 +525,16 @@ func (d ToolDescriptor) Validate() error {
 				return ErrInvalidRequest
 			}
 		}
+	}
+	seenRoles := make(map[string]struct{}, len(d.AllowedRoles))
+	for _, role := range d.AllowedRoles {
+		if !safeBrokerOpaque(role, 128) {
+			return ErrInvalidRequest
+		}
+		if _, duplicate := seenRoles[role]; duplicate {
+			return ErrInvalidRequest
+		}
+		seenRoles[role] = struct{}{}
 	}
 	return nil
 }
@@ -349,6 +645,11 @@ func redact(value []byte) ([]byte, bool) {
 func redactError(err error) error {
 	if err == nil {
 		return nil
+	}
+	for _, known := range []error{ErrInvalidRequest, ErrPolicyDenied, ErrLeaseInvalid, ErrApprovalRequired, ErrOutputTooLarge, ErrNetworkDenied, ErrInvocationRecord, ErrIdempotencyConflict, ErrRateLimited, ErrMCPConfig, ErrMCPTransport} {
+		if errors.Is(err, known) {
+			return known
+		}
 	}
 	value, _ := redact([]byte(err.Error()))
 	return errors.New(string(value))

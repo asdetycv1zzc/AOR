@@ -60,6 +60,7 @@ compose-check-secrets:
 	test -s deploy/compose/secrets/minio_root_password
 	test -s deploy/compose/secrets/model_provider_openai_key
 	test -s deploy/compose/secrets/model_provider_deepseek_key
+	test -s deploy/compose/secrets/lease_signing_key
 
 compose-check:
 	$(COMPOSE) config --quiet

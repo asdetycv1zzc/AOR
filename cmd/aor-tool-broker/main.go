@@ -5,10 +5,11 @@ import (
 	"os"
 
 	"github.com/akimisaka/aor/internal/command"
+	"github.com/akimisaka/aor/internal/servicebootstrap"
 )
 
 func main() {
-	if err := command.Run("aor-tool-broker"); err != nil {
+	if err := command.Run("aor-tool-broker", servicebootstrap.ToolBroker); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
