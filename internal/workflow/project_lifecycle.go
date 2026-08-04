@@ -188,7 +188,7 @@ func ProjectLifecycleWorkflow(ctx temporalworkflow.Context, input ProjectLifecyc
 				snapshot.BufferedEvents = len(buffer)
 				return snapshot, nil
 			}
-				if appliedThisRun >= lifecycleHistoryLimit && len(buffer) == 0 {
+			if appliedThisRun >= lifecycleHistoryLimit && len(buffer) == 0 {
 				continuation := ProjectLifecycleInput{
 					TenantID: snapshot.TenantID, ProjectID: snapshot.ProjectID, CreatedBy: input.CreatedBy,
 					GoalAgentCount: input.GoalAgentCount, State: snapshot.State, ProjectVersion: snapshot.ProjectVersion,
