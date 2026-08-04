@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -102,7 +103,11 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 	projectID := parts[0]
 	if len(parts) == 1 {
 		if id, commandName, found := strings.Cut(projectID, ":"); found {
-			if request.Method == http.MethodPost && id != "" && commandName != "" {
+			if !validProjectID(id) {
+				writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+				return
+			}
+			if request.Method == http.MethodPost && validProjectID(id) && commandName != "" {
 				handler.commandProject(response, request, principal, id, commandName)
 				return
 			}
@@ -111,6 +116,10 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 		}
 	}
 	if len(parts) == 1 {
+		if !validProjectID(projectID) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
 		if request.Method == http.MethodGet {
 			handler.getProject(response, request, principal, projectID)
 			return
@@ -119,6 +128,10 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 		return
 	}
 	if len(parts) == 2 && parts[1] == "state" {
+		if !validProjectID(projectID) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
 		if request.Method == http.MethodGet {
 			handler.getProject(response, request, principal, projectID)
 			return
@@ -127,6 +140,10 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 		return
 	}
 	if len(parts) == 2 && parts[1] == "events" {
+		if !validProjectID(projectID) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
 		if request.Method == http.MethodGet {
 			handler.projectEvents(response, request, principal, projectID)
 			return
@@ -135,6 +152,10 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 		return
 	}
 	if len(parts) == 3 && parts[1] == "tasks" {
+		if !validProjectID(projectID) || !validAPIIdentifier(parts[2]) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
 		if request.Method == http.MethodGet {
 			handler.getTask(response, request, principal, projectID, parts[2])
 			return
@@ -284,13 +305,40 @@ func (handler *Handler) projectEvents(response http.ResponseWriter, request *htt
 		writeError(response, request, normalizeError(err))
 		return
 	}
+	after := request.URL.Query().Get("after")
+	if len(after) > 512 || strings.ContainsAny(after, "\r\n\x00") {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "event cursor"}))
+		return
+	}
+	projectEvents := make([]eventing.DomainEvent, 0, len(events))
+	for _, event := range events {
+		if event.ProjectID == projectID {
+			projectEvents = append(projectEvents, event)
+		}
+	}
+	start := 0
+	if after != "" {
+		foundCursor := false
+		for index, event := range projectEvents {
+			if event.EventID == after {
+				start = index + 1
+				foundCursor = true
+				break
+			}
+		}
+		if !foundCursor {
+			writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "event cursor"}))
+			return
+		}
+	}
 	response.Header().Set("Content-Type", "text/event-stream")
 	response.Header().Set("Cache-Control", "no-store")
+	response.Header().Set("X-Accel-Buffering", "no")
 	response.WriteHeader(http.StatusOK)
 	encoder := json.NewEncoder(response)
-	for _, event := range events {
-		if event.ProjectID != projectID {
-			continue
+	for _, event := range projectEvents[start:] {
+		if !safeSSEField(event.EventID) || !safeSSEField(event.Type) {
+			return
 		}
 		_, _ = io.WriteString(response, "id: "+event.EventID+"\n")
 		_, _ = io.WriteString(response, "event: "+event.Type+"\n")
@@ -299,6 +347,9 @@ func (handler *Handler) projectEvents(response http.ResponseWriter, request *htt
 			return
 		}
 		_, _ = io.WriteString(response, "\n")
+		if flusher, ok := response.(http.Flusher); ok {
+			flusher.Flush()
+		}
 	}
 }
 
@@ -363,7 +414,8 @@ func splitProjectPath(path string) ([]string, bool) {
 }
 
 func decodeJSON(request *http.Request, target any) error {
-	if request.Header.Get("Content-Type") != "application/json" {
+	contentType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || contentType != "application/json" {
 		return aorerrors.New(aorerrors.CodeInvalidArgument, "", nil)
 	}
 	reader := http.MaxBytesReader(nil, request.Body, maximumRequestBytes)
@@ -405,6 +457,8 @@ func mapProjectCommand(name string) (state.ProjectCommandType, bool) {
 		return state.ProjectCommandResume, true
 	case "abort":
 		return state.ProjectCommandAbort, true
+	case "archive", "request-deletion", "approve-release":
+		return "", false
 	default:
 		return "", false
 	}
@@ -441,7 +495,31 @@ func writeJSON(response http.ResponseWriter, status int, value any) {
 }
 
 func writeMethodNotAllowed(response http.ResponseWriter, request *http.Request) {
-	writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "http method"}))
+	response.Header().Set("Allow", "GET, POST")
+	problem := aorerrors.New(aorerrors.CodeInvalidArgument, request.Header.Get("X-Request-ID"), map[string]any{"scope": "http method"}).Problem()
+	problem.Status = http.StatusMethodNotAllowed
+	problem.Instance = request.URL.Path
+	writeJSON(response, http.StatusMethodNotAllowed, problem)
+}
+
+func validProjectID(value string) bool {
+	return uuidPattern.MatchString(value)
+}
+
+func validAPIIdentifier(value string) bool {
+	if len(value) < 3 || len(value) > 128 || value[0] < 'A' || value[0] > 'z' || value[0] > 'Z' && value[0] < 'a' {
+		return false
+	}
+	for _, character := range value[1:] {
+		if (character < 'A' || character > 'Z') && (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '_' && character != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func safeSSEField(value string) bool {
+	return value != "" && !strings.ContainsAny(value, "\r\n\x00")
 }
 
 func writeError(response http.ResponseWriter, request *http.Request, err error) {

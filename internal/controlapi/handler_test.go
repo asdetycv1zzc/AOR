@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -156,6 +157,37 @@ func TestAuthenticationAndPolicyFailuresAreFailClosed(t *testing.T) {
 	})
 	if unavailable.Code != http.StatusServiceUnavailable || bytes.Contains(unavailable.Body.Bytes(), []byte("secret detail")) {
 		t.Fatalf("unavailable status=%d body=%s", unavailable.Code, unavailable.Body.String())
+	}
+}
+
+func TestProjectEventsResumeFromCursorAndRejectInvalidRoutes(t *testing.T) {
+	handler, store, _ := newTestHandler(t)
+	project := createTestProject(t, handler)
+	paused := performRequest(handler, http.MethodPost, "/v1/projects/"+project.ID+":pause", []byte(`{"expectedVersion":1}`), map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "pause-for-events", "If-Match": `"v1"`,
+	})
+	if paused.Code != http.StatusAccepted {
+		t.Fatalf("pause status=%d body=%s", paused.Code, paused.Body.String())
+	}
+	events, err := store.ListEvents(context.Background(), testTenantID)
+	if err != nil || len(events) != 2 {
+		t.Fatalf("events=%d err=%v", len(events), err)
+	}
+	stream := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/events?after="+events[0].EventID, nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if stream.Code != http.StatusOK || !strings.Contains(stream.Body.String(), events[1].EventID) || strings.Contains(stream.Body.String(), events[0].EventID) {
+		t.Fatalf("resumed stream status=%d body=%s", stream.Code, stream.Body.String())
+	}
+	unknownCursor := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/events?after=missing", nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if unknownCursor.Code != http.StatusBadRequest {
+		t.Fatalf("unknown cursor status=%d body=%s", unknownCursor.Code, unknownCursor.Body.String())
+	}
+	invalidRoute := performRequest(handler, http.MethodGet, "/v1/projects/not-a-uuid", nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if invalidRoute.Code != http.StatusNotFound {
+		t.Fatalf("invalid route status=%d body=%s", invalidRoute.Code, invalidRoute.Body.String())
+	}
+	method := performRequest(handler, http.MethodDelete, "/v1/projects/"+project.ID, nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if method.Code != http.StatusMethodNotAllowed || method.Header().Get("Allow") == "" {
+		t.Fatalf("method status=%d allow=%q body=%s", method.Code, method.Header().Get("Allow"), method.Body.String())
 	}
 }
 
