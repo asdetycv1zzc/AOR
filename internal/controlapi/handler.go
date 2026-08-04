@@ -457,7 +457,9 @@ func mapProjectCommand(name string) (state.ProjectCommandType, bool) {
 		return state.ProjectCommandResume, true
 	case "abort":
 		return state.ProjectCommandAbort, true
-	case "archive", "request-deletion", "approve-release":
+	case "archive":
+		return state.ProjectCommandArchive, true
+	case "request-deletion", "approve-release":
 		return "", false
 	default:
 		return "", false

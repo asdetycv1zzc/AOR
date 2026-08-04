@@ -135,6 +135,36 @@ func TestProjectReadAndCommandRequirePolicyAndVersion(t *testing.T) {
 	}
 }
 
+func TestProjectArchiveRequiresAbortedOrCompletedState(t *testing.T) {
+	handler, _, _ := newTestHandler(t)
+	project := createTestProject(t, handler)
+	headers := func(key, etag string) map[string]string {
+		return map[string]string{
+			"Authorization": "Bearer " + testBearer, "Content-Type": "application/json",
+			"Idempotency-Key": key, "If-Match": etag,
+		}
+	}
+	active := performRequest(handler, http.MethodPost, "/v1/projects/"+project.ID+":archive", []byte(`{"expectedVersion":1}`), headers("archive-active", `"v1"`))
+	if active.Code != http.StatusConflict {
+		t.Fatalf("active archive status=%d body=%s", active.Code, active.Body.String())
+	}
+	aborted := performRequest(handler, http.MethodPost, "/v1/projects/"+project.ID+":abort", []byte(`{"expectedVersion":1}`), headers("abort-before-archive", `"v1"`))
+	if aborted.Code != http.StatusAccepted {
+		t.Fatalf("abort status=%d body=%s", aborted.Code, aborted.Body.String())
+	}
+	archived := performRequest(handler, http.MethodPost, "/v1/projects/"+project.ID+":archive", []byte(`{"expectedVersion":2}`), headers("archive-aborted", `"v2"`))
+	if archived.Code != http.StatusAccepted || archived.Header().Get("ETag") != `"v3"` {
+		t.Fatalf("archive status=%d etag=%q body=%s", archived.Code, archived.Header().Get("ETag"), archived.Body.String())
+	}
+	var result state.Project
+	if err := json.Unmarshal(archived.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.State != "ARCHIVED" || result.Version != 3 {
+		t.Fatalf("archived project = %#v", result)
+	}
+}
+
 func TestAuthenticationAndPolicyFailuresAreFailClosed(t *testing.T) {
 	handler, _, authorizer := newTestHandler(t)
 	unauthenticated := performRequest(handler, http.MethodPost, "/v1/projects", []byte(`{}`), map[string]string{"Content-Type": "application/json", "Idempotency-Key": "key"})

@@ -425,7 +425,9 @@ VALUES ($1::uuid, $2, 'PROJECT', $2, 'USD', 0, 0, 0, 0, transaction_timestamp(),
 	}
 	result, err := tx.ExecContext(ctx, `
 UPDATE projects
-SET state = $3, state_version = $4, updated_at = transaction_timestamp()
+SET state = $3, state_version = $4,
+    archived_at = CASE WHEN $3 = 'ARCHIVED' THEN transaction_timestamp() ELSE archived_at END,
+    updated_at = transaction_timestamp()
 WHERE tenant_id = $1::uuid AND id = $2::uuid AND state_version = $5`,
 		request.TenantID, projection.ID, projection.State, update.NextVersion, update.ExpectedVersion)
 	if err == nil {

@@ -65,6 +65,18 @@ func TestProjectCannotCompleteWithoutReleaseApprovalAndEvidence(t *testing.T) {
 	}
 }
 
+func TestProjectArchiveRequiresTerminalOutcome(t *testing.T) {
+	project := createProject(t)
+	if _, err := DecideProject(project, ProjectCommand{Type: ProjectCommandArchive, ActorID: "usr_1", At: testTime()}); err == nil || err.Code != aorerrors.CodeInvalidStateTransition {
+		t.Fatalf("active project archive = %#v", err)
+	}
+	project = applyProject(t, project, ProjectCommand{Type: ProjectCommandAbort, ActorID: "usr_1", At: testTime()})
+	project = applyProject(t, project, ProjectCommand{Type: ProjectCommandArchive, ActorID: "usr_1", At: testTime()})
+	if project.State != contracts.ProjectArchived {
+		t.Fatalf("archived state = %s", project.State)
+	}
+}
+
 func TestOneHundredGoalRoundsNeverAutoApproveOrPlan(t *testing.T) {
 	project := createProject(t)
 	for version := 1; version <= 100; version++ {

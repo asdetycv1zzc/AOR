@@ -65,6 +65,7 @@ const (
 	ProjectCommandPause                ProjectCommandType = "PAUSE_PROJECT"
 	ProjectCommandResume               ProjectCommandType = "RESUME_PROJECT"
 	ProjectCommandAbort                ProjectCommandType = "ABORT_PROJECT"
+	ProjectCommandArchive              ProjectCommandType = "ARCHIVE_PROJECT"
 )
 
 type ProjectCommand struct {
@@ -244,6 +245,12 @@ func DecideProject(current Project, command ProjectCommand) (ProjectEvent, *aore
 		}
 		next.State = contracts.ProjectAborted
 		eventType = "io.aor.project.aborted.v1"
+	case ProjectCommandArchive:
+		if current.State != contracts.ProjectCompleted && current.State != contracts.ProjectAborted {
+			return ProjectEvent{}, transitionProject(command, current.State)
+		}
+		next.State = contracts.ProjectArchived
+		eventType = "io.aor.project.archived.v1"
 	default:
 		return ProjectEvent{}, invalidProject(command, "unknown command")
 	}
