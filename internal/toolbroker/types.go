@@ -140,6 +140,19 @@ type LeaseValidation struct {
 	At              time.Time
 }
 
+type executionAuthorizationContextKey struct{}
+
+// ExecutionAuthorizationFromContext returns the broker-validated lease binding
+// supplied to an in-process tool. External MCP transports cannot manufacture
+// this private context value.
+func ExecutionAuthorizationFromContext(ctx context.Context) (LeaseValidation, bool) {
+	if ctx == nil {
+		return LeaseValidation{}, false
+	}
+	validation, ok := ctx.Value(executionAuthorizationContextKey{}).(LeaseValidation)
+	return validation, ok
+}
+
 type PolicyDecision struct {
 	Allow         bool
 	PolicyVersion string

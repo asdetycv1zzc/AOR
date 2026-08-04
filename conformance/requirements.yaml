@@ -886,9 +886,14 @@ requirements:
     status: implemented
   - id: AOR-ACC-051
     title: High and critical dependency vulnerabilities are zero at release
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - go.mod
+      - go.sum
+      - deploy/compose/Dockerfile
+      - .github/workflows/ci.yml
+    tests:
+      - .github/workflows/ci.yml
+    evidenceType: pinned-govulncheck+release-time-container-and-dependency-scan-required
     owner: security
     status: planned
   - id: AOR-ACC-052

@@ -18,7 +18,7 @@ x-aor-common: &aor-common
 services:
   aor-sandbox-runtime:
     profiles: [aor]
-    image: golang:1.26.0-alpine3.23@sha256:d4c4845f5d60c6a974c6000ce58ae079328d03ab7f721a0734277e69905473e5
+    image: golang:1.26.5-alpine3.23@sha256:622e56dbc11a8cfe87cafa2331e9a201877271cbff918af53d3be315f3da88cc
     restart: "no"
     user: "65532:65532"
     entrypoint: [go]
@@ -40,7 +40,7 @@ services:
     entrypoint: [/bin/sh, /usr/local/bin/aor-sandbox-preflight]
     environment:
       AOR_SANDBOX_ENGINE_ENDPOINT: unix:///run/aor-sandbox/engine.sock
-      AOR_SANDBOX_IMAGE_REFERENCE: golang:1.26.0-alpine3.23@sha256:d4c4845f5d60c6a974c6000ce58ae079328d03ab7f721a0734277e69905473e5
+      AOR_SANDBOX_IMAGE_REFERENCE: golang:1.26.5-alpine3.23@sha256:622e56dbc11a8cfe87cafa2331e9a201877271cbff918af53d3be315f3da88cc
       AOR_SANDBOX_RUNTIME: runc
       AOR_SANDBOX_SECCOMP_PROFILE: builtin
       AOR_SANDBOX_MANDATORY_POLICY: apparmor=aor-sandbox
@@ -552,7 +552,7 @@ services:
       AOR_SANDBOX_WINDOWS_NETWORK_ISOLATION: NONE
       AOR_ALLOW_WINDOWS_UNTRUSTED: "false"
       AOR_SANDBOX_ENGINE_ENDPOINT: unix:///run/aor-sandbox/engine.sock
-      AOR_SANDBOX_IMAGE_REFERENCE: golang:1.26.0-alpine3.23@sha256:d4c4845f5d60c6a974c6000ce58ae079328d03ab7f721a0734277e69905473e5
+      AOR_SANDBOX_IMAGE_REFERENCE: golang:1.26.5-alpine3.23@sha256:622e56dbc11a8cfe87cafa2331e9a201877271cbff918af53d3be315f3da88cc
       AOR_SANDBOX_RUNTIME: runc
       AOR_SANDBOX_SECCOMP_PROFILE: builtin
       AOR_SANDBOX_MANDATORY_POLICY: apparmor=aor-sandbox

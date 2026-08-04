@@ -243,6 +243,7 @@ func (b *Broker) Invoke(ctx context.Context, request ToolRequest) (result ToolRe
 	executionCtx, cancel := context.WithTimeout(ctx, time.Duration(descriptor.TimeoutSeconds)*time.Second)
 	defer cancel()
 	executionCtx = context.WithValue(executionCtx, invocationRequestIDContextKey{}, request.RequestID)
+	executionCtx = context.WithValue(executionCtx, executionAuthorizationContextKey{}, validation)
 	var output []byte
 	if descriptor.NetworkAccess != NetworkNone {
 		networkExecutor, ok := b.executor.(NetworkToolExecutor)

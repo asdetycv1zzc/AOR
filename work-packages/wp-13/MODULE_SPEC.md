@@ -3,7 +3,7 @@
 - Task ID: `WP-13`
 - Phase: `6`
 - Dependencies: `WP-02`
-- Dependency baselines: Go `1.26.0`, OpenTelemetry Collector configuration, Prometheus rules, Grafana dashboard schema `39`
+- Dependency baselines: Go `1.26.5`, OpenTelemetry Collector configuration, Prometheus rules, Grafana dashboard schema `39`
 - Data classification: application telemetry `INTERNAL`; security audit records `CONFIDENTIAL`
 - Execution platform: `LINUX`
 - Sandbox level: `CONTAINER`

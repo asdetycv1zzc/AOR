@@ -69,6 +69,16 @@ type testExecutor struct {
 	calls  int
 }
 
+type authorizationCapturingExecutor struct {
+	validation LeaseValidation
+	found      bool
+}
+
+func (executor *authorizationCapturingExecutor) Execute(ctx context.Context, _ ToolDescriptor, _ []byte) ([]byte, error) {
+	executor.validation, executor.found = ExecutionAuthorizationFromContext(ctx)
+	return []byte(`{"ok":true}`), nil
+}
+
 func (e *testExecutor) Execute(context.Context, ToolDescriptor, []byte) ([]byte, error) {
 	e.calls++
 	return append([]byte(nil), e.output...), nil
@@ -114,6 +124,23 @@ func TestBrokerStableListAndInvocation(t *testing.T) {
 	parameterDigest, _ := canonicaljson.Digest([]byte(`{}`))
 	if len(lease.validations) != 1 || lease.validations[0].ParameterSHA256 != parameterDigest || lease.validations[0].ToolVersion != "1.0.0" || lease.validations[0].Resource != "tool://repo/repo.read@1.0.0" || !lease.validations[0].At.Equal(brokerTestNow) {
 		t.Fatalf("lease validation was not bound to the invocation: %#v", lease.validations)
+	}
+}
+
+func TestBrokerSuppliesValidatedAuthorizationOnlyDuringExecution(t *testing.T) {
+	executor := &authorizationCapturingExecutor{}
+	broker := New(&testLease{}, testPolicy{}, executor, nil, &testRecorder{}, nil, func() time.Time { return brokerTestNow })
+	if err := broker.Register(descriptor()); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := ExecutionAuthorizationFromContext(context.Background()); found {
+		t.Fatal("authorization escaped broker execution context")
+	}
+	if _, err := broker.Invoke(context.Background(), request()); err != nil {
+		t.Fatal(err)
+	}
+	if !executor.found || executor.validation.Lease.ID != request().Lease.ID || executor.validation.ToolID != request().ToolID || executor.validation.ParameterSHA256 == "" {
+		t.Fatalf("execution authorization = %#v found=%t", executor.validation, executor.found)
 	}
 }
 

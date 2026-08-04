@@ -109,7 +109,7 @@ func TestComposeSandboxRuntimeCannotDowngradeIsolation(t *testing.T) {
 	}{
 		{old: "target: worker-runtime", new: "target: runtime"},
 		{old: "user: \"65532:65532\"", new: "user: root"},
-		{old: "golang:1.26.0-alpine3.23@sha256:d4c4845f5d60c6a974c6000ce58ae079328d03ab7f721a0734277e69905473e5", new: "golang:1.26.0-alpine3.23"},
+		{old: "golang:1.26.5-alpine3.23@sha256:622e56dbc11a8cfe87cafa2331e9a201877271cbff918af53d3be315f3da88cc", new: "golang:1.26.5-alpine3.23"},
 		{old: "docker:29.6.1-cli@sha256:862099ada15c669000bef53aa4cb9d821262829f45b0dda2159ccb276443043b", new: "docker:29.6.1-cli"},
 		{old: "AOR_SANDBOX_SECCOMP_PROFILE: builtin", new: "AOR_SANDBOX_SECCOMP_PROFILE: unconfined"},
 		{old: "AOR_SANDBOX_MANDATORY_POLICY: apparmor=aor-sandbox", new: "AOR_SANDBOX_MANDATORY_POLICY: apparmor=unconfined"},

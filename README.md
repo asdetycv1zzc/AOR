@@ -8,7 +8,7 @@ The repository is under active implementation. It is not production ready until 
 
 ## Prerequisites
 
-- Go `1.26.0`
+- Go `1.26.5`
 - GNU Make
 - OCI-compatible Linux container runtime for Executor and Auditor workloads
 - PostgreSQL, Temporal, NATS JetStream, S3-compatible storage, and OPA for deployed profiles
