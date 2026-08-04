@@ -30,6 +30,17 @@ type ActivityResult struct {
 	Duplicate      bool
 }
 
+const MaximumActivityResultBytes = 4 << 20
+
+// ActivityResultStore persists successful external-effect results. The key is
+// stable for the scheduled activity, so a retry on another Worker can replay
+// the result without invoking the dependency again. Implementations must
+// reject a key reused with a different request digest.
+type ActivityResultStore interface {
+	Load(context.Context, string, string, string) (json.RawMessage, bool, error)
+	Save(context.Context, string, string, string, json.RawMessage) error
+}
+
 type activityRecord struct {
 	requestSHA256 string
 	done          chan struct{}
@@ -41,15 +52,23 @@ type activityRecord struct {
 // same scheduled activity the exact same external idempotency key.
 type ActivityExecutor struct {
 	effect  Effect
+	store   ActivityResultStore
 	mu      sync.Mutex
 	records map[string]*activityRecord
 }
 
 func NewActivityExecutor(effect Effect) *ActivityExecutor {
-	return &ActivityExecutor{effect: effect, records: make(map[string]*activityRecord)}
+	return NewDurableActivityExecutor(effect, nil)
+}
+
+func NewDurableActivityExecutor(effect Effect, store ActivityResultStore) *ActivityExecutor {
+	return &ActivityExecutor{effect: effect, store: store, records: make(map[string]*activityRecord)}
 }
 
 func (e *ActivityExecutor) Execute(ctx context.Context, identity ActivityIdentity, input json.RawMessage) (ActivityResult, error) {
+	if ctx == nil {
+		return ActivityResult{}, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "workflow activity context"})
+	}
 	if err := ctx.Err(); err != nil {
 		return ActivityResult{}, err
 	}
@@ -73,7 +92,7 @@ func (e *ActivityExecutor) Execute(ctx context.Context, identity ActivityIdentit
 				record := &activityRecord{requestSHA256: requestDigest, done: make(chan struct{})}
 				e.records[key] = record
 				e.mu.Unlock()
-				return e.execute(ctx, key, record, input)
+				return e.execute(ctx, identity, key, requestDigest, record, input)
 			}
 			result := cloneActivityResult(prior.result)
 			result.Duplicate = true
@@ -98,27 +117,52 @@ func (e *ActivityExecutor) Execute(ctx context.Context, identity ActivityIdentit
 	record := &activityRecord{requestSHA256: requestDigest, done: make(chan struct{})}
 	e.records[key] = record
 	e.mu.Unlock()
-	return e.execute(ctx, key, record, input)
+	return e.execute(ctx, identity, key, requestDigest, record, input)
 }
 
-func (e *ActivityExecutor) execute(ctx context.Context, key string, record *activityRecord, input json.RawMessage) (ActivityResult, error) {
+func (e *ActivityExecutor) execute(ctx context.Context, identity ActivityIdentity, key, requestDigest string, record *activityRecord, input json.RawMessage) (ActivityResult, error) {
+	if e.store != nil {
+		stored, found, loadErr := e.store.Load(ctx, identity.TenantID, key, requestDigest)
+		if loadErr != nil {
+			e.finish(record, ActivityResult{}, loadErr)
+			return ActivityResult{}, loadErr
+		}
+		if found {
+			result := ActivityResult{Output: cloneActivityJSON(stored), IdempotencyKey: key, Duplicate: true}
+			e.finish(record, result, nil)
+			return cloneActivityResult(result), nil
+		}
+	}
 	output, executeErr := e.effect.Execute(ctx, key, cloneActivityJSON(input))
-	if executeErr == nil && !json.Valid(output) {
+	if executeErr == nil && (!json.Valid(output) || len(output) > MaximumActivityResultBytes) {
 		executeErr = errors.New("workflow activity result is not JSON")
 	}
-
-	e.mu.Lock()
-	if executeErr != nil {
-		record.err = executeErr
-	} else {
-		record.result = ActivityResult{Output: cloneActivityJSON(output), IdempotencyKey: key}
+	if executeErr == nil && e.store != nil {
+		executeErr = e.store.Save(ctx, identity.TenantID, key, requestDigest, output)
 	}
-	close(record.done)
-	e.mu.Unlock()
+
+	result := ActivityResult{}
+	if executeErr != nil {
+		e.finish(record, result, executeErr)
+	} else {
+		result = ActivityResult{Output: cloneActivityJSON(output), IdempotencyKey: key}
+		e.finish(record, result, nil)
+	}
 	if executeErr != nil {
 		return ActivityResult{}, executeErr
 	}
-	return cloneActivityResult(record.result), nil
+	return cloneActivityResult(result), nil
+}
+
+func (e *ActivityExecutor) finish(record *activityRecord, result ActivityResult, executeErr error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if executeErr != nil {
+		record.err = executeErr
+	} else {
+		record.result = cloneActivityResult(result)
+	}
+	close(record.done)
 }
 
 func activityKeys(identity ActivityIdentity, input json.RawMessage) (string, string, error) {

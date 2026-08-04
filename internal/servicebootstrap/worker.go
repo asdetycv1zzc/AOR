@@ -138,7 +138,11 @@ func Worker(config runtimeconfig.Config, clients *runtimeclient.Clients) (http.H
 	if err := provider.Ready(probeCtx); err != nil {
 		return nil, errors.Join(ErrWorkerUnavailable, err)
 	}
-	activities, err := aorworkflow.NewActivities(sandboxActivityEffect{provider: provider})
+	activityResults, err := aorworkflow.NewPostgresActivityResultStore(clients.Database())
+	if err != nil {
+		return nil, err
+	}
+	activities, err := aorworkflow.NewActivitiesWithStore(sandboxActivityEffect{provider: provider}, activityResults)
 	if err != nil {
 		return nil, err
 	}

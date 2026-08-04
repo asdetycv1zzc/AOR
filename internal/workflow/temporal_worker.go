@@ -63,7 +63,7 @@ func ExecutionInputFromContext(ctx context.Context) (ExecutionInput, bool) {
 func (input ExecutionInput) Validate() error {
 	if !identifierPattern.MatchString(input.TenantID) || !identifierPattern.MatchString(input.ProjectID) ||
 		!identifierPattern.MatchString(input.TaskID) || !identifierPattern.MatchString(input.ActivityID) ||
-		len(input.Payload) == 0 || len(input.Payload) > 4<<20 || !json.Valid(input.Payload) {
+		len(input.Payload) == 0 || len(input.Payload) > MaximumActivityResultBytes || !json.Valid(input.Payload) {
 		return ErrInvalidExecution
 	}
 	return nil
@@ -105,10 +105,14 @@ type Activities struct {
 }
 
 func NewActivities(effect Effect) (*Activities, error) {
+	return NewActivitiesWithStore(effect, nil)
+}
+
+func NewActivitiesWithStore(effect Effect, store ActivityResultStore) (*Activities, error) {
 	if effect == nil {
 		return nil, ErrInvalidExecution
 	}
-	return &Activities{executor: NewActivityExecutor(effect)}, nil
+	return &Activities{executor: NewDurableActivityExecutor(effect, store)}, nil
 }
 
 func (activities *Activities) Execute(ctx context.Context, input ExecutionInput) (ExecutionOutput, error) {

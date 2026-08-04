@@ -71,6 +71,55 @@ func TestActivityExecutorReusesKeyAfterUnknownFailure(t *testing.T) {
 	}
 }
 
+func TestActivityExecutorReplaysDurableResultAfterWorkerRestart(t *testing.T) {
+	store := NewMemoryActivityResultStore()
+	identity := ActivityIdentity{TenantID: "tenant_1", WorkflowID: "workflow_1", ActivityID: "publish-release"}
+	input := json.RawMessage(`{"release":"v1"}`)
+	firstEffect := &recordingEffect{}
+	first, err := NewDurableActivityExecutor(firstEffect, store).Execute(context.Background(), identity, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Duplicate || firstEffect.calls != 1 {
+		t.Fatalf("first execution = %#v calls=%d", first, firstEffect.calls)
+	}
+
+	secondEffect := &recordingEffect{}
+	second, err := NewDurableActivityExecutor(secondEffect, store).Execute(context.Background(), identity, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.Duplicate || secondEffect.calls != 0 || second.IdempotencyKey != first.IdempotencyKey || string(second.Output) != string(first.Output) {
+		t.Fatalf("durable replay = %#v calls=%d first=%#v", second, secondEffect.calls, first)
+	}
+
+	_, err = NewDurableActivityExecutor(secondEffect, store).Execute(context.Background(), identity, json.RawMessage(`{"release":"v2"}`))
+	var typed *aorerrors.Error
+	if !errors.As(err, &typed) || typed.Code != aorerrors.CodeIdempotencyConflict || secondEffect.calls != 0 {
+		t.Fatalf("changed durable input was not rejected before effect: err=%v calls=%d", err, secondEffect.calls)
+	}
+}
+
+func TestActivityExecutorRejectsOversizedResultBeforePersistence(t *testing.T) {
+	store := NewMemoryActivityResultStore()
+	effect := oversizedResultEffect{}
+	executor := NewDurableActivityExecutor(effect, store)
+	_, err := executor.Execute(context.Background(), ActivityIdentity{TenantID: "tenant_1", WorkflowID: "workflow_1", ActivityID: "oversized"}, json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("oversized activity result was accepted")
+	}
+}
+
+type oversizedResultEffect struct{}
+
+func (oversizedResultEffect) Execute(context.Context, string, json.RawMessage) (json.RawMessage, error) {
+	output := make(json.RawMessage, MaximumActivityResultBytes+1)
+	for index := range output {
+		output[index] = '0'
+	}
+	return output, nil
+}
+
 func TestActivityKeyDoesNotDependOnAttemptOrInputOrder(t *testing.T) {
 	identity := ActivityIdentity{TenantID: "tenant_1", WorkflowID: "workflow_1", ActivityID: "publish"}
 	firstKey, _, err := activityKeys(identity, []byte(`{"a":1,"b":2}`))

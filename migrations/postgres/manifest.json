@@ -85,6 +85,13 @@
       "file": "000012_artifact_project_uri_scope.up.sql",
       "sha256": "sha256:cb43faf33233f4bf4870de6ed8a1025257a3b3042799e1dd14728ce606ea7d7a",
       "destructive": false
+    },
+    {
+      "version": 13,
+      "mode": "EXPAND",
+      "file": "000013_workflow_activity_results.up.sql",
+      "sha256": "sha256:1eca6a9936b0515e9f14cd259b66542f62ca2806852969e15179b0cd0be4d1ed",
+      "destructive": false
     }
   ]
 }
