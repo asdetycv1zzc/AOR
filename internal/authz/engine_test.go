@@ -177,6 +177,31 @@ func TestSandboxExecutionLeaseGrantBindsRoleAndState(t *testing.T) {
 	}
 }
 
+func TestToolLeaseGrantRejectsTerminalTaskAndPausedProject(t *testing.T) {
+	engine := testEngine(nil, func() time.Time { return authzTestNow })
+	input := testInput()
+	input.Action = ActionToolInvoke
+	input.Resource = Resource{Type: "tool", ID: "tool://repository/repo.read@1.0.0"}
+
+	decision, err := engine.EvaluateLeaseGrant(context.Background(), input)
+	if err != nil || decision.Decision != DecisionAllow || decision.Binding == nil {
+		t.Fatalf("active tool lease grant = %#v, err=%v", decision, err)
+	}
+
+	input.Task.State = "CANCELED"
+	decision, err = engine.EvaluateLeaseGrant(context.Background(), input)
+	if err != nil || decision.Decision != DecisionDeny || decision.ReasonCodes[0] != "TASK_NOT_ACTIVE" {
+		t.Fatalf("canceled task tool grant = %#v, err=%v", decision, err)
+	}
+
+	input.Task.State = "EXECUTING"
+	input.Project.State = "PAUSED"
+	decision, err = engine.EvaluateLeaseGrant(context.Background(), input)
+	if err != nil || decision.Decision != DecisionDeny || decision.ReasonCodes[0] != "TASK_NOT_ACTIVE" {
+		t.Fatalf("paused project tool grant = %#v, err=%v", decision, err)
+	}
+}
+
 func TestProductionUntrustedExecutionRequiresLinuxContainer(t *testing.T) {
 	manager, _ := testManager(t, func() time.Time { return authzTestNow })
 	engine := testEngine(manager, func() time.Time { return authzTestNow })

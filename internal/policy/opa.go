@@ -17,6 +17,7 @@ import (
 
 const (
 	decisionPath    = "/v1/data/aor/authz/decision"
+	leaseGrantPath  = "/v1/data/aor/authz/lease_grant"
 	healthPath      = "/health"
 	maxResponseSize = 64 * 1024
 )
@@ -34,6 +35,7 @@ type OPAClient struct {
 }
 
 var _ authz.PolicyEvaluator = (*OPAClient)(nil)
+var _ authz.LeaseGrantEvaluator = (*OPAClient)(nil)
 
 // NewOPAClient creates a client for an HTTP or HTTPS OPA endpoint.
 func NewOPAClient(baseURL string) (*OPAClient, error) {
@@ -50,6 +52,20 @@ func NewOPAClient(baseURL string) (*OPAClient, error) {
 // Evaluate validates the trusted input, evaluates it in OPA, and validates the
 // returned decision. Any transport or protocol failure returns a denial.
 func (client *OPAClient) Evaluate(ctx context.Context, input authz.PolicyInput) (authz.PolicyDecision, error) {
+	return client.evaluate(ctx, input, decisionPath, false)
+}
+
+// EvaluateLeaseGrant calls the policy entrypoint that authorizes creation or
+// renewal of a capability lease. Regular side-effect evaluation deliberately
+// requires an existing lease, so issuance uses a separate fail-closed rule.
+func (client *OPAClient) EvaluateLeaseGrant(ctx context.Context, input authz.PolicyInput) (authz.PolicyDecision, error) {
+	if !authz.IsSideEffect(input.Action) || input.Lease != nil || input.ParameterDigest == "" || input.Budget.AccountID == "" || !input.Budget.Available || input.Task.SpecDigest == "" {
+		return denied("INVALID_LEASE_GRANT_INPUT"), ErrInvalidPolicyResponse
+	}
+	return client.evaluate(ctx, input, leaseGrantPath, true)
+}
+
+func (client *OPAClient) evaluate(ctx context.Context, input authz.PolicyInput, path string, requireBinding bool) (authz.PolicyDecision, error) {
 	if err := contextError(ctx); err != nil {
 		return denied("REQUEST_CANCELED"), err
 	}
@@ -65,7 +81,7 @@ func (client *OPAClient) Evaluate(ctx context.Context, input authz.PolicyInput) 
 		return denied("INVALID_POLICY_INPUT"), ErrPolicyUnavailable
 	}
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, client.endpoint(decisionPath), bytes.NewReader(payload))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, client.endpoint(path), bytes.NewReader(payload))
 	if err != nil {
 		return denied("POLICY_UNAVAILABLE"), ErrPolicyUnavailable
 	}
@@ -91,6 +107,9 @@ func (client *OPAClient) Evaluate(ctx context.Context, input authz.PolicyInput) 
 		return denied("INVALID_POLICY_RESULT"), err
 	}
 	if err := decision.Validate(now); err != nil {
+		return denied("INVALID_POLICY_RESULT"), ErrInvalidPolicyResponse
+	}
+	if requireBinding && decision.Decision == authz.DecisionAllow && decision.Binding == nil {
 		return denied("INVALID_POLICY_RESULT"), ErrInvalidPolicyResponse
 	}
 	return decision, nil

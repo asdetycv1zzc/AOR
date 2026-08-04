@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -56,6 +57,60 @@ func TestOPAClientEvaluateReturnsDeny(t *testing.T) {
 	decision, err := mustOPAClient(t, server.URL).Evaluate(context.Background(), policyInput())
 	if err != nil || decision.Decision != authz.DecisionDeny {
 		t.Fatalf("Evaluate() = %#v, %v", decision, err)
+	}
+}
+
+func TestOPAClientEvaluateLeaseGrantUsesDedicatedEntrypoint(t *testing.T) {
+	input := leaseGrantInput()
+	expected := authz.DecisionBinding{
+		PrincipalID: input.Principal.ID, TenantID: input.Project.TenantID,
+		ProjectID: input.Project.ID, ProjectVersion: input.Project.StateVersion,
+		TaskID: input.Task.ID, TaskVersion: input.Task.StateVersion,
+		SpecDigest: input.Task.SpecDigest, Role: input.Principal.Role,
+		Action: input.Action, Resource: input.Resource,
+		ParameterDigest: input.ParameterDigest, BudgetAccountID: input.Budget.AccountID,
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != leaseGrantPath {
+			t.Fatalf("request = %s %s", request.Method, request.URL.Path)
+		}
+		decision := validDecision(authz.DecisionAllow)
+		decision.Binding = &expected
+		_ = json.NewEncoder(writer).Encode(map[string]any{"result": decision})
+	}))
+	defer server.Close()
+
+	decision, err := mustOPAClient(t, server.URL).EvaluateLeaseGrant(context.Background(), input)
+	if err != nil || decision.Decision != authz.DecisionAllow || decision.Binding == nil || !reflect.DeepEqual(*decision.Binding, expected) {
+		t.Fatalf("EvaluateLeaseGrant() = %#v, %v", decision, err)
+	}
+}
+
+func TestOPAClientEvaluateLeaseGrantFailsClosedWithoutBinding(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != leaseGrantPath {
+			t.Fatalf("path = %q", request.URL.Path)
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]any{"result": validDecision(authz.DecisionAllow)})
+	}))
+	defer server.Close()
+
+	decision, err := mustOPAClient(t, server.URL).EvaluateLeaseGrant(context.Background(), leaseGrantInput())
+	if err == nil || decision.Decision != authz.DecisionDeny {
+		t.Fatalf("EvaluateLeaseGrant() = %#v, %v; want denial", decision, err)
+	}
+}
+
+func TestOPAClientEvaluateLeaseGrantRejectsInvalidInputBeforeRequest(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
+	defer server.Close()
+	input := leaseGrantInput()
+	input.Budget.Available = false
+
+	decision, err := mustOPAClient(t, server.URL).EvaluateLeaseGrant(context.Background(), input)
+	if err == nil || decision.Decision != authz.DecisionDeny || called {
+		t.Fatalf("EvaluateLeaseGrant() = %#v, %v, called=%t", decision, err, called)
 	}
 }
 
@@ -190,5 +245,23 @@ func policyInput() authz.PolicyInput {
 		Project:   authz.ProjectScope{TenantID: "tenant_1", ID: "project_1", State: "EXECUTING", StateVersion: 1, Classification: "INTERNAL"},
 		Action:    authz.ActionGoalRead,
 		Resource:  authz.Resource{Type: "goal", ID: "goal_1"},
+	}
+}
+
+func leaseGrantInput() authz.PolicyInput {
+	return authz.PolicyInput{
+		Principal: authn.Principal{ID: "agent_1", Type: authn.PrincipalAgentInstance, Role: authn.RoleExecutor, TenantID: "tenant_1", ProjectID: "project_1"},
+		Project:   authz.ProjectScope{TenantID: "tenant_1", ID: "project_1", State: "EXECUTING", StateVersion: 7, Classification: "INTERNAL"},
+		Task: authz.TaskScope{
+			TenantID: "tenant_1", ProjectID: "project_1", ID: "task_1", State: "EXECUTING", StateVersion: 9,
+			SpecDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+			OwnedPaths: []string{"internal/auth/**"}, ExecutionPlatform: "LINUX", SandboxLevel: "CONTAINER",
+			WorkloadTrust: "UNTRUSTED", DeploymentProfile: "PRODUCTION",
+		},
+		Action:          authz.ActionToolInvoke,
+		Resource:        authz.Resource{Type: "tool", ID: "tool://repository/repo.read@1.0.0"},
+		ParameterDigest: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+		Budget:          authz.BudgetScope{AccountID: "budget_1", Available: true},
+		Context:         authz.ExecutionContext{Platform: "LINUX", SandboxLevel: "CONTAINER"},
 	}
 }

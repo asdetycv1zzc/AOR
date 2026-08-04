@@ -143,6 +143,128 @@ sandbox_exec_allowed if {
 	active_lease
 }
 
+tool_invoke_allowed if {
+	valid_task_scope
+	input.action == "tool.invoke"
+	input.resource.type == "tool"
+	input.resource.id != ""
+	input.principal.type == "AGENT_INSTANCE"
+	input.principal.role in {"GOAL_PROPOSER", "GOAL_CHALLENGER", "PLAN_SUPERVISOR", "MODULE_PLANNER", "EXECUTOR", "AUDITOR", "KNOWLEDGE_CURATOR", "SERVICE"}
+	input.project.state != "ABORTED"
+	input.project.state != "ARCHIVED"
+	input.project.state != "FAILED_SYSTEM"
+	input.project.state != "PAUSED"
+	input.task.state != "CANCELED"
+	input.task.state != "SUPERSEDED"
+	input.task.state != "PASSED"
+	input.task.state != "INTEGRATED"
+	input.budget.available
+	active_lease
+}
+
+lease_grant_input_valid if {
+	valid_task_scope
+	input.action in side_effect_actions
+	not input.lease
+	input.parameterDigest != ""
+	input.task.specDigest != ""
+	input.budget.accountId != ""
+	input.budget.available
+}
+
+repo_write_grant_allowed if {
+	lease_grant_input_valid
+	input.action in {"repo.write", "repo.apply_patch"}
+	input.principal.type == "AGENT_INSTANCE"
+	input.principal.role == "EXECUTOR"
+	input.project.state == "EXECUTING"
+	input.task.state == "EXECUTING"
+	some owned in input.task.ownedPaths
+	glob.match(owned, ["/"], input.resource.path)
+}
+
+sandbox_exec_grant_allowed if {
+	lease_grant_input_valid
+	input.action == "sandbox.exec"
+	input.resource.type == "sandbox"
+	input.resource.id != ""
+	input.principal.type == "AGENT_INSTANCE"
+	input.principal.role == "EXECUTOR"
+	input.project.state == "EXECUTING"
+	input.task.state == "EXECUTING"
+}
+
+sandbox_exec_grant_allowed if {
+	lease_grant_input_valid
+	input.action == "sandbox.exec"
+	input.resource.type == "sandbox"
+	input.resource.id != ""
+	input.principal.type == "AGENT_INSTANCE"
+	input.principal.role == "AUDITOR"
+	input.project.state in {"EXECUTING", "GLOBAL_AUDIT"}
+	input.task.state in {"DETERMINISTIC_AUDIT", "LLM_AUDIT"}
+}
+
+tool_invoke_grant_allowed if {
+	lease_grant_input_valid
+	input.action == "tool.invoke"
+	input.resource.type == "tool"
+	input.resource.id != ""
+	input.principal.type == "AGENT_INSTANCE"
+	input.principal.role in {"GOAL_PROPOSER", "GOAL_CHALLENGER", "PLAN_SUPERVISOR", "MODULE_PLANNER", "EXECUTOR", "AUDITOR", "KNOWLEDGE_CURATOR", "SERVICE"}
+	input.project.state != "ABORTED"
+	input.project.state != "ARCHIVED"
+	input.project.state != "FAILED_SYSTEM"
+	input.project.state != "PAUSED"
+	input.task.state != "CANCELED"
+	input.task.state != "SUPERSEDED"
+	input.task.state != "PASSED"
+	input.task.state != "INTEGRATED"
+}
+
+lease_grant_allowed if {
+	repo_write_grant_allowed
+}
+
+lease_grant_allowed if {
+	sandbox_exec_grant_allowed
+}
+
+lease_grant_allowed if {
+	tool_invoke_grant_allowed
+}
+
+lease_grant_binding := {
+	"principalId": input.principal.id,
+	"tenantId": input.project.tenantId,
+	"projectId": input.project.id,
+	"projectVersion": input.project.stateVersion,
+	"taskId": input.task.id,
+	"taskVersion": input.task.stateVersion,
+	"specDigest": input.task.specDigest,
+	"role": input.principal.role,
+	"action": input.action,
+	"resource": input.resource,
+	"parameterDigest": input.parameterDigest,
+	"budgetAccountId": input.budget.accountId,
+} if {
+	lease_grant_input_valid
+}
+
+lease_grant := {
+	"decision": "ALLOW",
+	"policyVersion": data.aor.policy.version,
+	"reasonCodes": ["LEASE_GRANT_ALLOWED", "CURRENT_SCOPE_VALID"],
+	"ruleId": "aor.lease.grant",
+	"binding": lease_grant_binding,
+} if {
+	lease_grant_allowed
+}
+
+lease_grant := default_deny if {
+	not lease_grant_allowed
+}
+
 sandbox_exec_allowed if {
 	valid_task_scope
 	input.action == "sandbox.exec"
@@ -209,6 +331,19 @@ decision := {
 }
 
 decision := {
+	"decision": "ALLOW",
+	"policyVersion": data.aor.policy.version,
+	"reasonCodes": ["ROLE_ALLOWED", "BUDGET_AVAILABLE", "LEASE_VALID"],
+	"ruleId": "aor.tool.invoke",
+	"constraints": {
+		"maxBytes": data.aor.policy.maxWriteBytes,
+		"expiresAt": input.lease.expiresAt,
+	},
+} if {
+	tool_invoke_allowed
+}
+
+decision := {
     "decision": "APPROVAL_REQUIRED",
     "policyVersion": data.aor.policy.version,
     "reasonCodes": ["CURATOR_APPROVAL_REQUIRED"],
@@ -243,6 +378,10 @@ matched if {
 
 matched if {
 	sandbox_exec_allowed
+}
+
+matched if {
+	tool_invoke_allowed
 }
 
 matched if {

@@ -14,6 +14,14 @@ type PolicyEvaluator interface {
 	Evaluate(context.Context, PolicyInput) (PolicyDecision, error)
 }
 
+// LeaseGrantEvaluator evaluates the current authoritative scope before a
+// capability lease exists. An ALLOW result must contain an exact Binding so it
+// cannot be replayed for a different principal, task, resource, or parameter
+// digest.
+type LeaseGrantEvaluator interface {
+	EvaluateLeaseGrant(context.Context, PolicyInput) (PolicyDecision, error)
+}
+
 // ApprovalVerifier verifies the immutable Approval Record signature and its
 // current revocation state. Implementations normally read the WP-02 authority.
 type ApprovalVerifier interface {
@@ -318,6 +326,9 @@ func (e *Engine) defaultDecision(input PolicyInput, lease CapabilityLease, now t
 		return e.repoWriteDecision(input, lease)
 	case ActionToolInvoke:
 		if roleIn(input.Principal.Role, authn.RoleGoalProposer, authn.RoleGoalChallenger, authn.RolePlanSupervisor, authn.RoleModulePlanner, authn.RoleExecutor, authn.RoleAuditor, authn.RoleKnowledgeCurator, authn.RoleService) {
+			if roleIn(input.Project.State, "ABORTED", "ARCHIVED", "FAILED_SYSTEM", "PAUSED") || roleIn(input.Task.State, "CANCELED", "SUPERSEDED", "PASSED", "INTEGRATED") {
+				return denyDecision(e.bundle.Version, "TASK_NOT_ACTIVE")
+			}
 			return e.constrainAllow(allowDecision(e.bundle.Version, "aor.tool.invoke", "ROLE_ALLOWED", "LEASE_VALID"), input, lease)
 		}
 		return denyDecision(e.bundle.Version, "ROLE_DENIED")
