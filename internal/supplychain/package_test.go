@@ -83,6 +83,14 @@ func TestAssembleRejectsExistingOutputAndSymlinkInputs(t *testing.T) {
 	}
 }
 
+func TestAssembleRejectsUnapprovedDependencyLicense(t *testing.T) {
+	request, _ := assembleRequestFixture(t)
+	request.Dependencies[0].License = "Proprietary"
+	if _, err := Assemble(context.Background(), request); !errors.Is(err, ErrInvalidManifest) {
+		t.Fatalf("unapproved license result = %v", err)
+	}
+}
+
 func TestLoadBundleRejectsSymlinkedMetadata(t *testing.T) {
 	request, _ := assembleRequestFixture(t)
 	if _, err := Assemble(context.Background(), request); err != nil {

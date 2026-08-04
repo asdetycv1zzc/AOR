@@ -21,6 +21,16 @@ const maxDependencyLicenseBytes = 4 << 20
 
 var licenseExpressionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-.+() ]{0,255}$`)
 
+var approvedLicenseIdentifiers = map[string]struct{}{
+	"0BSD":         {},
+	"Apache-2.0":   {},
+	"BSD-2-Clause": {},
+	"BSD-3-Clause": {},
+	"ISC":          {},
+	"MIT":          {},
+	"MPL-2.0":      {},
+}
+
 type PackageArtifact struct {
 	SourcePath string
 	Path       string
@@ -231,7 +241,7 @@ func validateAssembleRequest(request AssembleRequest) error {
 	dependencies := map[string]struct{}{}
 	for _, dependency := range request.Dependencies {
 		identity := dependency.Name + "@" + dependency.Version
-		if strings.TrimSpace(dependency.Name) == "" || strings.TrimSpace(dependency.Version) == "" || strings.TrimSpace(dependency.SourceURI) == "" || strings.ContainsAny(identity+dependency.SourceURI, "\x00\r\n") || !digestPattern.MatchString(dependency.SHA256) || !licenseExpressionPattern.MatchString(dependency.License) || strings.TrimSpace(dependency.LicenseText) == "" || len(dependency.LicenseText) > maxDependencyLicenseBytes {
+		if strings.TrimSpace(dependency.Name) == "" || strings.TrimSpace(dependency.Version) == "" || strings.TrimSpace(dependency.SourceURI) == "" || strings.ContainsAny(identity+dependency.SourceURI, "\x00\r\n") || !digestPattern.MatchString(dependency.SHA256) || !licenseExpressionPattern.MatchString(dependency.License) || !approvedLicenseExpression(dependency.License) || strings.TrimSpace(dependency.LicenseText) == "" || len(dependency.LicenseText) > maxDependencyLicenseBytes {
 			return ErrInvalidManifest
 		}
 		if _, found := dependencies[identity]; found {
@@ -240,6 +250,21 @@ func validateAssembleRequest(request AssembleRequest) error {
 		dependencies[identity] = struct{}{}
 	}
 	return nil
+}
+
+func approvedLicenseExpression(expression string) bool {
+	for _, token := range strings.FieldsFunc(expression, func(value rune) bool {
+		return value == ' ' || value == '(' || value == ')'
+	}) {
+		switch token {
+		case "AND", "OR", "WITH":
+			continue
+		}
+		if _, found := approvedLicenseIdentifiers[token]; !found {
+			return false
+		}
+	}
+	return true
 }
 
 func copyPackageArtifact(root string, input PackageArtifact) (Artifact, error) {
