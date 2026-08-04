@@ -71,12 +71,12 @@ type Finding struct {
 }
 
 type Audit struct {
-	IntegrationID  string
-	ProjectID      string
-	Findings       []Finding
-	EvidenceSHA256 string
-	Passed         bool
-	CreatedAt      time.Time
+	IntegrationID  string    `json:"integrationId"`
+	ProjectID      string    `json:"projectId"`
+	Findings       []Finding `json:"findings"`
+	EvidenceSHA256 string    `json:"evidenceSha256"`
+	Passed         bool      `json:"passed"`
+	CreatedAt      time.Time `json:"createdAt"`
 }
 
 type MergeResult struct {

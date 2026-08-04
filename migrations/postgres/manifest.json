@@ -162,6 +162,13 @@
       "file": "000023_staged_module_planning.up.sql",
       "sha256": "sha256:449f73396a083dfe2ae26712a831a060dc8f190183c58b2036d7ed9581eb3b3f",
       "destructive": false
+    },
+    {
+      "version": 24,
+      "mode": "EXPAND",
+      "file": "000024_audit_integration_runtime.up.sql",
+      "sha256": "sha256:6a869780d8ba7d2d2923c80cdbb73126a681df2941182baa80212057c71d4426",
+      "destructive": false
     }
   ]
 }
