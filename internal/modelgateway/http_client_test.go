@@ -90,6 +90,38 @@ func TestHTTPClientGenerateUsesPrivateEnvelopeTokenAndTrace(t *testing.T) {
 	}
 }
 
+func TestHTTPClientSkipsFinalValidationForToolCallResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var input transportGenerateRequest
+		if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+			t.Fatal(err)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(transportGenerateResponse{Response: NormalizedResponse{
+			RequestID: input.Request.RequestID, ProviderRequestID: "provider-tool", ModelVersion: "model-v1",
+			ToolCalls: []ToolCall{{ID: "call-1", Name: "repo.read", Arguments: json.RawMessage(`{"path":"README.md"}`)}}, FinishReason: "tool_calls",
+		}})
+	}))
+	defer server.Close()
+
+	client, err := NewHTTPClient(HTTPClientConfig{Endpoint: server.URL, TokenSource: &httpClientTokenSource{token: validHTTPClientToken()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := httpClientNormalizedRequest()
+	input.Tools = []ToolDefinition{{Name: "repo.read", Schema: json.RawMessage(`{"type":"object"}`)}}
+	input.ResponseSchema = json.RawMessage(`{"type":"object","required":["ok"]}`)
+	semanticCalls := 0
+	input.ResponseSemanticValidator = func(json.RawMessage) error {
+		semanticCalls++
+		return errors.New("final-content validation must be skipped")
+	}
+	response, err := client.Generate(context.Background(), input, GenerateOptions{Provider: "provider", AccountID: "account", ReservationID: "reservation", MaxAttempts: 1})
+	if err != nil || len(response.Content) != 0 || len(response.ToolCalls) != 1 || semanticCalls != 0 {
+		t.Fatalf("response=%#v error=%v semanticCalls=%d", response, err, semanticCalls)
+	}
+}
+
 func TestHTTPClientMapsStableErrorEnvelope(t *testing.T) {
 	tests := []struct {
 		name      string

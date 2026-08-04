@@ -185,10 +185,7 @@ func (client *HTTPClient) Generate(ctx context.Context, request NormalizedReques
 	if err := decodeHTTPClientJSON(body, &output); err != nil || output.Response.RequestID != request.RequestID {
 		return NormalizedResponse{}, ErrProviderUnavailable
 	}
-	if err := validateResponse(request.ResponseSchema, output.Response.Content); err != nil {
-		return NormalizedResponse{}, err
-	}
-	if err := validateResponseSemantics(request.ResponseSemanticValidator, output.Response.Content); err != nil {
+	if err := validateGeneratedResponse(request, output.Response); err != nil {
 		return NormalizedResponse{}, err
 	}
 	return output.Response, nil
