@@ -263,7 +263,7 @@ func (n *Negotiator) publishGoal(ctx context.Context, request NegotiationRequest
 	return n.projects.HandleProject(ctx, orchestrator.ProjectRequest{
 		TenantID: request.TenantID, ProjectID: request.ProjectID, PrincipalID: request.UserPrincipalID,
 		IdempotencyKey: request.IdempotencyKey, ExpectedVersion: request.ExpectedProjectVersion,
-		Command: state.ProjectCommand{Type: commandType, Goal: record, GoalSpec: &goal, ImpactedTaskIDs: append([]string(nil), request.ImpactedTaskIDs...)},
+		Command: state.ProjectCommand{Type: commandType, Goal: record, GoalSpec: &goal, GoalMessage: &state.GoalMessage{Kind: state.GoalMessageUser, Message: string(request.UserInput)}, ImpactedTaskIDs: append([]string(nil), request.ImpactedTaskIDs...)},
 	})
 }
 

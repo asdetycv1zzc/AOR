@@ -91,6 +91,20 @@ func TestSingleAgentNegotiationRunsHundredRoundsWithoutApproval(t *testing.T) {
 	if len(invoker.invocations) != 100 {
 		t.Fatalf("invocations = %d", len(invoker.invocations))
 	}
+	messages, err := service.GoalMessages(context.Background(), "tenant_1", "prj_1")
+	if err != nil {
+		t.Fatalf("goal messages: %v", err)
+	}
+	if len(messages) != 100 {
+		t.Fatalf("goal message count = %d", len(messages))
+	}
+	seen := make(map[string]bool, len(messages))
+	for _, message := range messages {
+		seen[message.Message] = true
+	}
+	if !seen["round 1"] || !seen["round 100"] {
+		t.Fatalf("missing boundary rounds: round 1=%t round 100=%t", seen["round 1"], seen["round 100"])
+	}
 }
 
 func TestNegotiatorCommitsAgentDraftAsAuthenticatedUser(t *testing.T) {

@@ -55,6 +55,13 @@ func prepareGoalCommand(request ProjectRequest, command state.ProjectCommand) (s
 			if message.Kind != state.GoalMessageUser {
 				return state.ProjectCommand{}, invalidGoalCommand("goal message kind")
 			}
+		case state.ProjectCommandProposeGoal, state.ProjectCommandSupersedeGoal:
+			if message.Kind == "" {
+				message.Kind = state.GoalMessageUser
+			}
+			if message.Kind != state.GoalMessageUser {
+				return state.ProjectCommand{}, invalidGoalCommand("goal proposal message kind")
+			}
 		case state.ProjectCommandRejectGoal:
 			if message.Kind == "" {
 				message.Kind = state.GoalMessageRejection
