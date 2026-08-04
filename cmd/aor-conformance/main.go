@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,8 @@ import (
 	aorconformance "github.com/akimisaka/aor/internal/conformance"
 	contractcheck "github.com/akimisaka/aor/internal/contracts"
 	"github.com/akimisaka/aor/internal/state"
+	"github.com/akimisaka/aor/internal/supplychain"
+	"github.com/akimisaka/aor/internal/version"
 )
 
 type result struct {
@@ -87,6 +90,8 @@ func runConformance(root string, arguments []string) {
 	specVersion := "2.0.0"
 	target := ""
 	output := ""
+	releaseVersion := version.Version
+	sourceCommit := version.Commit
 	groups := []string{}
 	for index := 0; index < len(arguments); index++ {
 		if index+1 >= len(arguments) {
@@ -100,6 +105,10 @@ func runConformance(root string, arguments []string) {
 			specVersion = value
 		case "--target":
 			target = value
+		case "--release-version":
+			releaseVersion = value
+		case "--source-commit":
+			sourceCommit = value
 		case "--output":
 			output = value
 		case "--groups":
@@ -109,16 +118,12 @@ func runConformance(root string, arguments []string) {
 		}
 		index++
 	}
-	var signer aorconformance.Signer
-	if key := os.Getenv("AOR_RELEASE_SIGNING_KEY"); key != "" {
-		created, err := aorconformance.NewHMACSigner([]byte(key))
-		if err != nil {
-			fail("run", []bootstrap.Finding{{Code: "SIGNER_INVALID", Message: err.Error()}})
-		}
-		signer = created
+	signer, signerErr := releaseSigner(profile)
+	if signerErr != nil {
+		fail("run", []bootstrap.Finding{{Code: "SIGNER_INVALID", Message: signerErr.Error()}})
 	}
 	runner := aorconformance.NewRunner(nil)
-	evidence, err := runner.Run(context.Background(), aorconformance.Request{Root: root, Target: target, Profile: profile, SpecVersion: specVersion, OutputDir: output, Groups: groups, Signer: signer})
+	evidence, err := runner.Run(context.Background(), aorconformance.Request{Root: root, Target: target, Profile: profile, SpecVersion: specVersion, ReleaseVersion: releaseVersion, SourceCommit: sourceCommit, OutputDir: output, Groups: groups, Signer: signer})
 	encoded, marshalErr := json.Marshal(result{Check: "run", Status: "PASS"})
 	if marshalErr != nil {
 		os.Exit(2)
@@ -135,6 +140,36 @@ func runConformance(root string, arguments []string) {
 	}
 	os.Stdout.Write(append(encoded, '\n'))
 	_ = evidence
+}
+
+func releaseSigner(profile string) (aorconformance.Signer, error) {
+	privateKeyPath := os.Getenv("AOR_RELEASE_SIGNING_PRIVATE_KEY_FILE")
+	if privateKeyPath != "" {
+		info, err := os.Lstat(privateKeyPath)
+		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o077 != 0 {
+			return nil, fmt.Errorf("release private key must be an owner-only regular file")
+		}
+		value, err := os.ReadFile(privateKeyPath)
+		if err != nil {
+			return nil, err
+		}
+		privateKey, err := supplychain.ParsePrivateKey(value)
+		if err != nil {
+			return nil, err
+		}
+		kid := os.Getenv("AOR_RELEASE_SIGNING_KID")
+		if kid == "" {
+			return nil, errors.New("AOR_RELEASE_SIGNING_KID is required with a private key")
+		}
+		return aorconformance.NewEd25519Signer(privateKey, kid)
+	}
+	if key := os.Getenv("AOR_RELEASE_SIGNING_KEY"); key != "" {
+		if profile == "production" {
+			return nil, errors.New("production requires AOR_RELEASE_SIGNING_PRIVATE_KEY_FILE or an injected KMS signer; HMAC is local-only")
+		}
+		return aorconformance.NewHMACSigner([]byte(key))
+	}
+	return nil, nil
 }
 
 func convertContractFindings(input []contractcheck.Finding) []bootstrap.Finding {

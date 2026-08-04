@@ -3,10 +3,12 @@
   "$id": "https://schemas.aor.local/conformance/release-evidence.v1.schema.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["evidenceVersion", "specVersion", "buildDigest", "startedAt", "completedAt", "environment", "results", "exceptions", "evidenceDigest"],
+  "required": ["evidenceVersion", "specVersion", "releaseVersion", "sourceCommit", "buildDigest", "startedAt", "completedAt", "environment", "results", "exceptions", "evidenceDigest"],
   "properties": {
     "evidenceVersion": {"type": "string"},
     "specVersion": {"type": "string"},
+    "releaseVersion": {"type": "string", "minLength": 1},
+    "sourceCommit": {"type": "string", "pattern": "^(unknown|[0-9a-f]{40})$"},
     "buildDigest": {"pattern": "^sha256:[0-9a-f]{64}$"},
     "startedAt": {"format": "date-time"},
     "completedAt": {"format": "date-time"},
@@ -15,6 +17,6 @@
     "results": {"type": "array", "items": {"type": "object", "required": ["requirementId", "status", "tool", "toolVersion"], "properties": {"requirementId": {"type": "string"}, "status": {"enum": ["PASS", "FAIL", "INCONCLUSIVE"]}, "evidenceUris": {"type": "array", "items": {"type": "string"}}, "tool": {"type": "string"}, "toolVersion": {"type": "string"}}}},
     "exceptions": {"type": "array", "items": {"type": "string"}},
     "evidenceDigest": {"pattern": "^sha256:[0-9a-f]{64}$"},
-    "signature": {"type": "object"}
+    "signature": {"type": "object", "additionalProperties": false, "required": ["type", "kid", "value"], "properties": {"type": {"type": "string"}, "kid": {"type": "string", "minLength": 1}, "value": {"type": "string", "minLength": 1}}}
   }
 }

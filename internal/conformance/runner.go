@@ -2,8 +2,10 @@ package conformance
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +14,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -38,6 +41,8 @@ type RequirementResult struct {
 type ReleaseEvidence struct {
 	EvidenceVersion string              `json:"evidenceVersion"`
 	SpecVersion     string              `json:"specVersion"`
+	ReleaseVersion  string              `json:"releaseVersion"`
+	SourceCommit    string              `json:"sourceCommit"`
 	BuildDigest     string              `json:"buildDigest"`
 	StartedAt       string              `json:"startedAt"`
 	CompletedAt     string              `json:"completedAt"`
@@ -61,14 +66,16 @@ type Signer interface {
 }
 
 type Request struct {
-	Root        string
-	Target      string
-	Profile     string
-	SpecVersion string
-	OutputDir   string
-	Groups      []string
-	Signer      Signer
-	Clock       func() time.Time
+	Root           string
+	Target         string
+	Profile        string
+	SpecVersion    string
+	ReleaseVersion string
+	SourceCommit   string
+	OutputDir      string
+	Groups         []string
+	Signer         Signer
+	Clock          func() time.Time
 }
 
 type Runner struct {
@@ -76,6 +83,11 @@ type Runner struct {
 }
 
 var productionGroups = []string{"contracts", "state-machine", "idempotency", "a2a", "aop", "mcp", "security", "authn", "authz", "budget", "tool-broker", "sandbox-linux", "sandbox-windows", "knowledge", "audit", "integration", "observability", "backup-restore", "chaos", "performance", "supply-chain", "full"}
+
+var (
+	conformanceVersionPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`)
+	conformanceCommitPattern  = regexp.MustCompile(`^[0-9a-f]{40}$`)
+)
 
 func NewRunner(clock func() time.Time) *Runner {
 	if clock == nil {
@@ -89,6 +101,18 @@ func (r *Runner) Run(ctx context.Context, request Request) (ReleaseEvidence, err
 		return ReleaseEvidence{}, err
 	}
 	if request.Root == "" || request.SpecVersion == "" || (request.Profile != "test" && request.Profile != "preproduction" && request.Profile != "production") || request.Profile == "production" && request.Target == "" {
+		return ReleaseEvidence{}, ErrInvalidRequest
+	}
+	if request.ReleaseVersion == "" {
+		request.ReleaseVersion = "0.1.0-dev"
+	}
+	if request.SourceCommit == "" {
+		request.SourceCommit = "unknown"
+	}
+	if !conformanceVersionPattern.MatchString(request.ReleaseVersion) || request.SourceCommit != "unknown" && !conformanceCommitPattern.MatchString(request.SourceCommit) {
+		return ReleaseEvidence{}, ErrInvalidRequest
+	}
+	if request.Profile == "production" && !conformanceCommitPattern.MatchString(request.SourceCommit) {
 		return ReleaseEvidence{}, ErrInvalidRequest
 	}
 	root, err := filepath.Abs(request.Root)
@@ -113,7 +137,7 @@ func (r *Runner) Run(ctx context.Context, request Request) (ReleaseEvidence, err
 	if err != nil {
 		return ReleaseEvidence{}, err
 	}
-	evidence := ReleaseEvidence{EvidenceVersion: "1.0", SpecVersion: request.SpecVersion, BuildDigest: build, StartedAt: started.Format(time.RFC3339), Environment: request.Profile, Target: request.Target, Results: []RequirementResult{}, Exceptions: []string{}}
+	evidence := ReleaseEvidence{EvidenceVersion: "1.0", SpecVersion: request.SpecVersion, ReleaseVersion: request.ReleaseVersion, SourceCommit: request.SourceCommit, BuildDigest: build, StartedAt: started.Format(time.RFC3339), Environment: request.Profile, Target: request.Target, Results: []RequirementResult{}, Exceptions: []string{}}
 	hardFailure := false
 	if request.Profile == "production" {
 		spec, specErr := os.ReadFile(filepath.Join(root, "SPEC.md"))
@@ -152,6 +176,13 @@ func (r *Runner) Run(ctx context.Context, request Request) (ReleaseEvidence, err
 	}
 	if err := finalize(&evidence, request.Signer); err != nil {
 		return ReleaseEvidence{}, err
+	}
+	if request.Profile == "production" && evidence.Signature != nil && !productionSignatureType(evidence.Signature.Type) {
+		evidence.Exceptions = append(evidence.Exceptions, "production requires Ed25519, Sigstore, or KMS release evidence signing")
+		hardFailure = true
+		if err := finalize(&evidence, request.Signer); err != nil {
+			return ReleaseEvidence{}, err
+		}
 	}
 	if request.OutputDir != "" {
 		if err := Write(request.OutputDir, evidence); err != nil {
@@ -302,6 +333,9 @@ func Verify(ctx context.Context, evidence ReleaseEvidence, signer Signer) error 
 	if (evidence.Environment == "production" || evidence.Environment == "preproduction") && signer == nil || evidence.Signature != nil && signer == nil {
 		return ErrGateFailed
 	}
+	if evidence.Environment == "production" && (evidence.Signature == nil || !productionSignatureType(evidence.Signature.Type)) {
+		return ErrGateFailed
+	}
 	digest := evidence.EvidenceDigest
 	signature := evidence.Signature
 	evidence.EvidenceDigest = ""
@@ -439,7 +473,48 @@ func signaturePayload(evidence ReleaseEvidence) []byte {
 	return mustJSON(evidence)
 }
 
+func productionSignatureType(value string) bool {
+	switch value {
+	case "Ed25519", "sigstore-bundle", "kms-signature":
+		return true
+	default:
+		return false
+	}
+}
+
 type HMACSigner struct{ key []byte }
+
+type Ed25519Signer struct {
+	private ed25519.PrivateKey
+	public  ed25519.PublicKey
+	kid     string
+}
+
+func NewEd25519Signer(private ed25519.PrivateKey, kid string) (*Ed25519Signer, error) {
+	if len(private) != ed25519.PrivateKeySize || strings.TrimSpace(kid) == "" {
+		return nil, ErrInvalidRequest
+	}
+	public, ok := private.Public().(ed25519.PublicKey)
+	if !ok {
+		return nil, ErrInvalidRequest
+	}
+	return &Ed25519Signer{private: append(ed25519.PrivateKey(nil), private...), public: append(ed25519.PublicKey(nil), public...), kid: kid}, nil
+}
+
+func (s *Ed25519Signer) Sign(_ context.Context, payload []byte) (*Signature, error) {
+	return &Signature{Type: "Ed25519", KID: s.kid, Value: base64.RawURLEncoding.EncodeToString(ed25519.Sign(s.private, payload))}, nil
+}
+
+func (s *Ed25519Signer) Verify(_ context.Context, payload []byte, signature *Signature) error {
+	if signature == nil || signature.Type != "Ed25519" || signature.KID != s.kid {
+		return ErrGateFailed
+	}
+	value, err := base64.RawURLEncoding.DecodeString(signature.Value)
+	if err != nil || !ed25519.Verify(s.public, payload, value) {
+		return ErrGateFailed
+	}
+	return nil
+}
 
 func NewHMACSigner(key []byte) (*HMACSigner, error) {
 	if len(key) < 32 {

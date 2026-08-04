@@ -2,6 +2,8 @@ package conformance
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"os"
 	"path/filepath"
@@ -25,7 +27,7 @@ func TestRunnerProducesHashableEvidenceAndHonorsEnvironmentGates(t *testing.T) {
 	if err := Verify(context.Background(), evidence, signer); err != nil {
 		t.Fatal(err)
 	}
-	production, err := runner.Run(context.Background(), Request{Root: "../..", Target: "https://preproduction.aor.invalid", Profile: "production", SpecVersion: "2.0.0", Signer: signer})
+	production, err := runner.Run(context.Background(), Request{Root: "../..", Target: "https://preproduction.aor.invalid", Profile: "production", SpecVersion: "2.0.0", ReleaseVersion: "2.0.0-rc.1", SourceCommit: "0123456789abcdef0123456789abcdef01234567", Signer: signer})
 	if !errors.Is(err, ErrGateFailed) || len(production.Exceptions) == 0 {
 		t.Fatalf("production gate unexpectedly passed: %v %#v", err, production)
 	}
@@ -66,7 +68,7 @@ func TestSecurityGroupFailsClosedWhenCorpusIsMissing(t *testing.T) {
 func TestProductionCannotSelectOnlyEasyGroups(t *testing.T) {
 	signer, _ := NewHMACSigner([]byte("0123456789abcdef0123456789abcdef"))
 	runner := NewRunner(nil)
-	_, err := runner.Run(context.Background(), Request{Root: "../..", Target: "https://preproduction.aor.invalid", Profile: "production", SpecVersion: "2.0.0", Groups: []string{"contracts"}, Signer: signer})
+	_, err := runner.Run(context.Background(), Request{Root: "../..", Target: "https://preproduction.aor.invalid", Profile: "production", SpecVersion: "2.0.0", ReleaseVersion: "2.0.0-rc.1", SourceCommit: "0123456789abcdef0123456789abcdef01234567", Groups: []string{"contracts"}, Signer: signer})
 	if !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("partial production groups error = %v", err)
 	}
@@ -95,5 +97,26 @@ func TestBuildDigestBindsRepositoryContentAndProductionVerifyRequiresSigner(t *t
 	evidence := ReleaseEvidence{Environment: "production", EvidenceDigest: first}
 	if err := Verify(context.Background(), evidence, nil); !errors.Is(err, ErrGateFailed) {
 		t.Fatalf("unsigned production verify error = %v", err)
+	}
+}
+
+func TestEd25519SignerRoundTrip(t *testing.T) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := NewEd25519Signer(privateKey, "release-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	signature, err := signer.Sign(context.Background(), []byte("release evidence"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := signer.Verify(context.Background(), []byte("release evidence"), signature); err != nil {
+		t.Fatal(err)
+	}
+	if err := signer.Verify(context.Background(), []byte("tampered"), signature); !errors.Is(err, ErrGateFailed) {
+		t.Fatalf("tampered signature result = %v", err)
 	}
 }
