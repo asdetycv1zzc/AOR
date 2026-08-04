@@ -104,6 +104,35 @@ func TestServiceRejectsChangedIdempotentRequestAndStaleVersion(t *testing.T) {
 	}
 }
 
+func TestProjectLifecycleRecordsUseTrustedTimeAndIdempotentIdentity(t *testing.T) {
+	store := eventing.NewMemoryStore()
+	service := newTestService(store)
+	if _, err := service.HandleProject(context.Background(), ProjectRequest{
+		TenantID: "tenant_1", ProjectID: "prj_lifecycle", PrincipalID: "usr_1", IdempotencyKey: "create-lifecycle", ExpectedVersion: 0,
+		Command: state.ProjectCommand{Type: state.ProjectCommandCreate, GoalAgentCount: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	request := ProjectRequest{
+		TenantID: "tenant_1", ProjectID: "prj_lifecycle", PrincipalID: "usr_1", IdempotencyKey: "delete-lifecycle", ExpectedVersion: 1,
+		Command: state.ProjectCommand{Type: state.ProjectCommandRequestDeletion, Deletion: &state.ProjectDeletion{EarliestExecutionAt: fixedClock()}},
+	}
+	first, err := service.HandleProject(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.HandleProject(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Project.Deletion == nil || !first.Project.Deletion.RequestedAt.Equal(fixedClock()) || first.Project.Deletion.RequestedBy != "usr_1" || first.Project.Deletion.ID == "" {
+		t.Fatalf("trusted deletion record = %#v", first.Project.Deletion)
+	}
+	if !second.Duplicate || second.Project.Deletion.ID != first.Project.Deletion.ID || store.Stats().Events != 2 {
+		t.Fatalf("duplicate lifecycle outcome = %#v stats=%#v", second, store.Stats())
+	}
+}
+
 func TestTaskCommandRequiresApprovedGoalAndPublishedPlan(t *testing.T) {
 	store := eventing.NewMemoryStore()
 	service := newTestService(store)

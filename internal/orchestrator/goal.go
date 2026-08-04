@@ -32,6 +32,11 @@ type GoalSpecProjection struct {
 }
 
 func prepareGoalCommand(request ProjectRequest, command state.ProjectCommand) (state.ProjectCommand, error) {
+	var err error
+	command, err = prepareProjectLifecycleCommand(request, command)
+	if err != nil {
+		return state.ProjectCommand{}, err
+	}
 	if command.GoalMessage != nil {
 		message := *command.GoalMessage
 		message.ID = stableID("msg", request.TenantID+"\x00"+request.ProjectID+"\x00"+request.PrincipalID+"\x00"+request.IdempotencyKey)
@@ -86,6 +91,18 @@ func prepareGoalCommand(request ProjectRequest, command state.ProjectCommand) (s
 
 func goalDigestCommand(command state.ProjectCommand) state.ProjectCommand {
 	digestCommand := command
+	if command.Deletion != nil {
+		deletion := *command.Deletion
+		deletion.RequestedAt = time.Time{}
+		deletion.StartedAt = cloneTimePointer(nil)
+		deletion.CompletedAt = cloneTimePointer(nil)
+		digestCommand.Deletion = &deletion
+	}
+	if command.LegalHold != nil {
+		hold := *command.LegalHold
+		hold.PlacedAt = time.Time{}
+		digestCommand.LegalHold = &hold
+	}
 	if command.Approval != nil {
 		approval := *command.Approval
 		approval.IssuedAt = time.Time{}
@@ -104,12 +121,63 @@ func goalDigestCommand(command state.ProjectCommand) state.ProjectCommand {
 }
 
 func finalizeGoalCommand(command state.ProjectCommand) state.ProjectCommand {
+	if command.Type == state.ProjectCommandRequestDeletion && command.Deletion != nil {
+		deletion := *command.Deletion
+		deletion.RequestedAt = command.At
+		command.Deletion = &deletion
+	}
+	if command.Type == state.ProjectCommandPlaceLegalHold && command.LegalHold != nil {
+		hold := *command.LegalHold
+		hold.PlacedAt = command.At
+		command.LegalHold = &hold
+	}
 	if command.GoalMessage != nil {
 		message := *command.GoalMessage
 		message.CreatedAt = command.At
 		command.GoalMessage = &message
 	}
 	return command
+}
+
+func prepareProjectLifecycleCommand(request ProjectRequest, command state.ProjectCommand) (state.ProjectCommand, error) {
+	switch command.Type {
+	case state.ProjectCommandRequestDeletion:
+		if command.Deletion == nil {
+			return state.ProjectCommand{}, invalidGoalCommand("deletion request required")
+		}
+		deletion := *command.Deletion
+		deletion.ID = stableID("deletion", request.TenantID+"\x00"+request.ProjectID+"\x00"+request.PrincipalID+"\x00"+request.IdempotencyKey)
+		deletion.RequestedBy = request.PrincipalID
+		deletion.RequestedAt = time.Time{}
+		deletion.Status = ""
+		deletion.StartedAt = nil
+		deletion.CompletedAt = nil
+		deletion.ProofSHA256 = ""
+		deletion.ProofArtifactURI = ""
+		deletion.BackupExpiresAt = nil
+		command.Deletion = &deletion
+	case state.ProjectCommandPlaceLegalHold:
+		if command.LegalHold == nil {
+			return state.ProjectCommand{}, invalidGoalCommand("legal hold required")
+		}
+		hold := *command.LegalHold
+		hold.ID = stableID("hold", request.TenantID+"\x00"+request.ProjectID+"\x00"+request.PrincipalID+"\x00"+request.IdempotencyKey)
+		hold.PlacedBy = request.PrincipalID
+		hold.PlacedAt = time.Time{}
+		hold.ReleasedBy = ""
+		hold.ReleasedAt = nil
+		hold.ReleaseReason = ""
+		command.LegalHold = &hold
+	}
+	return command, nil
+}
+
+func cloneTimePointer(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	cloned := value.UTC()
+	return &cloned
 }
 
 func (s *Service) goalRelatedTransitions(ctx context.Context, request ProjectRequest, current state.Project, command state.ProjectCommand, requestDigest string) ([]eventing.ProjectionUpdate, []eventing.DomainEvent, error) {

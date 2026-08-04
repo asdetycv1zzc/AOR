@@ -138,6 +138,7 @@ func cloneCommitValidation(value CommitValidation) CommitValidation {
 }
 
 func cloneBoundaryProject(value state.Project) state.Project {
+	value.DeploymentTargets = append([]string(nil), value.DeploymentTargets...)
 	if value.Goal != nil {
 		goal := *value.Goal
 		goal.UnresolvedItems = append([]string(nil), value.Goal.UnresolvedItems...)
@@ -146,6 +147,17 @@ func cloneBoundaryProject(value state.Project) state.Project {
 	if value.Plan != nil {
 		plan := *value.Plan
 		value.Plan = &plan
+	}
+	if value.Deletion != nil {
+		deletion := *value.Deletion
+		deletion.StartedAt = cloneTimePointer(value.Deletion.StartedAt)
+		deletion.CompletedAt = cloneTimePointer(value.Deletion.CompletedAt)
+		deletion.BackupExpiresAt = cloneTimePointer(value.Deletion.BackupExpiresAt)
+		value.Deletion = &deletion
+	}
+	value.LegalHolds = append([]state.ProjectLegalHold(nil), value.LegalHolds...)
+	for index := range value.LegalHolds {
+		value.LegalHolds[index].ReleasedAt = cloneTimePointer(value.LegalHolds[index].ReleasedAt)
 	}
 	return value
 }
