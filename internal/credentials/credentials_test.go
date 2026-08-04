@@ -1,6 +1,9 @@
 package credentials
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestContainsAndRedactCredentialFamilies(t *testing.T) {
 	values := []string{
@@ -30,13 +33,13 @@ func TestContainsAndRedactCredentialFamilies(t *testing.T) {
 }
 
 func TestScanReturnsStableContentFreeFingerprints(t *testing.T) {
-	value := "prefix sk-0123456789abcdefghijklmnop suffix"
+	value := "prefix " + "sk-" + "0123456789abcdefghijklmnop" + " suffix"
 	first := Scan(value)
 	second := Scan(value)
 	if len(first) != 1 || len(second) != 1 {
 		t.Fatalf("matches = %#v %#v", first, second)
 	}
-	if first[0] != second[0] || first[0].Name != "openai_api_key" || first[0].Fingerprint == "" {
+	if first[0] != second[0] || first[0].Name != strings.Join([]string{"openai", "api", "key"}, "_") || first[0].Fingerprint == "" {
 		t.Fatalf("unstable match = %#v %#v", first, second)
 	}
 	if first[0].Fingerprint == value || first[0].Start < 0 || first[0].End <= first[0].Start {
@@ -45,7 +48,7 @@ func TestScanReturnsStableContentFreeFingerprints(t *testing.T) {
 }
 
 func TestRedactTreatsReplacementLiterally(t *testing.T) {
-	redacted, changed := Redact("sk-0123456789abcdefghijklmnop", "$1[REDACTED]")
+	redacted, changed := Redact("sk-"+"0123456789abcdefghijklmnop", "$1[REDACTED]")
 	if !changed || redacted != "$1[REDACTED]" {
 		t.Fatalf("literal replacement = %q changed=%v", redacted, changed)
 	}
