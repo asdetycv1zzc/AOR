@@ -60,6 +60,65 @@ func TestServiceInitializesBareRepositoryAndMaterializesWorkspace(t *testing.T) 
 	}
 }
 
+func TestServiceResolvesAuthoritativeWorkspaceBaseAcrossAttempts(t *testing.T) {
+	root := t.TempDir()
+	registry := NewMemoryRegistryStore()
+	submissions := NewMemorySubmissionStore()
+	service, err := NewServiceWithConfig(ServiceConfig{
+		Root: root, Leases: testLeaseValidator{}, Submissions: submissions,
+		Workspaces: registry, ProjectRepositories: registry, Signer: testSubmissionSigner{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	base, err := service.ResolveWorkspaceBaseCommit(ctx, "tenant-1", "project-1", "task-1", "series-1", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, found, err := service.ProjectRepository(ctx, "tenant-1", "project-1")
+	if err != nil || !found || base != repository.BaselineCommit {
+		t.Fatalf("resolved base=%q repository=%#v found=%t error=%v", base, repository, found, err)
+	}
+
+	lease := LeaseProof{ID: "lease-1", FencingToken: 1, ExpiresAt: time.Now().Add(time.Hour)}
+	workspace, err := service.CreateWorkspace(ctx, WorkspaceRequest{
+		TenantID: "tenant-1", ProjectID: "project-1", TaskID: "task-1", Attempt: 1,
+		AttemptSeriesID: "series-1", BaseCommit: base, ModuleSpec: testModule(),
+		AgentIdentity: contracts.AgentIdentity{AgentInstanceID: "agent-1", Role: "EXECUTOR", LeaseID: lease.ID}, Lease: lease,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.WriteFile(ctx, WriteRequest{WorkspaceID: workspace.ID, Path: "owned/retry.txt", Content: []byte("retry base\n"), Lease: lease}); err != nil {
+		t.Fatal(err)
+	}
+	submission, err := service.Submit(ctx, SubmissionRequest{
+		WorkspaceID: workspace.ID, Attempt: 1, ClaimedCriteria: []string{"criterion-1"},
+		IdempotencyKey: "resolve-base-submit", Lease: lease,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	retryBase, err := service.ResolveWorkspaceBaseCommit(ctx, "tenant-1", "project-1", "task-1", "series-1", 2)
+	if err != nil || retryBase != submission.Manifest.HeadCommit {
+		t.Fatalf("retry base=%q want=%q error=%v", retryBase, submission.Manifest.HeadCommit, err)
+	}
+	if _, err := service.ResolveWorkspaceBaseCommit(ctx, "tenant-1", "project-1", "task-1", "series-1", 3); !errors.Is(err, ErrInitialCommitNeeded) {
+		t.Fatalf("missing prior attempt error = %v", err)
+	}
+
+	key := submissionKey("tenant-1", "task-1", "series-1", 1)
+	submissions.mu.Lock()
+	tampered := submissions.items[key]
+	tampered.Manifest.Signature.JWS = "sha256:" + strings.Repeat("0", 64)
+	submissions.items[key] = tampered
+	submissions.mu.Unlock()
+	if _, err := service.ResolveWorkspaceBaseCommit(ctx, "tenant-1", "project-1", "task-1", "series-1", 2); !errors.Is(err, ErrSubmissionConflict) {
+		t.Fatalf("tampered prior submission error = %v", err)
+	}
+}
+
 func TestServiceImportsProjectRepositoryAndRejectsConflictingReplay(t *testing.T) {
 	source := t.TempDir()
 	if _, err := runGit(source, "init", "-b", "trunk"); err != nil {
@@ -85,6 +144,10 @@ func TestServiceImportsProjectRepositoryAndRejectsConflictingReplay(t *testing.T
 	}
 	if repository.Initialization != RepositoryInitializationImport || repository.DefaultBranch != "trunk" || repository.BaselineCommit != strings.TrimSpace(sourceHead) {
 		t.Fatalf("imported repository = %#v", repository)
+	}
+	resolved, err := service.ResolveWorkspaceBaseCommit(context.Background(), "tenant-1", "project-1", "task-1", "series-1", 1)
+	if err != nil || resolved != repository.BaselineCommit {
+		t.Fatalf("imported repository base = %q error=%v", resolved, err)
 	}
 	if remote, err := runGit(repository.Path, "config", "--get", "remote.origin.url"); err == nil || strings.TrimSpace(remote) != "" {
 		t.Fatalf("import retained origin URL %q error=%v", remote, err)

@@ -64,12 +64,29 @@ func TestRepositoryMCPClientRegistersWithToolBrokerHost(t *testing.T) {
 
 func TestRepositoryArgumentsRejectUnknownFields(t *testing.T) {
 	var input repositoryCreateArguments
-	if err := decodeRepositoryArguments(map[string]any{"attemptSeriesId": "series", "attempt": 1, "baseCommit": "commit"}, &input); err != nil {
+	if err := decodeRepositoryArguments(map[string]any{"attemptSeriesId": "series", "attempt": 1}, &input); err != nil {
 		t.Fatal(err)
 	}
-	if err := decodeRepositoryArguments(map[string]any{"attemptSeriesId": "series", "attempt": 1, "baseCommit": "commit", "repositoryPath": "/tmp/escape"}, &input); !errors.Is(err, repository.ErrInvalidRequest) {
+	if err := decodeRepositoryArguments(map[string]any{"attemptSeriesId": "series", "attempt": 1, "baseCommit": "commit"}, &input); !errors.Is(err, repository.ErrInvalidRequest) {
 		t.Fatalf("unknown field error = %v", err)
 	}
+}
+
+func TestRepositoryCreateToolDoesNotAcceptAgentSelectedBaseCommit(t *testing.T) {
+	for _, tool := range repositoryMCPTools() {
+		if tool.Name != string(repository.LeaseActionCreateWorkspace) {
+			continue
+		}
+		properties, ok := tool.InputSchema["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("create properties = %#v", tool.InputSchema["properties"])
+		}
+		if _, found := properties["baseCommit"]; found {
+			t.Fatal("create tool exposes agent-selected baseCommit")
+		}
+		return
+	}
+	t.Fatal("repository create tool is not registered")
 }
 
 func TestRepositorySigningKeyUsesDomainSeparation(t *testing.T) {

@@ -46,7 +46,6 @@ type repositoryMCPClient struct {
 type repositoryCreateArguments struct {
 	AttemptSeriesID string `json:"attemptSeriesId"`
 	Attempt         int    `json:"attempt"`
-	BaseCommit      string `json:"baseCommit"`
 }
 
 type repositoryWriteArguments struct {
@@ -134,6 +133,10 @@ func (client *repositoryMCPClient) CallTool(ctx context.Context, name string, ar
 			return mcp.ToolCallResult{}, err
 		}
 		request, err := client.authority.workspaceRequest(ctx, input)
+		if err != nil {
+			return mcp.ToolCallResult{}, err
+		}
+		request.BaseCommit, err = client.service.ResolveWorkspaceBaseCommit(ctx, request.TenantID, request.ProjectID, request.TaskID, request.AttemptSeriesID, request.Attempt)
 		if err != nil {
 			return mcp.ToolCallResult{}, err
 		}
@@ -263,7 +266,6 @@ func (authority *repositoryExecutionAuthority) workspaceRequest(ctx context.Cont
 		TaskID:          claim.TaskID,
 		Attempt:         input.Attempt,
 		AttemptSeriesID: input.AttemptSeriesID,
-		BaseCommit:      input.BaseCommit,
 		ModuleSpec:      scope.module,
 		AgentIdentity: contracts.AgentIdentity{
 			AgentInstanceID: claim.Principal.ID,
@@ -421,7 +423,7 @@ func repositoryMCPTools() []mcp.Tool {
 		return map[string]any{"type": "object", "required": required, "properties": properties, "additionalProperties": false}
 	}
 	return []mcp.Tool{
-		{Name: string(repository.LeaseActionCreateWorkspace), Description: "Create a lease-bound repository workspace", InputSchema: objectSchema([]any{"attemptSeriesId", "attempt", "baseCommit"}, map[string]any{"attemptSeriesId": stringProperty(128), "attempt": integerProperty, "baseCommit": map[string]any{"type": "string", "pattern": "^[0-9a-f]{40}$"}}), OutputSchema: objectSchema([]any{"workspaceId", "branch", "baseCommit", "moduleSpecRef"}, map[string]any{"workspaceId": stringProperty(512), "branch": stringProperty(512), "baseCommit": stringProperty(40), "moduleSpecRef": map[string]any{"type": "object"}})},
+		{Name: string(repository.LeaseActionCreateWorkspace), Description: "Create a lease-bound repository workspace", InputSchema: objectSchema([]any{"attemptSeriesId", "attempt"}, map[string]any{"attemptSeriesId": stringProperty(128), "attempt": integerProperty}), OutputSchema: objectSchema([]any{"workspaceId", "branch", "baseCommit", "moduleSpecRef"}, map[string]any{"workspaceId": stringProperty(512), "branch": stringProperty(512), "baseCommit": stringProperty(40), "moduleSpecRef": map[string]any{"type": "object"}})},
 		{Name: string(repository.LeaseActionWriteFile), Description: "Write one module-owned file", InputSchema: objectSchema([]any{"workspaceId", "path", "contentBase64"}, map[string]any{"workspaceId": stringProperty(512), "path": stringProperty(4096), "contentBase64": stringProperty(6 << 20)}), OutputSchema: objectSchema([]any{"ok"}, map[string]any{"ok": map[string]any{"type": "boolean"}})},
 		{Name: string(repository.LeaseActionDeleteFile), Description: "Delete one module-owned file", InputSchema: objectSchema([]any{"workspaceId", "path"}, map[string]any{"workspaceId": stringProperty(512), "path": stringProperty(4096)}), OutputSchema: objectSchema([]any{"ok"}, map[string]any{"ok": map[string]any{"type": "boolean"}})},
 		{Name: repositoryReadTool, Description: "Read one module-owned file", InputSchema: objectSchema([]any{"workspaceId", "path"}, map[string]any{"workspaceId": stringProperty(512), "path": stringProperty(4096)}), OutputSchema: objectSchema([]any{"workspaceId", "path", "contentBase64", "sha256", "size"}, map[string]any{"workspaceId": stringProperty(512), "path": stringProperty(4096), "contentBase64": map[string]any{"type": "string"}, "sha256": stringProperty(71), "size": map[string]any{"type": "integer", "minimum": 0}})},

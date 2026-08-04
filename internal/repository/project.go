@@ -47,6 +47,65 @@ func (s *Service) InitializeProjectRepository(ctx context.Context, tenantID, pro
 	}, RepositoryInitializationEmpty)
 }
 
+func (s *Service) ResolveWorkspaceBaseCommit(ctx context.Context, tenantID, projectID, taskID, attemptSeriesID string, attempt int) (string, error) {
+	if s == nil || ctx == nil || !safeIDPattern.MatchString(tenantID) || !safeIDPattern.MatchString(projectID) || !safeIDPattern.MatchString(taskID) || !safeIDPattern.MatchString(attemptSeriesID) || attempt < 1 || attempt > 3 {
+		return "", ErrInvalidRequest
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	repository, found, err := s.ProjectRepository(ctx, tenantID, projectID)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		repository, err = s.InitializeProjectRepository(ctx, tenantID, projectID, s.clock().UTC())
+		if err != nil {
+			return "", err
+		}
+	}
+	if attempt == 1 {
+		return resolveProjectCommit(ctx, repository, "refs/heads/"+repository.DefaultBranch, ErrRepositoryConflict)
+	}
+
+	previous, found, err := s.store.Get(ctx, tenantID, taskID, attemptSeriesID, attempt-1)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", ErrInitialCommitNeeded
+	}
+	if err := validateStoredSubmission(previous); err != nil {
+		return "", ErrSubmissionConflict
+	}
+	manifest := previous.Manifest
+	if previous.Workspace.TenantID != tenantID || manifest.ProjectID != projectID || manifest.ModuleTaskID != taskID || manifest.AttemptSeriesID != attemptSeriesID || manifest.Attempt != attempt-1 {
+		return "", ErrSubmissionConflict
+	}
+	payload, err := manifestPayload(manifest)
+	if err != nil || s.signer.Verify(ctx, payload, manifest.Signature) != nil {
+		return "", ErrSubmissionConflict
+	}
+	branch := workspaceBranch(WorkspaceRequest{ProjectID: projectID, TaskID: taskID, Attempt: attempt - 1})
+	commit, err := resolveProjectCommit(ctx, repository, "refs/heads/"+branch, ErrSubmissionConflict)
+	if err != nil || commit != manifest.HeadCommit {
+		return "", ErrSubmissionConflict
+	}
+	return commit, nil
+}
+
+func resolveProjectCommit(ctx context.Context, repository ProjectRepository, revision string, failure error) (string, error) {
+	commit, err := gitFrom(ctx, repository.Path, "--git-dir", repository.Path, "rev-parse", "--verify", revision+"^{commit}")
+	if err != nil {
+		return "", failure
+	}
+	commit = strings.TrimSpace(commit)
+	if validateCommit(commit) != nil {
+		return "", failure
+	}
+	return commit, nil
+}
+
 func (s *Service) ImportProjectRepository(ctx context.Context, request ProjectRepositoryImportRequest) (ProjectRepository, error) {
 	if strings.TrimSpace(request.SourcePath) == "" {
 		return ProjectRepository{}, ErrInvalidRequest
