@@ -136,6 +136,7 @@ func (s *Service) PublishPlan(ctx context.Context, request PublishPlanRequest) (
 	if err := s.validatePlanCommit(ctx, request, project, digest, at); err != nil {
 		return PublishPlanOutcome{}, err
 	}
+	applyEventTrace(ctx, digest, events)
 	transaction, err := s.store.Execute(ctx, eventing.TransactionRequest{
 		TenantID: request.TenantID, PrincipalID: request.PrincipalID, IdempotencyKey: request.IdempotencyKey, RequestSHA256: digest,
 		Updates: updates, Events: events, Result: result, ResultSHA256: mustDigest(result),

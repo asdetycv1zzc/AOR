@@ -49,6 +49,27 @@ func TestExternalizeBudgetEvent(t *testing.T) {
 	}
 }
 
+func TestExternalizeGoalProjectionEvents(t *testing.T) {
+	for _, testCase := range []struct {
+		aggregateType string
+		eventType     string
+	}{
+		{aggregateType: "goal_message", eventType: "io.aor.goal.message-stored.v1"},
+		{aggregateType: "goal_spec", eventType: "io.aor.goal.spec-approved.v1"},
+		{aggregateType: "project", eventType: "io.aor.goal.change-requested.v1"},
+		{aggregateType: "project", eventType: "io.aor.project.archived.v1"},
+	} {
+		event := externalEvent(testCase.aggregateType, testCase.eventType, `{"projectId":"project-1","aggregateVersion":2}`)
+		external, err := Externalize(event, CloudEventOptions{Source: "urn:aor:service:orchestrator", Traceparent: "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"})
+		if err != nil {
+			t.Fatalf("%s: %v", testCase.eventType, err)
+		}
+		if external.Subject != "projects/project-1" || external.DataSchema == "" {
+			t.Fatalf("%s: %#v", testCase.eventType, external)
+		}
+	}
+}
+
 func externalEvent(aggregateType, eventType, payload string) DomainEvent {
 	payloadValue := json.RawMessage(payload)
 	digest, _ := canonicaljson.Digest(payloadValue)

@@ -12,6 +12,7 @@ import (
 	"github.com/akimisaka/aor/internal/controlapi"
 	"github.com/akimisaka/aor/internal/eventing"
 	"github.com/akimisaka/aor/internal/knowledge"
+	"github.com/akimisaka/aor/internal/observability"
 	"github.com/akimisaka/aor/internal/policy"
 	"github.com/akimisaka/aor/internal/runtimeclient"
 	"github.com/akimisaka/aor/internal/runtimeconfig"
@@ -109,7 +110,38 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	dispatchContext, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- dispatcher.Run(dispatchContext) }()
-	return &controlHandler{Handler: domain, dispatcher: dispatcher, cancel: cancel, done: done}, nil
+	return &controlHandler{Handler: withRequestTrace(domain), dispatcher: dispatcher, cancel: cancel, done: done}, nil
+}
+
+func withRequestTrace(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if next == nil || request == nil {
+			response.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		trace, err := requestTrace(request)
+		if err != nil {
+			trace, err = observability.NewRootTraceContext(false)
+			if err != nil {
+				response.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+		}
+		ctx, err := observability.ContextWithTrace(request.Context(), trace)
+		if err != nil {
+			response.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		next.ServeHTTP(response, request.WithContext(ctx))
+	})
+}
+
+func requestTrace(request *http.Request) (observability.TraceContext, error) {
+	traceparent := request.Header.Get(observability.TraceParentHeader)
+	if traceparent == "" {
+		return observability.NewRootTraceContext(false)
+	}
+	return observability.ParseTraceParent(traceparent, request.Header.Get(observability.TraceStateHeader))
 }
 
 func oidcAuthenticator(config runtimeconfig.Config) (authn.Authenticator, error) {

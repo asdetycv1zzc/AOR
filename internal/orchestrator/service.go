@@ -163,6 +163,7 @@ func (s *Service) HandleProject(ctx context.Context, request ProjectRequest) (Pr
 			events = append(events, taskDomainEvent)
 		}
 	}
+	applyEventTrace(ctx, digest, events)
 	if err := s.validateProjectCommit(ctx, request, current, command, digest); err != nil {
 		return ProjectOutcome{}, err
 	}
@@ -311,6 +312,7 @@ func (s *Service) HandleTask(ctx context.Context, request TaskRequest) (TaskOutc
 			events = append(events, dependentEvent)
 		}
 	}
+	applyEventTrace(ctx, digest, events)
 	if err := s.validateTaskCommit(ctx, request, project, current, command, digest); err != nil {
 		return TaskOutcome{}, err
 	}
@@ -366,7 +368,7 @@ func newEvent(tenantID, projectID, aggregateType, aggregateID, eventType string,
 	return eventing.DomainEvent{
 		EventID: stableUUIDv7(at, aggregateType+"\x00"+aggregateID+"\x00"+fmt.Sprint(version)+"\x00"+requestDigest), TenantID: tenantID, ProjectID: projectID,
 		AggregateType: aggregateType, AggregateID: aggregateID, AggregateVersion: version, Type: eventType, Payload: payload, PayloadSHA256: mustDigest(payload), OccurredAt: at,
-		CorrelationID: stableID("corr", requestDigest),
+		CorrelationID: stableID("corr", requestDigest), Traceparent: fallbackTraceParent(requestDigest),
 	}
 }
 
