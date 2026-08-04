@@ -3,7 +3,7 @@ import json
 from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
-OPENAPI_SHA256 = "sha256:38d74eafafcc06062803cc39c1c41c69e9fee39015835bc1132266dea9c9ed14"
+OPENAPI_SHA256 = "sha256:c3cf62b6a0426fbda0866dd99d4cc0f7fd27c4f5dc114c97b622bb53c778a69b"
 
 
 class AORClient:
@@ -68,6 +68,9 @@ class AORClient:
     def decide_task(self, options=None):
         return self._request("POST", "/v1/projects/{projectId}/tasks/{taskId}/decisions", options)
 
+    def execute_project_deletion(self, options=None):
+        return self._request("POST", "/v1/projects/{projectId}:execute-deletion", options)
+
     def export_project(self, options=None):
         return self._request("GET", "/v1/projects/{projectId}/export", options)
 
@@ -116,6 +119,9 @@ class AORClient:
     def list_plans(self, options=None):
         return self._request("GET", "/v1/projects/{projectId}/plans", options)
 
+    def list_project_legal_holds(self, options=None):
+        return self._request("GET", "/v1/projects/{projectId}/legal-holds", options)
+
     def list_task_audits(self, options=None):
         return self._request("GET", "/v1/projects/{projectId}/tasks/{taskId}/audits", options)
 
@@ -128,6 +134,9 @@ class AORClient:
     def pause_project(self, options=None):
         return self._request("POST", "/v1/projects/{projectId}:pause", options)
 
+    def place_project_legal_hold(self, options=None):
+        return self._request("POST", "/v1/projects/{projectId}/legal-holds", options)
+
     def probe_sandboxes(self, options=None):
         return self._request("POST", "/v1/admin/sandboxes:probe", options)
 
@@ -136,6 +145,9 @@ class AORClient:
 
     def reject_goal_spec(self, options=None):
         return self._request("POST", "/v1/projects/{projectId}/goal/specs/{version}:reject", options)
+
+    def release_project_legal_hold(self, options=None):
+        return self._request("POST", "/v1/projects/{projectId}/legal-holds/{holdId}:release", options)
 
     def request_project_deletion(self, options=None):
         return self._request("POST", "/v1/projects/{projectId}:request-deletion", options)

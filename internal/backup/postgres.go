@@ -3,7 +3,6 @@ package backup
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"time"
 
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
@@ -191,11 +190,13 @@ ORDER BY task.project_id, task.id`, tenantID)
 
 func loadAudits(ctx context.Context, tx *sql.Tx, tenantID string, snapshot *Snapshot) error {
 	rows, err := tx.QueryContext(ctx, `
-SELECT id::text, project_id::text,
-       CASE WHEN subject_type = 'SUBMISSION' THEN submission_id::text ELSE '' END
-FROM audit_runs
-WHERE tenant_id = $1::uuid
-ORDER BY project_id, id`, tenantID)
+SELECT audit.id::text, audit.project_id::text,
+       CASE WHEN audit.subject_type = 'SUBMISSION' THEN submission.module_task_id::text ELSE '' END
+FROM audit_runs AS audit
+LEFT JOIN submissions AS submission
+  ON submission.tenant_id = audit.tenant_id AND submission.id = audit.submission_id
+WHERE audit.tenant_id = $1::uuid
+ORDER BY audit.project_id, audit.id`, tenantID)
 	if err != nil {
 		return err
 	}
@@ -206,14 +207,6 @@ ORDER BY project_id, id`, tenantID)
 			return err
 		}
 		record.TenantID = tenantID
-		if record.TaskID != "" {
-			if err := tx.QueryRowContext(ctx, `
-SELECT module_task_id::text
-FROM submissions
-WHERE tenant_id = $1::uuid AND id = $2::uuid`, tenantID, record.TaskID).Scan(&record.TaskID); err != nil && !errors.Is(err, sql.ErrNoRows) {
-				return err
-			}
-		}
 		snapshot.Audits = append(snapshot.Audits, record)
 	}
 	return rows.Err()
