@@ -83,3 +83,24 @@ jobs:
           go run ./cmd/aor-conformance source-format
       - name: Build release verification tool
         run: go build -trimpath -o bin/aor-release ./cmd/aor-release
+
+  dependency-vulnerabilities:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          persist-credentials: false
+      - name: Install pinned Go toolchain
+        uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Run pinned Go vulnerability gate
+        env:
+          GOPROXY: https://proxy.golang.org
+          GOSUMDB: sum.golang.org
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
