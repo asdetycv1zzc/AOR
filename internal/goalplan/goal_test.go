@@ -21,6 +21,26 @@ type scriptedGoalInvoker struct {
 
 type goalPlanCommitBoundary struct{}
 
+type principalRecordingCommander struct {
+	delegate  ProjectCommander
+	handled   []string
+	published []string
+}
+
+func (commander *principalRecordingCommander) HandleProject(ctx context.Context, request orchestrator.ProjectRequest) (orchestrator.ProjectOutcome, error) {
+	commander.handled = append(commander.handled, request.PrincipalID)
+	return commander.delegate.HandleProject(ctx, request)
+}
+
+func (commander *principalRecordingCommander) PublishPlan(ctx context.Context, request orchestrator.PublishPlanRequest) (orchestrator.PublishPlanOutcome, error) {
+	commander.published = append(commander.published, request.PrincipalID)
+	return commander.delegate.PublishPlan(ctx, request)
+}
+
+func (commander *principalRecordingCommander) Project(ctx context.Context, tenantID, projectID string) (state.Project, bool, error) {
+	return commander.delegate.Project(ctx, tenantID, projectID)
+}
+
 func (goalPlanCommitBoundary) Validate(_ context.Context, validation orchestrator.CommitValidation) error {
 	if validation.TenantID == "" || validation.ProjectID == "" || validation.PrincipalID == "" || validation.Action == "" || validation.ParameterDigest == "" || validation.CommitAt.IsZero() {
 		return orchestrator.ErrCommitBoundary
@@ -70,6 +90,22 @@ func TestSingleAgentNegotiationRunsHundredRoundsWithoutApproval(t *testing.T) {
 	}
 	if len(invoker.invocations) != 100 {
 		t.Fatalf("invocations = %d", len(invoker.invocations))
+	}
+}
+
+func TestNegotiatorCommitsAgentDraftAsAuthenticatedUser(t *testing.T) {
+	negotiator, _, _ := negotiationHarness(t, 1)
+	commander := &principalRecordingCommander{delegate: negotiator.projects}
+	negotiator.projects = commander
+	_, err := negotiator.Negotiate(context.Background(), NegotiationRequest{
+		TenantID: "tenant_1", ProjectID: "prj_1", GoalSpecID: "goal_1", MessageID: "msg_1", UserPrincipalID: "usr_1",
+		UserInput: []byte("build"), GoalAgentCount: 1, ExpectedProjectVersion: 2, IdempotencyKey: "draft",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(commander.handled) != 1 || commander.handled[0] != "usr_1" {
+		t.Fatalf("goal commit principals = %#v", commander.handled)
 	}
 }
 

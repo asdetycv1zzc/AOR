@@ -64,6 +64,18 @@ func TestPlannerPublishesValidatedPlanAndAllTasksAtomically(t *testing.T) {
 	}
 }
 
+func TestPlannerPublishesAgentPlanAsAuthenticatedUser(t *testing.T) {
+	planner, _, request := approvedPlanningHarness(t)
+	commander := &principalRecordingCommander{delegate: planner.projects}
+	planner.projects = commander
+	if _, err := planner.BuildAndPublish(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if len(commander.published) != 1 || commander.published[0] != "usr_1" {
+		t.Fatalf("plan commit principals = %#v", commander.published)
+	}
+}
+
 func TestPlannerAutomaticallyAllocatesStableProductionTaskIdentities(t *testing.T) {
 	planner, invoker, request := approvedPlanningHarness(t)
 	request.ModuleTaskIDs = nil
@@ -122,7 +134,7 @@ func TestPlannerRequiresApprovedGoalArtifact(t *testing.T) {
 	}
 	invoker := &scriptedPlanningInvoker{plan: validPlanDraft()}
 	planner, _ := NewPlanner(negotiator.artifacts, invoker, service, goalPlanClock)
-	_, err = planner.BuildAndPublish(context.Background(), PlanningRequest{TenantID: "tenant_1", ProjectID: "prj_1", GoalSpecID: "goal_1", GoalRef: contracts.SpecRef{Version: draft.Goal.Content.Version, SHA256: draft.Goal.ContentSHA256}, PlanSpecID: "plan_1", PlanVersion: 1, ModuleTaskIDs: map[string]string{"mod_api": "task_api", "mod_worker": "task_worker"}, AttemptSeriesIDs: map[string]string{"mod_api": "series_api", "mod_worker": "series_worker"}, ModuleSpecVersions: map[string]int{"mod_api": 1, "mod_worker": 1}, ExpectedProjectVersion: 3, IdempotencyKey: "plan"})
+	_, err = planner.BuildAndPublish(context.Background(), PlanningRequest{TenantID: "tenant_1", ProjectID: "prj_1", PrincipalID: "usr_1", GoalSpecID: "goal_1", GoalRef: contracts.SpecRef{Version: draft.Goal.Content.Version, SHA256: draft.Goal.ContentSHA256}, PlanSpecID: "plan_1", PlanVersion: 1, ModuleTaskIDs: map[string]string{"mod_api": "task_api", "mod_worker": "task_worker"}, AttemptSeriesIDs: map[string]string{"mod_api": "series_api", "mod_worker": "series_worker"}, ModuleSpecVersions: map[string]int{"mod_api": 1, "mod_worker": 1}, ExpectedProjectVersion: 3, IdempotencyKey: "plan"})
 	if !errors.Is(err, ErrInvalidRequest) {
 		t.Fatalf("unapproved planning = %v", err)
 	}
@@ -168,7 +180,7 @@ func TestApprovedGoalChangeSupersedesOnlyImpactedTasks(t *testing.T) {
 		t.Fatal(err)
 	}
 	replanned, err := replanner.BuildAndPublish(context.Background(), PlanningRequest{
-		TenantID: "tenant_1", ProjectID: "prj_1", GoalSpecID: "goal_1", GoalRef: changedRef, PlanSpecID: "plan_2", PlanVersion: 2,
+		TenantID: "tenant_1", ProjectID: "prj_1", PrincipalID: "usr_1", GoalSpecID: "goal_1", GoalRef: changedRef, PlanSpecID: "plan_2", PlanVersion: 2,
 		ModuleTaskIDs: map[string]string{"mod_api": "task_api_v2", "mod_worker": "task_worker"}, AttemptSeriesIDs: map[string]string{"mod_api": "series_api_v2", "mod_worker": "series_worker"},
 		ModuleSpecVersions: map[string]int{"mod_api": 2, "mod_worker": 1}, RetainedModules: map[string]bool{"mod_worker": true},
 		ExpectedProjectVersion: 7, IdempotencyKey: "publish_plan_v2",
@@ -203,7 +215,7 @@ func approvedPlanningHarness(t *testing.T) (*Planner, *scriptedPlanningInvoker, 
 		t.Fatal(err)
 	}
 	request := PlanningRequest{
-		TenantID: "tenant_1", ProjectID: "prj_1", GoalSpecID: "goal_1", GoalRef: ref, PlanSpecID: "plan_1", PlanVersion: 1,
+		TenantID: "tenant_1", ProjectID: "prj_1", PrincipalID: "usr_1", GoalSpecID: "goal_1", GoalRef: ref, PlanSpecID: "plan_1", PlanVersion: 1,
 		ModuleTaskIDs:          map[string]string{"mod_api": "task_api", "mod_worker": "task_worker"},
 		AttemptSeriesIDs:       map[string]string{"mod_api": "series_api", "mod_worker": "series_worker"},
 		ModuleSpecVersions:     map[string]int{"mod_api": 1, "mod_worker": 1},

@@ -74,7 +74,7 @@ func (n *Negotiator) Negotiate(ctx context.Context, request NegotiationRequest) 
 			challenge = &report
 			challengeArtifact = &stored
 		}
-		outcome, publishErr := n.publishGoal(ctx, request, goal, existing.CreatedBy, previousApproved)
+		outcome, publishErr := n.publishGoal(ctx, request, goal, previousApproved)
 		return NegotiationResult{Goal: goal, Artifact: existing, Challenge: challenge, ChallengeArtifact: challengeArtifact, Project: outcome}, publishErr
 	}
 
@@ -102,7 +102,7 @@ func (n *Negotiator) Negotiate(ctx context.Context, request NegotiationRequest) 
 		return NegotiationResult{}, err
 	}
 	if request.GoalAgentCount == 1 {
-		outcome, publishErr := n.publishGoal(ctx, request, provisionalGoal, proposer.AgentInstanceID, previousApproved)
+		outcome, publishErr := n.publishGoal(ctx, request, provisionalGoal, previousApproved)
 		return NegotiationResult{Goal: provisionalGoal, Artifact: provisional, Project: outcome}, publishErr
 	}
 
@@ -150,7 +150,7 @@ func (n *Negotiator) Negotiate(ctx context.Context, request NegotiationRequest) 
 	if err != nil {
 		return NegotiationResult{}, err
 	}
-	outcome, err := n.publishGoal(ctx, request, goal, revised.AgentInstanceID, previousApproved)
+	outcome, err := n.publishGoal(ctx, request, goal, previousApproved)
 	return NegotiationResult{Goal: goal, Artifact: finalArtifact, Challenge: &report, ChallengeArtifact: &challengeArtifact, Project: outcome}, err
 }
 
@@ -254,14 +254,14 @@ func (n *Negotiator) validateNegotiation(ctx context.Context, request Negotiatio
 	return project, &draft, false, false, nil
 }
 
-func (n *Negotiator) publishGoal(ctx context.Context, request NegotiationRequest, goal contracts.GoalSpec, actor string, supersede bool) (orchestrator.ProjectOutcome, error) {
+func (n *Negotiator) publishGoal(ctx context.Context, request NegotiationRequest, goal contracts.GoalSpec, supersede bool) (orchestrator.ProjectOutcome, error) {
 	commandType := state.ProjectCommandProposeGoal
 	if supersede {
 		commandType = state.ProjectCommandSupersedeGoal
 	}
 	record := &state.GoalRecord{ID: request.GoalSpecID, Version: goal.Content.Version, SHA256: goal.ContentSHA256, UnresolvedItems: append([]string(nil), goal.Content.UnresolvedItems...)}
 	return n.projects.HandleProject(ctx, orchestrator.ProjectRequest{
-		TenantID: request.TenantID, ProjectID: request.ProjectID, PrincipalID: actor,
+		TenantID: request.TenantID, ProjectID: request.ProjectID, PrincipalID: request.UserPrincipalID,
 		IdempotencyKey: request.IdempotencyKey, ExpectedVersion: request.ExpectedProjectVersion,
 		Command: state.ProjectCommand{Type: commandType, Goal: record, GoalSpec: &goal, ImpactedTaskIDs: append([]string(nil), request.ImpactedTaskIDs...)},
 	})

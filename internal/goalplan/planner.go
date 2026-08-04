@@ -108,7 +108,7 @@ func (p *Planner) BuildAndPublish(ctx context.Context, request PlanningRequest) 
 		})
 	}
 	publication, err := p.projects.PublishPlan(ctx, orchestrator.PublishPlanRequest{
-		TenantID: request.TenantID, ProjectID: request.ProjectID, PrincipalID: planArtifact.CreatedBy,
+		TenantID: request.TenantID, ProjectID: request.ProjectID, PrincipalID: request.PrincipalID,
 		IdempotencyKey: request.IdempotencyKey, ExpectedProjectVersion: request.ExpectedProjectVersion,
 		GoalSpecRef: request.GoalRef, PlanRef: contracts.SpecRef{Version: plan.PlanSpecVersion, SHA256: plan.SHA256}, DAG: dag, Tasks: tasks,
 	})
@@ -413,7 +413,7 @@ func cloneStrings(values []string) []string {
 }
 
 func validatePlanningRequest(request PlanningRequest, projectVersion int64, projectState contracts.ProjectState, goal *state.GoalRecord, plan *contracts.SpecRef) error {
-	if request.TenantID == "" || request.ProjectID == "" || request.GoalSpecID == "" || request.PlanSpecID == "" || request.PlanVersion < 1 || request.GoalRef.Validate() != nil || request.ExpectedProjectVersion < 1 || request.IdempotencyKey == "" || len(request.ModuleTaskIDs) == 0 || len(request.AttemptSeriesIDs) == 0 || len(request.ModuleSpecVersions) == 0 || goal == nil || goal.ID != request.GoalSpecID || goal.Version != request.GoalRef.Version || goal.SHA256 != request.GoalRef.SHA256 || goal.ApprovedBy == "" {
+	if request.TenantID == "" || request.ProjectID == "" || request.PrincipalID == "" || request.GoalSpecID == "" || request.PlanSpecID == "" || request.PlanVersion < 1 || request.GoalRef.Validate() != nil || request.ExpectedProjectVersion < 1 || request.IdempotencyKey == "" || len(request.ModuleTaskIDs) == 0 || len(request.AttemptSeriesIDs) == 0 || len(request.ModuleSpecVersions) == 0 || goal == nil || goal.ID != request.GoalSpecID || goal.Version != request.GoalRef.Version || goal.SHA256 != request.GoalRef.SHA256 || goal.ApprovedBy == "" {
 		return ErrInvalidRequest
 	}
 	initial := projectVersion == request.ExpectedProjectVersion && projectState == contracts.ProjectPlanning && plan == nil
@@ -432,7 +432,7 @@ func validatePlanningRequest(request PlanningRequest, projectVersion int64, proj
 func validateAutomaticPlanningRequest(request PlanningRequest, project state.Project) error {
 	initial := project.Version == request.ExpectedProjectVersion && project.State == contracts.ProjectPlanning && project.Plan == nil
 	replay := project.Version == request.ExpectedProjectVersion+1 && project.State == contracts.ProjectExecuting && project.Plan != nil
-	if request.TenantID == "" || request.ProjectID == "" || request.GoalSpecID == "" || request.PlanSpecID == "" || request.PlanVersion < 1 || request.GoalRef.Validate() != nil || request.ExpectedProjectVersion < 1 || request.IdempotencyKey == "" || project.TenantID != request.TenantID || project.ID != request.ProjectID || !initial && !replay || project.Goal == nil || project.Goal.ID != request.GoalSpecID || project.Goal.Version != request.GoalRef.Version || project.Goal.SHA256 != request.GoalRef.SHA256 || project.Goal.ApprovedBy == "" {
+	if request.TenantID == "" || request.ProjectID == "" || request.PrincipalID == "" || request.GoalSpecID == "" || request.PlanSpecID == "" || request.PlanVersion < 1 || request.GoalRef.Validate() != nil || request.ExpectedProjectVersion < 1 || request.IdempotencyKey == "" || project.TenantID != request.TenantID || project.ID != request.ProjectID || !initial && !replay || project.Goal == nil || project.Goal.ID != request.GoalSpecID || project.Goal.Version != request.GoalRef.Version || project.Goal.SHA256 != request.GoalRef.SHA256 || project.Goal.ApprovedBy == "" {
 		return ErrInvalidRequest
 	}
 	return nil

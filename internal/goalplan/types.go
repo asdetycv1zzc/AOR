@@ -123,6 +123,7 @@ type ApprovalBinding struct {
 type PlanningRequest struct {
 	TenantID               string
 	ProjectID              string
+	PrincipalID            string
 	GoalSpecID             string
 	GoalRef                contracts.SpecRef
 	PlanSpecID             string
