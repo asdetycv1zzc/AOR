@@ -13,6 +13,7 @@ import (
 	"github.com/akimisaka/aor/internal/policy"
 	"github.com/akimisaka/aor/internal/runtimeclient"
 	"github.com/akimisaka/aor/internal/runtimeconfig"
+	aorworkflow "github.com/akimisaka/aor/internal/workflow"
 )
 
 type controlHandler struct {
@@ -50,7 +51,7 @@ func (handler *controlHandler) Close() error {
 }
 
 func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (http.Handler, error) {
-	if clients == nil || clients.Database() == nil || clients.JetStream() == nil {
+	if clients == nil || clients.Database() == nil || clients.JetStream() == nil || clients.Temporal() == nil {
 		return nil, runtimeclient.ErrInvalidClientConfig
 	}
 	authenticator, err := oidcAuthenticator(config)
@@ -62,8 +63,12 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 		return nil, err
 	}
 	store := eventing.NewPostgresStore(clients.Database())
+	lifecycleStore, err := aorworkflow.NewProjectLifecycleStore(store, clients.Temporal(), config.Temporal.TaskQueue)
+	if err != nil {
+		return nil, err
+	}
 	domain, err := controlapi.New(controlapi.Config{
-		Store: store, Authenticator: authenticator, Authorizer: authorizer,
+		Store: lifecycleStore, Authenticator: authenticator, Authorizer: authorizer,
 		Database: clients.Database(), Clock: time.Now,
 	})
 	if err != nil {
