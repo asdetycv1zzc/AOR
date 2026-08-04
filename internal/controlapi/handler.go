@@ -69,6 +69,7 @@ type Handler struct {
 	database      *sql.DB
 	budgets       modelgateway.BudgetAdministration
 	artifacts     artifact.Catalog
+	publisher     artifact.Publisher
 	knowledge     KnowledgeReader
 	taskHistory   TaskHistoryReader
 	autoBudget    bool
@@ -91,6 +92,34 @@ type projectBudgetSelection struct {
 
 type commandBody struct {
 	ExpectedVersion int64 `json:"expectedVersion"`
+}
+
+type legalHoldBody struct {
+	ExpectedVersion int64  `json:"expectedVersion"`
+	Reason          string `json:"reason"`
+}
+
+type legalHoldReleaseBody struct {
+	ExpectedVersion int64  `json:"expectedVersion"`
+	Reason          string `json:"reason"`
+}
+
+type projectExportManifest struct {
+	SchemaVersion string                 `json:"schemaVersion"`
+	Project       state.Project          `json:"project"`
+	Events        []eventing.DomainEvent `json:"events"`
+	Artifacts     []artifact.Record      `json:"artifacts"`
+	GeneratedAt   time.Time              `json:"generatedAt"`
+}
+
+type projectExportResource struct {
+	ProjectID      string    `json:"projectId"`
+	ProjectVersion int64     `json:"projectVersion"`
+	ArtifactID     string    `json:"artifactId"`
+	URI            string    `json:"uri"`
+	SHA256         string    `json:"sha256"`
+	SizeBytes      int64     `json:"sizeBytes"`
+	CreatedAt      time.Time `json:"createdAt"`
 }
 
 type budgetAdjustmentBody struct {
@@ -227,6 +256,7 @@ func New(config Config) (*Handler, error) {
 		autoBudget:    autoBudget,
 		clock:         config.Clock,
 	}
+	handler.publisher, _ = config.Artifacts.(artifact.Publisher)
 	handler.events, _ = config.Store.(eventing.EventLog)
 	return handler, nil
 }
@@ -298,6 +328,46 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 		}
 		if request.Method == http.MethodGet {
 			handler.projectEvents(response, request, principal, projectID)
+			return
+		}
+		writeMethodNotAllowed(response, request)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "export" {
+		if !validProjectID(projectID) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		if request.Method == http.MethodGet {
+			handler.exportProject(response, request, principal, projectID)
+			return
+		}
+		writeMethodNotAllowed(response, request)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "legal-holds" {
+		if !validProjectID(projectID) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		switch request.Method {
+		case http.MethodGet:
+			handler.listLegalHolds(response, request, principal, projectID)
+		case http.MethodPost:
+			handler.placeLegalHold(response, request, principal, projectID)
+		default:
+			writeMethodNotAllowed(response, request)
+		}
+		return
+	}
+	if len(parts) == 3 && parts[1] == "legal-holds" {
+		holdID, action, found := strings.Cut(parts[2], ":")
+		if !validProjectID(projectID) || !found || action != "release" || !validAPIIdentifier(holdID) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		if request.Method == http.MethodPost {
+			handler.releaseLegalHold(response, request, principal, projectID, holdID)
 			return
 		}
 		writeMethodNotAllowed(response, request)
@@ -736,16 +806,203 @@ func (handler *Handler) commandProject(response http.ResponseWriter, request *ht
 		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "unsupported project command"}))
 		return
 	}
+	command := state.ProjectCommand{Type: commandType}
+	if commandType == state.ProjectCommandRequestDeletion {
+		command.Deletion = &state.ProjectDeletion{}
+	}
 	outcome, err := handler.orchestrator.HandleProject(request.Context(), orchestrator.ProjectRequest{
 		TenantID: principal.TenantID, ProjectID: projectID, PrincipalID: principal.ID,
 		IdempotencyKey: idempotencyKey, ExpectedVersion: body.ExpectedVersion,
-		Command: state.ProjectCommand{Type: commandType},
+		Command: command,
 	})
 	if err != nil {
 		writeError(response, request, normalizeError(err))
 		return
 	}
 	writeProject(response, http.StatusAccepted, outcome.Project)
+}
+
+func (handler *Handler) listLegalHolds(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string) {
+	if len(request.URL.Query()) != 0 {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "legal hold query"}))
+		return
+	}
+	project, err := handler.authorizeProjectResourceRead(request.Context(), principal, projectID, authz.ActionProjectRead, "project-legal-holds", projectID)
+	if err != nil {
+		writeError(response, request, err)
+		return
+	}
+	response.Header().Set("ETag", entityTag(project.Version))
+	writeJSON(response, http.StatusOK, page{Items: project.LegalHolds})
+}
+
+func (handler *Handler) placeLegalHold(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string) {
+	idempotencyKey, err := requiredIdempotencyKey(request)
+	if err != nil {
+		writeError(response, request, err)
+		return
+	}
+	var body legalHoldBody
+	if err := decodeJSON(request, &body); err != nil || body.ExpectedVersion < 1 || !safeAPIText(body.Reason, 1024) {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "legal hold"}))
+		return
+	}
+	if err := requireProjectVersionHeader(request, body.ExpectedVersion); err != nil {
+		writeError(response, request, err)
+		return
+	}
+	outcome, err := handler.orchestrator.HandleProject(request.Context(), orchestrator.ProjectRequest{
+		TenantID: principal.TenantID, ProjectID: projectID, PrincipalID: principal.ID,
+		IdempotencyKey: idempotencyKey, ExpectedVersion: body.ExpectedVersion,
+		Command: state.ProjectCommand{Type: state.ProjectCommandPlaceLegalHold, LegalHold: &state.ProjectLegalHold{Reason: body.Reason}},
+	})
+	if err != nil {
+		writeError(response, request, normalizeError(err))
+		return
+	}
+	writeProject(response, http.StatusAccepted, outcome.Project)
+}
+
+func (handler *Handler) releaseLegalHold(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID, holdID string) {
+	idempotencyKey, err := requiredIdempotencyKey(request)
+	if err != nil {
+		writeError(response, request, err)
+		return
+	}
+	var body legalHoldReleaseBody
+	if err := decodeJSON(request, &body); err != nil || body.ExpectedVersion < 1 || !safeAPIText(body.Reason, 1024) {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "legal hold release"}))
+		return
+	}
+	if err := requireProjectVersionHeader(request, body.ExpectedVersion); err != nil {
+		writeError(response, request, err)
+		return
+	}
+	outcome, err := handler.orchestrator.HandleProject(request.Context(), orchestrator.ProjectRequest{
+		TenantID: principal.TenantID, ProjectID: projectID, PrincipalID: principal.ID,
+		IdempotencyKey: idempotencyKey, ExpectedVersion: body.ExpectedVersion,
+		Command: state.ProjectCommand{Type: state.ProjectCommandReleaseLegalHold, LegalHoldID: holdID, ReleaseReason: body.Reason},
+	})
+	if err != nil {
+		writeError(response, request, normalizeError(err))
+		return
+	}
+	writeProject(response, http.StatusAccepted, outcome.Project)
+}
+
+func (handler *Handler) exportProject(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string) {
+	if len(request.URL.Query()) != 0 {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "project export query"}))
+		return
+	}
+	if handler.events == nil || handler.artifacts == nil || handler.publisher == nil {
+		writeError(response, request, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "project export"}))
+		return
+	}
+	project, err := handler.authorizeProjectResourceRead(request.Context(), principal, projectID, authz.ActionProjectRead, "project-export", projectID)
+	if err != nil {
+		writeError(response, request, err)
+		return
+	}
+	events, err := handler.projectEventHistory(request.Context(), principal.TenantID, projectID)
+	if err != nil {
+		writeError(response, request, normalizeError(err))
+		return
+	}
+	artifacts, err := handler.projectArtifactHistory(request.Context(), principal.TenantID, projectID)
+	if err != nil {
+		writeError(response, request, normalizeArtifactError(err))
+		return
+	}
+	generatedAt := handler.clock().UTC()
+	if len(events) != 0 {
+		generatedAt = events[len(events)-1].OccurredAt.UTC()
+	}
+	manifest := projectExportManifest{SchemaVersion: "1.0", Project: project, Events: events, Artifacts: artifacts, GeneratedAt: generatedAt}
+	encoded, err := json.Marshal(manifest)
+	if err != nil {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInternalError, "", map[string]any{"scope": "project export encoding"}))
+		return
+	}
+	content, err := canonicaljson.Canonicalize(encoded)
+	if err != nil {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInternalError, "", map[string]any{"scope": "project export canonicalization"}))
+		return
+	}
+	digest, err := canonicaljson.Digest(content)
+	if err != nil {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInternalError, "", map[string]any{"scope": "project export digest"}))
+		return
+	}
+	record, err := handler.publisher.Publish(request.Context(), artifact.Publication{
+		TenantID: principal.TenantID, ProjectID: projectID, CreatedByPrincipal: principal.ID,
+		ContentType: "application/vnd.aor.project-export.v1+json", Data: content,
+		Metadata: map[string]any{"kind": "project-export", "schemaVersion": "1.0", "projectVersion": project.Version},
+	})
+	if err != nil {
+		writeError(response, request, normalizeArtifactError(err))
+		return
+	}
+	if record.SHA256 != digest || record.URI != "artifact://sha256/"+strings.TrimPrefix(digest, "sha256:") || record.ProjectID != projectID {
+		writeError(response, request, aorerrors.New(aorerrors.CodeArtifactHashMismatch, "", map[string]any{"scope": "project export"}))
+		return
+	}
+	response.Header().Set("ETag", `"`+digest+`"`)
+	response.Header().Set("Cache-Control", "private, no-store")
+	writeJSON(response, http.StatusOK, projectExportResource{
+		ProjectID: projectID, ProjectVersion: project.Version, ArtifactID: record.ID, URI: record.URI,
+		SHA256: record.SHA256, SizeBytes: record.SizeBytes, CreatedAt: record.CreatedAt,
+	})
+}
+
+func (handler *Handler) projectEventHistory(ctx context.Context, tenantID, projectID string) ([]eventing.DomainEvent, error) {
+	events, err := handler.events.ListEvents(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]eventing.DomainEvent, 0, len(events))
+	for _, event := range events {
+		if event.ProjectID == projectID {
+			result = append(result, event)
+		}
+	}
+	return result, nil
+}
+
+func (handler *Handler) projectArtifactHistory(ctx context.Context, tenantID, projectID string) ([]artifact.Record, error) {
+	result := make([]artifact.Record, 0, 100)
+	cursor := ""
+	seen := make(map[string]struct{})
+	for {
+		page, err := handler.artifacts.List(ctx, tenantID, projectID, cursor, 100)
+		if err != nil {
+			return nil, err
+		}
+		for _, record := range page.Items {
+			if record.Metadata["kind"] != "project-export" {
+				result = append(result, record)
+			}
+		}
+		if page.NextCursor == "" {
+			return result, nil
+		}
+		if _, duplicate := seen[page.NextCursor]; duplicate || len(seen) >= 10000 {
+			return nil, artifact.ErrIntegrity
+		}
+		seen[page.NextCursor] = struct{}{}
+		cursor = page.NextCursor
+	}
+}
+
+func requireProjectVersionHeader(request *http.Request, expectedVersion int64) error {
+	if len(request.Header.Values("If-Match")) != 1 {
+		return aorerrors.New(aorerrors.CodeStateVersionConflict, "", map[string]any{"expectedVersion": expectedVersion})
+	}
+	return validateIfMatch(request.Header.Get("If-Match"), expectedVersion)
+}
+
+func safeAPIText(value string, limit int) bool {
+	return value != "" && len(value) <= limit && strings.TrimSpace(value) == value && !strings.ContainsAny(value, "\r\n\x00")
 }
 
 func (handler *Handler) getTask(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID, taskID string) {
@@ -2085,7 +2342,9 @@ func mapProjectCommand(name string) (state.ProjectCommandType, bool) {
 		return state.ProjectCommandAbort, true
 	case "archive":
 		return state.ProjectCommandArchive, true
-	case "request-deletion", "approve-release":
+	case "request-deletion":
+		return state.ProjectCommandRequestDeletion, true
+	case "approve-release":
 		return "", false
 	default:
 		return "", false

@@ -65,12 +65,25 @@ func (catalog *testArtifactCatalog) Publish(_ context.Context, publication artif
 	}
 	publication.Data = append([]byte(nil), publication.Data...)
 	catalog.publications = append(catalog.publications, publication)
-	return artifact.Record{ProjectID: publication.ProjectID}, nil
+	digest, err := canonicaljson.Digest(publication.Data)
+	if err != nil {
+		return artifact.Record{}, err
+	}
+	return artifact.Record{
+		ID: "33333333-3333-4333-8333-333333333333", ProjectID: publication.ProjectID,
+		URI: "artifact://sha256/" + strings.TrimPrefix(digest, "sha256:"), SHA256: digest,
+		SizeBytes: int64(len(publication.Data)), ContentType: publication.ContentType,
+		Classification: "INTERNAL", CreatedByPrincipal: publication.CreatedByPrincipal,
+		Metadata: publication.Metadata, CreatedAt: controlAPITestTime,
+	}, nil
 }
 
-func (catalog *testArtifactCatalog) List(context.Context, string, string, string, int) (artifact.Page, error) {
+func (catalog *testArtifactCatalog) List(_ context.Context, _, _, cursor string, _ int) (artifact.Page, error) {
 	if catalog.err != nil {
 		return artifact.Page{}, catalog.err
+	}
+	if cursor != "" {
+		return artifact.Page{}, nil
 	}
 	return artifact.Page{Items: []artifact.Record{catalog.record}, NextCursor: "next-artifact"}, nil
 }
@@ -318,6 +331,87 @@ func TestProjectReadAndCommandRequirePolicyAndVersion(t *testing.T) {
 	}
 	if authorizer.inputs[len(authorizer.inputs)-1].Action != "project.command" {
 		t.Fatalf("last policy action = %q", authorizer.inputs[len(authorizer.inputs)-1].Action)
+	}
+}
+
+func TestProjectDeletionAndLegalHoldAPIsAreVersionedAndAudited(t *testing.T) {
+	handler, _, _ := newTestHandler(t)
+	project := createTestProject(t, handler)
+	holdResponse := performRequest(handler, http.MethodPost, "/v1/projects/"+project.ID+"/legal-holds", []byte(`{"expectedVersion":1,"reason":"active litigation"}`), map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "hold-project", "If-Match": `"v1"`,
+	})
+	if holdResponse.Code != http.StatusAccepted {
+		t.Fatalf("hold status=%d body=%s", holdResponse.Code, holdResponse.Body.String())
+	}
+	var held state.Project
+	if err := json.Unmarshal(holdResponse.Body.Bytes(), &held); err != nil || len(held.LegalHolds) != 1 || held.LegalHolds[0].ID == "" {
+		t.Fatalf("held project=%#v err=%v", held, err)
+	}
+	holdID := held.LegalHolds[0].ID
+	listed := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/legal-holds", nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if listed.Code != http.StatusOK || listed.Header().Get("ETag") != `"v2"` || !strings.Contains(listed.Body.String(), holdID) {
+		t.Fatalf("hold list status=%d etag=%q body=%s", listed.Code, listed.Header().Get("ETag"), listed.Body.String())
+	}
+	deletionResponse := performRequest(handler, http.MethodPost, "/v1/projects/"+project.ID+":request-deletion", []byte(`{"expectedVersion":2}`), map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "delete-project", "If-Match": `"v2"`,
+	})
+	if deletionResponse.Code != http.StatusAccepted {
+		t.Fatalf("deletion status=%d body=%s", deletionResponse.Code, deletionResponse.Body.String())
+	}
+	var deleting state.Project
+	if err := json.Unmarshal(deletionResponse.Body.Bytes(), &deleting); err != nil || deleting.State != contracts.ProjectPaused || deleting.Deletion == nil || deleting.Deletion.Status != state.ProjectDeletionBlocked || deleting.Deletion.RequestedBy != "user-1" || !deleting.Deletion.RequestedAt.Equal(controlAPITestTime) {
+		t.Fatalf("deleting project=%#v err=%v", deleting, err)
+	}
+	releaseResponse := performRequest(handler, http.MethodPost, "/v1/projects/"+project.ID+"/legal-holds/"+holdID+":release", []byte(`{"expectedVersion":3,"reason":"matter closed"}`), map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "release-hold", "If-Match": `"v3"`,
+	})
+	if releaseResponse.Code != http.StatusAccepted {
+		t.Fatalf("release status=%d body=%s", releaseResponse.Code, releaseResponse.Body.String())
+	}
+	var released state.Project
+	if err := json.Unmarshal(releaseResponse.Body.Bytes(), &released); err != nil || released.Deletion.Status != state.ProjectDeletionReady || released.LegalHolds[0].ReleasedAt == nil || released.LegalHolds[0].ReleasedBy != "user-1" {
+		t.Fatalf("released project=%#v err=%v", released, err)
+	}
+	missingVersion := performRequest(handler, http.MethodPost, "/v1/projects/"+project.ID+"/legal-holds", []byte(`{"expectedVersion":4,"reason":"new matter"}`), map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "hold-without-version",
+	})
+	if missingVersion.Code != http.StatusConflict {
+		t.Fatalf("missing version status=%d body=%s", missingVersion.Code, missingVersion.Body.String())
+	}
+}
+
+func TestProjectExportPublishesStableContentAddressedManifest(t *testing.T) {
+	store := eventing.NewMemoryStore()
+	authorizer := &recordingAuthorizer{}
+	catalog := &testArtifactCatalog{}
+	handler, err := New(Config{
+		Store:         store,
+		Authenticator: fixedAuthenticator{principal: authn.Principal{ID: "user-1", Type: authn.PrincipalUser, Role: authn.RoleUser, TenantID: testTenantID}},
+		Authorizer:    authorizer, Artifacts: catalog, Knowledge: &testKnowledgeReader{}, Clock: func() time.Time { return controlAPITestTime },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := createTestProject(t, handler)
+	catalog.publications = nil
+	catalog.record = artifact.Record{
+		ID: "22222222-2222-4222-8222-222222222222", ProjectID: project.ID,
+		URI: "artifact://sha256/" + strings.Repeat("a", 64), SHA256: "sha256:" + strings.Repeat("a", 64),
+		SizeBytes: 7, ContentType: "application/json", Classification: "INTERNAL", CreatedByPrincipal: "agent-1",
+		Metadata: map[string]any{"kind": "evidence"}, CreatedAt: controlAPITestTime,
+	}
+	first := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/export", nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if first.Code != http.StatusOK || first.Header().Get("ETag") == "" || len(catalog.publications) != 1 {
+		t.Fatalf("first export status=%d etag=%q body=%s publications=%d", first.Code, first.Header().Get("ETag"), first.Body.String(), len(catalog.publications))
+	}
+	var manifest projectExportManifest
+	if err := json.Unmarshal(catalog.publications[0].Data, &manifest); err != nil || manifest.Project.ID != project.ID || manifest.Project.Version != project.Version || len(manifest.Events) != 1 || len(manifest.Artifacts) != 1 || manifest.Artifacts[0].ID != catalog.record.ID {
+		t.Fatalf("manifest=%#v err=%v", manifest, err)
+	}
+	firstContent := append([]byte(nil), catalog.publications[0].Data...)
+	second := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/export", nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if second.Code != http.StatusOK || second.Header().Get("ETag") != first.Header().Get("ETag") || len(catalog.publications) != 2 || !bytes.Equal(firstContent, catalog.publications[1].Data) {
+		t.Fatalf("second export status=%d etag=%q body=%s", second.Code, second.Header().Get("ETag"), second.Body.String())
 	}
 }
 

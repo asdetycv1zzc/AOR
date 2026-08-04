@@ -81,7 +81,53 @@ paths:
             ETag: {$ref: '#/components/headers/ETag'}
           content:
             application/json:
-              schema: {type: object, additionalProperties: true}
+              schema: {$ref: '#/components/schemas/ProjectExport'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}/legal-holds:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      tags: [Projects]
+      operationId: listProjectLegalHolds
+      responses:
+        '200':
+          description: Immutable project legal-hold history
+          headers:
+            ETag: {$ref: '#/components/headers/ETag'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProjectLegalHoldPage'}
+        default: {$ref: '#/components/responses/Problem'}
+    post:
+      tags: [Projects]
+      operationId: placeProjectLegalHold
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProjectLegalHoldCommand'}
+      responses:
+        '202': {$ref: '#/components/responses/Project'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}/legal-holds/{holdId}:release:
+    post:
+      tags: [Projects]
+      operationId: releaseProjectLegalHold
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+        - $ref: '#/components/parameters/HoldId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProjectLegalHoldCommand'}
+      responses:
+        '202': {$ref: '#/components/responses/Project'}
         default: {$ref: '#/components/responses/Problem'}
   /v1/projects/{projectId}/goal/messages:
     parameters:
@@ -530,6 +576,7 @@ components:
     ProjectId: {name: projectId, in: path, required: true, schema: {type: string, format: uuid, pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'}}
     TaskId: {name: taskId, in: path, required: true, schema: {type: string, pattern: '^[A-Za-z][A-Za-z0-9_-]{2,127}$'}}
     ArtifactId: {name: artifactId, in: path, required: true, schema: {type: string, format: uuid, pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'}}
+    HoldId: {name: holdId, in: path, required: true, schema: {type: string, pattern: '^[A-Za-z][A-Za-z0-9_-]{2,127}$'}}
     Version: {name: version, in: path, required: true, schema: {type: integer, minimum: 1}}
     Cursor: {name: cursor, in: query, schema: {type: string, maxLength: 512}}
     IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 256}}
@@ -560,11 +607,85 @@ components:
         currency: {type: string, pattern: '^[A-Z]{3}$'}
     Project:
       type: object
-      required: [id, state, stateVersion]
+      additionalProperties: false
+      required: [tenantId, id, name, createdBy, dataClassification, riskTolerance, state, version, goalAgentCount]
       properties:
-        id: {type: string}
-        state: {type: string}
-        stateVersion: {type: integer, minimum: 0}
+        tenantId: {type: string, format: uuid}
+        id: {type: string, format: uuid}
+        name: {type: string, minLength: 1, maxLength: 256}
+        createdBy: {type: string, minLength: 1, maxLength: 256}
+        dataClassification: {enum: [PUBLIC, INTERNAL, CONFIDENTIAL, RESTRICTED]}
+        deploymentTargets: {type: array, uniqueItems: true, items: {type: string, minLength: 1, maxLength: 128}}
+        budgetCurrency: {type: string, pattern: '^[A-Z]{3}$'}
+        budgetHardLimitMinor: {type: integer, format: int64, minimum: 0}
+        budgetSoftLimitMinor: {type: integer, format: int64, minimum: 0}
+        promptBundleVersion: {type: string, minLength: 1, maxLength: 128}
+        riskTolerance: {enum: [LOW, MEDIUM, HIGH]}
+        state: {enum: [CREATED, GOAL_NEGOTIATING, GOAL_SUSPENDED, PLANNING, EXECUTING, INTEGRATING, GLOBAL_AUDIT, BLOCKED_USER_DECISION, PAUSED, COMPLETED, ABORTED, FAILED_SYSTEM, ARCHIVED]}
+        version: {type: integer, format: int64, minimum: 1}
+        goalAgentCount: {type: integer, minimum: 1, maximum: 2}
+        goal: {type: object, additionalProperties: true}
+        plan: {type: object, additionalProperties: true}
+        releaseApprovalRecordId: {type: string, minLength: 1, maxLength: 128}
+        pausedFromState: {type: string}
+        deletion: {$ref: '#/components/schemas/ProjectDeletion'}
+        legalHolds:
+          type: array
+          items: {$ref: '#/components/schemas/ProjectLegalHold'}
+    ProjectDeletion:
+      type: object
+      additionalProperties: false
+      required: [id, status, requestedBy, requestedAt, earliestExecutionAt]
+      properties:
+        id: {type: string, pattern: '^[A-Za-z][A-Za-z0-9_-]{2,127}$'}
+        status: {enum: [BLOCKED_LEGAL_HOLD, READY, ERASING, COMPLETED]}
+        requestedBy: {type: string, minLength: 1, maxLength: 256}
+        requestedAt: {type: string, format: date-time}
+        earliestExecutionAt: {type: string, format: date-time}
+        startedAt: {type: string, format: date-time}
+        completedAt: {type: string, format: date-time}
+        proofSha256: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        proofArtifactUri: {type: string, pattern: '^artifact://sha256/[0-9a-f]{64}$'}
+        backupExpiresAt: {type: string, format: date-time}
+    ProjectLegalHold:
+      type: object
+      additionalProperties: false
+      required: [id, reason, placedBy, placedAt]
+      properties:
+        id: {type: string, pattern: '^[A-Za-z][A-Za-z0-9_-]{2,127}$'}
+        reason: {type: string, minLength: 1, maxLength: 1024}
+        placedBy: {type: string, minLength: 1, maxLength: 256}
+        placedAt: {type: string, format: date-time}
+        releasedBy: {type: string, minLength: 1, maxLength: 256}
+        releasedAt: {type: string, format: date-time}
+        releaseReason: {type: string, minLength: 1, maxLength: 1024}
+    ProjectLegalHoldPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/ProjectLegalHold'}
+    ProjectLegalHoldCommand:
+      type: object
+      additionalProperties: false
+      required: [expectedVersion, reason]
+      properties:
+        expectedVersion: {type: integer, format: int64, minimum: 1}
+        reason: {type: string, minLength: 1, maxLength: 1024}
+    ProjectExport:
+      type: object
+      additionalProperties: false
+      required: [projectId, projectVersion, artifactId, uri, sha256, sizeBytes, createdAt]
+      properties:
+        projectId: {type: string, format: uuid}
+        projectVersion: {type: integer, format: int64, minimum: 1}
+        artifactId: {type: string, format: uuid}
+        uri: {type: string, pattern: '^artifact://sha256/[0-9a-f]{64}$'}
+        sha256: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        sizeBytes: {type: integer, format: int64, minimum: 0}
+        createdAt: {type: string, format: date-time}
     Command:
       type: object
       additionalProperties: true

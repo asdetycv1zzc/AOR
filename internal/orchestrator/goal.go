@@ -124,6 +124,9 @@ func finalizeGoalCommand(command state.ProjectCommand) state.ProjectCommand {
 	if command.Type == state.ProjectCommandRequestDeletion && command.Deletion != nil {
 		deletion := *command.Deletion
 		deletion.RequestedAt = command.At
+		if deletion.EarliestExecutionAt.IsZero() {
+			deletion.EarliestExecutionAt = command.At
+		}
 		command.Deletion = &deletion
 	}
 	if command.Type == state.ProjectCommandPlaceLegalHold && command.LegalHold != nil {
