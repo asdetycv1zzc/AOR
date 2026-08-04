@@ -91,7 +91,7 @@ type Report struct {
 }
 
 func (s Snapshot) Digest() (string, error) {
-	encoded, err := json.Marshal(s)
+	encoded, err := json.Marshal(canonicalSnapshot(s))
 	if err != nil {
 		return "", err
 	}
@@ -99,13 +99,19 @@ func (s Snapshot) Digest() (string, error) {
 }
 
 func Verify(ctx context.Context, snapshot Snapshot, artifacts ArtifactVerifier) (Report, error) {
-	if ctx == nil || ctx.Err() != nil || artifacts == nil {
+	if ctx == nil || artifacts == nil {
 		return Report{}, ErrInvalidSnapshot
+	}
+	if err := ctx.Err(); err != nil {
+		return Report{}, err
 	}
 	if err := validateSnapshot(snapshot); err != nil {
 		return Report{}, err
 	}
 	for _, artifact := range snapshot.Artifacts {
+		if err := ctx.Err(); err != nil {
+			return Report{}, err
+		}
 		if err := artifacts.Verify(ctx, artifact); err != nil {
 			return Report{}, fmt.Errorf("%w: %s: %v", ErrArtifactIntegrity, artifact.ID, err)
 		}
@@ -183,6 +189,57 @@ func addUnique(set map[string]struct{}, key string) bool {
 func has(set map[string]struct{}, values ...string) bool {
 	_, found := set[recordKey(values...)]
 	return found
+}
+
+// canonicalSnapshot returns a detached, deterministically ordered copy of a
+// restored graph. Backup exports can be produced by different query plans, so
+// row order must not change the evidence digest.
+func canonicalSnapshot(snapshot Snapshot) Snapshot {
+	canonical := snapshot
+	canonical.CreatedAt = snapshot.CreatedAt.UTC()
+	canonical.Projects = append([]ProjectRecord(nil), snapshot.Projects...)
+	canonical.Goals = append([]GoalRecord(nil), snapshot.Goals...)
+	canonical.Plans = append([]PlanRecord(nil), snapshot.Plans...)
+	canonical.Tasks = append([]TaskRecord(nil), snapshot.Tasks...)
+	canonical.Audits = make([]AuditRecord, len(snapshot.Audits))
+	copy(canonical.Audits, snapshot.Audits)
+	canonical.Artifacts = append([]ArtifactRecord(nil), snapshot.Artifacts...)
+	sort.Slice(canonical.Projects, func(i, j int) bool {
+		return compareStrings(canonical.Projects[i].TenantID, canonical.Projects[j].TenantID, canonical.Projects[i].ID, canonical.Projects[j].ID)
+	})
+	sort.Slice(canonical.Goals, func(i, j int) bool {
+		return compareStrings(canonical.Goals[i].TenantID, canonical.Goals[j].TenantID, canonical.Goals[i].ProjectID, canonical.Goals[j].ProjectID, canonical.Goals[i].ID, canonical.Goals[j].ID)
+	})
+	sort.Slice(canonical.Plans, func(i, j int) bool {
+		return compareStrings(canonical.Plans[i].TenantID, canonical.Plans[j].TenantID, canonical.Plans[i].ProjectID, canonical.Plans[j].ProjectID, canonical.Plans[i].ID, canonical.Plans[j].ID)
+	})
+	sort.Slice(canonical.Tasks, func(i, j int) bool {
+		return compareStrings(canonical.Tasks[i].TenantID, canonical.Tasks[j].TenantID, canonical.Tasks[i].ProjectID, canonical.Tasks[j].ProjectID, canonical.Tasks[i].ID, canonical.Tasks[j].ID)
+	})
+	for index := range canonical.Audits {
+		canonical.Audits[index].ArtifactIDs = append([]string(nil), canonical.Audits[index].ArtifactIDs...)
+		sort.Strings(canonical.Audits[index].ArtifactIDs)
+	}
+	sort.Slice(canonical.Audits, func(i, j int) bool {
+		return compareStrings(canonical.Audits[i].TenantID, canonical.Audits[j].TenantID, canonical.Audits[i].ProjectID, canonical.Audits[j].ProjectID, canonical.Audits[i].ID, canonical.Audits[j].ID)
+	})
+	sort.Slice(canonical.Artifacts, func(i, j int) bool {
+		return compareStrings(canonical.Artifacts[i].TenantID, canonical.Artifacts[j].TenantID, canonical.Artifacts[i].ProjectID, canonical.Artifacts[j].ProjectID, canonical.Artifacts[i].ID, canonical.Artifacts[j].ID)
+	})
+	return canonical
+}
+
+func compareStrings(left ...string) bool {
+	if len(left)%2 != 0 {
+		return false
+	}
+	for index := 0; index < len(left); index += 2 {
+		if left[index] == left[index+1] {
+			continue
+		}
+		return left[index] < left[index+1]
+	}
+	return false
 }
 
 func SortedArtifactIDs(snapshot Snapshot) []string {

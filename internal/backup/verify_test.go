@@ -44,6 +44,47 @@ func TestVerifyChecksEveryArtifactAndProducesStableDigest(t *testing.T) {
 	}
 }
 
+func TestSnapshotDigestIsIndependentOfRestoreQueryOrder(t *testing.T) {
+	first := validSnapshot()
+	first.Audits[0].ArtifactIDs = []string{"artifact-2", "artifact-1"}
+	first.Artifacts = append(first.Artifacts, ArtifactRecord{TenantID: "tenant-1", ProjectID: "project-1", ID: "artifact-2", URI: "s3://aor/2", SHA256: "sha256:abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd", Size: 20})
+	second := first
+	second.Projects = append([]ProjectRecord(nil), first.Projects...)
+	second.Goals = append([]GoalRecord(nil), first.Goals...)
+	second.Plans = append([]PlanRecord(nil), first.Plans...)
+	second.Tasks = append([]TaskRecord(nil), first.Tasks...)
+	second.Audits = append([]AuditRecord(nil), first.Audits...)
+	second.Artifacts = append([]ArtifactRecord(nil), first.Artifacts...)
+	second.Audits[0].ArtifactIDs = []string{"artifact-1", "artifact-2"}
+	second.Artifacts[0], second.Artifacts[1] = second.Artifacts[1], second.Artifacts[0]
+	firstDigest, err := first.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDigest, err := second.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstDigest != secondDigest {
+		t.Fatalf("query order changed snapshot digest: %s != %s", firstDigest, secondDigest)
+	}
+}
+
+func TestVerifyStopsWhenContextIsCanceledDuringArtifactScan(t *testing.T) {
+	snapshot := validSnapshot()
+	snapshot.Artifacts = append(snapshot.Artifacts, ArtifactRecord{TenantID: "tenant-1", ProjectID: "project-1", ID: "artifact-2", URI: "s3://aor/2", SHA256: "sha256:abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd", Size: 20})
+	ctx, cancel := context.WithCancel(context.Background())
+	called := 0
+	_, err := Verify(ctx, snapshot, artifactVerifier(func(context.Context, ArtifactRecord) error {
+		called++
+		cancel()
+		return nil
+	}))
+	if !errors.Is(err, context.Canceled) || called != 1 {
+		t.Fatalf("canceled restore result = %v, verifier calls=%d", err, called)
+	}
+}
+
 func TestVerifyRejectsDuplicateAuditRecords(t *testing.T) {
 	snapshot := validSnapshot()
 	snapshot.Audits = append(snapshot.Audits, snapshot.Audits[0])
