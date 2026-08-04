@@ -133,6 +133,7 @@ type SandboxConfig struct {
 	SeccompProfile               string
 	MandatoryPolicy              string
 	HoldCommand                  []string
+	AllowedMountRoots            []string
 }
 
 func Load(component string, lookup LookupEnv) (Config, error) {
@@ -225,6 +226,15 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 			return Config{}, configurationError("AOR_SANDBOX_HOLD_COMMAND_JSON")
 		}
 	}
+	if raw, found := lookup("AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON"); found && strings.TrimSpace(raw) != "" {
+		decoder := json.NewDecoder(strings.NewReader(raw))
+		if err := decoder.Decode(&config.Sandbox.AllowedMountRoots); err != nil {
+			return Config{}, configurationError("AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON")
+		}
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			return Config{}, configurationError("AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON")
+		}
+	}
 	if raw, found := lookup("AOR_MODEL_PROVIDERS_JSON"); found && strings.TrimSpace(raw) != "" {
 		decoder := json.NewDecoder(strings.NewReader(raw))
 		decoder.DisallowUnknownFields()
@@ -305,7 +315,7 @@ func (config Config) Validate() error {
 			return ErrInvalidConfiguration
 		}
 		engineConfigured := config.Sandbox.EngineEndpoint != "" || config.Sandbox.ImageReference != ""
-		if engineConfigured && (!validSandboxEngineEndpoint(config.Sandbox.EngineEndpoint) || !validSandboxRuntimeName(config.Sandbox.RuntimeName) || !validImmutableImageReference(config.Sandbox.ImageReference) || !validSandboxSeccompProfile(config.Sandbox.SeccompProfile) || !validSandboxMandatoryPolicy(config.Sandbox.MandatoryPolicy) || !validSandboxHoldCommand(config.Sandbox.HoldCommand)) {
+		if engineConfigured && (!validSandboxEngineEndpoint(config.Sandbox.EngineEndpoint) || !validSandboxRuntimeName(config.Sandbox.RuntimeName) || !validImmutableImageReference(config.Sandbox.ImageReference) || !validSandboxSeccompProfile(config.Sandbox.SeccompProfile) || !validSandboxMandatoryPolicy(config.Sandbox.MandatoryPolicy) || !validSandboxHoldCommand(config.Sandbox.HoldCommand) || !validSandboxMountRoots(config.Sandbox.AllowedMountRoots)) {
 			return ErrInvalidConfiguration
 		}
 	}
@@ -535,6 +545,23 @@ func validDeploymentProfile(value string) bool {
 
 func validKnowledgeRoot(value string) bool {
 	return value != "" && len(value) <= 4096 && filepath.IsAbs(value) && filepath.Clean(value) == value && value != string(filepath.Separator) && !strings.ContainsAny(value, "\r\n\x00")
+}
+
+func validSandboxMountRoots(values []string) bool {
+	if len(values) == 0 || len(values) > 16 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if !validKnowledgeRoot(value) {
+			return false
+		}
+		if _, duplicate := seen[value]; duplicate {
+			return false
+		}
+		seen[value] = struct{}{}
+	}
+	return true
 }
 
 func validSandboxEngineEndpoint(value string) bool {

@@ -22,10 +22,11 @@ type workerSandboxProvider struct {
 
 func TestLinuxExecutionProviderRequiresPinnedDedicatedEngine(t *testing.T) {
 	_, err := newExecutionProvider(runtimeconfig.Config{Sandbox: runtimeconfig.SandboxConfig{
-		RuntimeName:     "runc",
-		SeccompProfile:  "builtin",
-		MandatoryPolicy: "apparmor=aor-sandbox",
-		HoldCommand:     []string{"/bin/sh"},
+		RuntimeName:       "runc",
+		SeccompProfile:    "builtin",
+		MandatoryPolicy:   "apparmor=aor-sandbox",
+		HoldCommand:       []string{"/bin/sh"},
+		AllowedMountRoots: []string{"/var/lib/aor/sandbox-data"},
 	}})
 	if !errors.Is(err, ErrWorkerConfiguration) && !errors.Is(err, ErrWorkerUnavailable) {
 		t.Fatalf("missing Linux engine configuration error = %v", err)

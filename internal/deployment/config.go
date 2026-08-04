@@ -156,7 +156,7 @@ func ValidateCompose(input []byte) error {
 	if !containsString(worker.CapDrop, "ALL") || !containsString(preflight.CapDrop, "ALL") || !containsString(runtimeImage.CapDrop, "ALL") || !containsString(worker.SecurityOpt, "no-new-privileges:true") || !containsString(preflight.SecurityOpt, "no-new-privileges:true") || !containsString(runtimeImage.SecurityOpt, "no-new-privileges:true") {
 		return ErrInvalidDeployment
 	}
-	if !hasVolume(worker.Volumes, "AOR_SANDBOX_ENGINE_SOCKET", "/run/aor-sandbox/engine.sock") || !hasVolume(preflight.Volumes, "AOR_SANDBOX_ENGINE_SOCKET", "/run/aor-sandbox/engine.sock") || !hasVolume(preflight.Volumes, "sandbox-preflight.sh", "/usr/local/bin/aor-sandbox-preflight") {
+	if !hasVolume(worker.Volumes, "AOR_SANDBOX_ENGINE_SOCKET", "/run/aor-sandbox/engine.sock") || !hasVolume(preflight.Volumes, "AOR_SANDBOX_ENGINE_SOCKET", "/run/aor-sandbox/engine.sock") || !hasVolume(preflight.Volumes, "sandbox-preflight.sh", "/usr/local/bin/aor-sandbox-preflight") || !hasSharedSandboxRoot(worker.Volumes, worker.Environment["AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON"]) {
 		return ErrInvalidDeployment
 	}
 	imageReference := worker.Environment["AOR_SANDBOX_IMAGE_REFERENCE"]
@@ -174,6 +174,18 @@ func ValidateCompose(input []byte) error {
 		}
 	}
 	return nil
+}
+
+func hasSharedSandboxRoot(volumes []string, rootsJSON string) bool {
+	if !strings.Contains(rootsJSON, "AOR_SANDBOX_SHARED_ROOT") {
+		return false
+	}
+	for _, volume := range volumes {
+		if strings.Count(volume, "AOR_SANDBOX_SHARED_ROOT") >= 2 {
+			return true
+		}
+	}
+	return false
 }
 
 func isImmutableSHA256Reference(value string) bool {

@@ -25,6 +25,7 @@ func TestDeploymentProfilesFailClosed(t *testing.T) {
 		"aor-sandbox-runtime:", "aor-sandbox-preflight:", "target: worker-runtime",
 		"AOR_SANDBOX_ENGINE_ENDPOINT: unix:///run/aor-sandbox/engine.sock", "apparmor=aor-sandbox",
 		"sandbox-preflight.sh", "AOR_SANDBOX_ENGINE_SOCKET", "network_mode: none",
+		"AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON", "AOR_SANDBOX_SHARED_ROOT",
 		"000010_outbox_tenant_discovery.up.sql", "000012_artifact_project_uri_scope.up.sql",
 	} {
 		if !strings.Contains(composeText, value) {
@@ -112,6 +113,7 @@ func TestComposeSandboxRuntimeCannotDowngradeIsolation(t *testing.T) {
 		{old: "AOR_SANDBOX_SECCOMP_PROFILE: builtin", new: "AOR_SANDBOX_SECCOMP_PROFILE: unconfined"},
 		{old: "AOR_SANDBOX_MANDATORY_POLICY: apparmor=aor-sandbox", new: "AOR_SANDBOX_MANDATORY_POLICY: apparmor=unconfined"},
 		{old: "${AOR_SANDBOX_ENGINE_SOCKET:?Set AOR_SANDBOX_ENGINE_SOCKET to the rootless engine socket}:/run/aor-sandbox/engine.sock", new: "/var/run/docker.sock:/run/aor-sandbox/engine.sock"},
+		{old: "AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON: '[\"${AOR_SANDBOX_SHARED_ROOT:?Set AOR_SANDBOX_SHARED_ROOT to an absolute host path shared with the rootless engine}\"]'", new: "AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON: '[\"/\"]'"},
 	} {
 		candidate := strings.Replace(string(compose), replacement.old, replacement.new, 1)
 		if candidate == string(compose) {

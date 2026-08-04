@@ -556,9 +556,11 @@ services:
       AOR_SANDBOX_SECCOMP_PROFILE: builtin
       AOR_SANDBOX_MANDATORY_POLICY: apparmor=aor-sandbox
       AOR_SANDBOX_HOLD_COMMAND_JSON: '["/bin/sh","-c","while :; do sleep 3600; done"]'
+      AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON: '["${AOR_SANDBOX_SHARED_ROOT:?Set AOR_SANDBOX_SHARED_ROOT to an absolute host path shared with the rootless engine}"]'
     secrets: [postgres_app_password, minio_root_user, minio_root_password]
     volumes:
       - "${AOR_SANDBOX_ENGINE_SOCKET:?Set AOR_SANDBOX_ENGINE_SOCKET to the rootless engine socket}:/run/aor-sandbox/engine.sock"
+      - "${AOR_SANDBOX_SHARED_ROOT:?Set AOR_SANDBOX_SHARED_ROOT to an absolute host path shared with the rootless engine}:${AOR_SANDBOX_SHARED_ROOT:?Set AOR_SANDBOX_SHARED_ROOT to an absolute host path shared with the rootless engine}"
     cap_drop: [ALL]
     ports:
       - 127.0.0.1:8093:8080

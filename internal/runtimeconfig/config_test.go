@@ -150,7 +150,7 @@ func TestWorkerRequiresImmutableSandboxRuntimeAndDedicatedRootlessEndpoint(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Sandbox.EngineEndpoint != "unix:///run/aor-sandbox/engine.sock" || len(config.Sandbox.HoldCommand) != 3 {
+	if config.Sandbox.EngineEndpoint != "unix:///run/aor-sandbox/engine.sock" || len(config.Sandbox.HoldCommand) != 3 || len(config.Sandbox.AllowedMountRoots) != 1 || config.Sandbox.AllowedMountRoots[0] != "/var/lib/aor/sandbox-data" {
 		t.Fatalf("sandbox config = %#v", config.Sandbox)
 	}
 	for _, invalid := range []struct {
@@ -167,6 +167,11 @@ func TestWorkerRequiresImmutableSandboxRuntimeAndDedicatedRootlessEndpoint(t *te
 		{key: "AOR_SANDBOX_SECCOMP_PROFILE", value: "Unconfined"},
 		{key: "AOR_SANDBOX_MANDATORY_POLICY", value: "apparmor=unconfined"},
 		{key: "AOR_SANDBOX_HOLD_COMMAND_JSON", value: `[]`},
+		{key: "AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON", value: `[]`},
+		{key: "AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON", value: `["/"]`},
+		{key: "AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON", value: `["relative"]`},
+		{key: "AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON", value: `["/var/lib/aor/data","/var/lib/aor/data"]`},
+		{key: "AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON", value: `["/var/lib/aor/data"] {}`},
 	} {
 		candidate := validWorkerEnvironment()
 		candidate[invalid.key] = invalid.value
@@ -251,13 +256,14 @@ func environment(values map[string]string) LookupEnv {
 
 func validWorkerEnvironment() map[string]string {
 	return map[string]string{
-		"AOR_DATABASE_PASSWORD_REF":     "secret://postgres/password",
-		"AOR_S3_ACCESS_KEY_REF":         "secret://minio/access-key",
-		"AOR_S3_SECRET_KEY_REF":         "secret://minio/secret-key",
-		"AOR_SANDBOX_ENGINE_ENDPOINT":   "unix:///run/aor-sandbox/engine.sock",
-		"AOR_SANDBOX_IMAGE_REFERENCE":   "golang:1.26@sha256:0000000000000000000000000000000000000000000000000000000000000000",
-		"AOR_SANDBOX_SECCOMP_PROFILE":   "builtin",
-		"AOR_SANDBOX_MANDATORY_POLICY":  "apparmor=aor-sandbox",
-		"AOR_SANDBOX_HOLD_COMMAND_JSON": `["/bin/sh","-c","while :; do sleep 3600; done"]`,
+		"AOR_DATABASE_PASSWORD_REF":            "secret://postgres/password",
+		"AOR_S3_ACCESS_KEY_REF":                "secret://minio/access-key",
+		"AOR_S3_SECRET_KEY_REF":                "secret://minio/secret-key",
+		"AOR_SANDBOX_ENGINE_ENDPOINT":          "unix:///run/aor-sandbox/engine.sock",
+		"AOR_SANDBOX_IMAGE_REFERENCE":          "golang:1.26@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+		"AOR_SANDBOX_SECCOMP_PROFILE":          "builtin",
+		"AOR_SANDBOX_MANDATORY_POLICY":         "apparmor=aor-sandbox",
+		"AOR_SANDBOX_HOLD_COMMAND_JSON":        `["/bin/sh","-c","while :; do sleep 3600; done"]`,
+		"AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON": `["/var/lib/aor/sandbox-data"]`,
 	}
 }

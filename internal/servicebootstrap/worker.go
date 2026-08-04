@@ -174,7 +174,10 @@ func newExecutionProvider(config runtimeconfig.Config) (*sandbox.Provider, error
 		if err != nil {
 			return nil, errors.Join(ErrWorkerConfiguration, err)
 		}
-		return sandbox.NewLinuxProvider(backend, config.Sandbox.RuntimeName, time.Now), nil
+		return sandbox.NewLinuxProviderWithOptions(backend, sandbox.LinuxProviderOptions{
+			RuntimeName:       config.Sandbox.RuntimeName,
+			AllowedMountRoots: append([]string(nil), config.Sandbox.AllowedMountRoots...),
+		}, time.Now), nil
 	case "windows":
 		workRoot := strings.TrimSpace(os.Getenv("AOR_SANDBOX_WINDOWS_WORK_ROOT"))
 		if workRoot == "" {
