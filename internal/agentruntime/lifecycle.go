@@ -85,7 +85,7 @@ func validateRenewedLease(previous, renewed AgentLease, now time.Time) error {
 	if renewed.LeaseID != previous.LeaseID || renewed.AgentInstanceID != previous.AgentInstanceID ||
 		renewed.TenantID != previous.TenantID || renewed.ProjectID != previous.ProjectID ||
 		renewed.TaskID != previous.TaskID || renewed.Role != previous.Role ||
-		!renewed.IssuedAt.Equal(previous.IssuedAt) || renewed.Nonce != previous.Nonce ||
+		!renewed.IssuedAt.Equal(previous.IssuedAt) ||
 		renewed.PolicyVersion != previous.PolicyVersion || renewed.BudgetAccountID != previous.BudgetAccountID || !renewed.ExpiresAt.After(now) || !sameCapabilities(previous.Capabilities, renewed.Capabilities) {
 		return ErrLeaseBinding
 	}
@@ -94,7 +94,8 @@ func validateRenewedLease(previous, renewed AgentLease, now time.Time) error {
 
 func validateHeartbeatLease(previous, heartbeat AgentLease) error {
 	if !heartbeat.ExpiresAt.Equal(previous.ExpiresAt) || heartbeat.PolicyVersion != previous.PolicyVersion ||
-		heartbeat.BudgetAccountID != previous.BudgetAccountID || heartbeat.FencingToken != previous.FencingToken || len(heartbeat.Capabilities) != len(previous.Capabilities) {
+		heartbeat.BudgetAccountID != previous.BudgetAccountID || heartbeat.Nonce != previous.Nonce ||
+		heartbeat.FencingToken != previous.FencingToken || len(heartbeat.Capabilities) != len(previous.Capabilities) {
 		return ErrLeaseBinding
 	}
 	for index := range heartbeat.Capabilities {
