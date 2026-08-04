@@ -8,6 +8,13 @@
       "file": "000001_core.up.sql",
       "sha256": "sha256:cb22704d0bdabc635b8b86a7557b40f56c7dfba833cffd1319571f32ef128e28",
       "destructive": false
+    },
+    {
+      "version": 2,
+      "mode": "EXPAND",
+      "file": "000002_inbox_claims.up.sql",
+      "sha256": "sha256:456eea1f4689d733d405303a364269c577a7451b32a2f9e74ff08635232261de",
+      "destructive": false
     }
   ]
 }

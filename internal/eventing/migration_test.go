@@ -35,21 +35,41 @@ func TestCoreMigrationContainsAtomicityAndIsolationConstraints(t *testing.T) {
 	if strings.Contains(sql, "ACCEPT_RISK_AND_CONTINUE") || strings.Contains(sql, "ON DELETE CASCADE") {
 		t.Fatal("migration contains a forbidden completion bypass or cascading history deletion")
 	}
+	claimPath := filepath.Join("..", "..", "migrations", "postgres", "000002_inbox_claims.up.sql")
+	claimContent, err := os.ReadFile(claimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimSQL := string(claimContent)
+	for _, value := range []string{
+		"ADD COLUMN status", "result_jsonb jsonb", "claim_token text", "claim_attempt integer", "lease_expires_at timestamptz",
+		"ALTER COLUMN result_sha256 DROP NOT NULL", "inbox_status_check", "inbox_completed_result_check", "inbox_processing_claim_check", "inbox_retryable_claim_index",
+	} {
+		if !strings.Contains(claimSQL, value) {
+			t.Errorf("inbox claims migration missing %q", value)
+		}
+	}
 	manifestContent, err := os.ReadFile(filepath.Join("..", "..", "migrations", "postgres", "manifest.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var manifest struct {
 		Migrations []struct {
+			File   string `json:"file"`
 			SHA256 string `json:"sha256"`
 		} `json:"migrations"`
 	}
 	if err := json.Unmarshal(manifestContent, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	sum := sha256.Sum256(content)
-	digest := "sha256:" + hex.EncodeToString(sum[:])
-	if len(manifest.Migrations) != 1 || manifest.Migrations[0].SHA256 != digest {
-		t.Fatalf("migration manifest digest does not match %s", digest)
+	for index, migration := range []struct {
+		file    string
+		content []byte
+	}{{file: "000001_core.up.sql", content: content}, {file: "000002_inbox_claims.up.sql", content: claimContent}} {
+		sum := sha256.Sum256(migration.content)
+		digest := "sha256:" + hex.EncodeToString(sum[:])
+		if len(manifest.Migrations) != 2 || manifest.Migrations[index].File != migration.file || manifest.Migrations[index].SHA256 != digest {
+			t.Fatalf("migration manifest digest does not match %s", digest)
+		}
 	}
 }

@@ -11,3 +11,4 @@
 9. Supersede Goal/ModuleSpec and reject stale submissions.
 10. Validate migration constraints, RLS policy definitions, and expand-migrate-contract metadata.
 11. Replay 10,000 events under bounded time and memory in the performance suite.
+12. Restart the PostgreSQL inbox between a completed delivery and a duplicate delivery; assert the stored result is returned without invoking the handler. Expire a processing claim and assert only the same digest can reclaim it.
