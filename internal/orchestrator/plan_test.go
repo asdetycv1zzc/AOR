@@ -28,10 +28,13 @@ func TestPublishPlanRequiresPersistedPlannedTasks(t *testing.T) {
 	}
 	apiTask := findTask(t, service, store, "task_api")
 	workerTask := findTask(t, service, store, "task_worker")
+	if apiTask.State != contracts.TaskReadyExecution || workerTask.State != contracts.TaskDefined {
+		t.Fatalf("published task states = api %s worker %s", apiTask.State, workerTask.State)
+	}
 	if len(apiTask.DependentTaskIDs) != 1 || apiTask.DependentTaskIDs[0] != workerTask.ID {
 		t.Fatalf("dependent IDs = %v", apiTask.DependentTaskIDs)
 	}
-	if stats := store.Stats(); stats.Projections != 3 || stats.Events != 11 || stats.Outbox != 11 {
+	if stats := store.Stats(); stats.Projections != 3 || stats.Events != 12 || stats.Outbox != 12 {
 		t.Fatalf("store stats = %#v", stats)
 	}
 }

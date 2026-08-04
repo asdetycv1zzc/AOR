@@ -233,6 +233,19 @@ func (s *Service) PublishPlan(ctx context.Context, request PublishPlanRequest) (
 		if task.TenantID != request.TenantID || task.ProjectID != request.ProjectID || task.ModuleSpecRef != definition.ModuleSpecRef || task.AttemptSeriesID != definition.AttemptSeriesID || task.State == contracts.TaskSuperseded || task.State == contracts.TaskCanceled || !validState || !validPlanningBinding || !slices.Equal(task.DependentTaskIDs, dependentIDs[definition.ModuleID]) {
 			return PublishPlanOutcome{}, aorerrors.New(aorerrors.CodeConflict, "", map[string]any{"scope": "plan task"})
 		}
+		if !definition.Retain && len(request.DAG[definition.ModuleID]) == 0 {
+			ready, readyErr := state.DecideTask(task, state.TaskCommand{Type: state.TaskCommandReadyExecution, At: at})
+			if readyErr != nil {
+				return PublishPlanOutcome{}, readyErr
+			}
+			readyUpdate, readyEvent, _, encodeErr := encodeTaskTransition(request.TenantID, request.ProjectID, task.ID, task.Version, ready, digest)
+			if encodeErr != nil {
+				return PublishPlanOutcome{}, encodeErr
+			}
+			updates = append(updates, readyUpdate)
+			events = append(events, readyEvent)
+			task = ready.Projection
+		}
 		tasks = append(tasks, task)
 	}
 	result, err := json.Marshal(struct {

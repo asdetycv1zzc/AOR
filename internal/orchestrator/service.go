@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/akimisaka/aor/internal/eventing"
@@ -314,6 +315,14 @@ func (s *Service) HandleTask(ctx context.Context, request TaskRequest) (TaskOutc
 			events = append(events, dependentEvent)
 		}
 	}
+	if command.Type == state.TaskCommandIntegrate {
+		dependentUpdates, dependentEvents, propagationErr := s.readyIntegratedDependents(ctx, request, taskEvent.Projection, command.At, digest)
+		if propagationErr != nil {
+			return TaskOutcome{}, propagationErr
+		}
+		updates = append(updates, dependentUpdates...)
+		events = append(events, dependentEvents...)
+	}
 	applyEventTrace(ctx, digest, events)
 	if err := s.validateTaskCommit(ctx, request, project, current, command, digest); err != nil {
 		return TaskOutcome{}, err
@@ -327,6 +336,60 @@ func (s *Service) HandleTask(ctx context.Context, request TaskRequest) (TaskOutc
 	}
 	task, err := decodeTask(transactionResult.Result)
 	return TaskOutcome{Task: task, Events: transactionResult.Events, Duplicate: transactionResult.Duplicate}, err
+}
+
+func (s *Service) readyIntegratedDependents(ctx context.Context, request TaskRequest, integrated state.ModuleTask, at time.Time, digest string) ([]eventing.ProjectionUpdate, []eventing.DomainEvent, error) {
+	if len(integrated.DependentTaskIDs) == 0 {
+		return nil, nil, nil
+	}
+	tasks, err := s.Tasks(ctx, request.TenantID, request.ProjectID)
+	if err != nil {
+		return nil, nil, err
+	}
+	byID := make(map[string]state.ModuleTask, len(tasks))
+	for _, task := range tasks {
+		byID[task.ID] = task
+	}
+	byID[integrated.ID] = integrated
+
+	dependentIDs := append([]string(nil), integrated.DependentTaskIDs...)
+	sort.Strings(dependentIDs)
+	updates := make([]eventing.ProjectionUpdate, 0, len(dependentIDs))
+	events := make([]eventing.DomainEvent, 0, len(dependentIDs))
+	for _, dependentID := range dependentIDs {
+		dependent, found := byID[dependentID]
+		if !found {
+			return nil, nil, aorerrors.New(aorerrors.CodeNotFound, "", map[string]any{"scope": "dependent task"})
+		}
+		if dependent.State != contracts.TaskDefined || !allTaskDependenciesIntegrated(byID, dependentID) {
+			continue
+		}
+		ready, readyErr := state.DecideTask(dependent, state.TaskCommand{Type: state.TaskCommandReadyExecution, At: at})
+		if readyErr != nil {
+			return nil, nil, readyErr
+		}
+		update, event, _, encodeErr := encodeTaskTransition(request.TenantID, request.ProjectID, dependentID, dependent.Version, ready, digest)
+		if encodeErr != nil {
+			return nil, nil, encodeErr
+		}
+		updates = append(updates, update)
+		events = append(events, event)
+	}
+	return updates, events, nil
+}
+
+func allTaskDependenciesIntegrated(tasks map[string]state.ModuleTask, dependentID string) bool {
+	found := false
+	for _, task := range tasks {
+		if task.State == contracts.TaskCanceled || task.State == contracts.TaskSuperseded || !contains(task.DependentTaskIDs, dependentID) {
+			continue
+		}
+		found = true
+		if task.State != contracts.TaskIntegrated {
+			return false
+		}
+	}
+	return found
 }
 
 func encodeProjectTransition(request ProjectRequest, transition state.ProjectEvent, requestDigest string) (eventing.ProjectionUpdate, eventing.DomainEvent, json.RawMessage, error) {

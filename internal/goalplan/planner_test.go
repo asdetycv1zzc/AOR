@@ -220,7 +220,7 @@ func TestApprovedGoalChangeSupersedesOnlyImpactedTasks(t *testing.T) {
 	}
 	retainedWorker, _, _ := service.Task(context.Background(), "tenant_1", "prj_1", "task_worker")
 	newAPI, found, err := service.Task(context.Background(), "tenant_1", "prj_1", "task_api_v2")
-	if err != nil || !found || retainedWorker.Version != workerTask.Version || newAPI.State != contracts.TaskDefined || !slices.Equal(newAPI.DependentTaskIDs, []string{"task_worker"}) {
+	if err != nil || !found || retainedWorker.Version != workerTask.Version || newAPI.State != contracts.TaskReadyExecution || !slices.Equal(newAPI.DependentTaskIDs, []string{"task_worker"}) {
 		t.Fatalf("retained=%#v new=%#v found=%v err=%v", retainedWorker, newAPI, found, err)
 	}
 }
