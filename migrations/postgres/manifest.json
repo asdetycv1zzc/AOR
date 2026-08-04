@@ -92,6 +92,13 @@
       "file": "000013_workflow_activity_results.up.sql",
       "sha256": "sha256:1eca6a9936b0515e9f14cd259b66542f62ca2806852969e15179b0cd0be4d1ed",
       "destructive": false
+    },
+    {
+      "version": 14,
+      "mode": "EXPAND",
+      "file": "000014_project_initialization_selection.up.sql",
+      "sha256": "sha256:25535a4d4f45dad164bf2bcb20d514dbfb66c1ce4a8635db94e7e72872cad0e0",
+      "destructive": false
     }
   ]
 }

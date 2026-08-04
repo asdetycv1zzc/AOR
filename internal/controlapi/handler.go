@@ -12,10 +12,12 @@ import (
 	"mime"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/akimisaka/aor/internal/agentruntime"
 	"github.com/akimisaka/aor/internal/artifact"
 	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/authz"
@@ -28,6 +30,7 @@ import (
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 	"github.com/akimisaka/aor/pkg/contracts"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
+	"github.com/akimisaka/aor/prompts"
 	"github.com/google/uuid"
 )
 
@@ -43,6 +46,7 @@ type Config struct {
 	Budgets       modelgateway.BudgetAdministration
 	Artifacts     artifact.Catalog
 	Knowledge     KnowledgeReader
+	TaskHistory   TaskHistoryReader
 	Clock         func() time.Time
 }
 
@@ -50,6 +54,10 @@ type KnowledgeReader interface {
 	Search(context.Context, knowledge.SearchRequest) (knowledge.SearchResponse, error)
 	ReadRange(context.Context, knowledge.ReadRangeRequest) (knowledge.ReadRangeResponse, error)
 	Manifest(context.Context, knowledge.Access, string) (knowledge.Manifest, error)
+}
+
+type KnowledgeInitializer interface {
+	Initialize(context.Context, string, string, time.Time) (knowledge.Manifest, error)
 }
 
 type Handler struct {
@@ -62,14 +70,23 @@ type Handler struct {
 	budgets       modelgateway.BudgetAdministration
 	artifacts     artifact.Catalog
 	knowledge     KnowledgeReader
+	taskHistory   TaskHistoryReader
 	autoBudget    bool
 	clock         func() time.Time
 }
 
 type projectCreate struct {
-	Name               string `json:"name"`
-	GoalAgentCount     int    `json:"goalAgentCount"`
-	DataClassification string `json:"dataClassification"`
+	Name               string                 `json:"name"`
+	GoalAgentCount     int                    `json:"goalAgentCount"`
+	DataClassification string                 `json:"dataClassification"`
+	DeploymentTargets  []string               `json:"deploymentTargets,omitempty"`
+	Budget             projectBudgetSelection `json:"budget,omitempty"`
+}
+
+type projectBudgetSelection struct {
+	HardLimitMinor int64  `json:"hardLimitMinor"`
+	SoftLimitMinor int64  `json:"softLimitMinor"`
+	Currency       string `json:"currency"`
 }
 
 type commandBody struct {
@@ -186,6 +203,13 @@ func New(config Config) (*Handler, error) {
 		config.Budgets = modelgateway.NewBudgetLedger(config.Clock)
 		autoBudget = true
 	}
+	if config.TaskHistory == nil && config.Database != nil {
+		reader, err := NewPostgresTaskHistoryReader(config.Database)
+		if err != nil {
+			return nil, err
+		}
+		config.TaskHistory = reader
+	}
 	boundary, err := NewPolicyCommitBoundary(config.Authorizer)
 	if err != nil {
 		return nil, err
@@ -199,6 +223,7 @@ func New(config Config) (*Handler, error) {
 		budgets:       config.Budgets,
 		artifacts:     config.Artifacts,
 		knowledge:     config.Knowledge,
+		taskHistory:   config.TaskHistory,
 		autoBudget:    autoBudget,
 		clock:         config.Clock,
 	}
@@ -407,6 +432,31 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 		writeMethodNotAllowed(response, request)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "plans" {
+		if !validProjectID(projectID) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		if request.Method == http.MethodGet {
+			handler.listPlans(response, request, principal, projectID)
+			return
+		}
+		writeMethodNotAllowed(response, request)
+		return
+	}
+	if len(parts) == 3 && parts[1] == "plans" {
+		version, versionErr := strconv.Atoi(parts[2])
+		if !validProjectID(projectID) || versionErr != nil || version < 1 {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		if request.Method == http.MethodGet {
+			handler.getPlan(response, request, principal, projectID, version)
+			return
+		}
+		writeMethodNotAllowed(response, request)
+		return
+	}
 	if len(parts) == 2 && parts[1] == "budgets" {
 		if !validProjectID(projectID) {
 			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
@@ -455,6 +505,22 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 		writeMethodNotAllowed(response, request)
 		return
 	}
+	if len(parts) == 4 && parts[1] == "tasks" && (parts[3] == "submissions" || parts[3] == "audits") {
+		if !validProjectID(projectID) || !validAPIIdentifier(parts[2]) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		if request.Method == http.MethodGet {
+			if parts[3] == "submissions" {
+				handler.listTaskSubmissions(response, request, principal, projectID, parts[2])
+			} else {
+				handler.listTaskAudits(response, request, principal, projectID, parts[2])
+			}
+			return
+		}
+		writeMethodNotAllowed(response, request)
+		return
+	}
 	writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
 }
 
@@ -476,9 +542,32 @@ func (handler *Handler) createProject(response http.ResponseWriter, request *htt
 		return
 	}
 	var body projectCreate
-	if err := decodeJSON(request, &body); err != nil || body.Name == "" || len(body.Name) > 256 || body.GoalAgentCount < 1 || body.GoalAgentCount > 2 || !oneOf(body.DataClassification, "PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED") {
+	if err := decodeJSON(request, &body); err != nil {
 		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "project create"}))
 		return
+	}
+	if err := validateProjectCreate(body); err != nil {
+		writeError(response, request, err)
+		return
+	}
+	bundles := make([]agentruntime.PromptBundle, 0, body.GoalAgentCount)
+	promptVersion := ""
+	roles := []agentruntime.Role{agentruntime.RoleGoalProposer}
+	if body.GoalAgentCount == 2 {
+		roles = append(roles, agentruntime.RoleGoalChallenger)
+	}
+	for _, role := range roles {
+		bundle, loadErr := prompts.LoadBaseline(role)
+		if loadErr != nil {
+			writeError(response, request, aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", loadErr, map[string]any{"scope": "initial prompt bundle"}))
+			return
+		}
+		if promptVersion != "" && promptVersion != bundle.Version {
+			writeError(response, request, aorerrors.New(aorerrors.CodeInternalError, "", map[string]any{"scope": "prompt bundle version"}))
+			return
+		}
+		promptVersion = bundle.Version
+		bundles = append(bundles, bundle)
 	}
 	projectUUID, err := uuid.NewV7()
 	if err != nil {
@@ -497,30 +586,113 @@ func (handler *Handler) createProject(response http.ResponseWriter, request *htt
 	outcome, err := handler.orchestrator.HandleProject(request.Context(), orchestrator.ProjectRequest{
 		TenantID: principal.TenantID, ProjectID: projectID, PrincipalID: principal.ID,
 		IdempotencyKey: idempotencyKey, ExpectedVersion: 0,
-		Command: state.ProjectCommand{Type: state.ProjectCommandCreate, Name: body.Name, GoalAgentCount: body.GoalAgentCount, DataClassification: body.DataClassification},
+		Command: state.ProjectCommand{
+			Type: state.ProjectCommandCreate, Name: body.Name, GoalAgentCount: body.GoalAgentCount,
+			DataClassification: body.DataClassification, DeploymentTargets: append([]string(nil), body.DeploymentTargets...),
+			BudgetCurrency: body.Budget.Currency, BudgetHardLimitMinor: body.Budget.HardLimitMinor,
+			BudgetSoftLimitMinor: body.Budget.SoftLimitMinor, PromptBundleVersion: promptVersion,
+			StartGoalNegotiation: true,
+		},
 	})
 	if err != nil {
 		writeError(response, request, normalizeError(err))
 		return
 	}
-	if handler.autoBudget {
-		creator, ok := handler.budgets.(interface {
-			CreateAccount(context.Context, modelgateway.BudgetAccount) error
-		})
-		if !ok {
-			writeError(response, request, aorerrors.New(aorerrors.CodeInternalError, "", map[string]any{"scope": "budget account"}))
-			return
-		}
-		err := creator.CreateAccount(request.Context(), modelgateway.BudgetAccount{
-			ID: outcome.Project.ID, TenantID: principal.TenantID, ScopeType: "PROJECT", ScopeID: outcome.Project.ID,
-			Currency: "USD", PeriodStart: handler.clock().UTC(), Version: 1,
-		})
-		if err != nil && !errors.Is(err, modelgateway.ErrReservationConflict) {
-			writeError(response, request, normalizeBudgetError(err))
-			return
-		}
+	if err := handler.ensureProjectBudget(request.Context(), principal.TenantID, outcome.Project, body.Budget); err != nil {
+		writeError(response, request, normalizeBudgetError(err))
+		return
+	}
+	if err := handler.initializeProjectResources(request.Context(), principal, outcome.Project, bundles); err != nil {
+		writeError(response, request, err)
+		return
 	}
 	writeProject(response, http.StatusCreated, outcome.Project)
+}
+
+func validateProjectCreate(body projectCreate) error {
+	if body.Name == "" || len(body.Name) > 256 || strings.TrimSpace(body.Name) != body.Name || strings.ContainsAny(body.Name, "\r\n\x00") || body.GoalAgentCount < 1 || body.GoalAgentCount > 2 || !oneOf(body.DataClassification, "PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED") {
+		return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "project create"})
+	}
+	if len(body.DeploymentTargets) == 0 || len(body.DeploymentTargets) > 16 || body.Budget.HardLimitMinor <= 0 || body.Budget.SoftLimitMinor < 0 || body.Budget.SoftLimitMinor > body.Budget.HardLimitMinor || !validCurrency(body.Budget.Currency) {
+		return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "project initialization selection"})
+	}
+	seen := make(map[string]struct{}, len(body.DeploymentTargets))
+	for _, target := range body.DeploymentTargets {
+		if target == "" || len(target) > 128 || strings.TrimSpace(target) != target || strings.ContainsAny(target, "\r\n\x00") {
+			return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "deployment target"})
+		}
+		if _, duplicate := seen[target]; duplicate {
+			return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "deployment target"})
+		}
+		seen[target] = struct{}{}
+	}
+	return nil
+}
+
+func (handler *Handler) ensureProjectBudget(ctx context.Context, tenantID string, project state.Project, selection projectBudgetSelection) error {
+	if !handler.autoBudget {
+		return nil
+	}
+	creator, ok := handler.budgets.(interface {
+		CreateAccount(context.Context, modelgateway.BudgetAccount) error
+	})
+	if !ok {
+		return aorerrors.New(aorerrors.CodeInternalError, "", map[string]any{"scope": "budget account"})
+	}
+	currency := selection.Currency
+	if currency == "" {
+		currency = "USD"
+	}
+	account := modelgateway.BudgetAccount{
+		ID: project.ID, TenantID: tenantID, ScopeType: "PROJECT", ScopeID: project.ID,
+		Currency: currency, LimitMicros: selection.HardLimitMinor, SoftLimitMicros: selection.SoftLimitMinor,
+		PeriodStart: handler.clock().UTC(), Version: 1,
+	}
+	if err := creator.CreateAccount(ctx, account); err == nil {
+		return nil
+	} else if !errors.Is(err, modelgateway.ErrReservationConflict) {
+		return err
+	}
+	existing, err := handler.budgets.ListAccounts(ctx, tenantID, project.ID)
+	if err != nil {
+		return err
+	}
+	if len(existing) != 1 || existing[0].ID != account.ID || existing[0].Currency != account.Currency || existing[0].LimitMicros != account.LimitMicros || existing[0].SoftLimitMicros != account.SoftLimitMicros {
+		return modelgateway.ErrReservationConflict
+	}
+	return nil
+}
+
+func (handler *Handler) initializeProjectResources(ctx context.Context, principal authn.Principal, project state.Project, bundles []agentruntime.PromptBundle) error {
+	initializer, ok := handler.knowledge.(KnowledgeInitializer)
+	if !ok {
+		return aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "knowledge initializer"})
+	}
+	if _, err := initializer.Initialize(ctx, principal.TenantID, project.ID, handler.clock().UTC()); err != nil {
+		return normalizeKnowledgeError(err)
+	}
+	publisher, ok := handler.artifacts.(artifact.Publisher)
+	if !ok {
+		return aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "prompt artifact publisher"})
+	}
+	for _, bundle := range bundles {
+		content, err := json.Marshal(bundle)
+		if err != nil {
+			return aorerrors.Wrap(aorerrors.CodeInternalError, "", err, map[string]any{"scope": "prompt bundle serialization"})
+		}
+		_, err = publisher.Publish(ctx, artifact.Publication{
+			TenantID: principal.TenantID, ProjectID: project.ID, CreatedByPrincipal: principal.ID,
+			ContentType: "application/json", Data: content,
+			Metadata: map[string]any{
+				"artifactKind": "PROMPT_BUNDLE", "role": string(bundle.Role),
+				"promptBundleVersion": bundle.Version, "promptBundleSha256": bundle.SHA256,
+			},
+		})
+		if err != nil {
+			return normalizeArtifactError(err)
+		}
+	}
+	return nil
 }
 
 func (handler *Handler) getProject(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string) {
@@ -601,6 +773,71 @@ func (handler *Handler) getTask(response http.ResponseWriter, request *http.Requ
 	writeJSON(response, http.StatusOK, task)
 }
 
+func (handler *Handler) listTaskSubmissions(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID, taskID string) {
+	cursor, err := goalCursor(request, "submission")
+	if err != nil {
+		writeError(response, request, err)
+		return
+	}
+	if handler.taskHistory == nil {
+		writeError(response, request, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "task history"}))
+		return
+	}
+	if err := handler.authorizeTaskHistoryRead(request.Context(), principal, projectID, taskID, "task-submissions"); err != nil {
+		writeError(response, request, err)
+		return
+	}
+	result, err := handler.taskHistory.ListSubmissions(request.Context(), principal.TenantID, projectID, taskID, cursor)
+	if err != nil {
+		writeError(response, request, normalizeTaskHistoryError(err))
+		return
+	}
+	writeVersionedPage(response, request, result)
+}
+
+func (handler *Handler) listTaskAudits(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID, taskID string) {
+	cursor, err := goalCursor(request, "audit")
+	if err != nil {
+		writeError(response, request, err)
+		return
+	}
+	if handler.taskHistory == nil {
+		writeError(response, request, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "task history"}))
+		return
+	}
+	if err := handler.authorizeTaskHistoryRead(request.Context(), principal, projectID, taskID, "task-audits"); err != nil {
+		writeError(response, request, err)
+		return
+	}
+	result, err := handler.taskHistory.ListAudits(request.Context(), principal.TenantID, projectID, taskID, cursor)
+	if err != nil {
+		writeError(response, request, normalizeTaskHistoryError(err))
+		return
+	}
+	writeVersionedPage(response, request, result)
+}
+
+func (handler *Handler) authorizeTaskHistoryRead(ctx context.Context, principal authn.Principal, projectID, taskID, resourceType string) error {
+	project, found, err := handler.orchestrator.Project(ctx, principal.TenantID, projectID)
+	if err != nil || !found {
+		if err == nil {
+			err = aorerrors.New(aorerrors.CodeNotFound, "", nil)
+		}
+		return normalizeError(err)
+	}
+	task, found, err := handler.orchestrator.Task(ctx, principal.TenantID, projectID, taskID)
+	if err != nil || !found {
+		if err == nil {
+			err = aorerrors.New(aorerrors.CodeNotFound, "", nil)
+		}
+		return normalizeError(err)
+	}
+	if err := authorizeTaskRead(ctx, handler.authorizer, principal, project, task); err != nil {
+		return err
+	}
+	return authorizeRead(ctx, handler.authorizer, principal, projectID, authz.ActionTaskRead, resourceType, taskID, string(project.State), project.Version, project.DataClassification)
+}
+
 func (handler *Handler) listTasks(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string) {
 	query := request.URL.Query()
 	if len(query) > 1 || len(query) == 1 && len(query["cursor"]) != 1 {
@@ -662,6 +899,127 @@ func (handler *Handler) listTasks(response http.ResponseWriter, request *http.Re
 		result.NextCursor = taskPageCursor(projectID, items[len(items)-1].ID)
 	}
 	writeJSON(response, http.StatusOK, result)
+}
+
+type storedPlan struct {
+	Version       int
+	ContentSHA256 string
+	Content       json.RawMessage
+}
+
+func (handler *Handler) listPlans(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string) {
+	cursor, err := goalCursor(request, "plan")
+	if err != nil {
+		writeError(response, request, err)
+		return
+	}
+	project, err := handler.authorizeProjectResourceRead(request.Context(), principal, projectID, authz.ActionProjectRead, "plan-list", projectID)
+	if err != nil {
+		writeError(response, request, err)
+		return
+	}
+	plans, err := handler.storedPlans(request.Context(), principal.TenantID, projectID)
+	if err != nil {
+		writeError(response, request, normalizeError(err))
+		return
+	}
+	start := 0
+	if cursor != "" {
+		found := false
+		for index := range plans {
+			if planCursor(projectID, plans[index].Version, plans[index].ContentSHA256) == cursor {
+				start = index + 1
+				found = true
+				break
+			}
+		}
+		if !found {
+			writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "plan cursor"}))
+			return
+		}
+	}
+	const pageSize = 100
+	end := start + pageSize
+	if end > len(plans) {
+		end = len(plans)
+	}
+	items := make([]json.RawMessage, 0, end-start)
+	for _, plan := range plans[start:end] {
+		items = append(items, append(json.RawMessage(nil), plan.Content...))
+	}
+	result := page{Items: items}
+	if end < len(plans) {
+		last := plans[end-1]
+		result.NextCursor = planCursor(projectID, last.Version, last.ContentSHA256)
+	}
+	response.Header().Set("ETag", entityTag(project.Version))
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (handler *Handler) getPlan(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string, version int) {
+	if len(request.URL.Query()) != 0 {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "plan query"}))
+		return
+	}
+	if _, err := handler.authorizeProjectResourceRead(request.Context(), principal, projectID, authz.ActionProjectRead, "plan", strconv.Itoa(version)); err != nil {
+		writeError(response, request, err)
+		return
+	}
+	plans, err := handler.storedPlans(request.Context(), principal.TenantID, projectID)
+	if err != nil {
+		writeError(response, request, normalizeError(err))
+		return
+	}
+	for _, plan := range plans {
+		if plan.Version != version {
+			continue
+		}
+		response.Header().Set("ETag", `"`+plan.ContentSHA256+`"`)
+		response.Header().Set("Cache-Control", "private, no-store")
+		writeJSON(response, http.StatusOK, plan.Content)
+		return
+	}
+	writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+}
+
+func (handler *Handler) storedPlans(ctx context.Context, tenantID, projectID string) ([]storedPlan, error) {
+	lister, ok := handler.store.(eventing.ProjectionList)
+	if !ok {
+		return nil, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "plan projection list"})
+	}
+	projections, err := lister.ListProjections(ctx, tenantID, projectID, "spec_artifact")
+	if err != nil {
+		return nil, err
+	}
+	plans := make([]storedPlan, 0)
+	seenVersions := make(map[int]struct{})
+	for _, projection := range projections {
+		var artifact struct {
+			TenantID      string `json:"tenantId"`
+			ProjectID     string `json:"projectId"`
+			Kind          string `json:"kind"`
+			Version       int    `json:"version"`
+			ContentSHA256 string `json:"contentSha256"`
+			Content       []byte `json:"content"`
+		}
+		if err := json.Unmarshal(projection.State, &artifact); err != nil {
+			return nil, aorerrors.Wrap(aorerrors.CodeInternalError, "", err, map[string]any{"scope": "plan projection"})
+		}
+		if artifact.Kind != "PLAN_SPEC" {
+			continue
+		}
+		var plan contracts.PlanSpec
+		if artifact.TenantID != tenantID || artifact.ProjectID != projectID || artifact.Version < 1 || len(artifact.Content) == 0 || contracts.ValidatePlanJSON(artifact.Content) != nil || json.Unmarshal(artifact.Content, &plan) != nil || plan.ProjectID != projectID || plan.PlanSpecVersion != artifact.Version || plan.SHA256 != artifact.ContentSHA256 {
+			return nil, aorerrors.New(aorerrors.CodeInternalError, "", map[string]any{"scope": "plan projection integrity"})
+		}
+		if _, duplicate := seenVersions[artifact.Version]; duplicate {
+			return nil, aorerrors.New(aorerrors.CodeConflict, "", map[string]any{"scope": "plan version"})
+		}
+		seenVersions[artifact.Version] = struct{}{}
+		plans = append(plans, storedPlan{Version: artifact.Version, ContentSHA256: artifact.ContentSHA256, Content: append(json.RawMessage(nil), artifact.Content...)})
+	}
+	sort.Slice(plans, func(left, right int) bool { return plans[left].Version < plans[right].Version })
+	return plans, nil
 }
 
 func (handler *Handler) submitGoalMessage(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string) {
@@ -1748,9 +2106,29 @@ func taskPageCursor(projectID, taskID string) string {
 	return hex.EncodeToString(digest[:])
 }
 
+func planCursor(projectID string, version int, contentSHA256 string) string {
+	digest := sha256.Sum256([]byte(projectID + "\x00" + strconv.Itoa(version) + "\x00" + contentSHA256))
+	return hex.EncodeToString(digest[:])
+}
+
 func writeProject(response http.ResponseWriter, status int, project state.Project) {
 	response.Header().Set("ETag", entityTag(project.Version))
 	writeJSON(response, status, project)
+}
+
+func writeVersionedPage(response http.ResponseWriter, request *http.Request, value any) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInternalError, "", map[string]any{"scope": "history page"}))
+		return
+	}
+	digest, err := canonicaljson.Digest(encoded)
+	if err != nil {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInternalError, "", map[string]any{"scope": "history page"}))
+		return
+	}
+	response.Header().Set("ETag", `"`+digest+`"`)
+	writeJSON(response, http.StatusOK, value)
 }
 
 func writeJSON(response http.ResponseWriter, status int, value any) {
@@ -1814,4 +2192,12 @@ func normalizeError(err error) error {
 		return aorerrors.New(aorerrors.CodePolicyDenied, "", nil)
 	}
 	return aorerrors.New(aorerrors.CodeInternalError, "", nil)
+}
+
+func normalizeTaskHistoryError(err error) error {
+	var typed *aorerrors.Error
+	if errors.As(err, &typed) {
+		return typed
+	}
+	return aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "task history"})
 }

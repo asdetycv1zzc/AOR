@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -52,9 +53,19 @@ type recordingAuthorizer struct {
 }
 
 type testArtifactCatalog struct {
-	record  artifact.Record
-	content string
-	err     error
+	record       artifact.Record
+	content      string
+	publications []artifact.Publication
+	err          error
+}
+
+func (catalog *testArtifactCatalog) Publish(_ context.Context, publication artifact.Publication) (artifact.Record, error) {
+	if catalog.err != nil {
+		return artifact.Record{}, catalog.err
+	}
+	publication.Data = append([]byte(nil), publication.Data...)
+	catalog.publications = append(catalog.publications, publication)
+	return artifact.Record{ProjectID: publication.ProjectID}, nil
 }
 
 func (catalog *testArtifactCatalog) List(context.Context, string, string, string, int) (artifact.Page, error) {
@@ -83,7 +94,37 @@ type testKnowledgeReader struct {
 	readRequest   knowledge.ReadRangeRequest
 	manifest      knowledge.Manifest
 	reference     knowledge.Reference
+	initialized   []knowledge.Manifest
 	err           error
+}
+
+type testTaskHistoryReader struct {
+	submissions TaskSubmissionPage
+	audits      TaskAuditPage
+	tenantID    string
+	projectID   string
+	taskID      string
+	cursor      string
+	err         error
+}
+
+func (reader *testTaskHistoryReader) ListSubmissions(_ context.Context, tenantID, projectID, taskID, cursor string) (TaskSubmissionPage, error) {
+	reader.tenantID, reader.projectID, reader.taskID, reader.cursor = tenantID, projectID, taskID, cursor
+	return reader.submissions, reader.err
+}
+
+func (reader *testTaskHistoryReader) ListAudits(_ context.Context, tenantID, projectID, taskID, cursor string) (TaskAuditPage, error) {
+	reader.tenantID, reader.projectID, reader.taskID, reader.cursor = tenantID, projectID, taskID, cursor
+	return reader.audits, reader.err
+}
+
+func (reader *testKnowledgeReader) Initialize(_ context.Context, tenantID, projectID string, createdAt time.Time) (knowledge.Manifest, error) {
+	if reader.err != nil {
+		return knowledge.Manifest{}, reader.err
+	}
+	manifest := knowledge.Manifest{Version: 1, TenantID: tenantID, ProjectID: projectID, Revision: "sha256:" + strings.Repeat("1", 64), CreatedAt: createdAt, Parents: []knowledge.ParentSnapshot{}, Overrides: []string{}, Documents: []knowledge.DocumentMetadata{}}
+	reader.initialized = append(reader.initialized, manifest)
+	return manifest, nil
 }
 
 func (reader *testKnowledgeReader) Search(_ context.Context, request knowledge.SearchRequest) (knowledge.SearchResponse, error) {
@@ -123,7 +164,7 @@ func (authorizer *recordingAuthorizer) Evaluate(_ context.Context, input authz.P
 
 func TestCreateProjectIsAuthenticatedAuthorizedAndIdempotent(t *testing.T) {
 	handler, store, authorizer := newTestHandler(t)
-	body := []byte(`{"name":"AOR integration","goalAgentCount":2,"dataClassification":"INTERNAL"}`)
+	body := []byte(`{"name":"AOR integration","goalAgentCount":2,"dataClassification":"INTERNAL","deploymentTargets":["test"],"budget":{"hardLimitMinor":100000,"softLimitMinor":80000,"currency":"USD"}}`)
 
 	first := performRequest(handler, http.MethodPost, "/v1/projects", body, map[string]string{
 		"Authorization":   "Bearer " + testBearer,
@@ -165,7 +206,7 @@ func TestCreateProjectIsAuthenticatedAuthorizedAndIdempotent(t *testing.T) {
 		t.Fatalf("policy inputs = %#v", authorizer.inputs)
 	}
 
-	conflictBody := []byte(`{"name":"different","goalAgentCount":1,"dataClassification":"INTERNAL"}`)
+	conflictBody := []byte(`{"name":"different","goalAgentCount":1,"dataClassification":"INTERNAL","deploymentTargets":["test"],"budget":{"hardLimitMinor":100000,"softLimitMinor":80000,"currency":"USD"}}`)
 	conflict := performRequest(handler, http.MethodPost, "/v1/projects", conflictBody, map[string]string{
 		"Authorization":   "Bearer " + testBearer,
 		"Content-Type":    "application/json",
@@ -173,6 +214,76 @@ func TestCreateProjectIsAuthenticatedAuthorizedAndIdempotent(t *testing.T) {
 	})
 	if conflict.Code != http.StatusConflict {
 		t.Fatalf("conflict status = %d body=%s", conflict.Code, conflict.Body.String())
+	}
+}
+
+func TestCreateProjectInitializesSelectedBudgetKnowledgePromptsAndGoalAgents(t *testing.T) {
+	store := eventing.NewMemoryStore()
+	authorizer := &recordingAuthorizer{}
+	catalog := &testArtifactCatalog{}
+	knowledgeReader := &testKnowledgeReader{}
+	handler, err := New(Config{
+		Store: store,
+		Authenticator: fixedAuthenticator{principal: authn.Principal{
+			ID: "user-1", Type: authn.PrincipalUser, Role: authn.RoleUser, TenantID: testTenantID,
+		}},
+		Authorizer: authorizer, Artifacts: catalog, Knowledge: knowledgeReader,
+		Clock: func() time.Time { return controlAPITestTime },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"name":"initialized","goalAgentCount":2,"dataClassification":"CONFIDENTIAL","deploymentTargets":["test-linux","pre-production"],"budget":{"hardLimitMinor":100000,"softLimitMinor":80000,"currency":"USD"}}`)
+	response := performRequest(handler, http.MethodPost, "/v1/projects", body, map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "project-initialize-1",
+	})
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", response.Code, response.Body.String())
+	}
+	var project state.Project
+	if err := json.Unmarshal(response.Body.Bytes(), &project); err != nil {
+		t.Fatal(err)
+	}
+	if project.State != contracts.ProjectGoalNegotiating || project.Version != 1 || project.PromptBundleVersion != "1.0.0" || !slices.Equal(project.DeploymentTargets, []string{"test-linux", "pre-production"}) || project.BudgetCurrency != "USD" || project.BudgetHardLimitMinor != 100000 || project.BudgetSoftLimitMinor != 80000 {
+		t.Fatalf("initialized project = %#v", project)
+	}
+	accounts, err := handler.budgets.ListAccounts(context.Background(), testTenantID, project.ID)
+	if err != nil || len(accounts) != 1 || accounts[0].LimitMicros != 100000 || accounts[0].SoftLimitMicros != 80000 || accounts[0].Currency != "USD" {
+		t.Fatalf("budget accounts=%#v err=%v", accounts, err)
+	}
+	if len(knowledgeReader.initialized) != 1 || knowledgeReader.initialized[0].ProjectID != project.ID || knowledgeReader.initialized[0].CreatedAt != controlAPITestTime {
+		t.Fatalf("knowledge initialization = %#v", knowledgeReader.initialized)
+	}
+	if len(catalog.publications) != 2 {
+		t.Fatalf("prompt publications = %#v", catalog.publications)
+	}
+	roles := make(map[string]bool, 2)
+	for _, publication := range catalog.publications {
+		if publication.ProjectID != project.ID || publication.CreatedByPrincipal != "user-1" || publication.ContentType != "application/json" || publication.Metadata["artifactKind"] != "PROMPT_BUNDLE" || publication.Metadata["promptBundleVersion"] != "1.0.0" {
+			t.Fatalf("prompt publication = %#v", publication)
+		}
+		role, _ := publication.Metadata["role"].(string)
+		roles[role] = true
+	}
+	if !roles["GOAL_PROPOSER"] || !roles["GOAL_CHALLENGER"] {
+		t.Fatalf("prompt roles = %#v", roles)
+	}
+	events, err := store.ListEvents(context.Background(), testTenantID)
+	if err != nil || len(events) != 1 || events[0].Type != "io.aor.goal.negotiation-started.v1" {
+		t.Fatalf("initialization events=%#v err=%v", events, err)
+	}
+}
+
+func TestCreateProjectRejectsIncompleteInitializationSelection(t *testing.T) {
+	handler, store, _ := newTestHandler(t)
+	response := performRequest(handler, http.MethodPost, "/v1/projects", []byte(`{"name":"partial","goalAgentCount":1,"dataClassification":"INTERNAL","deploymentTargets":["test"]}`), map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "project-partial",
+	})
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("partial selection status=%d body=%s", response.Code, response.Body.String())
+	}
+	if stats := store.Stats(); stats.Projections != 0 || stats.Events != 0 {
+		t.Fatalf("partial selection committed state: %#v", stats)
 	}
 }
 
@@ -202,7 +313,7 @@ func TestProjectReadAndCommandRequirePolicyAndVersion(t *testing.T) {
 	if err := json.Unmarshal(paused.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.State != "PAUSED" || result.Version != 2 {
+	if result.State != contracts.ProjectGoalSuspended || result.Version != 2 {
 		t.Fatalf("paused project = %#v", result)
 	}
 	if authorizer.inputs[len(authorizer.inputs)-1].Action != "project.command" {
@@ -248,7 +359,7 @@ func TestAuthenticationAndPolicyFailuresAreFailClosed(t *testing.T) {
 	}
 
 	authorizer.deny = true
-	denied := performRequest(handler, http.MethodPost, "/v1/projects", []byte(`{"name":"denied","goalAgentCount":1,"dataClassification":"INTERNAL"}`), map[string]string{
+	denied := performRequest(handler, http.MethodPost, "/v1/projects", []byte(`{"name":"denied","goalAgentCount":1,"dataClassification":"INTERNAL","deploymentTargets":["test"],"budget":{"hardLimitMinor":100000,"softLimitMinor":80000,"currency":"USD"}}`), map[string]string{
 		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "denied",
 	})
 	if denied.Code != http.StatusForbidden {
@@ -257,7 +368,7 @@ func TestAuthenticationAndPolicyFailuresAreFailClosed(t *testing.T) {
 
 	authorizer.deny = false
 	authorizer.err = errors.New("opa unavailable with secret detail")
-	unavailable := performRequest(handler, http.MethodPost, "/v1/projects", []byte(`{"name":"unavailable","goalAgentCount":1,"dataClassification":"INTERNAL"}`), map[string]string{
+	unavailable := performRequest(handler, http.MethodPost, "/v1/projects", []byte(`{"name":"unavailable","goalAgentCount":1,"dataClassification":"INTERNAL","deploymentTargets":["test"],"budget":{"hardLimitMinor":100000,"softLimitMinor":80000,"currency":"USD"}}`), map[string]string{
 		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "unavailable",
 	})
 	if unavailable.Code != http.StatusServiceUnavailable || bytes.Contains(unavailable.Body.Bytes(), []byte("secret detail")) {
@@ -267,13 +378,13 @@ func TestAuthenticationAndPolicyFailuresAreFailClosed(t *testing.T) {
 
 func TestWriteRequestsRejectDuplicateJSONMembers(t *testing.T) {
 	handler, _, _ := newTestHandler(t)
-	duplicate := performRequest(handler, http.MethodPost, "/v1/projects", []byte(`{"name":"first","name":"second","goalAgentCount":1,"dataClassification":"INTERNAL"}`), map[string]string{
+	duplicate := performRequest(handler, http.MethodPost, "/v1/projects", []byte(`{"name":"first","name":"second","goalAgentCount":1,"dataClassification":"INTERNAL","deploymentTargets":["test"],"budget":{"hardLimitMinor":100000,"softLimitMinor":80000,"currency":"USD"}}`), map[string]string{
 		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "duplicate-json",
 	})
 	if duplicate.Code != http.StatusBadRequest {
 		t.Fatalf("duplicate member status=%d body=%s", duplicate.Code, duplicate.Body.String())
 	}
-	nested := []byte(`{"name":"project","goalAgentCount":1,"dataClassification":"INTERNAL","unknown":{"key":1,"key":2}}`)
+	nested := []byte(`{"name":"project","goalAgentCount":1,"dataClassification":"INTERNAL","deploymentTargets":["test"],"budget":{"hardLimitMinor":100000,"softLimitMinor":80000,"currency":"USD"},"unknown":{"key":1,"key":2}}`)
 	duplicate = performRequest(handler, http.MethodPost, "/v1/projects", nested, map[string]string{
 		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "duplicate-nested-json",
 	})
@@ -343,6 +454,60 @@ func TestTaskListUsesStableOpaqueCursor(t *testing.T) {
 	unknown := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/tasks?cursor=unknown", nil, map[string]string{"Authorization": "Bearer " + testBearer})
 	if unknown.Code != http.StatusBadRequest {
 		t.Fatalf("unknown cursor status=%d body=%s", unknown.Code, unknown.Body.String())
+	}
+}
+
+func TestPlanEndpointsReadImmutableSpecArtifacts(t *testing.T) {
+	handler, store, authorizer := newTestHandler(t)
+	project := createTestProject(t, handler)
+	plan := seedPlanProjection(t, store, project.ID, 1)
+
+	listed := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/plans", nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if listed.Code != http.StatusOK || listed.Header().Get("ETag") != `"v1"` || !strings.Contains(listed.Body.String(), plan.SHA256) || !strings.Contains(listed.Body.String(), `"planSpecVersion":1`) {
+		t.Fatalf("plan list status=%d etag=%q body=%s", listed.Code, listed.Header().Get("ETag"), listed.Body.String())
+	}
+	got := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/plans/1", nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if got.Code != http.StatusOK || got.Header().Get("ETag") != `"`+plan.SHA256+`"` || !strings.Contains(got.Body.String(), `"moduleId":"module-api"`) {
+		t.Fatalf("get plan status=%d etag=%q body=%s", got.Code, got.Header().Get("ETag"), got.Body.String())
+	}
+	missing := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/plans/2", nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("missing plan status=%d body=%s", missing.Code, missing.Body.String())
+	}
+	invalidCursor := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/plans?cursor=unknown", nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if invalidCursor.Code != http.StatusBadRequest {
+		t.Fatalf("invalid plan cursor status=%d body=%s", invalidCursor.Code, invalidCursor.Body.String())
+	}
+	if last := authorizer.inputs[len(authorizer.inputs)-1]; last.Action != authz.ActionProjectRead || last.Resource.Type != "plan-list" {
+		t.Fatalf("plan policy input=%#v", last)
+	}
+}
+
+func TestTaskHistoryEndpointsAreScopedAuthorizedAndVersioned(t *testing.T) {
+	handler, store, authorizer := newTestHandler(t)
+	project := createTestProject(t, handler)
+	seedTaskProjection(t, store, project.ID, "task_history")
+	reader := &testTaskHistoryReader{
+		submissions: TaskSubmissionPage{Items: []json.RawMessage{json.RawMessage(`{"submissionVersion":1,"sha256":"sha256:` + strings.Repeat("2", 64) + `"}`)}, NextCursor: "next-submission"},
+		audits: TaskAuditPage{Items: []TaskAuditRun{{
+			ID: "22222222-2222-4222-8222-222222222222", ProjectID: project.ID, TaskID: "task_history",
+			SubmissionID: "33333333-3333-4333-8333-333333333333", Phase: "DETERMINISTIC", State: "COMPLETED",
+			PipelineVersion: "pipeline-1", ExecutionPlatform: "LINUX", IsolationLevel: "CONTAINER", StartedAt: controlAPITestTime,
+			Verdict: "PASS", Findings: []TaskAuditFinding{},
+		}}},
+	}
+	handler.taskHistory = reader
+
+	submissions := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/tasks/task_history/submissions?cursor=resume", nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if submissions.Code != http.StatusOK || submissions.Header().Get("ETag") == "" || !strings.Contains(submissions.Body.String(), "next-submission") || reader.cursor != "resume" || reader.tenantID != testTenantID || reader.projectID != project.ID || reader.taskID != "task_history" {
+		t.Fatalf("submissions status=%d etag=%q reader=%#v body=%s", submissions.Code, submissions.Header().Get("ETag"), reader, submissions.Body.String())
+	}
+	audits := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/tasks/task_history/audits", nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if audits.Code != http.StatusOK || audits.Header().Get("ETag") == "" || !strings.Contains(audits.Body.String(), `"pipelineVersion":"pipeline-1"`) {
+		t.Fatalf("audits status=%d etag=%q body=%s", audits.Code, audits.Header().Get("ETag"), audits.Body.String())
+	}
+	if last := authorizer.inputs[len(authorizer.inputs)-1]; last.Action != authz.ActionTaskRead || last.Resource.Type != "task-audits" || last.Resource.ID != "task_history" {
+		t.Fatalf("task history policy input=%#v", last)
 	}
 }
 
@@ -698,6 +863,8 @@ func newBudgetTestHandler(t *testing.T) (*Handler, *modelgateway.BudgetLedger, *
 		}},
 		Authorizer: authorizer,
 		Budgets:    ledger,
+		Artifacts:  &testArtifactCatalog{},
+		Knowledge:  &testKnowledgeReader{},
 		Clock:      func() time.Time { return controlAPITestTime },
 	})
 	if err != nil {
@@ -716,6 +883,8 @@ func newTestHandler(t *testing.T) (*Handler, *eventing.MemoryStore, *recordingAu
 			ID: "user-1", Type: authn.PrincipalUser, Role: authn.RoleUser, TenantID: testTenantID,
 		}},
 		Authorizer: authorizer,
+		Artifacts:  &testArtifactCatalog{},
+		Knowledge:  &testKnowledgeReader{},
 		Clock:      func() time.Time { return controlAPITestTime },
 	})
 	if err != nil {
@@ -726,7 +895,7 @@ func newTestHandler(t *testing.T) (*Handler, *eventing.MemoryStore, *recordingAu
 
 func createTestProject(t *testing.T, handler http.Handler) state.Project {
 	t.Helper()
-	response := performRequest(handler, http.MethodPost, "/v1/projects", []byte(`{"name":"project","goalAgentCount":1,"dataClassification":"INTERNAL"}`), map[string]string{
+	response := performRequest(handler, http.MethodPost, "/v1/projects", []byte(`{"name":"project","goalAgentCount":1,"dataClassification":"INTERNAL","deploymentTargets":["test"],"budget":{"hardLimitMinor":100000,"softLimitMinor":80000,"currency":"USD"}}`), map[string]string{
 		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "create-for-read",
 	})
 	if response.Code != http.StatusCreated {
@@ -801,6 +970,60 @@ func seedTaskProjection(t *testing.T, store *eventing.MemoryStore, projectID, ta
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+func seedPlanProjection(t *testing.T, store *eventing.MemoryStore, projectID string, version int) contracts.PlanSpec {
+	t.Helper()
+	plan := contracts.PlanSpec{
+		PlanSpecVersion: version, ProjectID: projectID,
+		GoalSpecRef:       contracts.SpecRef{Version: 1, SHA256: "sha256:" + strings.Repeat("1", 64)},
+		Architecture:      contracts.Architecture{Style: "modular service", Components: []string{"api"}, DataFlows: []string{}, TrustBoundaries: []string{}, DeploymentUnits: []string{"api"}},
+		QualityAttributes: []string{"reliability"}, IntegrationPlan: []string{"merge module"}, ReleasePlan: []string{"deploy test"},
+		TestStrategy: []string{"unit"}, RollbackStrategy: []string{"revert"}, OpenDecisions: []string{},
+		Modules: []contracts.PlanModule{{
+			ModuleID: "module-api", Name: "API", Responsibility: "serve requests", ExecutionPlatform: contracts.PlatformLinux,
+			SandboxLevel: contracts.IsolationContainer, OwnedPaths: []string{"internal/api/**"}, ForbiddenPaths: []string{}, PublicInterfaces: []string{"HTTP"},
+			Dependencies: []string{}, AcceptanceCriteria: []string{"requests succeed"}, Risk: "MEDIUM",
+		}},
+	}
+	unsigned, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.SHA256, err = canonicaljson.DigestObjectWithoutFields(unsigned, "sha256", "signature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := json.Marshal(plan)
+	if err != nil || contracts.ValidatePlanJSON(content) != nil {
+		t.Fatalf("plan content error=%v content=%s", err, content)
+	}
+	projection, err := json.Marshal(struct {
+		TenantID      string `json:"tenantId"`
+		ProjectID     string `json:"projectId"`
+		Kind          string `json:"kind"`
+		SpecID        string `json:"specId"`
+		Version       int    `json:"version"`
+		ContentSHA256 string `json:"contentSha256"`
+		Content       []byte `json:"content"`
+	}{testTenantID, projectID, "PLAN_SPEC", "plan-1", version, plan.SHA256, content})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := canonicaljson.Digest(projection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.Execute(context.Background(), eventing.TransactionRequest{
+		TenantID: testTenantID, PrincipalID: "test-seed", IdempotencyKey: fmt.Sprintf("plan-%d", version), RequestSHA256: digest,
+		Result: projection, ResultSHA256: digest,
+		Updates: []eventing.ProjectionUpdate{{TenantID: testTenantID, ProjectID: projectID, AggregateType: "spec_artifact", AggregateID: fmt.Sprintf("plan-%d", version), ExpectedVersion: 0, NextVersion: 1, State: projection}},
+		Events:  []eventing.DomainEvent{{EventID: fmt.Sprintf("event-plan-%d", version), TenantID: testTenantID, ProjectID: projectID, AggregateType: "spec_artifact", AggregateID: fmt.Sprintf("plan-%d", version), AggregateVersion: 1, Type: "io.aor.artifact.spec-stored.v1", Payload: projection, PayloadSHA256: digest, OccurredAt: controlAPITestTime}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return plan
 }
 
 func performRequest(handler http.Handler, method, path string, body []byte, headers map[string]string) *httptest.ResponseRecorder {

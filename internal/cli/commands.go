@@ -17,9 +17,11 @@ import (
 
 var commandDefinitions = map[string]commandDefinition{
 	"project create": {
-		usage: "aor project create --name NAME --goal-agent-count 1|2 --data-classification CLASS [--idempotency-key KEY]",
+		usage: "aor project create --name NAME --goal-agent-count 1|2 --data-classification CLASS --deployment-targets TARGET[,TARGET...] --budget-hard-limit-minor AMOUNT --budget-soft-limit-minor AMOUNT --budget-currency CURRENCY [--idempotency-key KEY]",
 		flags: map[string]flagDefinition{
-			"name": {kind: stringFlag}, "goal-agent-count": {kind: stringFlag}, "data-classification": {kind: stringFlag}, "idempotency-key": {kind: stringFlag},
+			"name": {kind: stringFlag}, "goal-agent-count": {kind: stringFlag}, "data-classification": {kind: stringFlag},
+			"deployment-targets": {kind: stringFlag}, "budget-hard-limit-minor": {kind: stringFlag}, "budget-soft-limit-minor": {kind: stringFlag},
+			"budget-currency": {kind: stringFlag}, "idempotency-key": {kind: stringFlag},
 		},
 		run: createProject,
 	},
@@ -101,6 +103,36 @@ func createProject(ctx context.Context, application *app, arguments parsedArgume
 	if !oneOf(classification, "PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED") {
 		return usageError("--data-classification must be PUBLIC, INTERNAL, CONFIDENTIAL, or RESTRICTED")
 	}
+	targetValue, err := requireValue(arguments, "deployment-targets")
+	if err != nil {
+		return err
+	}
+	targets := strings.Split(targetValue, ",")
+	if len(targets) > 16 {
+		return usageError("--deployment-targets accepts at most 16 comma-separated targets")
+	}
+	seenTargets := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		if target == "" || len(target) > 128 || strings.TrimSpace(target) != target || strings.ContainsAny(target, "\x00\r\n") {
+			return usageError("--deployment-targets contains an invalid target")
+		}
+		if _, duplicate := seenTargets[target]; duplicate {
+			return usageError("--deployment-targets may not contain duplicates")
+		}
+		seenTargets[target] = struct{}{}
+	}
+	hardLimit, err := requirePositiveInteger(arguments, "budget-hard-limit-minor")
+	if err != nil {
+		return err
+	}
+	softLimit, err := strconv.ParseInt(arguments.value("budget-soft-limit-minor"), 10, 64)
+	if err != nil || softLimit < 0 || softLimit > hardLimit {
+		return usageError("--budget-soft-limit-minor must be a non-negative integer no greater than the hard limit")
+	}
+	currency := strings.ToUpper(arguments.value("budget-currency"))
+	if len(currency) != 3 || currency[0] < 'A' || currency[0] > 'Z' || currency[1] < 'A' || currency[1] > 'Z' || currency[2] < 'A' || currency[2] > 'Z' {
+		return usageError("--budget-currency must be a three-letter currency code")
+	}
 	key, err := idempotencyKey(arguments)
 	if err != nil {
 		return err
@@ -111,7 +143,10 @@ func createProject(ctx context.Context, application *app, arguments parsedArgume
 	}
 	response, err := client.CreateProject(ctx, aorsdk.RequestOptions{
 		Headers: commandHeaders(key, ""),
-		Body:    map[string]any{"name": name, "goalAgentCount": count, "dataClassification": classification},
+		Body: map[string]any{
+			"name": name, "goalAgentCount": count, "dataClassification": classification, "deploymentTargets": targets,
+			"budget": map[string]any{"hardLimitMinor": hardLimit, "softLimitMinor": softLimit, "currency": currency},
+		},
 	})
 	if err != nil {
 		return requestFailure(err)

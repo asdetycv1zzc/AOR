@@ -57,6 +57,30 @@ func TestProjectCreationPrecedesGoalNegotiation(t *testing.T) {
 	}
 }
 
+func TestProjectCreationCanCommitCompleteInitializationSelection(t *testing.T) {
+	event, err := DecideProject(Project{}, ProjectCommand{
+		Type: ProjectCommandCreate, TenantID: "tenant_1", ProjectID: "prj_initialized", ActorID: "usr_1",
+		GoalAgentCount: 2, DataClassification: "CONFIDENTIAL", DeploymentTargets: []string{"test-linux", "pre-production"},
+		BudgetCurrency: "USD", BudgetHardLimitMinor: 100000, BudgetSoftLimitMinor: 80000,
+		PromptBundleVersion: "1.0.0", StartGoalNegotiation: true, At: testTime(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := event.Projection
+	if event.Type != "io.aor.goal.negotiation-started.v1" || project.State != contracts.ProjectGoalNegotiating || project.Version != 1 || project.BudgetCurrency != "USD" || project.BudgetHardLimitMinor != 100000 || project.BudgetSoftLimitMinor != 80000 || project.PromptBundleVersion != "1.0.0" || len(project.DeploymentTargets) != 2 {
+		t.Fatalf("initialized project = %#v event=%q", project, event.Type)
+	}
+	applied, applyErr := ApplyProject(Project{}, event)
+	if applyErr != nil || applied.DeploymentTargets[0] != "test-linux" {
+		t.Fatalf("project clone = %#v err=%v", applied, applyErr)
+	}
+	applied.DeploymentTargets[0] = "mutated"
+	if event.Projection.DeploymentTargets[0] != "test-linux" {
+		t.Fatalf("project deployment targets alias event: %#v", event.Projection.DeploymentTargets)
+	}
+}
+
 func TestProjectCannotCompleteWithoutReleaseApprovalAndEvidence(t *testing.T) {
 	project := Project{TenantID: "tenant_1", ID: "prj_1", State: contracts.ProjectGlobalAudit, Version: 8}
 	_, err := DecideProject(project, ProjectCommand{Type: ProjectCommandComplete, ActorID: "svc_orchestrator", Completion: &CompletionFacts{AllTasksIntegrated: true, GoalCriteriaSatisfied: true, GlobalAuditPassed: true, ReleaseArtifactsSigned: true, NoBlockingFindings: true, EvidenceSHA256: digestZero()}, At: testTime()})

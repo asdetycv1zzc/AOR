@@ -452,13 +452,18 @@ WHERE tenant_id = $1::uuid AND id = $2::uuid AND attempt_count = $3 AND publishe
 
 func syncProjectRow(ctx context.Context, tx *sql.Tx, request TransactionRequest, update ProjectionUpdate) error {
 	var projection struct {
-		ID                 string `json:"id"`
-		State              string `json:"state"`
-		Name               string `json:"name"`
-		GoalAgentCount     int    `json:"goalAgentCount"`
-		DataClassification string `json:"dataClassification"`
-		RiskTolerance      string `json:"riskTolerance"`
-		CreatedBy          string `json:"createdBy"`
+		ID                   string   `json:"id"`
+		State                string   `json:"state"`
+		Name                 string   `json:"name"`
+		GoalAgentCount       int      `json:"goalAgentCount"`
+		DataClassification   string   `json:"dataClassification"`
+		DeploymentTargets    []string `json:"deploymentTargets"`
+		BudgetCurrency       string   `json:"budgetCurrency"`
+		BudgetHardLimitMinor int64    `json:"budgetHardLimitMinor"`
+		BudgetSoftLimitMinor int64    `json:"budgetSoftLimitMinor"`
+		PromptBundleVersion  string   `json:"promptBundleVersion"`
+		RiskTolerance        string   `json:"riskTolerance"`
+		CreatedBy            string   `json:"createdBy"`
 	}
 	if err := json.Unmarshal(update.State, &projection); err != nil {
 		return fmt.Errorf("decode project projection for relational sync: %w", err)
@@ -479,11 +484,19 @@ func syncProjectRow(ctx context.Context, tx *sql.Tx, request TransactionRequest,
 		if projection.CreatedBy == "" {
 			projection.CreatedBy = request.PrincipalID
 		}
-		_, err := tx.ExecContext(ctx, `
+		if projection.BudgetCurrency == "" {
+			projection.BudgetCurrency = "USD"
+		}
+		deploymentTargets, err := json.Marshal(projection.DeploymentTargets)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
 INSERT INTO projects
-  (id, tenant_id, name, state, state_version, data_classification, risk_tolerance, goal_agent_count, created_by, created_at, updated_at)
-VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, transaction_timestamp(), transaction_timestamp())`,
-			projection.ID, request.TenantID, projection.Name, projection.State, update.NextVersion, projection.DataClassification, projection.RiskTolerance, projection.GoalAgentCount, projection.CreatedBy)
+	  (id, tenant_id, name, state, state_version, data_classification, deployment_targets_jsonb,
+	   risk_tolerance, goal_agent_count, created_by, created_at, updated_at)
+	VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, transaction_timestamp(), transaction_timestamp())`,
+			projection.ID, request.TenantID, projection.Name, projection.State, update.NextVersion, projection.DataClassification, deploymentTargets, projection.RiskTolerance, projection.GoalAgentCount, projection.CreatedBy)
 		if err != nil {
 			return err
 		}
@@ -491,9 +504,31 @@ VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, transaction_timestamp(),
 INSERT INTO budget_accounts
   (tenant_id, id, scope_type, scope_id, currency, hard_limit_micros, soft_limit_micros,
    spent_micros, reserved_micros, period_start, version)
-VALUES ($1::uuid, $2, 'PROJECT', $2, 'USD', 0, 0, 0, 0, transaction_timestamp(), 1)`,
-			request.TenantID, projection.ID)
-		return err
+VALUES ($1::uuid, $2, 'PROJECT', $2, $3, $4, $5, 0, 0, transaction_timestamp(), 1)`,
+			request.TenantID, projection.ID, projection.BudgetCurrency, projection.BudgetHardLimitMinor, projection.BudgetSoftLimitMinor)
+		if err != nil {
+			return err
+		}
+		if projection.PromptBundleVersion == "" {
+			return nil
+		}
+		roles := []string{"GOAL_PROPOSER"}
+		if projection.GoalAgentCount == 2 {
+			roles = append(roles, "GOAL_CHALLENGER")
+		}
+		for _, role := range roles {
+			agentID := projection.ID + ":" + role
+			_, err = tx.ExecContext(ctx, `
+INSERT INTO agent_instances
+  (id, tenant_id, project_id, role, provider, logical_model, actual_model_version,
+   prompt_bundle_version, state, created_at)
+VALUES ($1, $2::uuid, $3::uuid, $4, 'UNASSIGNED', 'UNASSIGNED', 'UNASSIGNED', $5, 'DECLARED', transaction_timestamp())`,
+				agentID, request.TenantID, projection.ID, role, projection.PromptBundleVersion)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	result, err := tx.ExecContext(ctx, `
 UPDATE projects

@@ -2,6 +2,7 @@ package state
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/akimisaka/aor/pkg/contracts"
@@ -14,6 +15,11 @@ type Project struct {
 	Name                    string                 `json:"name"`
 	CreatedBy               string                 `json:"createdBy"`
 	DataClassification      string                 `json:"dataClassification"`
+	DeploymentTargets       []string               `json:"deploymentTargets,omitempty"`
+	BudgetCurrency          string                 `json:"budgetCurrency,omitempty"`
+	BudgetHardLimitMinor    int64                  `json:"budgetHardLimitMinor,omitempty"`
+	BudgetSoftLimitMinor    int64                  `json:"budgetSoftLimitMinor,omitempty"`
+	PromptBundleVersion     string                 `json:"promptBundleVersion,omitempty"`
 	RiskTolerance           string                 `json:"riskTolerance"`
 	State                   contracts.ProjectState `json:"state"`
 	Version                 int64                  `json:"version"`
@@ -94,25 +100,31 @@ const (
 )
 
 type ProjectCommand struct {
-	Type               ProjectCommandType
-	TenantID           string
-	ProjectID          string
-	ActorID            string
-	GoalAgentCount     int
-	Goal               *GoalRecord
-	GoalSpec           *contracts.GoalSpec
-	GoalMessage        *GoalMessage
-	Plan               *contracts.SpecRef
-	GoalSpecRef        *contracts.SpecRef
-	DAG                map[string][]string
-	Approval           *ApprovalBinding
-	Completion         *CompletionFacts
-	Guard              *ProjectGuardFacts
-	ImpactedTaskIDs    []string
-	Name               string
-	DataClassification string
-	RiskTolerance      string
-	At                 time.Time
+	Type                 ProjectCommandType
+	TenantID             string
+	ProjectID            string
+	ActorID              string
+	GoalAgentCount       int
+	StartGoalNegotiation bool
+	Goal                 *GoalRecord
+	GoalSpec             *contracts.GoalSpec
+	GoalMessage          *GoalMessage
+	Plan                 *contracts.SpecRef
+	GoalSpecRef          *contracts.SpecRef
+	DAG                  map[string][]string
+	Approval             *ApprovalBinding
+	Completion           *CompletionFacts
+	Guard                *ProjectGuardFacts
+	ImpactedTaskIDs      []string
+	Name                 string
+	DataClassification   string
+	DeploymentTargets    []string
+	BudgetCurrency       string
+	BudgetHardLimitMinor int64
+	BudgetSoftLimitMinor int64
+	PromptBundleVersion  string
+	RiskTolerance        string
+	At                   time.Time
 }
 
 type ProjectEvent struct {
@@ -145,8 +157,31 @@ func DecideProject(current Project, command ProjectCommand) (ProjectEvent, *aore
 		if riskTolerance == "" {
 			riskTolerance = "MEDIUM"
 		}
-		next = Project{TenantID: command.TenantID, ID: command.ProjectID, Name: name, CreatedBy: command.ActorID, DataClassification: dataClassification, RiskTolerance: riskTolerance, State: contracts.ProjectCreated, GoalAgentCount: command.GoalAgentCount}
-		eventType = "io.aor.project.created.v1"
+		if command.BudgetCurrency == "" {
+			command.BudgetCurrency = "USD"
+		}
+		if command.BudgetHardLimitMinor < 0 || command.BudgetSoftLimitMinor < 0 || command.BudgetSoftLimitMinor > command.BudgetHardLimitMinor || !validProjectCurrency(command.BudgetCurrency) || command.StartGoalNegotiation && command.PromptBundleVersion == "" {
+			return ProjectEvent{}, invalidProject(command, "project budget")
+		}
+		deploymentTargets := append([]string(nil), command.DeploymentTargets...)
+		if len(deploymentTargets) != 0 {
+			seenTargets := make(map[string]struct{}, len(deploymentTargets))
+			for _, target := range deploymentTargets {
+				_, duplicate := seenTargets[target]
+				if target == "" || len(target) > 128 || strings.TrimSpace(target) != target || strings.ContainsAny(target, "\r\n\x00") || duplicate {
+					return ProjectEvent{}, invalidProject(command, "deployment target")
+				}
+				seenTargets[target] = struct{}{}
+			}
+		}
+		stateValue := contracts.ProjectCreated
+		if command.StartGoalNegotiation {
+			stateValue = contracts.ProjectGoalNegotiating
+			eventType = "io.aor.goal.negotiation-started.v1"
+		} else {
+			eventType = "io.aor.project.created.v1"
+		}
+		next = Project{TenantID: command.TenantID, ID: command.ProjectID, Name: name, CreatedBy: command.ActorID, DataClassification: dataClassification, DeploymentTargets: deploymentTargets, BudgetCurrency: command.BudgetCurrency, BudgetHardLimitMinor: command.BudgetHardLimitMinor, BudgetSoftLimitMinor: command.BudgetSoftLimitMinor, PromptBundleVersion: command.PromptBundleVersion, RiskTolerance: riskTolerance, State: stateValue, GoalAgentCount: command.GoalAgentCount}
 	case ProjectCommandStartGoalNegotiation:
 		if current.State != contracts.ProjectCreated {
 			return ProjectEvent{}, transitionProject(command, current.State)
@@ -402,6 +437,7 @@ func ApplyProject(current Project, event ProjectEvent) (Project, error) {
 
 func cloneProject(project Project) Project {
 	next := project
+	next.DeploymentTargets = append([]string(nil), project.DeploymentTargets...)
 	if project.Goal != nil {
 		goal := *project.Goal
 		goal.UnresolvedItems = append([]string(nil), project.Goal.UnresolvedItems...)
@@ -412,6 +448,18 @@ func cloneProject(project Project) Project {
 		next.Plan = &plan
 	}
 	return next
+}
+
+func validProjectCurrency(value string) bool {
+	if len(value) != 3 {
+		return false
+	}
+	for _, character := range value {
+		if character < 'A' || character > 'Z' {
+			return false
+		}
+	}
+	return true
 }
 
 func (f CompletionFacts) allSatisfied() bool {

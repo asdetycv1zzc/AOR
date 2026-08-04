@@ -35,12 +35,16 @@ func TestProjectCreateUsesHTTPSBearerAndIdempotency(t *testing.T) {
 
 	exitCode, stdout, stderr := runTestCLI(t, server, "", []string{
 		"--server", server.URL, "--json", "project", "create", "--name", "Example", "--goal-agent-count", "2",
-		"--data-classification", "confidential", "--idempotency-key", "create-key",
+		"--data-classification", "confidential", "--deployment-targets", "test-linux,pre-production",
+		"--budget-hard-limit-minor", "100000", "--budget-soft-limit-minor", "80000", "--budget-currency", "usd",
+		"--idempotency-key", "create-key",
 	})
 	if exitCode != 0 || stderr != "" {
 		t.Fatalf("exit = %d, stderr = %q", exitCode, stderr)
 	}
-	if requestBody["name"] != "Example" || requestBody["goalAgentCount"] != float64(2) || requestBody["dataClassification"] != "CONFIDENTIAL" {
+	budget, _ := requestBody["budget"].(map[string]any)
+	targets, _ := requestBody["deploymentTargets"].([]any)
+	if requestBody["name"] != "Example" || requestBody["goalAgentCount"] != float64(2) || requestBody["dataClassification"] != "CONFIDENTIAL" || len(targets) != 2 || targets[0] != "test-linux" || targets[1] != "pre-production" || budget["hardLimitMinor"] != float64(100000) || budget["softLimitMinor"] != float64(80000) || budget["currency"] != "USD" {
 		t.Fatalf("body = %#v", requestBody)
 	}
 	if !json.Valid([]byte(stdout)) || !strings.Contains(stdout, `"project-one"`) {

@@ -65,6 +65,16 @@ func (service *Service) now() time.Time {
 	return time.Now().UTC()
 }
 
+// Initialize creates the immutable empty baseline used during project
+// creation. The repository operation is idempotent, so a retry after a process
+// restart converges on the original revision.
+func (service *Service) Initialize(ctx context.Context, tenantID, projectID string, createdAt time.Time) (Manifest, error) {
+	if service == nil || service.repository == nil {
+		return Manifest{}, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "knowledge repository"})
+	}
+	return service.repository.Initialize(ctx, tenantID, projectID, createdAt)
+}
+
 func (service *Service) Search(ctx context.Context, request SearchRequest) (SearchResponse, error) {
 	if err := service.authorize(ctx, request.Access, false); err != nil {
 		return SearchResponse{}, err
