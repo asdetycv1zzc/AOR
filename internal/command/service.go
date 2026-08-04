@@ -15,6 +15,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/akimisaka/aor/internal/credentials"
+	"github.com/akimisaka/aor/internal/runtimeclient"
+	"github.com/akimisaka/aor/internal/runtimeconfig"
 	"github.com/akimisaka/aor/internal/version"
 )
 
@@ -25,15 +28,26 @@ const (
 	defaultHealthURL     = "http://127.0.0.1:8080/health/ready"
 )
 
+type HandlerFactory func(runtimeconfig.Config, *runtimeclient.Clients) (http.Handler, error)
+
+type ReadinessCheck func(context.Context) error
+
 // Run preserves the version-only default while providing the long-running
 // process and in-container health probe used by deployed profiles.
-func Run(component string) error {
+func Run(component string, factories ...HandlerFactory) error {
 	if len(os.Args) == 1 || os.Args[1] == "version" {
 		return WriteVersion(component)
 	}
+	if len(factories) > 1 {
+		return ErrInvalidCommand
+	}
 	switch os.Args[1] {
 	case "serve":
-		return runServer(component)
+		var factory HandlerFactory
+		if len(factories) == 1 {
+			factory = factories[0]
+		}
+		return runServer(component, factory)
 	case "healthcheck":
 		return probeHealth(envOrDefault("AOR_HEALTHCHECK_URL", defaultHealthURL))
 	default:
@@ -41,33 +55,57 @@ func Run(component string) error {
 	}
 }
 
-func runServer(component string) error {
-	dependencies, err := parseEndpoints(os.Getenv("AOR_REQUIRED_ENDPOINTS"))
-	if err != nil {
-		return err
-	}
-	listener, err := net.Listen("tcp", envOrDefault("AOR_LISTEN_ADDR", defaultListenAddress))
+func runServer(component string, factory HandlerFactory) error {
+	config, err := runtimeconfig.Load(component, os.LookupEnv)
 	if err != nil {
 		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return Serve(ctx, component, listener, dependencies)
+	resolver := credentials.NewSecretResolver(envOrDefault("AOR_SECRET_ROOT", credentials.DefaultSecretRoot))
+	clients, err := runtimeclient.Open(ctx, config, resolver)
+	if err != nil {
+		return err
+	}
+	defer clients.Close()
+	var domain http.Handler
+	if factory != nil {
+		domain, err = factory(config, clients)
+		if err != nil || domain == nil {
+			return ErrInvalidCommand
+		}
+	}
+	listener, err := net.Listen("tcp", config.ListenAddress)
+	if err != nil {
+		return err
+	}
+	return ServeWithHandler(ctx, component, listener, clients.Ready, domain)
 }
 
 // Serve runs a bounded health and identity surface. Domain APIs remain owned
 // by their service packages; this process surface only reports lifecycle and
 // dependency readiness.
 func Serve(ctx context.Context, component string, listener net.Listener, dependencies []string) error {
+	return ServeWithHandler(ctx, component, listener, func(checkCtx context.Context) error {
+		return endpointsReady(checkCtx, dependencies)
+	}, nil)
+}
+
+func ServeWithHandler(ctx context.Context, component string, listener net.Listener, readiness ReadinessCheck, domain http.Handler) error {
 	if ctx == nil || component == "" || listener == nil {
 		return ErrInvalidCommand
+	}
+	if readiness == nil {
+		readiness = func(context.Context) error { return ErrInvalidCommand }
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", func(writer http.ResponseWriter, _ *http.Request) {
 		writeStatus(writer, http.StatusOK, component, "live")
 	})
 	mux.HandleFunc("GET /health/ready", func(writer http.ResponseWriter, request *http.Request) {
-		if err := endpointsReady(request.Context(), dependencies); err != nil {
+		checkCtx, cancel := context.WithTimeout(request.Context(), 3*time.Second)
+		defer cancel()
+		if err := readiness(checkCtx); err != nil {
 			writeStatus(writer, http.StatusServiceUnavailable, component, "not_ready")
 			return
 		}
@@ -77,6 +115,9 @@ func Serve(ctx context.Context, component string, listener net.Listener, depende
 		writer.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(writer).Encode(version.Current(component))
 	})
+	if domain != nil {
+		mux.Handle("/", domain)
+	}
 
 	server := &http.Server{
 		Handler:           mux,

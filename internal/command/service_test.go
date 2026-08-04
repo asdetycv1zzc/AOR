@@ -62,6 +62,29 @@ func TestServeFailsReadinessWhenDependencyIsUnavailable(t *testing.T) {
 	}
 }
 
+func TestServeWithHandlerMountsDomainRoutesAndUsesReadiness(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	domain := http.NewServeMux()
+	domain.HandleFunc("GET /v1/test", func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusAccepted)
+	})
+	go func() {
+		result <- ServeWithHandler(ctx, "aor-test", listener, func(context.Context) error { return nil }, domain)
+	}()
+	baseURL := "http://" + listener.Addr().String()
+	waitForStatus(t, baseURL+"/v1/test", http.StatusAccepted)
+	waitForStatus(t, baseURL+"/health/ready", http.StatusOK)
+	cancel()
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestParseEndpointsRejectsInvalidAndDeduplicates(t *testing.T) {
 	endpoints, err := parseEndpoints("postgres:5432, postgres:5432,nats:4222")
 	if err != nil {
