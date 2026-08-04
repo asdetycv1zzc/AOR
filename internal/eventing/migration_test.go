@@ -49,6 +49,22 @@ func TestCoreMigrationContainsAtomicityAndIsolationConstraints(t *testing.T) {
 			t.Errorf("inbox claims migration missing %q", value)
 		}
 	}
+	rolePath := filepath.Join("..", "..", "migrations", "postgres", "000003_runtime_app_role.up.sql")
+	roleContent, err := os.ReadFile(rolePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roleSQL := string(roleContent)
+	for _, value := range []string{
+		"CREATE ROLE aor_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS",
+		"ALTER ROLE aor_app WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD",
+		"GRANT USAGE ON SCHEMA public TO aor_app", "GRANT SELECT, INSERT, UPDATE ON TABLE public.inbox TO aor_app",
+		"GRANT EXECUTE ON FUNCTION public.aor_current_tenant() TO aor_app", "REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM aor_app",
+	} {
+		if !strings.Contains(roleSQL, value) {
+			t.Errorf("runtime role migration missing %q", value)
+		}
+	}
 	manifestContent, err := os.ReadFile(filepath.Join("..", "..", "migrations", "postgres", "manifest.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -65,10 +81,10 @@ func TestCoreMigrationContainsAtomicityAndIsolationConstraints(t *testing.T) {
 	for index, migration := range []struct {
 		file    string
 		content []byte
-	}{{file: "000001_core.up.sql", content: content}, {file: "000002_inbox_claims.up.sql", content: claimContent}} {
+	}{{file: "000001_core.up.sql", content: content}, {file: "000002_inbox_claims.up.sql", content: claimContent}, {file: "000003_runtime_app_role.up.sql", content: roleContent}} {
 		sum := sha256.Sum256(migration.content)
 		digest := "sha256:" + hex.EncodeToString(sum[:])
-		if len(manifest.Migrations) != 2 || manifest.Migrations[index].File != migration.file || manifest.Migrations[index].SHA256 != digest {
+		if len(manifest.Migrations) != 3 || manifest.Migrations[index].File != migration.file || manifest.Migrations[index].SHA256 != digest {
 			t.Fatalf("migration manifest digest does not match %s", digest)
 		}
 	}

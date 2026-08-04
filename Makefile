@@ -55,10 +55,11 @@ verify: build lint test schema cross-language sdk backup-restore supply-chain re
 
 compose-check-secrets:
 	test -s deploy/compose/secrets/postgres_password
+	test -s deploy/compose/secrets/postgres_app_password
 	test -s deploy/compose/secrets/minio_root_user
 	test -s deploy/compose/secrets/minio_root_password
 	test -s deploy/compose/secrets/model_provider_openai_key
-	test -s deploy/compose/secrets/model_provider_anthropic_key
+	test -s deploy/compose/secrets/model_provider_deepseek_key
 
 compose-check:
 	$(COMPOSE) config --quiet

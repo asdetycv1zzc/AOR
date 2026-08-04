@@ -22,17 +22,18 @@ mkdir -p deploy/compose/secrets
 chmod 700 deploy/compose/secrets
 umask 077
 openssl rand -hex 32 > deploy/compose/secrets/postgres_password
+openssl rand -hex 32 > deploy/compose/secrets/postgres_app_password
 openssl rand -hex 16 > deploy/compose/secrets/minio_root_user
 openssl rand -hex 32 > deploy/compose/secrets/minio_root_password
 # Write the actual credentials issued by each provider, one value per file.
 # Do not generate placeholder keys: Compose checks that both files are nonempty.
 ${EDITOR:-vi} deploy/compose/secrets/model_provider_openai_key
-${EDITOR:-vi} deploy/compose/secrets/model_provider_anthropic_key
+${EDITOR:-vi} deploy/compose/secrets/model_provider_deepseek_key
 ```
 
-The secret values are mounted as files. They are not committed or placed in AOR container environment variables. AOR refers to mounted files only through `secret://` references: PostgreSQL uses `secret://postgres_password`; API and worker use the MinIO root access and secret files for local S3 access; the Model Gateway uses one mounted file for each provider family.
+The secret values are mounted as files. They are not committed or placed in AOR container environment variables. PostgreSQL migrations use the admin-only `postgres_password` to apply schema changes and configure the least-privilege `aor_app` role; API, Model Gateway, and worker use `secret://postgres_app_password`. AOR refers to mounted files only through `secret://` references. API and worker use the MinIO root access and secret files for local S3 access; the Model Gateway uses one mounted file for each provider family.
 
-The Model Gateway defaults to OpenAI and Anthropic endpoints and models. Set `AOR_OPENAI_BASE_URL`, `AOR_OPENAI_MODEL`, `AOR_ANTHROPIC_BASE_URL`, or `AOR_ANTHROPIC_MODEL` in the host environment before `make compose-up` to select compatible endpoints or approved models. Provider credentials always remain in the two secret files.
+The Model Gateway defaults to OpenAI and DeepSeek OpenAI-compatible endpoints and models. Set `AOR_OPENAI_BASE_URL`, `AOR_OPENAI_MODEL`, `AOR_DEEPSEEK_BASE_URL`, or `AOR_DEEPSEEK_MODEL` in the host environment before `make compose-up` to select compatible endpoints or approved models. Provider credentials always remain in the two provider secret files.
 
 ## Start
 
@@ -47,7 +48,7 @@ The target performs these stages in order:
 1. Validate the Compose model and required secret files.
 2. Pull all dependency images.
 3. Start PostgreSQL, Temporal, NATS, MinIO, and OPA, then wait for their health checks and initialization jobs.
-4. Apply PostgreSQL migrations `000001_core.up.sql` and `000002_inbox_claims.up.sql` in order; reruns detect the installed schema and are idempotent.
+4. Apply PostgreSQL migrations `000001_core.up.sql`, `000002_inbox_claims.up.sql`, and `000003_runtime_app_role.up.sql` in order; reruns detect the installed schema and keep the fixed `aor_app` role and grants idempotent. The app password is supplied through the ignored secret file and is not printed.
 5. Build the four AOR images serially from the current source.
 6. Start AOR only after every dependency and initializer has completed successfully, then wait for every process readiness endpoint.
 

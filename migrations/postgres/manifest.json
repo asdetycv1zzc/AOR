@@ -15,6 +15,13 @@
       "file": "000002_inbox_claims.up.sql",
       "sha256": "sha256:456eea1f4689d733d405303a364269c577a7451b32a2f9e74ff08635232261de",
       "destructive": false
+    },
+    {
+      "version": 3,
+      "mode": "EXPAND",
+      "file": "000003_runtime_app_role.up.sql",
+      "sha256": "sha256:e4dce4540fa4e6e4591eb1dcb32092174ae5917a65cab38b98e2a47d5d3730e2",
+      "destructive": false
     }
   ]
 }

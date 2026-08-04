@@ -2,6 +2,7 @@ package deployment
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -12,6 +13,21 @@ func TestDeploymentProfilesFailClosed(t *testing.T) {
 	}
 	if err := ValidateCompose(compose); err != nil {
 		t.Fatal(err)
+	}
+	composeText := string(compose)
+	for _, value := range []string{
+		"AOR_DATABASE_USER: aor_app", "AOR_DATABASE_PASSWORD_REF: secret://postgres_app_password",
+		"postgres_app_password", "000003_runtime_app_role.up.sql", "model_provider_deepseek_key",
+		"provider\":\"deepseek",
+	} {
+		if !strings.Contains(composeText, value) {
+			t.Errorf("compose missing %q", value)
+		}
+	}
+	for _, value := range []string{"AOR_DATABASE_USER: aor\n", "model_provider_anthropic_key", "provider\":\"anthropic"} {
+		if strings.Contains(composeText, value) {
+			t.Errorf("compose contains forbidden runtime setting %q", value)
+		}
 	}
 	values, err := os.ReadFile("../../deploy/helm/values.yaml")
 	if err != nil {
