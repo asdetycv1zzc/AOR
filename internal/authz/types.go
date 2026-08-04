@@ -364,7 +364,7 @@ func (d PolicyDecision) Validate(now time.Time) *aorerrors.Error {
 	}
 	if d.Binding != nil {
 		binding := d.Binding
-		if !safeID(binding.PrincipalID) || !safeID(binding.TenantID) || !safeID(binding.ProjectID) || binding.ProjectVersion < 0 || !safeID(binding.TaskID) || binding.TaskVersion < 0 || !digestPattern.MatchString(binding.SpecDigest) || !safeOpaque(binding.Role, 128) || !actionPattern.MatchString(binding.Action) || !digestPattern.MatchString(binding.ParameterDigest) || !safeID(binding.BudgetAccountID) {
+		if !safeID(binding.PrincipalID) || !safeID(binding.TenantID) || !safeID(binding.ProjectID) || binding.ProjectVersion < 0 || binding.TaskID != "" && !safeID(binding.TaskID) || !validLeaseTaskBinding(binding.Role, binding.TaskID, binding.TaskVersion, binding.SpecDigest) || !safeOpaque(binding.Role, 128) || !leaseActionAllowed(binding.Action, binding.Role, binding.TaskID) || !digestPattern.MatchString(binding.ParameterDigest) || !safeID(binding.BudgetAccountID) {
 			return aorerrors.New(aorerrors.CodePolicyDenied, "", map[string]any{"policyVersion": d.PolicyVersion})
 		}
 		if binding.Resource.Path != "" {
@@ -432,6 +432,24 @@ func RequiresTask(action string) bool {
 	default:
 		return true
 	}
+}
+
+// LeaseRoleRequiresTask keeps project-level Goal and Plan agents usable before
+// a ModuleTask exists. Unknown and task-level roles remain fail-closed.
+func LeaseRoleRequiresTask(role string) bool {
+	switch role {
+	case authn.RoleGoalProposer, authn.RoleGoalChallenger, authn.RolePlanSupervisor:
+		return false
+	default:
+		return true
+	}
+}
+
+func validLeaseTaskBinding(role, taskID string, taskVersion int64, specDigest string) bool {
+	if taskID == "" {
+		return !LeaseRoleRequiresTask(role) && taskVersion == 0 && specDigest == ""
+	}
+	return taskVersion >= 0 && digestPattern.MatchString(specDigest)
 }
 
 func IsHighRisk(action string) bool {

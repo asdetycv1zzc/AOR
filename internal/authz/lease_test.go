@@ -166,6 +166,56 @@ func TestCapabilityLeaseLifecycleAndFencing(t *testing.T) {
 	assertAuthzErrorCode(t, err, aorerrors.CodeLeaseExpired)
 }
 
+func TestProjectAgentLeaseLifecycleDoesNotRequireTask(t *testing.T) {
+	for _, role := range []string{authn.RoleGoalProposer, authn.RoleGoalChallenger, authn.RolePlanSupervisor} {
+		t.Run(role, func(t *testing.T) {
+			now := authzTestNow
+			manager, _ := testManager(t, func() time.Time { return now })
+			engine := testEngine(manager, func() time.Time { return now })
+			input := PolicyInput{
+				Principal: authn.Principal{ID: "agent_project", Type: authn.PrincipalAgentInstance, Role: role, TenantID: "tenant_1", ProjectID: "project_1"},
+				Project:   ProjectScope{TenantID: "tenant_1", ID: "project_1", State: "GOAL_NEGOTIATING", StateVersion: 3, Classification: "INTERNAL"},
+				Action:    ActionModelGenerate, Resource: Resource{Type: "model", ID: "model://goal/default"},
+				ParameterDigest: testParamsDigest, Budget: BudgetScope{AccountID: "budget_1", Available: true},
+			}
+			lease, authorized := issueForInput(t, manager, engine, input, now)
+			if lease.TaskID != "" || lease.TaskVersion != 0 || lease.SpecDigest != "" {
+				t.Fatalf("project lease has task binding: %#v", lease)
+			}
+			if _, err := manager.Validate(context.Background(), leaseCheckFor(lease, now)); err != nil {
+				t.Fatalf("validate project lease: %v", err)
+			}
+			if decision, err := engine.Authorize(context.Background(), authorized); err != nil || decision.Decision != DecisionAllow {
+				t.Fatalf("authorize project lease: decision=%#v err=%v", decision, err)
+			}
+			now = now.Add(10 * time.Second)
+			heartbeat, err := manager.Heartbeat(context.Background(), LeaseHeartbeatRequest{
+				LeaseID: lease.ID, TenantID: lease.TenantID, ProjectID: lease.ProjectID,
+				PrincipalID: lease.PrincipalID, FencingToken: lease.FencingToken,
+			})
+			if err != nil || !heartbeat.LastHeartbeatAt.Equal(now) {
+				t.Fatalf("heartbeat project lease: lease=%#v err=%v", heartbeat, err)
+			}
+			if err := manager.Revoke(context.Background(), LeaseRevokeRequest{
+				LeaseID: lease.ID, ProjectID: lease.ProjectID, Actor: input.Principal,
+				Reason: "project run completed", RequestDigest: testSpecDigest,
+			}); err != nil {
+				t.Fatalf("revoke project lease: %v", err)
+			}
+		})
+	}
+}
+
+func TestTaskAgentLeaseStillRequiresTask(t *testing.T) {
+	manager, _ := testManager(t, func() time.Time { return authzTestNow })
+	engine := testEngine(manager, func() time.Time { return authzTestNow })
+	input := testInput()
+	input.Task = TaskScope{}
+	if _, err := engine.EvaluateLeaseGrant(context.Background(), input); err == nil {
+		t.Fatal("task-scoped role received a project lease grant")
+	}
+}
+
 func TestLeaseRejectsDenyAndReboundGrant(t *testing.T) {
 	manager, _ := testManager(t, func() time.Time { return authzTestNow })
 	input := testInput()

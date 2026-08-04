@@ -53,9 +53,9 @@ VALUES
   ($1, $2::uuid, $3::uuid, $4, $5::uuid, $6, $7, $8, $9, $10, $11, $12,
    $13::jsonb, $14, $15, $16, $17, $18, $19::jsonb, $20, $21, $22, $23, $24,
    $25, $26)`,
-		lease.ID, lease.TenantID, lease.ProjectID, lease.AgentInstanceID, lease.TaskID,
+		lease.ID, lease.TenantID, lease.ProjectID, lease.AgentInstanceID, nullableLeaseString(lease.TaskID),
 		lease.PrincipalID, string(lease.PrincipalType), lease.Role, lease.Action,
-		lease.ProjectVersion, lease.TaskVersion, lease.SpecDigest, resource,
+		lease.ProjectVersion, lease.TaskVersion, nullableLeaseString(lease.SpecDigest), resource,
 		lease.ParameterDigest, lease.IssuedAt.UTC(), lease.ExpiresAt.UTC(),
 		lease.LastHeartbeatAt.UTC(), lease.HeartbeatIntervalSeconds, capabilities,
 		lease.PolicyVersion, lease.BudgetAccountID, lease.Nonce, lease.FencingToken,
@@ -184,7 +184,8 @@ func setLeaseTenant(ctx context.Context, tx *sql.Tx, tenantID string) error {
 func loadPostgresLease(ctx context.Context, tx *sql.Tx, tenantID, id string, lock bool) (CapabilityLease, bool, error) {
 	query := `
 SELECT id, agent_instance_id, principal_id, principal_type, tenant_id::text,
-       project_id::text, project_version, task_id::text, task_version, spec_sha256,
+	       project_id::text, project_version, COALESCE(task_id::text, ''), task_version,
+	       COALESCE(spec_sha256::text, ''),
        role, action, resource_jsonb, parameter_sha256, capabilities_jsonb, issued_at,
        expires_at, last_heartbeat_at, heartbeat_interval_seconds, policy_version,
        budget_account_id, nonce_hash, fencing_token, state, revoked_at, signature
@@ -285,7 +286,17 @@ func nullableLeaseTime(value *time.Time) any {
 	return value.UTC()
 }
 
+func nullableLeaseString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
 func advanceTaskFencing(ctx context.Context, tx *sql.Tx, lease CapabilityLease) error {
+	if lease.TaskID == "" {
+		return nil
+	}
 	var advanced sql.NullBool
 	err := tx.QueryRowContext(ctx, `
 SELECT aor_advance_task_fencing($1::uuid, $2::uuid, $3::uuid, $4)`,

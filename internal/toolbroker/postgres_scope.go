@@ -58,7 +58,16 @@ func (resolver *PostgresScopeResolver) ResolveToolAuthorizationScope(ctx context
 		return ToolAuthorizationScope{}, ErrPolicyDenied
 	}
 	defer func() { _ = tx.Rollback() }()
-	project, taskRecord, err := resolver.loadProjectTask(ctx, tx, query.TenantID, query.ProjectID, query.TaskID)
+	var project authz.ProjectScope
+	var taskRecord postgresTaskScope
+	if query.TaskID == "" {
+		if authz.LeaseRoleRequiresTask(query.Role) {
+			return ToolAuthorizationScope{}, ErrPolicyDenied
+		}
+		project, err = resolver.loadProject(ctx, tx, query.TenantID, query.ProjectID)
+	} else {
+		project, taskRecord, err = resolver.loadProjectTask(ctx, tx, query.TenantID, query.ProjectID, query.TaskID)
+	}
 	if err != nil {
 		return ToolAuthorizationScope{}, ErrPolicyDenied
 	}
@@ -79,6 +88,20 @@ func (resolver *PostgresScopeResolver) ResolveToolAuthorizationScope(ctx context
 type postgresTaskScope struct {
 	projectVersion int64
 	scope          authz.TaskScope
+}
+
+func (resolver *PostgresScopeResolver) loadProject(ctx context.Context, tx *sql.Tx, tenantID, projectID string) (authz.ProjectScope, error) {
+	project := authz.ProjectScope{TenantID: tenantID, ID: projectID}
+	err := tx.QueryRowContext(ctx, `
+SELECT state, state_version, data_classification
+FROM projects
+WHERE tenant_id = $1::uuid AND id = $2::uuid`, tenantID, projectID).Scan(
+		&project.State, &project.StateVersion, &project.Classification,
+	)
+	if err != nil {
+		return authz.ProjectScope{}, err
+	}
+	return project, nil
 }
 
 func (resolver *PostgresScopeResolver) loadProjectTask(ctx context.Context, tx *sql.Tx, tenantID, projectID, taskID string) (authz.ProjectScope, postgresTaskScope, error) {

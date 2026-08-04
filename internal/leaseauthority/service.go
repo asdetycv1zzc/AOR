@@ -188,7 +188,7 @@ func (service *Service) Renew(ctx context.Context, principal authn.Principal, re
 }
 
 func (service *Service) Heartbeat(ctx context.Context, principal authn.Principal, request HeartbeatRequest) (authz.CapabilityLease, error) {
-	if err := service.validateCaller(ctx, principal, request.TenantID, request.ProjectID); err != nil || request.TaskID == "" || request.LeaseID == "" || request.FencingToken < 1 {
+	if err := service.validateCaller(ctx, principal, request.TenantID, request.ProjectID); err != nil || request.LeaseID == "" || request.FencingToken < 1 {
 		if err != nil {
 			return authz.CapabilityLease{}, err
 		}
@@ -204,7 +204,7 @@ func (service *Service) Revoke(ctx context.Context, principal authn.Principal, r
 	if err := service.validateCaller(ctx, principal, request.TenantID, request.ProjectID); err != nil {
 		return err
 	}
-	if request.TaskID == "" || request.LeaseID == "" || !validIdempotencyKey(request.IdempotencyKey) {
+	if request.LeaseID == "" || !validIdempotencyKey(request.IdempotencyKey) {
 		return invalidRequest()
 	}
 	digest, err := revokeRequestDigest(principal, request)
@@ -224,7 +224,7 @@ func (service *Service) authorizeGrant(ctx context.Context, principal authn.Prin
 	if err := service.validateCaller(ctx, principal, request.TenantID, request.ProjectID); err != nil {
 		return authz.PolicyInput{}, authz.PolicyDecision{}, err
 	}
-	if request.TaskID == "" || request.Action == "" || request.ParameterDigest == "" || request.BudgetAccountID == "" || request.TTL < 0 || !validIdempotencyKey(request.IdempotencyKey) {
+	if (request.TaskID == "" && authz.LeaseRoleRequiresTask(principal.Role)) || request.Action == "" || request.ParameterDigest == "" || request.BudgetAccountID == "" || request.TTL < 0 || !validIdempotencyKey(request.IdempotencyKey) {
 		return authz.PolicyInput{}, authz.PolicyDecision{}, invalidRequest()
 	}
 	scope, err := service.scopes.Resolve(ctx, ScopeQuery{
@@ -235,7 +235,7 @@ func (service *Service) authorizeGrant(ctx context.Context, principal authn.Prin
 	if err != nil {
 		return authz.PolicyInput{}, authz.PolicyDecision{}, aorerrors.Wrap(aorerrors.CodePolicyDenied, "", err, map[string]any{"scope": "lease authority"})
 	}
-	if scope.Project.TenantID != request.TenantID || scope.Project.ID != request.ProjectID || scope.Task.TenantID != request.TenantID || scope.Task.ProjectID != request.ProjectID || scope.Task.ID != request.TaskID || scope.Budget.AccountID != request.BudgetAccountID || !scope.Budget.Available {
+	if scope.Project.TenantID != request.TenantID || scope.Project.ID != request.ProjectID || !leaseTaskScopeMatches(scope.Task, request.TenantID, request.ProjectID, request.TaskID) || scope.Budget.AccountID != request.BudgetAccountID || !scope.Budget.Available {
 		return authz.PolicyInput{}, authz.PolicyDecision{}, aorerrors.New(aorerrors.CodePolicyDenied, "", map[string]any{"scope": "authoritative lease facts"})
 	}
 	input := authz.PolicyInput{
@@ -256,6 +256,13 @@ func (service *Service) authorizeGrant(ctx context.Context, principal authn.Prin
 		return authz.PolicyInput{}, authz.PolicyDecision{}, aorerrors.New(aorerrors.CodePolicyDenied, "", map[string]any{"policyVersion": decision.PolicyVersion})
 	}
 	return input, decision, nil
+}
+
+func leaseTaskScopeMatches(task authz.TaskScope, tenantID, projectID, taskID string) bool {
+	if taskID == "" {
+		return task.ID == "" && task.TenantID == "" && task.ProjectID == "" && task.State == "" && task.StateVersion == 0 && task.SpecDigest == ""
+	}
+	return task.TenantID == tenantID && task.ProjectID == projectID && task.ID == taskID
 }
 
 func (service *Service) validateCaller(ctx context.Context, principal authn.Principal, tenantID, projectID string) error {

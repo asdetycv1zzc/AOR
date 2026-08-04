@@ -148,6 +148,13 @@
       "file": "000021_event_replay_state.up.sql",
       "sha256": "sha256:cf0b23d4ffa7a8839deab398e2b6558ab1a61931b50d55849b3bca1d1c725873",
       "destructive": false
+    },
+    {
+      "version": 22,
+      "mode": "EXPAND",
+      "file": "000022_project_agent_leases.up.sql",
+      "sha256": "sha256:dcad58823613137b98e7a6e635e657f93ff54e05bca7a7d4ae9232ad3cbe8bfa",
+      "destructive": false
     }
   ]
 }

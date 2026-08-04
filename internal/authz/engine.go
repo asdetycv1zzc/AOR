@@ -150,7 +150,7 @@ func (e *Engine) EvaluateLeaseGrant(ctx context.Context, input PolicyInput) (Pol
 	if err := e.validateApprovalProof(ctx, input); err != nil {
 		return denyDecision(e.bundle.Version, reasonForError(err)), err
 	}
-	if !IsSideEffect(input.Action) || input.Lease != nil || input.ParameterDigest == "" || input.Budget.AccountID == "" || !input.Budget.Available || input.Task.SpecDigest == "" {
+	if !leaseGrantActionAllowed(input) || input.Lease != nil || input.ParameterDigest == "" || input.Budget.AccountID == "" || !input.Budget.Available || !validLeaseTaskBinding(input.Principal.Role, input.Task.ID, input.Task.StateVersion, input.Task.SpecDigest) {
 		return denyDecision(e.bundle.Version, "INVALID_LEASE_GRANT_INPUT"), aorerrors.New(aorerrors.CodePolicyDenied, "", map[string]any{"scope": "lease grant"})
 	}
 	if err := e.validateExecutionBoundary(input); err != nil {
@@ -228,6 +228,13 @@ func bindGrant(result PolicyDecision, input PolicyInput, now time.Time) PolicyDe
 	return result
 }
 
+func leaseGrantActionAllowed(input PolicyInput) bool {
+	if input.Task.ID == "" {
+		return input.Action == ActionModelGenerate && !LeaseRoleRequiresTask(input.Principal.Role)
+	}
+	return IsSideEffect(input.Action)
+}
+
 func reasonForError(err error) string {
 	typed, ok := err.(*aorerrors.Error)
 	if !ok {
@@ -297,7 +304,7 @@ func (e *Engine) validateLease(ctx context.Context, input PolicyInput, now time.
 	if input.Lease.PolicyVersion != e.bundle.Version {
 		return CapabilityLease{}, aorerrors.New(aorerrors.CodePolicyDenied, "", map[string]any{"policyVersion": e.bundle.Version})
 	}
-	if input.ParameterDigest == "" || input.Budget.AccountID == "" || !input.Budget.Available || input.Task.SpecDigest == "" {
+	if input.ParameterDigest == "" || input.Budget.AccountID == "" || !input.Budget.Available || !validLeaseTaskBinding(input.Principal.Role, input.Task.ID, input.Task.StateVersion, input.Task.SpecDigest) {
 		return CapabilityLease{}, aorerrors.New(aorerrors.CodePolicyDenied, "", map[string]any{"scope": "commit facts"})
 	}
 	if e.leases == nil {
@@ -322,6 +329,11 @@ func (e *Engine) defaultDecision(input PolicyInput, lease CapabilityLease, now t
 			return allowDecision(e.bundle.Version, "aor.repo.read", "ROLE_ALLOWED", "PROJECT_SCOPE_VALID")
 		}
 		return denyDecision(e.bundle.Version, "ROLE_DENIED")
+	case ActionModelGenerate:
+		if !LeaseRoleRequiresTask(input.Principal.Role) && input.Task.ID == "" && input.Resource.Type == "model" && input.Resource.ID != "" && !roleIn(input.Project.State, "ABORTED", "ARCHIVED", "FAILED_SYSTEM", "PAUSED") && input.Budget.Available {
+			return allowDecision(e.bundle.Version, "aor.model.invoke", "MODEL_POLICY_ALLOWED", "PROJECT_SCOPE_VALID")
+		}
+		return denyDecision(e.bundle.Version, "MODEL_SCOPE_DENIED")
 	case ActionRepoWrite, ActionRepoApplyPatch:
 		return e.repoWriteDecision(input, lease)
 	case ActionToolInvoke:

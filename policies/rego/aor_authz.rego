@@ -42,6 +42,12 @@ model_actions := {
     "model.capabilities",
 }
 
+project_lease_roles := {
+	"GOAL_PROPOSER",
+	"GOAL_CHALLENGER",
+	"PLAN_SUPERVISOR",
+}
+
 valid_project_scope if {
     input.principal.id != ""
     input.principal.type != ""
@@ -83,7 +89,7 @@ model_scope_valid if {
     input.project.state != "ABORTED"
     input.project.state != "ARCHIVED"
     input.project.state != "FAILED_SYSTEM"
-    not input.task.id
+	object.get(object.get(input, "task", {}), "id", "") == ""
 }
 
 model_scope_valid if {
@@ -181,6 +187,18 @@ lease_grant_input_valid if {
 	input.budget.available
 }
 
+lease_grant_input_valid if {
+	valid_project_scope
+	input.principal.role in project_lease_roles
+	object.get(object.get(input, "task", {}), "id", "") == ""
+	object.get(object.get(input, "task", {}), "specDigest", "") == ""
+	input.action == "model.generate"
+	not input.lease
+	input.parameterDigest != ""
+	input.budget.accountId != ""
+	input.budget.available
+}
+
 repo_write_grant_allowed if {
 	lease_grant_input_valid
 	input.action in {"repo.write", "repo.apply_patch"}
@@ -231,6 +249,20 @@ tool_invoke_grant_allowed if {
 	input.task.state != "INTEGRATED"
 }
 
+model_generate_grant_allowed if {
+	lease_grant_input_valid
+	input.action == "model.generate"
+	input.resource.type == "model"
+	input.resource.id != ""
+	input.principal.type == "AGENT_INSTANCE"
+	input.principal.role in project_lease_roles
+	object.get(object.get(input, "task", {}), "id", "") == ""
+	input.project.state != "ABORTED"
+	input.project.state != "ARCHIVED"
+	input.project.state != "FAILED_SYSTEM"
+	input.project.state != "PAUSED"
+}
+
 lease_grant_allowed if {
 	repo_write_grant_allowed
 }
@@ -243,14 +275,18 @@ lease_grant_allowed if {
 	tool_invoke_grant_allowed
 }
 
+lease_grant_allowed if {
+	model_generate_grant_allowed
+}
+
 lease_grant_binding := {
 	"principalId": input.principal.id,
 	"tenantId": input.project.tenantId,
 	"projectId": input.project.id,
 	"projectVersion": input.project.stateVersion,
-	"taskId": input.task.id,
-	"taskVersion": input.task.stateVersion,
-	"specDigest": input.task.specDigest,
+	"taskId": object.get(object.get(input, "task", {}), "id", ""),
+	"taskVersion": object.get(object.get(input, "task", {}), "stateVersion", 0),
+	"specDigest": object.get(object.get(input, "task", {}), "specDigest", ""),
 	"role": input.principal.role,
 	"action": input.action,
 	"resource": input.resource,

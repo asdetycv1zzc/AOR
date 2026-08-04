@@ -23,7 +23,7 @@ const (
 	LeaseExpired LeaseState = "EXPIRED"
 )
 
-// CapabilityLease is the signed, short-lived proof for one side-effect scope.
+// CapabilityLease is the signed, short-lived proof for one runtime capability scope.
 // It is safe to serialize as metadata; the signing key is never part of it.
 type CapabilityLease struct {
 	ID                       string              `json:"id"`
@@ -69,13 +69,13 @@ func (lease CapabilityLease) IsExpired(now time.Time) bool {
 }
 
 func (lease CapabilityLease) ValidateShape() *aorerrors.Error {
-	if lease.ID == "" || lease.AgentInstanceID == "" || lease.PrincipalID == "" || lease.TenantID == "" || lease.ProjectID == "" || lease.ProjectVersion < 0 || lease.TaskID == "" || lease.TaskVersion < 0 || lease.SpecDigest == "" || lease.Role == "" || lease.Action == "" || resourceEmpty(lease.Resource) || lease.ParameterDigest == "" || lease.PolicyVersion == "" || lease.BudgetAccountID == "" || lease.Nonce == "" || lease.FencingToken < 1 || lease.State == "" || lease.IssuedAt.IsZero() || lease.ExpiresAt.IsZero() || lease.LastHeartbeatAt.IsZero() || lease.HeartbeatIntervalSeconds <= 0 || lease.HeartbeatIntervalSeconds > 300 || len(lease.Capabilities) == 0 || len(lease.Capabilities) > 64 || !containsString(lease.Capabilities, lease.Action) {
+	if lease.ID == "" || lease.AgentInstanceID == "" || lease.PrincipalID == "" || lease.TenantID == "" || lease.ProjectID == "" || lease.ProjectVersion < 0 || !validLeaseTaskBinding(lease.Role, lease.TaskID, lease.TaskVersion, lease.SpecDigest) || lease.Role == "" || !leaseActionAllowed(lease.Action, lease.Role, lease.TaskID) || resourceEmpty(lease.Resource) || lease.ParameterDigest == "" || lease.PolicyVersion == "" || lease.BudgetAccountID == "" || lease.Nonce == "" || lease.FencingToken < 1 || lease.State == "" || lease.IssuedAt.IsZero() || lease.ExpiresAt.IsZero() || lease.LastHeartbeatAt.IsZero() || lease.HeartbeatIntervalSeconds <= 0 || lease.HeartbeatIntervalSeconds > 300 || len(lease.Capabilities) == 0 || len(lease.Capabilities) > 64 || !containsString(lease.Capabilities, lease.Action) {
 		return aorerrors.New(aorerrors.CodePolicyDenied, "", map[string]any{"scope": "lease"})
 	}
 	if lease.PrincipalType == "" || !lease.ExpiresAt.After(lease.IssuedAt) || lease.LastHeartbeatAt.Before(lease.IssuedAt) || lease.LastHeartbeatAt.After(lease.ExpiresAt) {
 		return aorerrors.New(aorerrors.CodePolicyDenied, "", map[string]any{"scope": "lease"})
 	}
-	if !digestPattern.MatchString(lease.SpecDigest) || !digestPattern.MatchString(lease.ParameterDigest) || !digestPattern.MatchString(lease.Nonce) {
+	if !digestPattern.MatchString(lease.ParameterDigest) || !digestPattern.MatchString(lease.Nonce) {
 		return aorerrors.New(aorerrors.CodePolicyDenied, "", map[string]any{"scope": "lease digest"})
 	}
 	for _, capability := range lease.Capabilities {
@@ -361,7 +361,7 @@ func (m *LeaseManager) Issue(ctx context.Context, request LeaseRequest) (Capabil
 	if request.Principal.ID != request.AgentInstanceID {
 		return CapabilityLease{}, aorerrors.New(aorerrors.CodeForbidden, "", map[string]any{"scope": "agent"})
 	}
-	if request.TenantID == "" || request.ProjectID == "" || request.ProjectVersion < 0 || request.TaskID == "" || request.TaskVersion < 0 || !digestPattern.MatchString(request.SpecDigest) || request.Role == "" || request.Action == "" || resourceEmpty(request.Resource) || !digestPattern.MatchString(request.ParameterDigest) || request.PolicyVersion == "" || request.BudgetAccountID == "" || len(request.Capabilities) == 0 || len(request.Capabilities) > 64 || !containsString(request.Capabilities, request.Action) || request.RequestDigest != "" && !digestPattern.MatchString(request.RequestDigest) {
+	if request.TenantID == "" || request.ProjectID == "" || request.ProjectVersion < 0 || !validLeaseTaskBinding(request.Role, request.TaskID, request.TaskVersion, request.SpecDigest) || request.Role == "" || request.Action == "" || resourceEmpty(request.Resource) || !digestPattern.MatchString(request.ParameterDigest) || request.PolicyVersion == "" || request.BudgetAccountID == "" || len(request.Capabilities) == 0 || len(request.Capabilities) > 64 || !containsString(request.Capabilities, request.Action) || request.RequestDigest != "" && !digestPattern.MatchString(request.RequestDigest) {
 		return CapabilityLease{}, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "lease"})
 	}
 	if request.Principal.TenantID != "" && request.Principal.TenantID != request.TenantID {
@@ -373,7 +373,7 @@ func (m *LeaseManager) Issue(ctx context.Context, request LeaseRequest) (Capabil
 	if request.Principal.Role != "" && request.Principal.Role != request.Role {
 		return CapabilityLease{}, aorerrors.New(aorerrors.CodeForbidden, "", map[string]any{"scope": "role"})
 	}
-	if !sideEffectLeaseAction(request.Action) {
+	if !leaseActionAllowed(request.Action, request.Role, request.TaskID) {
 		return CapabilityLease{}, aorerrors.New(aorerrors.CodePolicyDenied, "", map[string]any{"scope": "action"})
 	}
 	now := m.now()
@@ -434,7 +434,10 @@ func (m *LeaseManager) Issue(ctx context.Context, request LeaseRequest) (Capabil
 	return cloneLease(lease), nil
 }
 
-func sideEffectLeaseAction(action string) bool {
+func leaseActionAllowed(action, role, taskID string) bool {
+	if taskID == "" {
+		return action == ActionModelGenerate && !LeaseRoleRequiresTask(role)
+	}
 	return IsSideEffect(action)
 }
 
@@ -535,7 +538,7 @@ func (m *LeaseManager) Heartbeat(ctx context.Context, request LeaseHeartbeatRequ
 	if current.State != LeaseActive || current.IsExpired(now) {
 		return CapabilityLease{}, aorerrors.New(aorerrors.CodeLeaseExpired, "", nil)
 	}
-	if request.ProjectID == "" || request.ProjectID != current.ProjectID || request.TaskID == "" || request.TaskID != current.TaskID || request.PrincipalID == "" || request.PrincipalID != current.PrincipalID || request.FencingToken != current.FencingToken {
+	if request.ProjectID == "" || request.ProjectID != current.ProjectID || request.TaskID != current.TaskID || request.PrincipalID == "" || request.PrincipalID != current.PrincipalID || request.FencingToken != current.FencingToken {
 		return CapabilityLease{}, aorerrors.New(aorerrors.CodeForbidden, "", map[string]any{"scope": "lease fencing"})
 	}
 	if now.Before(current.LastHeartbeatAt) {
@@ -566,7 +569,7 @@ func (m *LeaseManager) Revoke(ctx context.Context, request LeaseRevokeRequest) e
 	if err := request.Actor.Validate(); err != nil {
 		return err
 	}
-	if request.ProjectID == "" || request.TaskID == "" || request.Reason == "" || len(request.Reason) > 256 || strings.ContainsAny(request.Reason, "\r\n\x00") || !digestPattern.MatchString(request.RequestDigest) {
+	if request.ProjectID == "" || request.Reason == "" || len(request.Reason) > 256 || strings.ContainsAny(request.Reason, "\r\n\x00") || !digestPattern.MatchString(request.RequestDigest) {
 		return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "revoke reason"})
 	}
 	now := m.now()
@@ -638,7 +641,7 @@ func (m *LeaseManager) Validate(ctx context.Context, check LeaseCheck) (Capabili
 		}
 		return CapabilityLease{}, aorerrors.New(aorerrors.CodeLeaseExpired, "", nil)
 	}
-	if check.AgentInstanceID == "" || check.AgentInstanceID != current.AgentInstanceID || check.PrincipalID == "" || check.PrincipalID != current.PrincipalID || check.PrincipalType == "" || check.PrincipalType != current.PrincipalType || check.TenantID == "" || check.TenantID != current.TenantID || check.ProjectID == "" || check.ProjectID != current.ProjectID || check.ProjectVersion != current.ProjectVersion || check.TaskID == "" || check.TaskID != current.TaskID || check.TaskVersion != current.TaskVersion || check.SpecDigest == "" || check.SpecDigest != current.SpecDigest || check.Role == "" || check.Role != current.Role || check.Action == "" || check.Action != current.Action || check.PolicyVersion == "" || check.PolicyVersion != current.PolicyVersion || check.BudgetAccountID == "" || check.BudgetAccountID != current.BudgetAccountID || check.Capability == "" || !containsString(current.Capabilities, check.Capability) || check.FencingToken < 1 || check.FencingToken != current.FencingToken {
+	if check.AgentInstanceID == "" || check.AgentInstanceID != current.AgentInstanceID || check.PrincipalID == "" || check.PrincipalID != current.PrincipalID || check.PrincipalType == "" || check.PrincipalType != current.PrincipalType || check.TenantID == "" || check.TenantID != current.TenantID || check.ProjectID == "" || check.ProjectID != current.ProjectID || check.ProjectVersion != current.ProjectVersion || check.TaskID != current.TaskID || check.TaskVersion != current.TaskVersion || check.SpecDigest != current.SpecDigest || check.Role == "" || check.Role != current.Role || check.Action == "" || check.Action != current.Action || check.PolicyVersion == "" || check.PolicyVersion != current.PolicyVersion || check.BudgetAccountID == "" || check.BudgetAccountID != current.BudgetAccountID || check.Capability == "" || !containsString(current.Capabilities, check.Capability) || check.FencingToken < 1 || check.FencingToken != current.FencingToken {
 		return CapabilityLease{}, aorerrors.New(aorerrors.CodeForbidden, "", map[string]any{"scope": "lease binding"})
 	}
 	if !digestPattern.MatchString(check.ParameterDigest) || check.ParameterDigest != current.ParameterDigest {

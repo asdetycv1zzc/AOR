@@ -24,6 +24,16 @@ grant_input := {
 	"budget": {"accountId": "budget_1", "available": true},
 }
 
+project_grant_input := {
+	"principal": {"id": "agent_goal", "type": "AGENT_INSTANCE", "role": "GOAL_PROPOSER", "tenantId": "tenant_1"},
+	"project": {"id": "project_1", "tenantId": "tenant_1", "state": "GOAL_NEGOTIATING", "stateVersion": 3},
+	"task": {"id": "", "stateVersion": 0, "specDigest": ""},
+	"action": "model.generate",
+	"resource": {"type": "model", "id": "model://goal/default"},
+	"parameterDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+	"budget": {"accountId": "budget_1", "available": true},
+}
+
 test_unknown_action_is_denied if {
     result := authz.decision with input as object.union(base_input, {"action": "unknown.action"})
     result.decision == "DENY"
@@ -91,6 +101,33 @@ test_tool_invoke_lease_grant_is_exactly_bound if {
 	result.binding.taskVersion == grant_input.task.stateVersion
 	result.binding.resource == grant_input.resource
 	result.binding.parameterDigest == grant_input.parameterDigest
+}
+
+test_project_agent_lease_grant_has_no_task_binding if {
+	result := authz.lease_grant with input as project_grant_input
+	result.decision == "ALLOW"
+	result.binding.taskId == ""
+	result.binding.taskVersion == 0
+	result.binding.specDigest == ""
+
+	request := object.union(project_grant_input, {
+		"lease": {
+			"id": "lease_goal",
+			"policyVersion": data.aor.policy.version,
+			"fencingToken": 1,
+			"expiresAt": "2099-01-01T00:00:00Z",
+		},
+	})
+	authorized := authz.decision with input as request
+	authorized.decision == "ALLOW"
+}
+
+test_task_agent_lease_grant_still_requires_task if {
+	request := object.union(project_grant_input, {
+		"principal": object.union(project_grant_input.principal, {"role": "EXECUTOR"}),
+	})
+	result := authz.lease_grant with input as request
+	result.decision == "DENY"
 }
 
 test_lease_grant_rejects_terminal_task_or_missing_budget if {

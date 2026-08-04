@@ -162,6 +162,41 @@ func TestServiceHeartbeatAndRevocationUseAuthenticatedPrincipal(t *testing.T) {
 	}
 }
 
+func TestServiceProjectAgentLeaseLifecycleWithoutTask(t *testing.T) {
+	service, scopes, policy, _ := testService(t)
+	principal := authn.Principal{ID: "agent_goal", Type: authn.PrincipalAgentInstance, Role: authn.RoleGoalProposer, TenantID: "tenant_1", ProjectID: "project_1"}
+	scopes.scope = Scope{
+		Project: authz.ProjectScope{TenantID: principal.TenantID, ID: principal.ProjectID, State: "GOAL_NEGOTIATING", StateVersion: 2, Classification: "INTERNAL"},
+		Budget:  authz.BudgetScope{AccountID: "budget_1", Available: true},
+	}
+	request := testGrantRequest()
+	request.TaskID = ""
+	request.Action = authz.ActionModelGenerate
+	request.Resource = authz.Resource{Type: "model", ID: "model://goal/default"}
+	request.IdempotencyKey = "goal-lease-1"
+	ctx := principalContext(t, principal)
+
+	lease, err := service.Issue(ctx, principal, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease.TaskID != "" || lease.TaskVersion != 0 || lease.SpecDigest != "" || policy.input.Task.ID != "" || scopes.query.TaskID != "" {
+		t.Fatalf("project lease acquired task binding: lease=%#v input=%#v query=%#v", lease, policy.input, scopes.query)
+	}
+	if _, err := service.Heartbeat(ctx, principal, HeartbeatRequest{
+		TenantID: principal.TenantID, ProjectID: principal.ProjectID,
+		LeaseID: lease.ID, FencingToken: lease.FencingToken,
+	}); err != nil {
+		t.Fatalf("heartbeat project lease: %v", err)
+	}
+	if err := service.Revoke(ctx, principal, RevokeRequest{
+		TenantID: principal.TenantID, ProjectID: principal.ProjectID,
+		LeaseID: lease.ID, Reason: "goal run completed", IdempotencyKey: "goal-revoke-1",
+	}); err != nil {
+		t.Fatalf("revoke project lease: %v", err)
+	}
+}
+
 func TestServiceFailsClosedForCallerScopePolicyAndBudget(t *testing.T) {
 	service, scopes, policy, principal := testService(t)
 	request := testGrantRequest()
