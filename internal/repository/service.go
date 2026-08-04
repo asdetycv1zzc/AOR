@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path"
@@ -83,6 +84,7 @@ func (s *Service) CreateWorkspace(ctx context.Context, request WorkspaceRequest)
 		return Workspace{}, ErrInvalidRequest
 	}
 	directory := filepath.Join(workspaceRoot, cleanID(request.TenantID), cleanID(request.ProjectID), cleanID(request.TaskID), fmt.Sprintf("attempt-%d", request.Attempt))
+	gitDirectory := filepath.Join(s.root, ".aor-git", workspaceIDDigest(id))
 	if filepath.Clean(source) == filepath.Clean(directory) {
 		return Workspace{}, ErrInvalidRequest
 	}
@@ -107,17 +109,24 @@ func (s *Service) CreateWorkspace(ctx context.Context, request WorkspaceRequest)
 	if err := rejectSymlinkTree(s.root, directory); err != nil {
 		return Workspace{}, err
 	}
-	if err := cloneRepository(ctx, source, directory); err != nil {
+	if err := cloneRepository(ctx, source, directory, gitDirectory); err != nil {
+		return Workspace{}, err
+	}
+	if err := configureWorkspaceVisibility(ctx, directory, request.ModuleSpec.AllowedPaths, request.ModuleSpec.ForbiddenPaths); err != nil {
+		_ = os.RemoveAll(gitDirectory)
 		return Workspace{}, err
 	}
 	if _, err := git(ctx, directory, "rev-parse", "--verify", request.BaseCommit+"^{commit}"); err != nil {
+		_ = os.RemoveAll(gitDirectory)
 		return Workspace{}, ErrInitialCommitNeeded
 	}
-	workspace := Workspace{ID: id, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, Attempt: request.Attempt, AttemptSeriesID: request.AttemptSeriesID, Path: directory, Branch: workspaceBranch(request), BaseCommit: request.BaseCommit, AllowedPaths: append([]string(nil), request.ModuleSpec.AllowedPaths...), ForbiddenPaths: append([]string(nil), request.ModuleSpec.ForbiddenPaths...), AcceptanceCriteria: append([]string(nil), request.ModuleSpec.AcceptanceCriteria...), ModuleSpecRef: moduleSpecRef, AgentIdentity: request.AgentIdentity}
+	workspace := Workspace{ID: id, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, Attempt: request.Attempt, AttemptSeriesID: request.AttemptSeriesID, Path: directory, Branch: workspaceBranch(request), BaseCommit: request.BaseCommit, AllowedPaths: append([]string(nil), request.ModuleSpec.AllowedPaths...), ForbiddenPaths: effectiveForbiddenPaths(request.ModuleSpec.ForbiddenPaths), AcceptanceCriteria: append([]string(nil), request.ModuleSpec.AcceptanceCriteria...), ModuleSpecRef: moduleSpecRef, AgentIdentity: request.AgentIdentity, gitDir: gitDirectory}
 	if err := checkoutCommit(ctx, workspace, request.BaseCommit); err != nil {
+		_ = os.RemoveAll(gitDirectory)
 		return Workspace{}, err
 	}
 	if err := s.validateLease(ctx, validation); err != nil {
+		_ = os.RemoveAll(gitDirectory)
 		return Workspace{}, err
 	}
 	s.mu.Lock()
@@ -421,14 +430,125 @@ func checkoutCommit(ctx context.Context, workspace Workspace, commit string) err
 	return nil
 }
 
-func cloneRepository(ctx context.Context, source, directory string) error {
+func cloneRepository(ctx context.Context, source, directory, gitDirectory string) error {
 	if _, err := os.Stat(filepath.Join(source, ".git")); err != nil {
 		return ErrInitialCommitNeeded
 	}
-	if _, err := gitFrom(ctx, filepath.Dir(directory), "clone", "--no-local", source, directory); err != nil {
+	if gitDirectory == "" || filepath.Clean(gitDirectory) == filepath.Clean(directory) || strings.HasPrefix(filepath.Clean(gitDirectory), filepath.Clean(directory)+string(os.PathSeparator)) {
+		return ErrInvalidRequest
+	}
+	if err := os.MkdirAll(filepath.Dir(gitDirectory), 0o700); err != nil {
+		return err
+	}
+	if _, err := gitFrom(ctx, filepath.Dir(directory), "clone", "--no-local", "--separate-git-dir", gitDirectory, source, directory); err != nil {
+		_ = os.RemoveAll(gitDirectory)
+		return ErrGitUnavailable
+	}
+	// Disable repository-provided hooks and file-system monitors before the
+	// untrusted checkout is materialized.
+	if _, err := git(ctx, directory, "config", "core.hooksPath", filepath.Join(gitDirectory, "disabled-hooks")); err != nil {
+		_ = os.RemoveAll(gitDirectory)
 		return ErrGitUnavailable
 	}
 	return nil
+}
+
+func configureWorkspaceVisibility(ctx context.Context, directory string, allowed, forbidden []string) error {
+	if len(allowed) == 0 {
+		return ErrPathDenied
+	}
+	patterns := []string{"/*"}
+	for _, value := range effectiveForbiddenPaths(forbidden) {
+		clean, valid := cleanRelative(value)
+		if !valid {
+			return ErrPathDenied
+		}
+		if clean == ".git" || strings.HasPrefix(clean, ".git/") {
+			continue
+		}
+		pattern, ok := sparsePattern(value)
+		if !ok {
+			return ErrPathDenied
+		}
+		patterns = append(patterns, "!"+pattern)
+	}
+	arguments := append([]string{"sparse-checkout", "set", "--no-cone", "--"}, patterns...)
+	if _, err := git(ctx, directory, arguments...); err != nil {
+		return ErrGitUnavailable
+	}
+	return validateVisibleTree(directory, effectiveForbiddenPaths(forbidden))
+}
+
+var defaultForbiddenWorkspacePaths = []string{
+	"policies/...",
+	"hidden-tests/...",
+	".aor-hidden-tests/...",
+	"audit/private/...",
+	".aor-private/...",
+}
+
+func effectiveForbiddenPaths(forbidden []string) []string {
+	result := append([]string(nil), forbidden...)
+	result = append(result, defaultForbiddenWorkspacePaths...)
+	return result
+}
+
+func sparsePattern(value string) (string, bool) {
+	clean, ok := cleanRelative(value)
+	if !ok || clean == ".git" || strings.HasPrefix(clean, ".git/") {
+		return "", false
+	}
+	recursive := strings.HasSuffix(clean, "/...") || strings.HasSuffix(clean, "/**")
+	clean = strings.TrimSuffix(clean, "/...")
+	clean = strings.TrimSuffix(clean, "/**")
+	if clean == "" || clean == "." {
+		return "", false
+	}
+	if strings.ContainsAny(clean, "*?[") {
+		return "/" + clean, true
+	}
+	if recursive {
+		return "/" + clean + "/**", true
+	}
+	return "/" + clean, true
+}
+
+func validateVisibleTree(directory string, forbidden []string) error {
+	return filepath.WalkDir(directory, func(name string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if name == directory {
+			return nil
+		}
+		if entry.Name() == ".git" {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		relative, err := filepath.Rel(directory, name)
+		if err != nil {
+			return err
+		}
+		relative = filepath.ToSlash(relative)
+		if entry.IsDir() {
+			return nil
+		}
+		if !matchesAnyPath(forbidden, relative) {
+			return nil
+		}
+		return ErrPathDenied
+	})
+}
+
+func matchesAnyPath(patterns []string, candidate string) bool {
+	for _, pattern := range patterns {
+		if matchesPath(pattern, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 func git(ctx context.Context, directory string, args ...string) (string, error) {
@@ -642,6 +762,11 @@ func mustJSON(value any) []byte {
 
 func workspaceID(request WorkspaceRequest) string {
 	return request.TenantID + ":" + request.ProjectID + ":" + request.TaskID + ":" + strconv.Itoa(request.Attempt)
+}
+
+func workspaceIDDigest(id string) string {
+	sum := sha256.Sum256([]byte(id))
+	return hex.EncodeToString(sum[:])
 }
 
 func workspaceBranch(request WorkspaceRequest) string {

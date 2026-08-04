@@ -174,6 +174,61 @@ func TestServiceRejectsStaleLeaseAndSymlinkEscape(t *testing.T) {
 	}
 }
 
+func TestWorkspaceHidesForbiddenFilesAndKeepsGitMetadataOutsideMount(t *testing.T) {
+	source := t.TempDir()
+	if _, err := runGit(source, "init", "-b", "main"); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, source, "owned/main.go", "package owned\n")
+	writeTestFile(t, source, "hidden-tests/exploit_test.go", "package hidden\n")
+	writeTestFile(t, source, "audit/private-policy.rego", "package private\n")
+	if _, err := runGit(source, "add", "."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(source, "commit", "-m", "initial"); err != nil {
+		t.Fatal(err)
+	}
+	base, err := runGit(source, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewService(t.TempDir(), testLeaseValidator{}, nil, testSubmissionSigner{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	module := testModule()
+	module.ForbiddenPaths = []string{".git/...", "hidden-tests/...", "audit/..."}
+	lease := LeaseProof{ID: "lease-private", FencingToken: 1, ExpiresAt: time.Now().Add(time.Hour)}
+	request := WorkspaceRequest{RepositoryPath: source, TenantID: "tenant-1", ProjectID: "project-1", TaskID: "task-private", Attempt: 1, AttemptSeriesID: "series-private", BaseCommit: strings.TrimSpace(base), ModuleSpec: module, AgentIdentity: contracts.AgentIdentity{AgentInstanceID: "agent-private", Role: "EXECUTOR", LeaseID: lease.ID}, Lease: lease}
+	workspace, err := service.CreateWorkspace(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"hidden-tests/exploit_test.go", "audit/private-policy.rego"} {
+		if _, err := os.Stat(filepath.Join(workspace.Path, filepath.FromSlash(forbidden))); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("forbidden file %s is visible: %v", forbidden, err)
+		}
+		if _, err := service.ReadFile(context.Background(), workspace.ID, forbidden); !errors.Is(err, ErrPathDenied) {
+			t.Fatalf("forbidden service read %s = %v", forbidden, err)
+		}
+	}
+	registered, found := service.Workspace(workspace.ID)
+	if !found || registered.gitDir == "" {
+		t.Fatal("service-owned git directory was not registered")
+	}
+	relative, err := filepath.Rel(workspace.Path, registered.gitDir)
+	if err != nil || relative == "." || !strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+		t.Fatalf("git directory %q is inside workspace %q", registered.gitDir, workspace.Path)
+	}
+	gitMarker, err := os.ReadFile(filepath.Join(workspace.Path, ".git"))
+	if err != nil || !strings.HasPrefix(string(gitMarker), "gitdir: ") {
+		t.Fatalf("external git marker = %q error=%v", gitMarker, err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace.Path, "owned", "main.go")); err != nil {
+		t.Fatalf("owned file is unavailable: %v", err)
+	}
+}
+
 func TestServiceRevalidatesLeaseAtEveryRepositoryCommitBoundary(t *testing.T) {
 	source := t.TempDir()
 	if _, err := runGit(source, "init", "-b", "main"); err != nil {

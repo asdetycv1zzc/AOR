@@ -84,6 +84,10 @@ type Workspace struct {
 	AcceptanceCriteria []string
 	ModuleSpecRef      contracts.SpecRef
 	AgentIdentity      contracts.AgentIdentity
+	// gitDir is service-owned metadata outside the mounted workspace. It is
+	// intentionally private so API consumers cannot use it as a repository
+	// capability.
+	gitDir string
 }
 
 type WriteRequest struct {
