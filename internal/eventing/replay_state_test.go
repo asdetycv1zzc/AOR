@@ -2,6 +2,7 @@ package eventing
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/akimisaka/aor/pkg/canonicaljson"
@@ -29,5 +30,22 @@ func TestDeriveReplayStateSupportsLegacyImmutableEvents(t *testing.T) {
 	artifact.AggregateID = "wrong"
 	if _, err := deriveReplayState(artifact, []replayResultCandidate{{EventIDs: []string{"event-2"}, Result: state, ResultSHA256: resultDigest}}); err == nil {
 		t.Fatal("legacy artifact accepted a mismatched aggregate identity")
+	}
+}
+
+func TestDeriveReplayStateRejectsUnknownLegacyAggregate(t *testing.T) {
+	state := json.RawMessage(`{"tenantId":"tenant-1","projectId":"project-1","id":"aggregate-1","version":1}`)
+	digest, err := canonicaljson.Digest(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := DomainEvent{
+		EventID: "event-unknown", TenantID: "tenant-1", ProjectID: "project-1",
+		AggregateType: "unknown", AggregateID: "aggregate-1", AggregateVersion: 1, Payload: state,
+	}
+	if _, err := deriveReplayState(event, []replayResultCandidate{{
+		EventIDs: []string{event.EventID}, Result: state, ResultSHA256: digest,
+	}}); !errors.Is(err, ErrReplayStateUnavailable) {
+		t.Fatalf("unknown legacy aggregate error=%v", err)
 	}
 }

@@ -868,22 +868,29 @@ func loadReplayEvents(ctx context.Context, tx *sql.Tx, tenantID string) ([]Domai
 	if err != nil {
 		return nil, err
 	}
-	legacy := false
-	for _, event := range events {
-		if len(event.ReplayState) == 0 {
-			legacy = true
-			break
+	legacyResultEventIDs := make([]string, 0)
+	for index, event := range events {
+		if len(event.ReplayState) != 0 {
+			continue
+		}
+		if event.AggregateType == "spec_artifact" {
+			legacyResultEventIDs = append(legacyResultEventIDs, event.EventID)
+			continue
+		}
+		events[index], err = deriveReplayState(event, nil)
+		if err != nil {
+			return nil, err
 		}
 	}
-	if !legacy {
+	if len(legacyResultEventIDs) == 0 {
 		return events, nil
 	}
-	candidates, err := loadReplayResultCandidates(ctx, tx, tenantID)
+	candidates, err := loadReplayResultCandidates(ctx, tx, tenantID, legacyResultEventIDs)
 	if err != nil {
 		return nil, err
 	}
 	for index, event := range events {
-		if len(event.ReplayState) != 0 {
+		if len(event.ReplayState) != 0 || event.AggregateType != "spec_artifact" {
 			continue
 		}
 		events[index], err = deriveReplayState(event, candidates[event.EventID])
@@ -954,34 +961,33 @@ func scanReplayEvent(scanner eventScanner) (DomainEvent, error) {
 	return event, nil
 }
 
-func loadReplayResultCandidates(ctx context.Context, tx *sql.Tx, tenantID string) (map[string][]replayResultCandidate, error) {
+func loadReplayResultCandidates(ctx context.Context, tx *sql.Tx, tenantID string, eventIDs []string) (map[string][]replayResultCandidate, error) {
+	if len(eventIDs) == 0 {
+		return map[string][]replayResultCandidate{}, nil
+	}
 	rows, err := tx.QueryContext(ctx, `
-SELECT result_jsonb, result_sha256, event_ids_jsonb
-FROM command_results
-WHERE tenant_id = $1::uuid
-ORDER BY principal_id, idempotency_key`, tenantID)
+SELECT stored.result_jsonb, stored.result_sha256, binding.event_id
+FROM command_results AS stored
+CROSS JOIN LATERAL jsonb_array_elements_text(stored.event_ids_jsonb) AS binding(event_id)
+WHERE stored.tenant_id = $1::uuid AND binding.event_id = ANY($2::text[])
+ORDER BY stored.principal_id, stored.idempotency_key, binding.event_id
+LIMIT $3`, tenantID, eventIDs, len(eventIDs)+1)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	result := make(map[string][]replayResultCandidate)
 	for rows.Next() {
-		var rawResult, rawEventIDs []byte
-		var resultSHA256 string
-		if err := rows.Scan(&rawResult, &resultSHA256, &rawEventIDs); err != nil {
+		var rawResult []byte
+		var resultSHA256, eventID string
+		if err := rows.Scan(&rawResult, &resultSHA256, &eventID); err != nil {
 			return nil, err
 		}
-		var eventIDs []string
-		if json.Unmarshal(rawEventIDs, &eventIDs) != nil || len(eventIDs) == 0 {
+		if eventID == "" {
 			return nil, ErrReplayStateUnavailable
 		}
-		candidate := replayResultCandidate{EventIDs: append([]string(nil), eventIDs...), Result: cloneJSON(rawResult), ResultSHA256: resultSHA256}
-		for _, eventID := range eventIDs {
-			if eventID == "" {
-				return nil, ErrReplayStateUnavailable
-			}
-			result[eventID] = append(result[eventID], candidate)
-		}
+		candidate := replayResultCandidate{EventIDs: []string{eventID}, Result: cloneJSON(rawResult), ResultSHA256: resultSHA256}
+		result[eventID] = append(result[eventID], candidate)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

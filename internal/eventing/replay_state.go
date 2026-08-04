@@ -122,7 +122,7 @@ func rawReplayStateMatches(event DomainEvent, state json.RawMessage) bool {
 	case "spec_artifact":
 		return false
 	default:
-		return identity.ID == event.AggregateID && identity.Version == event.AggregateVersion
+		return false
 	}
 }
 
