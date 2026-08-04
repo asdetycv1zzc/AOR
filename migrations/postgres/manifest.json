@@ -22,6 +22,13 @@
       "file": "000003_runtime_app_role.up.sql",
       "sha256": "sha256:e4dce4540fa4e6e4591eb1dcb32092174ae5917a65cab38b98e2a47d5d3730e2",
       "destructive": false
+    },
+    {
+      "version": 4,
+      "mode": "EXPAND",
+      "file": "000004_model_authorizer_reads.up.sql",
+      "sha256": "sha256:482170c5f87dac86c6515bdb99f2772e6c84fb4cdcc4c367bb8499f65439f853",
+      "destructive": false
     }
   ]
 }

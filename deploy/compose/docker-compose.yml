@@ -61,12 +61,14 @@ services:
         test -s /run/secrets/postgres_app_password
         export AOR_APP_PASSWORD="$$(cat /run/secrets/postgres_app_password)"
         psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000003_runtime_app_role.up.sql
+        psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000004_model_authorizer_reads.up.sql
         unset AOR_APP_PASSWORD
     secrets: [postgres_password, postgres_app_password]
     volumes:
       - ../../migrations/postgres/000001_core.up.sql:/migrations/000001_core.up.sql:ro
       - ../../migrations/postgres/000002_inbox_claims.up.sql:/migrations/000002_inbox_claims.up.sql:ro
       - ../../migrations/postgres/000003_runtime_app_role.up.sql:/migrations/000003_runtime_app_role.up.sql:ro
+      - ../../migrations/postgres/000004_model_authorizer_reads.up.sql:/migrations/000004_model_authorizer_reads.up.sql:ro
     read_only: true
     tmpfs: [/tmp]
     security_opt: [no-new-privileges:true]

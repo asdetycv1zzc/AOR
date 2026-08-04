@@ -54,6 +54,11 @@ func TestCoreMigrationContainsAtomicityAndIsolationConstraints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	modelAuthorizerPath := filepath.Join("..", "..", "migrations", "postgres", "000004_model_authorizer_reads.up.sql")
+	modelAuthorizerContent, err := os.ReadFile(modelAuthorizerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	roleSQL := string(roleContent)
 	for _, value := range []string{
 		"CREATE ROLE aor_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS",
@@ -81,10 +86,10 @@ func TestCoreMigrationContainsAtomicityAndIsolationConstraints(t *testing.T) {
 	for index, migration := range []struct {
 		file    string
 		content []byte
-	}{{file: "000001_core.up.sql", content: content}, {file: "000002_inbox_claims.up.sql", content: claimContent}, {file: "000003_runtime_app_role.up.sql", content: roleContent}} {
+	}{{file: "000001_core.up.sql", content: content}, {file: "000002_inbox_claims.up.sql", content: claimContent}, {file: "000003_runtime_app_role.up.sql", content: roleContent}, {file: "000004_model_authorizer_reads.up.sql", content: modelAuthorizerContent}} {
 		sum := sha256.Sum256(migration.content)
 		digest := "sha256:" + hex.EncodeToString(sum[:])
-		if len(manifest.Migrations) != 3 || manifest.Migrations[index].File != migration.file || manifest.Migrations[index].SHA256 != digest {
+		if len(manifest.Migrations) != 4 || manifest.Migrations[index].File != migration.file || manifest.Migrations[index].SHA256 != digest {
 			t.Fatalf("migration manifest digest does not match %s", digest)
 		}
 	}
