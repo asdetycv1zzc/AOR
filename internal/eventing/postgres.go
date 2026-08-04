@@ -412,6 +412,15 @@ INSERT INTO projects
   (id, tenant_id, name, state, state_version, data_classification, risk_tolerance, goal_agent_count, created_by, created_at, updated_at)
 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, transaction_timestamp(), transaction_timestamp())`,
 			projection.ID, request.TenantID, projection.Name, projection.State, update.NextVersion, projection.DataClassification, projection.RiskTolerance, projection.GoalAgentCount, projection.CreatedBy)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
+INSERT INTO budget_accounts
+  (tenant_id, id, scope_type, scope_id, currency, hard_limit_micros, soft_limit_micros,
+   spent_micros, reserved_micros, period_start, version)
+VALUES ($1::uuid, $2, 'PROJECT', $2, 'USD', 0, 0, 0, 0, transaction_timestamp(), 1)`,
+			request.TenantID, projection.ID)
 		return err
 	}
 	result, err := tx.ExecContext(ctx, `
