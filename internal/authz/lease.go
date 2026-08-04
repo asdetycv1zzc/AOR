@@ -226,6 +226,7 @@ type LeaseRequest struct {
 	TTL               time.Duration
 	HeartbeatInterval time.Duration
 	Grant             PolicyDecision
+	RequestDigest     string
 	Now               time.Time
 }
 
@@ -239,6 +240,7 @@ type LeaseRenewalRequest struct {
 	PolicyVersion string
 	TTL           time.Duration
 	Grant         PolicyDecision
+	RequestDigest string
 	Now           time.Time
 }
 
@@ -354,7 +356,7 @@ func (m *LeaseManager) Issue(ctx context.Context, request LeaseRequest) (Capabil
 	if request.Principal.ID != request.AgentInstanceID {
 		return CapabilityLease{}, aorerrors.New(aorerrors.CodeForbidden, "", map[string]any{"scope": "agent"})
 	}
-	if request.TenantID == "" || request.ProjectID == "" || request.ProjectVersion < 0 || request.TaskID == "" || request.TaskVersion < 0 || !digestPattern.MatchString(request.SpecDigest) || request.Role == "" || request.Action == "" || resourceEmpty(request.Resource) || !digestPattern.MatchString(request.ParameterDigest) || request.PolicyVersion == "" || request.BudgetAccountID == "" || len(request.Capabilities) == 0 || len(request.Capabilities) > 64 || !containsString(request.Capabilities, request.Action) {
+	if request.TenantID == "" || request.ProjectID == "" || request.ProjectVersion < 0 || request.TaskID == "" || request.TaskVersion < 0 || !digestPattern.MatchString(request.SpecDigest) || request.Role == "" || request.Action == "" || resourceEmpty(request.Resource) || !digestPattern.MatchString(request.ParameterDigest) || request.PolicyVersion == "" || request.BudgetAccountID == "" || len(request.Capabilities) == 0 || len(request.Capabilities) > 64 || !containsString(request.Capabilities, request.Action) || request.RequestDigest != "" && !digestPattern.MatchString(request.RequestDigest) {
 		return CapabilityLease{}, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "lease"})
 	}
 	if request.Principal.TenantID != "" && request.Principal.TenantID != request.TenantID {
@@ -405,12 +407,15 @@ func (m *LeaseManager) Issue(ctx context.Context, request LeaseRequest) (Capabil
 			return CapabilityLease{}, idErr
 		}
 	}
-	rawNonce, err := randomID("nonce_")
-	if err != nil {
-		return CapabilityLease{}, err
+	nonce := request.RequestDigest
+	if nonce == "" {
+		rawNonce, err := randomID("nonce_")
+		if err != nil {
+			return CapabilityLease{}, err
+		}
+		nonceSum := sha256.Sum256([]byte(rawNonce))
+		nonce = "sha256:" + hex.EncodeToString(nonceSum[:])
 	}
-	nonceSum := sha256.Sum256([]byte(rawNonce))
-	nonce := "sha256:" + hex.EncodeToString(nonceSum[:])
 	lease := CapabilityLease{ID: id, AgentInstanceID: request.AgentInstanceID, PrincipalID: request.Principal.ID, PrincipalType: request.Principal.Type, TenantID: request.TenantID, ProjectID: request.ProjectID, ProjectVersion: request.ProjectVersion, TaskID: request.TaskID, TaskVersion: request.TaskVersion, SpecDigest: request.SpecDigest, Role: request.Role, Action: request.Action, Resource: cloneResource(request.Resource), ParameterDigest: request.ParameterDigest, Capabilities: append([]string(nil), request.Capabilities...), IssuedAt: now, ExpiresAt: now.Add(ttl), LastHeartbeatAt: now, HeartbeatIntervalSeconds: int64(heartbeat / time.Second), PolicyVersion: request.PolicyVersion, BudgetAccountID: request.BudgetAccountID, Nonce: nonce, FencingToken: 1, State: LeaseActive}
 	if err := lease.ValidateShape(); err != nil {
 		return CapabilityLease{}, err
@@ -434,6 +439,9 @@ func (m *LeaseManager) Renew(ctx context.Context, request LeaseRenewalRequest) (
 	}
 	if err := ctx.Err(); err != nil {
 		return CapabilityLease{}, aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", err, nil)
+	}
+	if request.RequestDigest != "" && !digestPattern.MatchString(request.RequestDigest) {
+		return CapabilityLease{}, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "lease request digest"})
 	}
 	now := m.now()
 	current, found, err := m.store.Get(withLeaseTenant(ctx, request.TenantID), request.LeaseID)
@@ -482,6 +490,9 @@ func (m *LeaseManager) Renew(ctx context.Context, request LeaseRenewalRequest) (
 	updated.ExpiresAt = now.Add(ttl)
 	updated.LastHeartbeatAt = now
 	updated.FencingToken++
+	if request.RequestDigest != "" {
+		updated.Nonce = request.RequestDigest
+	}
 	if updated.ExpiresAt.Before(updated.IssuedAt) {
 		return CapabilityLease{}, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "lease time"})
 	}
@@ -665,6 +676,16 @@ func (m *LeaseManager) Get(ctx context.Context, id string) (CapabilityLease, boo
 		return CapabilityLease{}, false, err
 	}
 	return lease, true, nil
+}
+
+// GetForTenant rehydrates and verifies a lease under the caller's explicit
+// tenant scope. It is intended for idempotency replay checks, not authorization
+// of a side effect; Validate performs the exact commit-time binding checks.
+func (m *LeaseManager) GetForTenant(ctx context.Context, tenantID, id string) (CapabilityLease, bool, error) {
+	if tenantID == "" {
+		return CapabilityLease{}, false, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "lease tenant"})
+	}
+	return m.Get(withLeaseTenant(ctx, tenantID), id)
 }
 
 func (m *LeaseManager) verify(lease CapabilityLease) error {

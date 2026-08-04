@@ -4,10 +4,15 @@ package leaseauthority
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/authz"
+	"github.com/akimisaka/aor/pkg/canonicaljson"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
 )
 
@@ -37,6 +42,7 @@ type Manager interface {
 	Renew(context.Context, authz.LeaseRenewalRequest) (authz.CapabilityLease, error)
 	Heartbeat(context.Context, authz.LeaseHeartbeatRequest) (authz.CapabilityLease, error)
 	Revoke(context.Context, authz.LeaseRevokeRequest) error
+	GetForTenant(context.Context, string, string) (authz.CapabilityLease, bool, error)
 }
 
 type Service struct {
@@ -62,6 +68,7 @@ type GrantRequest struct {
 	ParameterDigest string
 	BudgetAccountID string
 	ApprovalID      string
+	IdempotencyKey  string
 	TTL             time.Duration
 }
 
@@ -98,7 +105,21 @@ func (service *Service) Issue(ctx context.Context, principal authn.Principal, re
 	if err != nil {
 		return authz.CapabilityLease{}, err
 	}
-	return service.manager.Issue(ctx, authz.LeaseRequest{
+	requestDigest, err := grantRequestDigest(principal, input, grant, request)
+	if err != nil {
+		return authz.CapabilityLease{}, aorerrors.Wrap(aorerrors.CodeInvalidArgument, "", err, map[string]any{"scope": "lease idempotency"})
+	}
+	leaseID := deterministicLeaseID(principal, request)
+	if existing, found, lookupErr := service.manager.GetForTenant(ctx, request.TenantID, leaseID); lookupErr != nil {
+		return authz.CapabilityLease{}, lookupErr
+	} else if found {
+		if existing.Nonce == requestDigest {
+			return existing, nil
+		}
+		return authz.CapabilityLease{}, aorerrors.New(aorerrors.CodeIdempotencyConflict, "", map[string]any{"scope": "lease issue"})
+	}
+	lease, issueErr := service.manager.Issue(ctx, authz.LeaseRequest{
+		ID:              leaseID,
 		AgentInstanceID: principal.ID, Principal: principal,
 		TenantID: input.Project.TenantID, ProjectID: input.Project.ID,
 		ProjectVersion: input.Project.StateVersion, TaskID: input.Task.ID,
@@ -106,27 +127,58 @@ func (service *Service) Issue(ctx context.Context, principal authn.Principal, re
 		Role: principal.Role, Action: input.Action, Resource: input.Resource,
 		ParameterDigest: input.ParameterDigest, Capabilities: []string{input.Action},
 		PolicyVersion: grant.PolicyVersion, BudgetAccountID: input.Budget.AccountID,
-		TTL: request.TTL, Grant: grant,
+		TTL: request.TTL, Grant: grant, RequestDigest: requestDigest,
 	})
+	if issueErr == nil {
+		return lease, nil
+	}
+	existing, found, lookupErr := service.manager.GetForTenant(ctx, request.TenantID, leaseID)
+	if lookupErr == nil && found && existing.Nonce == requestDigest {
+		return existing, nil
+	}
+	return authz.CapabilityLease{}, issueErr
 }
 
 func (service *Service) Renew(ctx context.Context, principal authn.Principal, request RenewRequest) (authz.CapabilityLease, error) {
 	if request.LeaseID == "" || request.FencingToken < 1 || request.PolicyVersion == "" {
 		return authz.CapabilityLease{}, invalidRequest()
 	}
-	_, grant, err := service.authorizeGrant(ctx, principal, request.GrantRequest)
+	input, grant, err := service.authorizeGrant(ctx, principal, request.GrantRequest)
 	if err != nil {
 		return authz.CapabilityLease{}, err
 	}
 	if grant.PolicyVersion != request.PolicyVersion {
 		return authz.CapabilityLease{}, aorerrors.New(aorerrors.CodePolicyDenied, "", map[string]any{"scope": "lease policy version"})
 	}
-	return service.manager.Renew(ctx, authz.LeaseRenewalRequest{
+	requestDigest, err := grantRequestDigest(principal, input, grant, request.GrantRequest)
+	if err != nil {
+		return authz.CapabilityLease{}, aorerrors.Wrap(aorerrors.CodeInvalidArgument, "", err, map[string]any{"scope": "lease idempotency"})
+	}
+	current, found, err := service.manager.GetForTenant(ctx, request.TenantID, request.LeaseID)
+	if err != nil {
+		return authz.CapabilityLease{}, err
+	}
+	if !found {
+		return authz.CapabilityLease{}, aorerrors.New(aorerrors.CodeNotFound, "", nil)
+	}
+	if current.FencingToken == request.FencingToken+1 && current.Nonce == requestDigest {
+		return current, nil
+	}
+	renewed, renewErr := service.manager.Renew(ctx, authz.LeaseRenewalRequest{
 		LeaseID: request.LeaseID, TenantID: request.TenantID,
 		FencingToken: request.FencingToken, PrincipalID: principal.ID,
 		PrincipalType: principal.Type, Role: principal.Role,
 		PolicyVersion: request.PolicyVersion, TTL: request.TTL, Grant: grant,
+		RequestDigest: requestDigest,
 	})
+	if renewErr == nil {
+		return renewed, nil
+	}
+	current, found, lookupErr := service.manager.GetForTenant(ctx, request.TenantID, request.LeaseID)
+	if lookupErr == nil && found && current.FencingToken == request.FencingToken+1 && current.Nonce == requestDigest {
+		return current, nil
+	}
+	return authz.CapabilityLease{}, renewErr
 }
 
 func (service *Service) Heartbeat(ctx context.Context, principal authn.Principal, request HeartbeatRequest) (authz.CapabilityLease, error) {
@@ -159,7 +211,7 @@ func (service *Service) authorizeGrant(ctx context.Context, principal authn.Prin
 	if err := service.validateCaller(ctx, principal, request.TenantID, request.ProjectID); err != nil {
 		return authz.PolicyInput{}, authz.PolicyDecision{}, err
 	}
-	if request.TaskID == "" || request.Action == "" || request.ParameterDigest == "" || request.BudgetAccountID == "" || request.TTL < 0 {
+	if request.TaskID == "" || request.Action == "" || request.ParameterDigest == "" || request.BudgetAccountID == "" || request.TTL < 0 || !validIdempotencyKey(request.IdempotencyKey) {
 		return authz.PolicyInput{}, authz.PolicyDecision{}, invalidRequest()
 	}
 	scope, err := service.scopes.Resolve(ctx, ScopeQuery{
@@ -212,4 +264,39 @@ func (service *Service) validateCaller(ctx context.Context, principal authn.Prin
 
 func invalidRequest() error {
 	return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "lease request"})
+}
+
+func deterministicLeaseID(principal authn.Principal, request GrantRequest) string {
+	digest := sha256.Sum256([]byte(request.TenantID + "\x00" + request.ProjectID + "\x00" + request.TaskID + "\x00" + principal.ID + "\x00" + request.IdempotencyKey))
+	return "lease_" + hex.EncodeToString(digest[:])
+}
+
+func grantRequestDigest(principal authn.Principal, input authz.PolicyInput, grant authz.PolicyDecision, request GrantRequest) (string, error) {
+	encoded, err := json.Marshal(struct {
+		Principal       authn.Principal    `json:"principal"`
+		Project         authz.ProjectScope `json:"project"`
+		Task            authz.TaskScope    `json:"task"`
+		Action          string             `json:"action"`
+		Resource        authz.Resource     `json:"resource"`
+		ParameterDigest string             `json:"parameterDigest"`
+		Budget          authz.BudgetScope  `json:"budget"`
+		ApprovalID      string             `json:"approvalId,omitempty"`
+		IdempotencyKey  string             `json:"idempotencyKey"`
+		PolicyVersion   string             `json:"policyVersion"`
+		Constraints     authz.Constraints  `json:"constraints"`
+		TTLNanoseconds  int64              `json:"ttlNanoseconds"`
+	}{
+		Principal: principal, Project: input.Project, Task: input.Task,
+		Action: input.Action, Resource: input.Resource, ParameterDigest: input.ParameterDigest,
+		Budget: input.Budget, ApprovalID: request.ApprovalID, IdempotencyKey: request.IdempotencyKey, PolicyVersion: grant.PolicyVersion,
+		Constraints: grant.Constraints, TTLNanoseconds: int64(request.TTL),
+	})
+	if err != nil {
+		return "", err
+	}
+	return canonicaljson.Digest(encoded)
+}
+
+func validIdempotencyKey(value string) bool {
+	return value != "" && len(value) <= 256 && strings.TrimSpace(value) == value && !strings.ContainsAny(value, "\r\n\x00")
 }

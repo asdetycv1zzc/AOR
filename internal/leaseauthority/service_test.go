@@ -73,6 +73,15 @@ func TestServiceIssuesExactlyBoundLeaseFromAuthoritativeScope(t *testing.T) {
 	if policy.input.Project.StateVersion != 7 || policy.input.Task.StateVersion != 9 || policy.input.Context.Platform != "LINUX" || policy.input.Context.SandboxLevel != "CONTAINER" {
 		t.Fatalf("policy input = %#v", policy.input)
 	}
+	replayed, err := service.Issue(ctx, principal, request)
+	if err != nil || replayed.ID != lease.ID || replayed.Signature != lease.Signature {
+		t.Fatalf("idempotent issue = %#v, err=%v", replayed, err)
+	}
+	changed := request
+	changed.ParameterDigest = "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+	if _, err := service.Issue(ctx, principal, changed); errorCode(err) != aorerrors.CodeIdempotencyConflict {
+		t.Fatalf("changed idempotent issue error = %v", err)
+	}
 }
 
 func TestServiceRenewalAdvancesFencingAndRejectsChangedScope(t *testing.T) {
@@ -91,14 +100,24 @@ func TestServiceRenewalAdvancesFencingAndRejectsChangedScope(t *testing.T) {
 	if err != nil || renewed.FencingToken != lease.FencingToken+1 {
 		t.Fatalf("renewed = %#v, err=%v", renewed, err)
 	}
-	if _, err := service.Renew(ctx, principal, RenewRequest{
+	replayed, err := service.Renew(ctx, principal, RenewRequest{
 		GrantRequest: request, LeaseID: lease.ID,
 		FencingToken: lease.FencingToken, PolicyVersion: lease.PolicyVersion,
+	})
+	if err != nil || replayed.FencingToken != renewed.FencingToken || replayed.Signature != renewed.Signature {
+		t.Fatalf("idempotent renewal = %#v, err=%v", replayed, err)
+	}
+	differentRenewal := request
+	differentRenewal.IdempotencyKey = "renew-different"
+	if _, err := service.Renew(ctx, principal, RenewRequest{
+		GrantRequest: differentRenewal, LeaseID: lease.ID,
+		FencingToken: lease.FencingToken, PolicyVersion: lease.PolicyVersion,
 	}); err == nil {
-		t.Fatal("stale fencing token renewed")
+		t.Fatal("stale fencing token with different idempotency key renewed")
 	}
 
 	scopes.scope.Task.StateVersion++
+	request.IdempotencyKey = "renew-changed-scope"
 	if _, err := service.Renew(ctx, principal, RenewRequest{
 		GrantRequest: request, LeaseID: lease.ID,
 		FencingToken: renewed.FencingToken, PolicyVersion: renewed.PolicyVersion,
@@ -196,7 +215,7 @@ func testGrantRequest() GrantRequest {
 		Action:          authz.ActionToolInvoke,
 		Resource:        authz.Resource{Type: "tool", ID: "tool://repository/repo.read@1.0.0"},
 		ParameterDigest: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-		BudgetAccountID: "budget_1", ApprovalID: "approval_1",
+		BudgetAccountID: "budget_1", ApprovalID: "approval_1", IdempotencyKey: "lease-request-1",
 	}
 }
 
