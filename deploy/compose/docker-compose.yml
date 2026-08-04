@@ -320,6 +320,8 @@ services:
         condition: service_completed_successfully
       nats:
         condition: service_healthy
+      opa:
+        condition: service_healthy
       identity:
         condition: service_healthy
     environment:
@@ -331,6 +333,7 @@ services:
       AOR_DATABASE_USER: aor_app
       AOR_DATABASE_PASSWORD_REF: secret://postgres_app_password
       AOR_NATS_URL: nats://nats:4222
+      AOR_OPA_URL: http://opa:8181
       AOR_OIDC_ISSUER: http://127.0.0.1:5556/dex
       AOR_OIDC_JWKS_URL: http://identity:5556/dex/keys
       AOR_OIDC_AUDIENCE: aor-control-plane
