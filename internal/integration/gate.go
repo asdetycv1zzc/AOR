@@ -182,7 +182,7 @@ func (s SignedEvidenceSource) Verified(ctx context.Context, task state.ModuleTas
 	if s.Store == nil || s.Signer == nil || !digestPattern(expectedSHA) {
 		return EvidenceRecord{}, ErrNotAudited
 	}
-	bundle, found, err := s.Store.Get(ctx, task.ProjectID, task.ID, task.AttemptSeriesID, task.Attempt)
+	bundle, found, err := s.Store.Get(ctx, task.TenantID, task.ProjectID, task.ID, task.AttemptSeriesID, task.Attempt)
 	if err != nil || !found || bundle.Validate() != nil || bundle.ManifestSHA256 != expectedSHA || bundle.Signature == nil {
 		return EvidenceRecord{}, ErrNotAudited
 	}

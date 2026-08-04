@@ -103,8 +103,8 @@ type Signer interface {
 }
 
 type EvidenceStore interface {
-	Put(context.Context, contracts.EvidenceBundle) error
-	Get(context.Context, string, string, string, int) (contracts.EvidenceBundle, bool, error)
+	Put(context.Context, string, contracts.EvidenceBundle) error
+	Get(context.Context, string, string, string, string, int) (contracts.EvidenceBundle, bool, error)
 }
 
 type MemoryEvidenceStore struct {
@@ -116,8 +116,8 @@ func NewMemoryEvidenceStore() *MemoryEvidenceStore {
 	return &MemoryEvidenceStore{items: make(map[string]contracts.EvidenceBundle)}
 }
 
-func (s *MemoryEvidenceStore) Put(_ context.Context, bundle contracts.EvidenceBundle) error {
-	key := evidenceKey(bundle.ProjectID, bundle.TaskID, bundle.AttemptSeriesID, bundle.Attempt)
+func (s *MemoryEvidenceStore) Put(_ context.Context, tenantID string, bundle contracts.EvidenceBundle) error {
+	key := evidenceKey(tenantID, bundle.ProjectID, bundle.TaskID, bundle.AttemptSeriesID, bundle.Attempt)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if previous, ok := s.items[key]; ok {
@@ -130,15 +130,15 @@ func (s *MemoryEvidenceStore) Put(_ context.Context, bundle contracts.EvidenceBu
 	return nil
 }
 
-func (s *MemoryEvidenceStore) Get(_ context.Context, projectID, taskID, attemptSeriesID string, attempt int) (contracts.EvidenceBundle, bool, error) {
+func (s *MemoryEvidenceStore) Get(_ context.Context, tenantID, projectID, taskID, attemptSeriesID string, attempt int) (contracts.EvidenceBundle, bool, error) {
 	s.mu.RLock()
-	bundle, ok := s.items[evidenceKey(projectID, taskID, attemptSeriesID, attempt)]
+	bundle, ok := s.items[evidenceKey(tenantID, projectID, taskID, attemptSeriesID, attempt)]
 	s.mu.RUnlock()
 	return cloneBundle(bundle), ok, nil
 }
 
-func evidenceKey(projectID, taskID, attemptSeriesID string, attempt int) string {
-	return projectID + "\x00" + taskID + "\x00" + attemptSeriesID + "\x00" + fmt.Sprint(attempt)
+func evidenceKey(tenantID, projectID, taskID, attemptSeriesID string, attempt int) string {
+	return tenantID + "\x00" + projectID + "\x00" + taskID + "\x00" + attemptSeriesID + "\x00" + fmt.Sprint(attempt)
 }
 
 func cloneBundle(bundle contracts.EvidenceBundle) contracts.EvidenceBundle {

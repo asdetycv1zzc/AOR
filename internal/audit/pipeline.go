@@ -61,26 +61,32 @@ func (p *Pipeline) Run(ctx context.Context, input DeterministicInput) (AuditResu
 	checks := make([]contracts.EvidenceCheck, 0, len(p.checks))
 	findings := []string{}
 	artifactRefs := []string{}
+	deterministicPassed := true
 	for ordinal, check := range p.checks {
 		started := p.clock().UTC()
 		result := check.Run(ctx, cloneDeterministicInput(input))
 		ended := p.clock().UTC()
-		status := string(result.Status)
-		if result.Status == "" {
-			status = string(StatusError)
-		}
-		if result.Status != StatusPass {
-			findings = append(findings, result.Findings...)
+		status := result.Status
+		if status != StatusPass {
+			deterministicPassed = false
+			if status != StatusFail && status != StatusError {
+				status = StatusError
+			}
+			if len(result.Findings) == 0 {
+				findings = append(findings, "check "+check.ID()+" returned "+string(status))
+			} else {
+				findings = append(findings, result.Findings...)
+			}
 		}
 		outputs, err := p.persistCheckOutputs(ctx, input, check.ID(), result)
 		if err != nil {
 			return AuditResult{}, err
 		}
 		artifactRefs = appendUnique(artifactRefs, outputs.refs...)
-		checks = append(checks, contracts.EvidenceCheck{CheckID: check.ID(), Ordinal: ordinal + 1, Type: "DETERMINISTIC", Status: status, Tool: contracts.CheckTool{Name: "aor-audit", Version: p.version, Digest: digestBytes([]byte(p.version))}, StartedAt: started.Format(time.RFC3339), CompletedAt: ended.Format(time.RFC3339), StdoutURI: outputs.stdout, StderrURI: outputs.stderr, ResultURI: outputs.result, ResultSHA256: outputs.resultDigest})
+		checks = append(checks, contracts.EvidenceCheck{CheckID: check.ID(), Ordinal: ordinal + 1, Type: "DETERMINISTIC", Status: string(status), Tool: contracts.CheckTool{Name: "aor-audit", Version: p.version, Digest: digestBytes([]byte(p.version))}, StartedAt: started.Format(time.RFC3339), CompletedAt: ended.Format(time.RFC3339), StdoutURI: outputs.stdout, StderrURI: outputs.stderr, ResultURI: outputs.result, ResultSHA256: outputs.resultDigest})
 	}
 	bundle := contracts.EvidenceBundle{EvidenceBundleVersion: 1, ProjectID: input.Manifest.ProjectID, TaskID: input.Manifest.ModuleTaskID, AttemptSeriesID: input.Manifest.AttemptSeriesID, Attempt: input.Manifest.Attempt, SpecVersion: input.ModuleSpecRef.Version, BaseCommit: input.Manifest.BaseCommit, SubmissionCommit: input.Manifest.HeadCommit, PipelineVersion: p.version, PolicyBundleDigest: input.PolicyDigest, ExecutionPlatform: input.Platform, IsolationLevel: input.Isolation, SandboxAttestation: input.SandboxAttestation, Checks: checks, Findings: append([]string(nil), findings...), Artifacts: artifactRefs, LLMAudit: contracts.LLMAudit{Verdict: "NOT_RUN"}}
-	if len(findings) == 0 {
+	if deterministicPassed {
 		blind := BlindAuditInput{ProjectID: input.Manifest.ProjectID, TaskID: input.Manifest.ModuleTaskID, Attempt: input.Manifest.Attempt, ModuleSpecRef: input.ModuleSpecRef, BaseCommit: input.Manifest.BaseCommit, SubmissionCommit: input.Manifest.HeadCommit, ChangedFiles: append([]string(nil), input.Manifest.ChangedFiles...), DeterministicChecks: append([]contracts.EvidenceCheck(nil), checks...)}
 		if p.auditors == nil {
 			return AuditResult{Bundle: bundle, Deterministic: checks, Verdict: "INCONCLUSIVE"}, ErrAuditorUnavailable
@@ -108,7 +114,7 @@ func (p *Pipeline) Run(ctx context.Context, input DeterministicInput) (AuditResu
 		if err := p.finalize(ctx, &result.Bundle); err != nil {
 			return AuditResult{}, err
 		}
-		if err := p.store.Put(ctx, result.Bundle); err != nil {
+		if err := p.store.Put(ctx, input.TenantID, result.Bundle); err != nil {
 			return AuditResult{}, err
 		}
 		if llm.Verdict != "PASS" {
@@ -120,7 +126,7 @@ func (p *Pipeline) Run(ctx context.Context, input DeterministicInput) (AuditResu
 	if err := p.finalize(ctx, &result.Bundle); err != nil {
 		return AuditResult{}, err
 	}
-	if err := p.store.Put(ctx, result.Bundle); err != nil {
+	if err := p.store.Put(ctx, input.TenantID, result.Bundle); err != nil {
 		return AuditResult{}, err
 	}
 	return result, ErrDeterministicGate
@@ -198,7 +204,7 @@ func (outputCheck) Run(_ context.Context, input DeterministicInput) CheckResult 
 }
 
 func validateInput(input DeterministicInput) error {
-	if input.Manifest.Validate() != nil || input.ModuleSpecRef.Validate() != nil || input.Manifest.ModuleSpecRef != input.ModuleSpecRef || !digestPattern.MatchString(input.PolicyDigest) || !contractsPlatformIsolation(input.Platform, input.Isolation) || input.SandboxAttestation == "" {
+	if strings.TrimSpace(input.TenantID) == "" || input.Manifest.Validate() != nil || input.ModuleSpecRef.Validate() != nil || input.Manifest.ModuleSpecRef != input.ModuleSpecRef || !digestPattern.MatchString(input.PolicyDigest) || !contractsPlatformIsolation(input.Platform, input.Isolation) || input.SandboxAttestation == "" {
 		return ErrInvalidInput
 	}
 	return nil

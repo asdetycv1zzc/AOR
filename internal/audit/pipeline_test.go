@@ -41,7 +41,8 @@ func TestPipelineRunsFixedOrderAndCreatesSignedEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	manifest := testManifest()
-	result, err := pipeline.Run(context.Background(), DeterministicInput{Manifest: manifest, ModuleSpecRef: manifest.ModuleSpecRef, AllowedPaths: []string{"owned/..."}, PolicyDigest: digestBytes([]byte("policy")), Platform: contracts.PlatformLinux, Isolation: contracts.IsolationContainer, SandboxAttestation: "oci:sha256:container"})
+	input := DeterministicInput{TenantID: "tenant-1", Manifest: manifest, ModuleSpecRef: manifest.ModuleSpecRef, AllowedPaths: []string{"owned/..."}, PolicyDigest: digestBytes([]byte("policy")), Platform: contracts.PlatformLinux, Isolation: contracts.IsolationContainer, SandboxAttestation: "oci:sha256:container"}
+	result, err := pipeline.Run(context.Background(), input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +52,7 @@ func TestPipelineRunsFixedOrderAndCreatesSignedEvidence(t *testing.T) {
 	if CheckOrder(pipeline.checks)[0] != "submission-schema" || result.Bundle.Checks[0].Ordinal != 1 {
 		t.Fatalf("fixed order not preserved: %#v", result.Bundle.Checks)
 	}
-	stored, found, err := store.Get(context.Background(), manifest.ProjectID, manifest.ModuleTaskID, manifest.AttemptSeriesID, manifest.Attempt)
+	stored, found, err := store.Get(context.Background(), input.TenantID, manifest.ProjectID, manifest.ModuleTaskID, manifest.AttemptSeriesID, manifest.Attempt)
 	if err != nil || !found || stored.ManifestSHA256 != result.Bundle.ManifestSHA256 {
 		t.Fatalf("evidence storage failed: %v %#v", err, stored)
 	}
@@ -63,10 +64,29 @@ func TestPipelineFailsBeforeAuditorOnUnownedPath(t *testing.T) {
 	pipeline, _ := NewPipeline(nil, factory, signer, NewMemoryEvidenceStore(), "pipeline-1", nil)
 	manifest := testManifest()
 	manifest.ChangedFiles = []string{"secret.txt"}
-	result, err := pipeline.Run(context.Background(), DeterministicInput{Manifest: manifest, ModuleSpecRef: manifest.ModuleSpecRef, AllowedPaths: []string{"owned/..."}, PolicyDigest: digestBytes([]byte("policy")), Platform: contracts.PlatformLinux, Isolation: contracts.IsolationContainer, SandboxAttestation: "oci:sha256:container"})
+	result, err := pipeline.Run(context.Background(), DeterministicInput{TenantID: "tenant-1", Manifest: manifest, ModuleSpecRef: manifest.ModuleSpecRef, AllowedPaths: []string{"owned/..."}, PolicyDigest: digestBytes([]byte("policy")), Platform: contracts.PlatformLinux, Isolation: contracts.IsolationContainer, SandboxAttestation: "oci:sha256:container"})
 	if !errors.Is(err, ErrDeterministicGate) || result.Verdict != "FAIL" || factory.calls != 0 {
 		t.Fatalf("deterministic gate bypassed: %v %#v calls=%d", err, result, factory.calls)
 	}
+}
+
+func TestPipelineFailsClosedWhenCheckOmitsFindings(t *testing.T) {
+	factory := &testAuditorFactory{}
+	signer, _ := NewHMACSigner([]byte("0123456789abcdef0123456789abcdef"))
+	pipeline, _ := NewPipeline([]Check{emptyFindingFailureCheck{}}, factory, signer, NewMemoryEvidenceStore(), "pipeline-1", nil)
+	manifest := testManifest()
+	result, err := pipeline.Run(context.Background(), DeterministicInput{TenantID: "tenant-1", Manifest: manifest, ModuleSpecRef: manifest.ModuleSpecRef, AllowedPaths: []string{"owned/..."}, PolicyDigest: digestBytes([]byte("policy")), Platform: contracts.PlatformLinux, Isolation: contracts.IsolationContainer, SandboxAttestation: "oci:sha256:container"})
+	if !errors.Is(err, ErrDeterministicGate) || result.Verdict != "FAIL" || factory.calls != 0 || len(result.Bundle.Findings) != 1 || result.Bundle.Checks[0].Status != "FAIL" {
+		t.Fatalf("empty finding bypassed deterministic gate: %v %#v calls=%d", err, result, factory.calls)
+	}
+}
+
+type emptyFindingFailureCheck struct{}
+
+func (emptyFindingFailureCheck) ID() string { return "empty-finding-failure" }
+
+func (emptyFindingFailureCheck) Run(context.Context, DeterministicInput) CheckResult {
+	return CheckResult{Status: StatusFail}
 }
 
 func TestBlindInputRejectsExecutorContent(t *testing.T) {
