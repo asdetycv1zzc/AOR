@@ -15,11 +15,14 @@ Core resources:
 - `POST /message:send`
 - `POST /message:stream` (requires `capabilities.streaming`)
 - `GET /tasks/{id}`
+- `GET /tasks` (filters and pagination: `contextId`, `status`, `pageSize`,
+  `pageToken`, `historyLength`, `statusTimestampAfter`, `includeArtifacts`)
 - `POST /tasks/{id}:cancel`
 - `POST /tasks/{id}:subscribe` (requires `capabilities.streaming`)
 - `POST|GET /tasks/{id}/pushNotificationConfigs` and
   `GET|DELETE /tasks/{id}/pushNotificationConfigs/{configId}` (requires
   `capabilities.pushNotifications`)
+- `GET /extendedAgentCard` (requires `capabilities.extendedAgentCard`)
 
 Streaming responses are Server-Sent Events. Each `data` line contains exactly
 one `StreamResponse` member (`task`, `message`, `statusUpdate`, or

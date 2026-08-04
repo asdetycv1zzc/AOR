@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -63,6 +64,9 @@ func TestHTTPJSONServerPublishesCardAndImplementsLifecycle(t *testing.T) {
 	}
 	if _, err := client.CancelTask(context.Background(), task.ID); protocolReason(err) != "TASK_NOT_CANCELABLE" {
 		t.Fatalf("cancel terminal err = %v", err)
+	}
+	if _, err := client.GetExtendedAgentCard(context.Background()); !errors.Is(err, ErrExtendedAgentCardNotConfigured) {
+		t.Fatalf("extended card capability err = %v", err)
 	}
 }
 
@@ -219,6 +223,49 @@ func TestHTTPJSONServerRestoresTaskSnapshotsFromStore(t *testing.T) {
 	restored, err := client.GetTask(context.Background(), task.ID, nil)
 	if err != nil || restored.ID != task.ID || restored.Status.State != TaskStateCompleted {
 		t.Fatalf("restored = %#v, err = %v", restored, err)
+	}
+}
+
+func TestHTTPJSONListsTasksWithPaginationFiltersAndProjection(t *testing.T) {
+	server, err := NewServer(ServerConfig{Card: serverCard(false, false), Processor: TaskProcessorFunc(func(_ context.Context, request TaskRequest) (TaskResult, error) {
+		return TaskResult{State: TaskStateCompleted, Artifacts: []Artifact{{ArtifactID: "artifact_" + request.Task.ID, Parts: []Part{{Text: "result"}}}}}, nil
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewTLSServer(server.Handler())
+	defer httpServer.Close()
+	client := protocolClient(t, httpServer, "", false, false)
+	for index := 0; index < 3; index++ {
+		_, err := client.SendMessage(context.Background(), SendMessageRequest{Message: Message{
+			MessageID: "message_list_" + strconv.Itoa(index), Role: "ROLE_USER", Parts: []Part{{Text: "list"}}, Extensions: []string{aop.ExtensionURI},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	zero := 0
+	first, err := client.ListTasks(context.Background(), ListTasksOptions{PageSize: 2, HistoryLength: &zero})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Tasks) != 2 || first.PageSize != 2 || first.TotalSize != 3 || first.NextPageToken == "" {
+		t.Fatalf("first page = %#v", first)
+	}
+	for _, task := range first.Tasks {
+		if task.History != nil || task.Artifacts != nil {
+			t.Fatalf("default projection leaked fields: %#v", task)
+		}
+	}
+	second, err := client.ListTasks(context.Background(), ListTasksOptions{PageSize: 2, PageToken: first.NextPageToken, IncludeArtifacts: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Tasks) != 1 || second.NextPageToken != "" || second.Tasks[0].Artifacts == nil {
+		t.Fatalf("second page = %#v", second)
+	}
+	if _, err := client.ListTasks(context.Background(), ListTasksOptions{PageSize: 101}); !errors.Is(err, ErrInvalidMessage) {
+		t.Fatalf("client page-size validation = %v", err)
 	}
 }
 

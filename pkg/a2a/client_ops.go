@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type ProtocolError struct {
@@ -48,6 +49,8 @@ func (err *ProtocolError) Is(target error) bool {
 		return target == ErrExtensionSupportRequired
 	case "VERSION_NOT_SUPPORTED":
 		return target == ErrVersionNotSupported
+	case "EXTENDED_AGENT_CARD_NOT_CONFIGURED":
+		return target == ErrExtendedAgentCardNotConfigured
 	case "IDEMPOTENCY_CONFLICT":
 		return target == ErrIdempotencyConflict
 	default:
@@ -61,9 +64,10 @@ type taskEnvelope struct {
 }
 
 type EventStream struct {
-	response *http.Response
-	scanner  *bufio.Scanner
-	closed   bool
+	response     *http.Response
+	scanner      *bufio.Scanner
+	pendingLines []string
+	closed       bool
 }
 
 func (stream *EventStream) Next(ctx context.Context) (StreamResponse, error) {
@@ -75,39 +79,71 @@ func (stream *EventStream) Next(ctx context.Context) (StreamResponse, error) {
 	}
 	for stream.scanner.Scan() {
 		line := stream.scanner.Text()
-		if line == "" || strings.HasPrefix(line, ":") {
+		if strings.HasPrefix(line, ":") {
 			continue
 		}
-		if !strings.HasPrefix(line, "data:") {
+		if strings.HasPrefix(line, "data:") {
+			stream.pendingLines = append(stream.pendingLines, strings.TrimPrefix(line, "data:"))
 			continue
 		}
-		select {
-		case <-ctx.Done():
-			return StreamResponse{}, ctx.Err()
-		default:
+		if line != "" || len(stream.pendingLines) == 0 {
+			continue
 		}
-		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if payload == "" || payload == "[DONE]" {
-			if payload == "[DONE]" {
+		payload := strings.TrimSpace(strings.Join(stream.pendingLines, "\n"))
+		stream.pendingLines = nil
+		event, err := decodeStreamEvent(ctx, payload)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
 				_ = stream.Close()
-				return StreamResponse{}, io.EOF
 			}
+			return StreamResponse{}, err
+		}
+		if event == nil {
 			continue
 		}
-		var event StreamResponse
-		if err := json.Unmarshal([]byte(payload), &event); err != nil {
-			return StreamResponse{}, err
-		}
-		if err := event.Validate(); err != nil {
-			return StreamResponse{}, err
-		}
-		return event, nil
+		return *event, nil
 	}
 	if err := stream.scanner.Err(); err != nil {
 		return StreamResponse{}, err
 	}
+	if len(stream.pendingLines) > 0 {
+		payload := strings.TrimSpace(strings.Join(stream.pendingLines, "\n"))
+		stream.pendingLines = nil
+		event, err := decodeStreamEvent(ctx, payload)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				_ = stream.Close()
+			}
+			return StreamResponse{}, err
+		}
+		if event != nil {
+			return *event, nil
+		}
+	}
 	_ = stream.Close()
 	return StreamResponse{}, io.EOF
+}
+
+func decodeStreamEvent(ctx context.Context, payload string) (*StreamResponse, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	if payload == "" {
+		return nil, nil
+	}
+	if payload == "[DONE]" {
+		return nil, io.EOF
+	}
+	var event StreamResponse
+	if err := json.Unmarshal([]byte(payload), &event); err != nil {
+		return nil, err
+	}
+	if err := event.Validate(); err != nil {
+		return nil, err
+	}
+	return &event, nil
 }
 
 func (stream *EventStream) Close() error {
@@ -136,6 +172,9 @@ func (client *Client) GetTask(ctx context.Context, id string, historyLength *int
 	if err := client.doJSON(ctx, http.MethodGet, "/tasks/"+url.PathEscape(id), query, nil, &task, "application/a2a+json"); err != nil {
 		return Task{}, err
 	}
+	if err := task.Validate(); err != nil {
+		return Task{}, err
+	}
 	return task, nil
 }
 
@@ -151,10 +190,83 @@ func (client *Client) CancelTask(ctx context.Context, id string) (Task, error) {
 	if err := client.doJSON(ctx, http.MethodPost, "/tasks/"+url.PathEscape(id)+":cancel", nil, input, &task, "application/a2a+json"); err != nil {
 		return Task{}, err
 	}
+	if err := task.Validate(); err != nil {
+		return Task{}, err
+	}
 	return task, nil
 }
 
+func (client *Client) ListTasks(ctx context.Context, options ListTasksOptions) (ListTasksResponse, error) {
+	if client == nil || client.endpoint == nil {
+		return ListTasksResponse{}, ErrInvalidMessage
+	}
+	if client.tenant != "" && options.Tenant != "" && options.Tenant != client.tenant {
+		return ListTasksResponse{}, ErrInvalidMessage
+	}
+	if options.PageSize < 0 || options.PageSize > 100 {
+		return ListTasksResponse{}, ErrInvalidMessage
+	}
+	if err := validateHistoryLength(options.HistoryLength); err != nil {
+		return ListTasksResponse{}, err
+	}
+	query := url.Values{}
+	tenant := options.Tenant
+	if tenant == "" {
+		tenant = client.tenant
+	}
+	if tenant != "" {
+		query.Set("tenant", tenant)
+	}
+	if options.ContextID != "" {
+		query.Set("contextId", options.ContextID)
+	}
+	if options.Status != "" {
+		query.Set("status", string(options.Status))
+	}
+	if options.PageSize != 0 {
+		query.Set("pageSize", strconv.Itoa(options.PageSize))
+	}
+	if options.PageToken != "" {
+		query.Set("pageToken", options.PageToken)
+	}
+	if options.HistoryLength != nil {
+		query.Set("historyLength", strconv.Itoa(*options.HistoryLength))
+	}
+	if options.IncludeArtifacts {
+		query.Set("includeArtifacts", "true")
+	}
+	if options.StatusTimestampAfter != nil {
+		query.Set("statusTimestampAfter", options.StatusTimestampAfter.UTC().Format(time.RFC3339Nano))
+	}
+	var result ListTasksResponse
+	if err := client.doJSON(ctx, http.MethodGet, "/tasks", query, nil, &result, "application/a2a+json"); err != nil {
+		return ListTasksResponse{}, err
+	}
+	for _, task := range result.Tasks {
+		if err := task.Validate(); err != nil {
+			return ListTasksResponse{}, err
+		}
+	}
+	return result, nil
+}
+
 func (client *Client) SendStreamingMessage(ctx context.Context, request SendMessageRequest) (*EventStream, error) {
+	if client == nil || client.endpoint == nil || client.httpClient == nil || !validMessage(request.Message) {
+		return nil, ErrInvalidMessage
+	}
+	if client.tenant != "" {
+		if request.Tenant != "" && request.Tenant != client.tenant {
+			return nil, ErrInvalidMessage
+		}
+		request.Tenant = client.tenant
+		if request.Configuration != nil && request.Configuration.TaskPushNotificationConfig != nil {
+			config := request.Configuration.TaskPushNotificationConfig
+			if config.Tenant != "" && config.Tenant != client.tenant {
+				return nil, ErrInvalidMessage
+			}
+			config.Tenant = client.tenant
+		}
+	}
 	return client.openStream(ctx, "/message:stream", request)
 }
 
@@ -214,7 +326,20 @@ func (client *Client) CreatePushNotificationConfig(ctx context.Context, taskID s
 		return TaskPushNotificationConfig{}, ErrInvalidMessage
 	}
 	var result TaskPushNotificationConfig
-	if err := client.doJSON(ctx, http.MethodPost, "/tasks/"+url.PathEscape(taskID)+"/pushNotificationConfigs", nil, PushNotificationConfigRequest{Tenant: client.tenant, Config: config}, &result, "application/a2a+json"); err != nil {
+	query := url.Values{}
+	if client.tenant != "" {
+		query.Set("tenant", client.tenant)
+	}
+	if client.tenant != "" {
+		if config.Tenant != "" && config.Tenant != client.tenant {
+			return TaskPushNotificationConfig{}, ErrInvalidMessage
+		}
+		config.Tenant = client.tenant
+	}
+	if err := client.doJSON(ctx, http.MethodPost, "/tasks/"+url.PathEscape(taskID)+"/pushNotificationConfigs", query, config, &result, "application/a2a+json"); err != nil {
+		return TaskPushNotificationConfig{}, err
+	}
+	if err := result.Validate(); err != nil {
 		return TaskPushNotificationConfig{}, err
 	}
 	return result, nil
@@ -233,20 +358,48 @@ func (client *Client) GetPushNotificationConfig(ctx context.Context, taskID, con
 	if err := client.doJSON(ctx, http.MethodGet, path, query, nil, &result, "application/a2a+json"); err != nil {
 		return TaskPushNotificationConfig{}, err
 	}
+	if err := result.Validate(); err != nil {
+		return TaskPushNotificationConfig{}, err
+	}
 	return result, nil
 }
 
 func (client *Client) ListPushNotificationConfigs(ctx context.Context, taskID string) (PushNotificationConfigList, error) {
+	return client.ListPushNotificationConfigsWithOptions(ctx, taskID, PushNotificationListOptions{})
+}
+
+func (client *Client) ListPushNotificationConfigsWithOptions(ctx context.Context, taskID string, options PushNotificationListOptions) (PushNotificationConfigList, error) {
 	if client == nil || client.endpoint == nil || taskID == "" || strings.Contains(taskID, "/") {
+		return PushNotificationConfigList{}, ErrInvalidMessage
+	}
+	if options.PageSize < 0 || options.PageSize > 100 {
+		return PushNotificationConfigList{}, ErrInvalidMessage
+	}
+	if client.tenant != "" && options.Tenant != "" && options.Tenant != client.tenant {
 		return PushNotificationConfigList{}, ErrInvalidMessage
 	}
 	var result PushNotificationConfigList
 	query := url.Values{}
-	if client.tenant != "" {
-		query.Set("tenant", client.tenant)
+	tenant := options.Tenant
+	if tenant == "" {
+		tenant = client.tenant
+	}
+	if tenant != "" {
+		query.Set("tenant", tenant)
+	}
+	if options.PageSize != 0 {
+		query.Set("pageSize", strconv.Itoa(options.PageSize))
+	}
+	if options.PageToken != "" {
+		query.Set("pageToken", options.PageToken)
 	}
 	if err := client.doJSON(ctx, http.MethodGet, "/tasks/"+url.PathEscape(taskID)+"/pushNotificationConfigs", query, nil, &result, "application/a2a+json"); err != nil {
 		return PushNotificationConfigList{}, err
+	}
+	for _, config := range result.Configs {
+		if err := config.Validate(); err != nil {
+			return PushNotificationConfigList{}, err
+		}
 	}
 	return result, nil
 }
@@ -260,6 +413,24 @@ func (client *Client) DeletePushNotificationConfig(ctx context.Context, taskID, 
 		query.Set("tenant", client.tenant)
 	}
 	return client.doJSON(ctx, http.MethodDelete, "/tasks/"+url.PathEscape(taskID)+"/pushNotificationConfigs/"+url.PathEscape(configID), query, nil, nil, "")
+}
+
+func (client *Client) GetExtendedAgentCard(ctx context.Context) (AgentCard, error) {
+	if client == nil || client.endpoint == nil {
+		return AgentCard{}, ErrInvalidMessage
+	}
+	var card AgentCard
+	query := url.Values{}
+	if client.tenant != "" {
+		query.Set("tenant", client.tenant)
+	}
+	if err := client.doJSON(ctx, http.MethodGet, "/extendedAgentCard", query, nil, &card, "application/a2a+json"); err != nil {
+		return AgentCard{}, err
+	}
+	if err := ValidateAgentCard(card); err != nil {
+		return AgentCard{}, err
+	}
+	return card, nil
 }
 
 func (client *Client) doJSON(ctx context.Context, method, path string, query url.Values, input, output any, accept string) error {

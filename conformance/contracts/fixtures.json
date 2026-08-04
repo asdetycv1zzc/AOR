@@ -11,6 +11,7 @@
     {"name": "A2A 1.0 HTTP JSON Agent Card", "schema": "api/a2a/a2a-http-json.v1.schema.json", "instance": "conformance/a2a/valid/http-json-agent-card.json", "valid": true},
     {"name": "A2A 1.0 SendMessage", "schema": "api/a2a/a2a-http-json.v1.schema.json", "instance": "conformance/a2a/valid/send-message.json", "valid": true},
     {"name": "A2A 1.0 Task", "schema": "api/a2a/a2a-http-json.v1.schema.json", "instance": "conformance/a2a/valid/task.json", "valid": true},
+    {"name": "A2A 1.0 ListTasks response", "schema": "api/a2a/a2a-http-json.v1.schema.json", "instance": "conformance/a2a/valid/list-tasks-response.json", "valid": true},
     {"name": "A2A 1.0 StreamResponse", "schema": "api/a2a/a2a-http-json.v1.schema.json", "instance": "conformance/a2a/valid/stream-response.json", "valid": true},
     {"name": "A2A StreamResponse union", "schema": "api/a2a/a2a-http-json.v1.schema.json", "instance": "conformance/a2a/invalid/multiple-stream-payloads.json", "valid": false},
     {"name": "CloudEvents envelope", "schema": "api/json-schema/cloud-event.v1.schema.json", "instance": "conformance/cloudevents/valid/project-created.json", "valid": true}

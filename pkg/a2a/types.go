@@ -161,7 +161,26 @@ type TaskQuery struct {
 	Tenant        string
 }
 
+type ListTasksOptions struct {
+	Tenant               string
+	ContextID            string
+	Status               TaskState
+	PageSize             int
+	PageToken            string
+	HistoryLength        *int
+	IncludeArtifacts     bool
+	StatusTimestampAfter *time.Time
+}
+
+type ListTasksResponse struct {
+	Tasks         []Task `json:"tasks"`
+	NextPageToken string `json:"nextPageToken"`
+	PageSize      int    `json:"pageSize"`
+	TotalSize     int    `json:"totalSize"`
+}
+
 type TaskPushNotificationConfig struct {
+	Tenant         string              `json:"tenant,omitempty"`
 	ID             string              `json:"id,omitempty"`
 	TaskID         string              `json:"taskId,omitempty"`
 	URL            string              `json:"url"`
@@ -184,8 +203,14 @@ type TaskOperationRequest struct {
 }
 
 type PushNotificationConfigList struct {
-	Configs       []TaskPushNotificationConfig `json:"configs,omitempty"`
-	NextPageToken string                       `json:"nextPageToken,omitempty"`
+	Configs       []TaskPushNotificationConfig `json:"configs"`
+	NextPageToken string                       `json:"nextPageToken"`
+}
+
+type PushNotificationListOptions struct {
+	Tenant    string
+	PageSize  int
+	PageToken string
 }
 
 type AgentProvider struct {
@@ -205,6 +230,49 @@ type SecurityScheme struct {
 	OAuth2SecurityScheme        map[string]any `json:"oauth2SecurityScheme,omitempty"`
 	OpenIDConnectSecurityScheme map[string]any `json:"openIdConnectSecurityScheme,omitempty"`
 	MTLSSecurityScheme          map[string]any `json:"mtlsSecurityScheme,omitempty"`
+}
+
+type StringList struct {
+	List []string `json:"list"`
+}
+
+type SecurityRequirement struct {
+	Schemes map[string]StringList `json:"schemes"`
+}
+
+func (requirement SecurityRequirement) Validate() error {
+	if len(requirement.Schemes) == 0 {
+		return errors.New("security requirement must name at least one scheme")
+	}
+	for name := range requirement.Schemes {
+		if strings.TrimSpace(name) == "" {
+			return errors.New("security requirement scheme is invalid")
+		}
+	}
+	return nil
+}
+
+func (scheme SecurityScheme) Validate() error {
+	count := 0
+	if scheme.APIKeySecurityScheme != nil {
+		count++
+	}
+	if scheme.HTTPAuthSecurityScheme != nil {
+		count++
+	}
+	if scheme.OAuth2SecurityScheme != nil {
+		count++
+	}
+	if scheme.OpenIDConnectSecurityScheme != nil {
+		count++
+	}
+	if scheme.MTLSSecurityScheme != nil {
+		count++
+	}
+	if count != 1 {
+		return errors.New("security scheme must contain exactly one scheme")
+	}
+	return nil
 }
 
 // ValidateMessage enforces the A2A one-of rules for a Message and its parts.

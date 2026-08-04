@@ -28,16 +28,18 @@ const (
 )
 
 var (
-	ErrTaskNotFound             = errors.New("A2A task not found")
-	ErrTaskNotCancelable        = errors.New("A2A task is not cancelable")
-	ErrTaskTerminal             = errors.New("A2A task is terminal")
-	ErrVersionNotSupported      = errors.New("A2A version not supported")
-	ErrStreamingNotSupported    = errors.New("A2A streaming is not supported")
-	ErrPushNotSupported         = errors.New("A2A push notifications are not supported")
-	ErrExtensionSupportRequired = errors.New("A2A extension support is required")
-	ErrIdempotencyConflict      = errors.New("A2A message id conflicts with an earlier request")
-	ErrInvalidRequest           = errors.New("invalid A2A request")
-	ErrCardInvalid              = errors.New("invalid A2A agent card")
+	ErrTaskNotFound                   = errors.New("A2A task not found")
+	ErrTaskNotCancelable              = errors.New("A2A task is not cancelable")
+	ErrTaskTerminal                   = errors.New("A2A task is terminal")
+	ErrVersionNotSupported            = errors.New("A2A version not supported")
+	ErrStreamingNotSupported          = errors.New("A2A streaming is not supported")
+	ErrPushNotSupported               = errors.New("A2A push notifications are not supported")
+	ErrExtensionSupportRequired       = errors.New("A2A extension support is required")
+	ErrExtendedAgentCardNotConfigured = errors.New("A2A extended agent card is not configured")
+	ErrContentTypeNotSupported        = errors.New("A2A content type is not supported")
+	ErrIdempotencyConflict            = errors.New("A2A message id conflicts with an earlier request")
+	ErrInvalidRequest                 = errors.New("invalid A2A request")
+	ErrCardInvalid                    = errors.New("invalid A2A agent card")
 )
 
 // TaskRequest is passed to the application processor for each accepted A2A
@@ -260,6 +262,19 @@ func (server *Server) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 		return
 	}
 	path := server.relativePath(request.URL.Path)
+	if server.tenant != "" {
+		prefix := "/" + url.PathEscape(server.tenant)
+		if strings.HasPrefix(path, prefix+"/") {
+			path = strings.TrimPrefix(path, prefix)
+			query := request.URL.Query()
+			if value := query.Get("tenant"); value != "" && value != server.tenant {
+				server.writeError(writer, http.StatusBadRequest, ErrInvalidRequest, "INVALID_ARGUMENT")
+				return
+			}
+			query.Set("tenant", server.tenant)
+			request.URL.RawQuery = query.Encode()
+		}
+	}
 	if request.Method == http.MethodGet && (path == "/.well-known/agent-card.json" || path == "/agent-card.json") {
 		server.writeJSON(writer, http.StatusOK, server.card)
 		return
@@ -285,7 +300,7 @@ func (server *Server) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 		server.serveSubscribe(writer, request, strings.TrimSuffix(strings.TrimPrefix(path, "/tasks/"), ":subscribe"))
 	case request.Method == http.MethodGet && path == "/extendedAgentCard":
 		if !server.card.Capabilities.ExtendedAgentCard {
-			server.writeError(writer, http.StatusBadRequest, ErrUnsupportedOperation, "UNSUPPORTED_OPERATION")
+			server.writeError(writer, http.StatusBadRequest, ErrExtendedAgentCardNotConfigured, "EXTENDED_AGENT_CARD_NOT_CONFIGURED")
 			return
 		}
 		server.writeJSON(writer, http.StatusOK, server.card)
@@ -314,7 +329,7 @@ func (server *Server) validVersion(request *http.Request) bool {
 	if version == "" {
 		version = request.URL.Query().Get("A2A-Version")
 	}
-	return version == ProtocolVersion
+	return protocolVersionEqual(version, ProtocolVersion)
 }
 
 func (server *Server) supportsExtensions(request *http.Request) error {
@@ -345,7 +360,8 @@ func (server *Server) serveSend(writer http.ResponseWriter, request *http.Reques
 	}
 	var input SendMessageRequest
 	if err := server.decodeJSON(writer, request, &input); err != nil {
-		server.writeError(writer, http.StatusBadRequest, err, "INVALID_ARGUMENT")
+		status, reason := statusForError(err)
+		server.writeError(writer, status, err, reason)
 		return
 	}
 	if err := ValidateMessage(input.Message); err != nil {
@@ -825,6 +841,9 @@ func (server *Server) addPushConfig(record *taskRecord, config TaskPushNotificat
 	if err := config.Validate(); err != nil {
 		return err
 	}
+	if err := server.validateTenant(config.Tenant); err != nil {
+		return err
+	}
 	if !server.allowHTTPPush {
 		parsed, _ := url.Parse(config.URL)
 		if parsed.Scheme != "https" {
@@ -876,16 +895,52 @@ func (server *Server) serveListTasks(writer http.ResponseWriter, request *http.R
 		server.writeError(writer, http.StatusBadRequest, err, "INVALID_ARGUMENT")
 		return
 	}
-	contextID := request.URL.Query().Get("contextId")
-	status := TaskState(request.URL.Query().Get("status"))
-	pageSize := 100
-	if value := request.URL.Query().Get("pageSize"); value != "" {
+	query := request.URL.Query()
+	contextID := query.Get("contextId")
+	status := TaskState(query.Get("status"))
+	if status != "" && (!status.Valid() || status == TaskStateUnspecified) {
+		server.writeError(writer, http.StatusBadRequest, ErrInvalidRequest, "INVALID_ARGUMENT")
+		return
+	}
+	pageSize := 50
+	if value := query.Get("pageSize"); value != "" {
 		parsed, err := strconv.Atoi(value)
-		if err != nil || parsed < 1 || parsed > 1000 {
+		if err != nil || parsed < 1 || parsed > 100 {
 			server.writeError(writer, http.StatusBadRequest, ErrInvalidRequest, "INVALID_ARGUMENT")
 			return
 		}
 		pageSize = parsed
+	}
+	historyLength, err := queryHistoryLength(request)
+	if err != nil {
+		server.writeError(writer, http.StatusBadRequest, err, "INVALID_ARGUMENT")
+		return
+	}
+	includeArtifacts := false
+	if value := query.Get("includeArtifacts"); value != "" {
+		parsed, parseErr := strconv.ParseBool(value)
+		if parseErr != nil {
+			server.writeError(writer, http.StatusBadRequest, ErrInvalidRequest, "INVALID_ARGUMENT")
+			return
+		}
+		includeArtifacts = parsed
+	}
+	var statusTimestampAfter time.Time
+	if value := query.Get("statusTimestampAfter"); value != "" {
+		statusTimestampAfter, err = time.Parse(time.RFC3339, value)
+		if err != nil {
+			server.writeError(writer, http.StatusBadRequest, ErrInvalidRequest, "INVALID_ARGUMENT")
+			return
+		}
+		statusTimestampAfter = statusTimestampAfter.UTC()
+	}
+	offset := 0
+	if value := query.Get("pageToken"); value != "" {
+		offset, err = strconv.Atoi(value)
+		if err != nil || offset < 0 {
+			server.writeError(writer, http.StatusBadRequest, ErrInvalidRequest, "INVALID_ARGUMENT")
+			return
+		}
 	}
 	server.mu.Lock()
 	tasks := make([]Task, 0, len(server.tasks))
@@ -893,14 +948,84 @@ func (server *Server) serveListTasks(writer http.ResponseWriter, request *http.R
 		if contextID != "" && record.task.ContextID != contextID || status != "" && record.task.Status.State != status {
 			continue
 		}
+		if !statusTimestampAfter.IsZero() && record.task.Status.Timestamp.Before(statusTimestampAfter) {
+			continue
+		}
 		tasks = append(tasks, cloneTask(record.task))
 	}
 	server.mu.Unlock()
 	sort.Slice(tasks, func(left, right int) bool { return tasks[left].ID < tasks[right].ID })
-	if len(tasks) > pageSize {
-		tasks = tasks[:pageSize]
+	totalSize := len(tasks)
+	if offset > totalSize {
+		server.writeError(writer, http.StatusBadRequest, ErrInvalidRequest, "INVALID_ARGUMENT")
+		return
 	}
-	server.writeJSON(writer, http.StatusOK, map[string]any{"tasks": tasks})
+	end := offset + pageSize
+	if end > totalSize {
+		end = totalSize
+	}
+	page := tasks[offset:end]
+	for index := range page {
+		page[index] = listTaskSnapshot(page[index], historyLength, includeArtifacts)
+	}
+	nextPageToken := ""
+	if end < totalSize {
+		nextPageToken = strconv.Itoa(end)
+	}
+	response := ListTasksResponse{Tasks: page, NextPageToken: nextPageToken, PageSize: pageSize, TotalSize: totalSize}
+	if !includeArtifacts {
+		server.writeJSON(writer, http.StatusOK, response)
+		return
+	}
+	encoded, err := marshalListTasksResponse(response)
+	if err != nil {
+		server.writeError(writer, http.StatusInternalServerError, err, "INTERNAL")
+		return
+	}
+	server.writeJSON(writer, http.StatusOK, encoded)
+}
+
+func listTaskSnapshot(task Task, historyLength *int, includeArtifacts bool) Task {
+	if historyLength != nil {
+		switch {
+		case *historyLength == 0:
+			task.History = nil
+		case len(task.History) > *historyLength:
+			task.History = append([]Message(nil), task.History[len(task.History)-*historyLength:]...)
+		}
+	}
+	if !includeArtifacts {
+		task.Artifacts = nil
+	}
+	return task
+}
+
+func marshalListTasksResponse(response ListTasksResponse) (any, error) {
+	tasks := make([]json.RawMessage, len(response.Tasks))
+	for index, task := range response.Tasks {
+		encoded, err := json.Marshal(task)
+		if err != nil {
+			return nil, err
+		}
+		var object map[string]any
+		if err := json.Unmarshal(encoded, &object); err != nil {
+			return nil, err
+		}
+		if len(task.Artifacts) == 0 {
+			object["artifacts"] = []Artifact{}
+		}
+		encoded, err = json.Marshal(object)
+		if err != nil {
+			return nil, err
+		}
+		tasks[index] = encoded
+	}
+	return struct {
+		Tasks         []json.RawMessage `json:"tasks"`
+		NextPageToken string            `json:"nextPageToken"`
+		PageSize      int               `json:"pageSize"`
+		TotalSize     int               `json:"totalSize"`
+	}{Tasks: tasks, NextPageToken: response.NextPageToken, PageSize: response.PageSize, TotalSize: response.TotalSize}, nil
 }
 
 func (server *Server) serveCancel(writer http.ResponseWriter, request *http.Request, id string) {
@@ -908,7 +1033,8 @@ func (server *Server) serveCancel(writer http.ResponseWriter, request *http.Requ
 	if request.Body != nil && request.ContentLength != 0 {
 		var input TaskOperationRequest
 		if err := server.decodeJSON(writer, request, &input); err != nil {
-			server.writeError(writer, http.StatusBadRequest, err, "INVALID_ARGUMENT")
+			status, reason := statusForError(err)
+			server.writeError(writer, status, err, reason)
 			return
 		}
 		if input.Tenant != "" {
@@ -965,7 +1091,7 @@ func (server *Server) serveSubscribe(writer http.ResponseWriter, request *http.R
 	terminal := record.task.Status.State.Terminal()
 	server.mu.Unlock()
 	if terminal {
-		server.writeError(writer, http.StatusBadRequest, ErrTaskTerminal, "TASK_NOT_CANCELABLE")
+		server.writeError(writer, http.StatusBadRequest, ErrUnsupportedOperation, "UNSUPPORTED_OPERATION")
 		return
 	}
 	server.streamRecord(writer, request, record, false)
@@ -999,33 +1125,52 @@ func (server *Server) servePushConfig(writer http.ResponseWriter, request *http.
 	}
 	switch {
 	case request.Method == http.MethodPost && rest == "":
-		var input PushNotificationConfigRequest
-		if err := server.decodeJSON(writer, request, &input); err != nil {
+		config, tenant, err := server.decodePushConfig(request)
+		if err != nil {
+			status, reason := statusForError(err)
+			server.writeError(writer, status, err, reason)
+			return
+		}
+		if err := server.validateTenant(tenant); err != nil {
 			server.writeError(writer, http.StatusBadRequest, err, "INVALID_ARGUMENT")
 			return
 		}
-		if err := server.validateTenant(input.Tenant); err != nil {
-			server.writeError(writer, http.StatusBadRequest, err, "INVALID_ARGUMENT")
-			return
-		}
-		if err := server.addPushConfig(record, input.Config); err != nil {
+		if err := server.addPushConfig(record, config); err != nil {
 			status, reason := statusForError(err)
 			server.writeError(writer, status, err, reason)
 			return
 		}
 		server.mu.Lock()
-		config := record.pushes[input.Config.ID]
-		if config.ID == "" {
+		selected := record.pushes[config.ID]
+		if selected.ID == "" {
 			for _, value := range record.pushes {
-				if value.URL == input.Config.URL && value.TaskID == taskID {
-					config = value
+				if value.URL == config.URL && value.TaskID == taskID {
+					selected = value
 					break
 				}
 			}
 		}
 		server.mu.Unlock()
-		server.writeJSON(writer, http.StatusOK, publicPushConfig(config))
+		server.writeJSON(writer, http.StatusOK, publicPushConfig(selected))
 	case request.Method == http.MethodGet && rest == "":
+		pageSize := 50
+		if value := request.URL.Query().Get("pageSize"); value != "" {
+			parsed, parseErr := strconv.Atoi(value)
+			if parseErr != nil || parsed < 1 || parsed > 100 {
+				server.writeError(writer, http.StatusBadRequest, ErrInvalidRequest, "INVALID_ARGUMENT")
+				return
+			}
+			pageSize = parsed
+		}
+		offset := 0
+		if value := request.URL.Query().Get("pageToken"); value != "" {
+			parsed, parseErr := strconv.Atoi(value)
+			if parseErr != nil || parsed < 0 {
+				server.writeError(writer, http.StatusBadRequest, ErrInvalidRequest, "INVALID_ARGUMENT")
+				return
+			}
+			offset = parsed
+		}
 		server.mu.Lock()
 		configs := make([]TaskPushNotificationConfig, 0, len(record.pushes))
 		for _, config := range record.pushes {
@@ -1033,7 +1178,19 @@ func (server *Server) servePushConfig(writer http.ResponseWriter, request *http.
 		}
 		server.mu.Unlock()
 		sort.Slice(configs, func(left, right int) bool { return configs[left].ID < configs[right].ID })
-		server.writeJSON(writer, http.StatusOK, PushNotificationConfigList{Configs: configs})
+		if offset > len(configs) {
+			server.writeError(writer, http.StatusBadRequest, ErrInvalidRequest, "INVALID_ARGUMENT")
+			return
+		}
+		end := offset + pageSize
+		if end > len(configs) {
+			end = len(configs)
+		}
+		nextPageToken := ""
+		if end < len(configs) {
+			nextPageToken = strconv.Itoa(end)
+		}
+		server.writeJSON(writer, http.StatusOK, PushNotificationConfigList{Configs: configs[offset:end], NextPageToken: nextPageToken})
 	case (request.Method == http.MethodGet || request.Method == http.MethodDelete) && rest != "":
 		server.mu.Lock()
 		config, found := record.pushes[rest]
@@ -1057,28 +1214,59 @@ func (server *Server) servePushConfig(writer http.ResponseWriter, request *http.
 }
 
 func (server *Server) decodeJSON(writer http.ResponseWriter, request *http.Request, target any) error {
+	encoded, err := server.readJSON(request)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(encoded, target); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (server *Server) decodePushConfig(request *http.Request) (TaskPushNotificationConfig, string, error) {
+	encoded, err := server.readJSON(request)
+	if err != nil {
+		return TaskPushNotificationConfig{}, "", err
+	}
+	var envelope struct {
+		Tenant string                      `json:"tenant"`
+		Config *TaskPushNotificationConfig `json:"config"`
+	}
+	if err := json.Unmarshal(encoded, &envelope); err != nil {
+		return TaskPushNotificationConfig{}, "", err
+	}
+	if envelope.Config != nil && envelope.Config.URL != "" {
+		if envelope.Tenant == "" {
+			envelope.Tenant = envelope.Config.Tenant
+		}
+		return *envelope.Config, envelope.Tenant, nil
+	}
+	var direct TaskPushNotificationConfig
+	if err := json.Unmarshal(encoded, &direct); err != nil {
+		return TaskPushNotificationConfig{}, "", err
+	}
+	if envelope.Tenant == "" {
+		envelope.Tenant = direct.Tenant
+	}
+	return direct, envelope.Tenant, nil
+}
+
+func (server *Server) readJSON(request *http.Request) ([]byte, error) {
 	contentType := request.Header.Get("Content-Type")
 	if contentType != "" && !strings.HasPrefix(strings.ToLower(contentType), "application/a2a+json") && !strings.HasPrefix(strings.ToLower(contentType), "application/json") {
-		return errors.New("unsupported content type")
+		return nil, ErrContentTypeNotSupported
 	}
 	body := io.LimitReader(request.Body, server.maxBodyBytes+1)
 	encoded, err := io.ReadAll(body)
 	if err != nil || int64(len(encoded)) > server.maxBodyBytes {
-		return errors.New("request body is too large")
+		return nil, errors.New("request body is too large")
 	}
 	canonical, err := canonicaljson.Canonicalize(encoded)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	decoder := json.NewDecoder(bytes.NewReader(canonical))
-	if err := decoder.Decode(target); err != nil {
-		return err
-	}
-	var extra any
-	if decoder.Decode(&extra) != io.EOF {
-		return errors.New("request body must contain one JSON object")
-	}
-	return nil
+	return canonical, nil
 }
 
 func (server *Server) writeJSON(writer http.ResponseWriter, status int, value any) {
@@ -1125,6 +1313,10 @@ func statusForError(err error) (int, string) {
 		return http.StatusConflict, "IDEMPOTENCY_CONFLICT"
 	case errors.Is(err, ErrVersionNotSupported):
 		return http.StatusBadRequest, "VERSION_NOT_SUPPORTED"
+	case errors.Is(err, ErrExtendedAgentCardNotConfigured):
+		return http.StatusBadRequest, "EXTENDED_AGENT_CARD_NOT_CONFIGURED"
+	case errors.Is(err, ErrContentTypeNotSupported):
+		return http.StatusBadRequest, "CONTENT_TYPE_NOT_SUPPORTED"
 	default:
 		return http.StatusBadRequest, "INVALID_ARGUMENT"
 	}
@@ -1158,7 +1350,10 @@ func parseExtensions(value string) []string {
 }
 
 func messageDigest(input SendMessageRequest) (string, error) {
-	encoded, err := json.Marshal(input)
+	// A2A messageId identifies the message itself. Request-level routing and
+	// execution preferences are intentionally excluded so a persisted task can
+	// recognize a replay after a server restart.
+	encoded, err := json.Marshal(input.Message)
 	if err != nil {
 		return "", err
 	}
@@ -1242,20 +1437,51 @@ func ValidateAgentCard(card AgentCard) error {
 	if strings.TrimSpace(card.Name) == "" || strings.TrimSpace(card.Description) == "" || strings.TrimSpace(card.Version) == "" || len(card.SupportedInterfaces) == 0 || len(card.DefaultInputModes) == 0 || len(card.DefaultOutputModes) == 0 || len(card.Skills) == 0 {
 		return ErrCardInvalid
 	}
+	if card.Provider != nil {
+		providerURL, err := url.Parse(card.Provider.URL)
+		if err != nil || providerURL.Scheme == "" || providerURL.Host == "" || providerURL.User != nil || providerURL.RawQuery != "" || providerURL.Fragment != "" || strings.TrimSpace(card.Provider.Organization) == "" {
+			return ErrCardInvalid
+		}
+	}
+	for _, value := range []string{card.DocumentationURL, card.IconURL} {
+		if value == "" {
+			continue
+		}
+		parsed, err := url.Parse(value)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
+			return ErrCardInvalid
+		}
+	}
 	for _, supported := range card.SupportedInterfaces {
 		parsed, err := url.Parse(supported.URL)
-		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || supported.ProtocolBinding != "HTTP+JSON" || supported.ProtocolVersion != ProtocolVersion {
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || supported.ProtocolBinding != "HTTP+JSON" || !protocolVersionEqual(supported.ProtocolVersion, ProtocolVersion) {
 			return ErrCardInvalid
 		}
 	}
 	for _, extension := range card.Capabilities.Extensions {
-		if strings.TrimSpace(extension.URI) == "" {
+		parsed, err := url.Parse(extension.URI)
+		if strings.TrimSpace(extension.URI) == "" || err != nil || parsed.Scheme == "" {
+			return ErrCardInvalid
+		}
+	}
+	for _, requirement := range card.SecurityRequirements {
+		if err := requirement.Validate(); err != nil {
+			return ErrCardInvalid
+		}
+	}
+	for _, scheme := range card.SecuritySchemes {
+		if err := scheme.Validate(); err != nil {
 			return ErrCardInvalid
 		}
 	}
 	for _, skill := range card.Skills {
 		if strings.TrimSpace(skill.ID) == "" || strings.TrimSpace(skill.Name) == "" || strings.TrimSpace(skill.Description) == "" || len(skill.Tags) == 0 {
 			return ErrCardInvalid
+		}
+		for _, requirement := range skill.SecurityRequirements {
+			if err := requirement.Validate(); err != nil {
+				return ErrCardInvalid
+			}
 		}
 	}
 	return nil

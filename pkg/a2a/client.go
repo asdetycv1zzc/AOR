@@ -12,9 +12,8 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
-
-	"github.com/akimisaka/aor/pkg/aop"
 )
 
 const ProtocolVersion = "1.0"
@@ -35,7 +34,7 @@ type AgentCard struct {
 	SupportedInterfaces  []AgentInterface          `json:"supportedInterfaces"`
 	Capabilities         Capabilities              `json:"capabilities"`
 	SecuritySchemes      map[string]SecurityScheme `json:"securitySchemes,omitempty"`
-	SecurityRequirements []map[string][]string     `json:"securityRequirements,omitempty"`
+	SecurityRequirements []SecurityRequirement     `json:"securityRequirements,omitempty"`
 	Security             []map[string][]string     `json:"security,omitempty"`
 	DefaultInputModes    []string                  `json:"defaultInputModes"`
 	DefaultOutputModes   []string                  `json:"defaultOutputModes"`
@@ -77,7 +76,7 @@ type Skill struct {
 	Examples             []string              `json:"examples,omitempty"`
 	InputModes           []string              `json:"inputModes,omitempty"`
 	OutputModes          []string              `json:"outputModes,omitempty"`
-	SecurityRequirements []map[string][]string `json:"securityRequirements,omitempty"`
+	SecurityRequirements []SecurityRequirement `json:"securityRequirements,omitempty"`
 	Security             []map[string][]string `json:"-"`
 }
 
@@ -133,7 +132,7 @@ func NewHTTPJSONClient(card AgentCard, negotiation Negotiation, httpClient *http
 	}
 	tenant := ""
 	for _, candidate := range card.SupportedInterfaces {
-		if candidate.URL == endpoint.String() && candidate.ProtocolBinding == "HTTP+JSON" && candidate.ProtocolVersion == ProtocolVersion {
+		if candidate.URL == endpoint.String() && candidate.ProtocolBinding == "HTTP+JSON" && protocolVersionEqual(candidate.ProtocolVersion, ProtocolVersion) {
 			tenant = candidate.Tenant
 			break
 		}
@@ -146,17 +145,16 @@ func SelectHTTPJSONInterface(card AgentCard, negotiation Negotiation) (*url.URL,
 		return nil, nil, ErrIncompatibleCard
 	}
 	requested := uniqueSorted(negotiation.Extensions)
-	known := map[string]bool{aop.ExtensionURI: true}
 	for _, extension := range card.Capabilities.Extensions {
 		if extension.URI == "" {
 			return nil, nil, ErrIncompatibleCard
 		}
-		if extension.Required && (!known[extension.URI] || !contains(requested, extension.URI)) {
+		if extension.Required && !contains(requested, extension.URI) {
 			return nil, nil, fmt.Errorf("%w: %s", ErrUnsupportedExtension, extension.URI)
 		}
 	}
 	for _, candidate := range card.SupportedInterfaces {
-		if candidate.ProtocolBinding != "HTTP+JSON" || candidate.ProtocolVersion != ProtocolVersion {
+		if candidate.ProtocolBinding != "HTTP+JSON" || !protocolVersionEqual(candidate.ProtocolVersion, ProtocolVersion) {
 			continue
 		}
 		endpoint, err := url.Parse(candidate.URL)
@@ -168,6 +166,28 @@ func SelectHTTPJSONInterface(card AgentCard, negotiation Negotiation) (*url.URL,
 	return nil, nil, ErrUnsupportedOperation
 }
 
+func protocolVersionEqual(left, right string) bool {
+	leftParts, leftOK := protocolMajorMinor(left)
+	rightParts, rightOK := protocolMajorMinor(right)
+	return leftOK && rightOK && leftParts == rightParts
+}
+
+func protocolMajorMinor(value string) (string, bool) {
+	parts := strings.Split(strings.TrimSpace(value), ".")
+	if len(parts) < 2 || len(parts) > 3 {
+		return "", false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return "", false
+		}
+		if _, err := strconv.Atoi(part); err != nil {
+			return "", false
+		}
+	}
+	return parts[0] + "." + parts[1], true
+}
+
 func (c *Client) SendMessage(ctx context.Context, request SendMessageRequest) (SendMessageResponse, error) {
 	if c == nil || c.endpoint == nil || c.httpClient == nil || !validMessage(request.Message) {
 		return SendMessageResponse{}, ErrInvalidMessage
@@ -177,6 +197,13 @@ func (c *Client) SendMessage(ctx context.Context, request SendMessageRequest) (S
 			return SendMessageResponse{}, ErrInvalidMessage
 		}
 		request.Tenant = c.tenant
+		if request.Configuration != nil && request.Configuration.TaskPushNotificationConfig != nil {
+			config := request.Configuration.TaskPushNotificationConfig
+			if config.Tenant != "" && config.Tenant != c.tenant {
+				return SendMessageResponse{}, ErrInvalidMessage
+			}
+			config.Tenant = c.tenant
+		}
 	}
 	payload, err := json.Marshal(request)
 	if err != nil {
@@ -189,6 +216,7 @@ func (c *Client) SendMessage(ctx context.Context, request SendMessageRequest) (S
 		return SendMessageResponse{}, err
 	}
 	httpRequest.Header.Set("Content-Type", "application/a2a+json")
+	httpRequest.Header.Set("Accept", "application/a2a+json")
 	httpRequest.Header.Set("A2A-Version", ProtocolVersion)
 	if len(c.extensions) > 0 {
 		httpRequest.Header.Set("A2A-Extensions", strings.Join(c.extensions, ","))

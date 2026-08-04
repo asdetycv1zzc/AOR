@@ -1,0 +1,15 @@
+{
+  "tasks": [
+    {
+      "id": "task_01HZXH4D1QK7B9C5F2Y8M3N6P0",
+      "contextId": "context_01HZXH4D1QK7B9C5F2Y8M3N6P0",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "timestamp": "2026-08-04T00:00:00Z"
+      }
+    }
+  ],
+  "nextPageToken": "",
+  "pageSize": 50,
+  "totalSize": 1
+}

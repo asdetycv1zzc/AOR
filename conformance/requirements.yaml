@@ -537,6 +537,7 @@ requirements:
       - conformance/a2a/valid/http-json-agent-card.json
       - conformance/a2a/valid/send-message.json
       - conformance/a2a/valid/task.json
+      - conformance/a2a/valid/list-tasks-response.json
       - conformance/a2a/valid/stream-response.json
       - conformance/a2a/invalid/multiple-stream-payloads.json
     evidenceType: go-test+protocol-fixtures+external-interoperability-gate
