@@ -52,6 +52,7 @@ func main() {
 		}
 	case "repository":
 		findings = append(findings, bootstrap.ValidateRepository(root)...)
+		findings = append(findings, bootstrap.ValidateRunbooks(root)...)
 		findings = append(findings, bootstrap.ValidateADRs(root, 25)...)
 		findings = append(findings, bootstrap.ValidateSourceMarkers(root)...)
 		spec, specErr := os.ReadFile(filepath.Join(root, "SPEC.md"))

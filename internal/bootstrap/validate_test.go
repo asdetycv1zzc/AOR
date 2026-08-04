@@ -95,6 +95,28 @@ func TestValidateRepositoryRequiresBaselinePaths(t *testing.T) {
 	}
 }
 
+func TestValidateRunbooksRequiresOperationalSections(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, "runbooks")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range RequiredRunbooks() {
+		if err := os.WriteFile(filepath.Join(directory, name), []byte("Severity: SEV-2\nAlert: test\nSymptoms: test\nContainment: test\nDiagnosis: test\nRecovery: test\nVerification: test\nEvidence: test\nRetrospective: test\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if findings := ValidateRunbooks(root); len(findings) != 0 {
+		t.Fatalf("valid runbooks rejected: %#v", findings)
+	}
+	if err := os.WriteFile(filepath.Join(directory, RequiredRunbooks()[0]), []byte("Severity: SEV-1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if findings := ValidateRunbooks(root); !hasFinding(findings, "RUNBOOK_SECTION_MISSING") {
+		t.Fatalf("incomplete runbook accepted: %#v", findings)
+	}
+}
+
 func TestScanSecretsDetectsCredentialShape(t *testing.T) {
 	root := t.TempDir()
 	value := "gh" + "p_" + strings.Repeat("a", 36)

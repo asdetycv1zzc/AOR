@@ -287,6 +287,49 @@ func ValidateRepository(root string) []Finding {
 	return sortedFindings(findings)
 }
 
+// RequiredRunbooks is the operational minimum defined by SPEC.md section 32.
+// Keeping the inventory in code makes a missing runbook fail the repository gate.
+func RequiredRunbooks() []string {
+	return []string{
+		"control-plane-outage.md",
+		"database-failover.md",
+		"workflow-stuck.md",
+		"event-bus-backlog.md",
+		"model-provider-outage.md",
+		"budget-reconciliation.md",
+		"sandbox-escape-suspected.md",
+		"secret-exposure.md",
+		"artifact-integrity-failure.md",
+		"knowledge-corruption.md",
+		"third-attempt-user-escalation.md",
+		"agent-runaway-cost.md",
+		"key-rotation.md",
+		"disaster-recovery.md",
+		"rollback-release.md",
+	}
+}
+
+// ValidateRunbooks checks that every required runbook has the operational
+// sections needed for a responder to execute it without tribal knowledge.
+func ValidateRunbooks(root string) []Finding {
+	sections := []string{"Severity:", "Alert:", "Symptoms:", "Containment:", "Diagnosis:", "Recovery:", "Verification:", "Evidence:", "Retrospective:"}
+	var findings []Finding
+	for _, name := range RequiredRunbooks() {
+		relative := filepath.ToSlash(filepath.Join("runbooks", name))
+		content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(relative)))
+		if err != nil {
+			findings = append(findings, Finding{Code: "RUNBOOK_MISSING", Path: relative, Message: err.Error()})
+			continue
+		}
+		for _, section := range sections {
+			if !bytes.Contains(content, []byte(section)) {
+				findings = append(findings, Finding{Code: "RUNBOOK_SECTION_MISSING", Path: relative, Message: section})
+			}
+		}
+	}
+	return sortedFindings(findings)
+}
+
 // ValidateADRs checks required ADR numbering and mandatory sections.
 func ValidateADRs(root string, minimum int) []Finding {
 	requiredSections := []string{
