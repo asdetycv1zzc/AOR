@@ -23,6 +23,7 @@ import (
 	"github.com/akimisaka/aor/internal/orchestrator"
 	"github.com/akimisaka/aor/internal/state"
 	"github.com/akimisaka/aor/pkg/canonicaljson"
+	"github.com/akimisaka/aor/pkg/cloudevents"
 	"github.com/akimisaka/aor/pkg/contracts"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
 )
@@ -560,6 +561,43 @@ func TestProjectEventsResumeFromCursorAndRejectInvalidRoutes(t *testing.T) {
 	method := performRequest(handler, http.MethodDelete, "/v1/projects/"+project.ID, nil, map[string]string{"Authorization": "Bearer " + testBearer})
 	if method.Code != http.StatusMethodNotAllowed || method.Header().Get("Allow") == "" {
 		t.Fatalf("method status=%d allow=%q body=%s", method.Code, method.Header().Get("Allow"), method.Body.String())
+	}
+}
+
+func TestProjectEventsEmitCloudEventEnvelopeAndLastEventID(t *testing.T) {
+	handler, store, _ := newTestHandler(t)
+	project := createTestProject(t, handler)
+	paused := performRequest(handler, http.MethodPost, "/v1/projects/"+project.ID+":pause", []byte(`{"expectedVersion":1}`), map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "pause-cloud-event", "If-Match": `"v1"`,
+	})
+	if paused.Code != http.StatusAccepted {
+		t.Fatalf("pause status=%d body=%s", paused.Code, paused.Body.String())
+	}
+	events, err := store.ListEvents(context.Background(), testTenantID)
+	if err != nil || len(events) != 2 {
+		t.Fatalf("events=%d err=%v", len(events), err)
+	}
+	stream := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/events", nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if stream.Code != http.StatusOK || stream.Header().Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("stream status=%d content-type=%q body=%s", stream.Code, stream.Header().Get("Content-Type"), stream.Body.String())
+	}
+	var envelope cloudevents.Event
+	lines := strings.Split(stream.Body.String(), "\n")
+	data := ""
+	for _, line := range lines {
+		if strings.HasPrefix(line, "data: ") {
+			data = strings.TrimPrefix(line, "data: ")
+			break
+		}
+	}
+	if data == "" || json.Unmarshal([]byte(data), &envelope) != nil || envelope.SpecVersion != "1.0" || envelope.Source == "" || envelope.ProjectID != project.ID || envelope.Traceparent == "" {
+		t.Fatalf("invalid CloudEvent envelope: %s", data)
+	}
+	resumed := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/events", nil, map[string]string{
+		"Authorization": "Bearer " + testBearer, "Last-Event-ID": events[0].EventID,
+	})
+	if resumed.Code != http.StatusOK || !strings.Contains(resumed.Body.String(), events[1].EventID) || strings.Contains(resumed.Body.String(), events[0].EventID) {
+		t.Fatalf("Last-Event-ID resume status=%d body=%s", resumed.Code, resumed.Body.String())
 	}
 }
 

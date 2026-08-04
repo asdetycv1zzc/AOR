@@ -2275,52 +2275,192 @@ func (handler *Handler) projectEvents(response http.ResponseWriter, request *htt
 		writeError(response, request, normalizeError(err))
 		return
 	}
-	after := request.URL.Query().Get("after")
-	if len(after) > 512 || strings.ContainsAny(after, "\r\n\x00") {
+	after, err := eventCursor(request)
+	if err != nil {
 		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "event cursor"}))
 		return
 	}
-	projectEvents := make([]eventing.DomainEvent, 0, len(events))
-	for _, event := range events {
-		if event.ProjectID == projectID {
-			projectEvents = append(projectEvents, event)
-		}
-	}
-	start := 0
-	if after != "" {
-		foundCursor := false
-		for index, event := range projectEvents {
-			if event.EventID == after {
-				start = index + 1
-				foundCursor = true
-				break
-			}
-		}
-		if !foundCursor {
-			writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "event cursor"}))
-			return
-		}
+	projectEvents := sortProjectEvents(events, projectID)
+	start, foundCursor := eventStart(projectEvents, after)
+	if after != "" && !foundCursor {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "event cursor"}))
+		return
 	}
 	response.Header().Set("Content-Type", "text/event-stream")
 	response.Header().Set("Cache-Control", "no-store")
 	response.Header().Set("X-Accel-Buffering", "no")
+	response.Header().Set("Connection", "keep-alive")
+	response.Header().Set("X-Content-Type-Options", "nosniff")
+	lastCursor := after
+	frames, preparedCursor, prepareErr := handler.prepareProjectEventBatch(request, principal, project, projectEvents[start:], lastCursor)
+	if prepareErr != nil {
+		writeError(response, request, prepareErr)
+		return
+	}
+	lastCursor = preparedCursor
 	response.WriteHeader(http.StatusOK)
-	encoder := json.NewEncoder(response)
-	for _, event := range projectEvents[start:] {
-		if !safeSSEField(event.EventID) || !safeSSEField(event.Type) {
+	if writeErr := writeProjectEventFrames(response, frames); writeErr != nil {
+		return
+	}
+	if !eventFollowRequested(request) {
+		return
+	}
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-request.Context().Done():
 			return
+		case <-ticker.C:
+			latest, listErr := handler.events.ListEvents(request.Context(), principal.TenantID)
+			if listErr != nil {
+				return
+			}
+			latest = sortProjectEvents(latest, projectID)
+			frames, nextCursor, prepareErr := handler.prepareProjectEventBatch(request, principal, project, eventsAfterCursor(latest, lastCursor), lastCursor)
+			if prepareErr != nil {
+				return
+			}
+			if writeErr := writeProjectEventFrames(response, frames); writeErr != nil {
+				return
+			}
+			lastCursor = nextCursor
 		}
-		_, _ = io.WriteString(response, "id: "+event.EventID+"\n")
-		_, _ = io.WriteString(response, "event: "+event.Type+"\n")
-		_, _ = io.WriteString(response, "data: ")
-		if err := encoder.Encode(event); err != nil {
-			return
+	}
+}
+
+func eventCursor(request *http.Request) (string, error) {
+	if request == nil {
+		return "", errors.New("nil event request")
+	}
+	queryCursor := request.URL.Query().Get("after")
+	headerCursor := request.Header.Get("Last-Event-ID")
+	if queryCursor != "" && headerCursor != "" && queryCursor != headerCursor {
+		return "", errors.New("conflicting event cursors")
+	}
+	cursor := queryCursor
+	if cursor == "" {
+		cursor = headerCursor
+	}
+	if len(cursor) > 512 || strings.ContainsAny(cursor, "\r\n\x00") {
+		return "", errors.New("invalid event cursor")
+	}
+	return cursor, nil
+}
+
+func sortProjectEvents(events []eventing.DomainEvent, projectID string) []eventing.DomainEvent {
+	result := make([]eventing.DomainEvent, 0, len(events))
+	for _, event := range events {
+		if event.ProjectID == projectID {
+			result = append(result, event)
 		}
-		_, _ = io.WriteString(response, "\n")
+	}
+	sort.SliceStable(result, func(left, right int) bool {
+		if result[left].OccurredAt.Equal(result[right].OccurredAt) {
+			if result[left].AggregateVersion != result[right].AggregateVersion {
+				return result[left].AggregateVersion < result[right].AggregateVersion
+			}
+			return result[left].EventID < result[right].EventID
+		}
+		return result[left].OccurredAt.Before(result[right].OccurredAt)
+	})
+	return result
+}
+
+func eventStart(events []eventing.DomainEvent, cursor string) (int, bool) {
+	if cursor == "" {
+		return 0, true
+	}
+	for index, event := range events {
+		if event.EventID == cursor {
+			return index + 1, true
+		}
+	}
+	return 0, false
+}
+
+func eventsAfterCursor(events []eventing.DomainEvent, cursor string) []eventing.DomainEvent {
+	if cursor == "" {
+		return events
+	}
+	start, found := eventStart(events, cursor)
+	if !found {
+		return events
+	}
+	return events[start:]
+}
+
+func eventFollowRequested(request *http.Request) bool {
+	if request == nil {
+		return false
+	}
+	if strings.EqualFold(request.URL.Query().Get("follow"), "true") {
+		return true
+	}
+	return strings.Contains(strings.ToLower(request.Header.Get("Accept")), "text/event-stream")
+}
+
+type projectEventFrame struct {
+	id      string
+	event   string
+	payload []byte
+}
+
+func (handler *Handler) prepareProjectEventBatch(request *http.Request, principal authn.Principal, project state.Project, events []eventing.DomainEvent, cursor string) ([]projectEventFrame, string, error) {
+	frames := make([]projectEventFrame, 0, len(events))
+	lastCursor := cursor
+	for _, event := range events {
+		if lastCursor == event.EventID {
+			continue
+		}
+		resourceType, resourceID := "project-event", event.EventID
+		switch event.AggregateType {
+		case "task":
+			resourceType, resourceID = "task", event.AggregateID
+		case "audit":
+			resourceType, resourceID = "audit", event.AggregateID
+		}
+		if err := authorizeRead(request.Context(), handler.authorizer, principal, project.ID, "project.read", resourceType, resourceID, string(project.State), project.Version, project.DataClassification); err != nil {
+			var typed *aorerrors.Error
+			if errors.As(err, &typed) && typed.Code == aorerrors.CodePolicyDenied {
+				lastCursor = event.EventID
+				continue
+			}
+			return nil, lastCursor, err
+		}
+		external, err := eventing.Externalize(event, eventing.CloudEventOptions{Source: "urn:aor:service:orchestrator"})
+		if err != nil {
+			return nil, lastCursor, aorerrors.Wrap(aorerrors.CodeInternalError, "", err, map[string]any{"scope": "external event"})
+		}
+		if !safeSSEField(external.ID) || !safeSSEField(external.Type) {
+			return nil, lastCursor, errors.New("unsafe SSE field")
+		}
+		payload, err := json.Marshal(external)
+		if err != nil {
+			return nil, lastCursor, err
+		}
+		frames = append(frames, projectEventFrame{id: external.ID, event: external.Type, payload: payload})
+		lastCursor = event.EventID
+	}
+	return frames, lastCursor, nil
+}
+
+func writeProjectEventFrames(response http.ResponseWriter, frames []projectEventFrame) error {
+	for _, frame := range frames {
+		if _, err := io.WriteString(response, "id: "+frame.id+"\n"); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(response, "event: "+frame.event+"\n"); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(response, "data: "+string(frame.payload)+"\n\n"); err != nil {
+			return err
+		}
 		if flusher, ok := response.(http.Flusher); ok {
 			flusher.Flush()
 		}
 	}
+	return nil
 }
 
 func (handler *Handler) ensureTenant(ctx context.Context, tenantID string) error {
