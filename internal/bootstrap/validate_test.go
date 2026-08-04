@@ -75,6 +75,15 @@ func TestValidateRequirementCatalogRejectsUnknownFieldsAndStatuses(t *testing.T)
 	}
 }
 
+func TestValidateProductionRequirementCatalogRejectsPlannedEntries(t *testing.T) {
+	spec := []byte("- **AOR-INV-001**: one\n")
+	catalog := []byte("catalogVersion: 1\nspec:\n  name: test\n  version: 1.0.0\n  baselineDate: 2030-01-01\n  conflictResolution: adr/test.md\nrequirements:\n  - id: AOR-INV-001\n    title: one\n    implementation: []\n    tests: []\n    evidenceType: pending\n    owner: test\n    status: planned\n")
+	findings := ValidateProductionRequirementCatalogAt("", spec, catalog)
+	if !hasFinding(findings, "REQUIREMENT_NOT_IMPLEMENTED") {
+		t.Fatalf("planned requirement accepted for production: %#v", findings)
+	}
+}
+
 func TestValidateRepositoryRequiresBaselinePaths(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("ok\n"), 0o600); err != nil {

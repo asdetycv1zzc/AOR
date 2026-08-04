@@ -115,6 +115,19 @@ func (r *Runner) Run(ctx context.Context, request Request) (ReleaseEvidence, err
 	}
 	evidence := ReleaseEvidence{EvidenceVersion: "1.0", SpecVersion: request.SpecVersion, BuildDigest: build, StartedAt: started.Format(time.RFC3339), Environment: request.Profile, Target: request.Target, Results: []RequirementResult{}, Exceptions: []string{}}
 	hardFailure := false
+	if request.Profile == "production" {
+		spec, specErr := os.ReadFile(filepath.Join(root, "SPEC.md"))
+		catalog, catalogErr := os.ReadFile(filepath.Join(root, "conformance", "requirements.yaml"))
+		if specErr != nil || catalogErr != nil {
+			evidence.Exceptions = append(evidence.Exceptions, "requirement catalog: SPEC.md and conformance/requirements.yaml are required")
+			hardFailure = true
+		} else if findings := bootstrap.ValidateProductionRequirementCatalogAt(root, spec, catalog); len(findings) > 0 {
+			for _, finding := range findings {
+				evidence.Exceptions = append(evidence.Exceptions, "requirement catalog: "+finding.Code+": "+finding.Message)
+			}
+			hardFailure = true
+		}
+	}
 	for _, group := range request.Groups {
 		results, gateErr, environmentGate := runGroup(ctx, root, group)
 		evidence.Results = append(evidence.Results, results...)

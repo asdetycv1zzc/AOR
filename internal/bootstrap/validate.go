@@ -90,6 +90,26 @@ func ValidateRequirementCatalogAt(root string, spec, catalog []byte) []Finding {
 	return validateRequirementCatalog(root, spec, catalog)
 }
 
+// ValidateProductionRequirementCatalogAt applies the production definition of
+// done: every catalogued requirement must have implemented evidence. Planned
+// entries are useful during development, but must never be treated as a
+// production release claim.
+func ValidateProductionRequirementCatalogAt(root string, spec, catalog []byte) []Finding {
+	findings := validateRequirementCatalog(root, spec, catalog)
+	decoder := yaml.NewDecoder(bytes.NewReader(catalog))
+	decoder.KnownFields(true)
+	var parsed requirementCatalog
+	if err := decoder.Decode(&parsed); err != nil {
+		return findings
+	}
+	for _, requirement := range parsed.Requirements {
+		if requirement.Status == "planned" {
+			findings = append(findings, Finding{Code: "REQUIREMENT_NOT_IMPLEMENTED", Path: "conformance/requirements.yaml", Message: requirement.ID})
+		}
+	}
+	return sortedFindings(findings)
+}
+
 func validateRequirementCatalog(root string, spec, catalog []byte) []Finding {
 	var findings []Finding
 	if len(catalog) == 0 || len(catalog) > maxScannedFileBytes {
