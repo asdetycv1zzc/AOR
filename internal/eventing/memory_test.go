@@ -89,6 +89,30 @@ func TestMemoryStoreScopesProjectionAndIdempotencyByTenant(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreListsProjectProjectionsInStableOrder(t *testing.T) {
+	store := NewMemoryStore()
+	for _, input := range []struct {
+		tenantID, projectID, aggregateID string
+	}{
+		{tenantID: "tenant_1", projectID: "prj_1", aggregateID: "task_b"},
+		{tenantID: "tenant_1", projectID: "prj_1", aggregateID: "task_a"},
+		{tenantID: "tenant_1", projectID: "prj_2", aggregateID: "task_hidden_project"},
+		{tenantID: "tenant_2", projectID: "prj_1", aggregateID: "task_hidden_tenant"},
+	} {
+		request := projectionTransaction(input.tenantID, input.projectID, "task", input.aggregateID)
+		if _, err := store.Execute(context.Background(), request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	projections, err := store.ListProjections(context.Background(), "tenant_1", "prj_1", "task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projections) != 2 || projections[0].AggregateID != "task_a" || projections[1].AggregateID != "task_b" {
+		t.Fatalf("projections = %#v", projections)
+	}
+}
+
 func TestMemoryStoreRejectsMismatchedContentDigests(t *testing.T) {
 	store := NewMemoryStore()
 	request := transactionRequest("request-a")
@@ -115,6 +139,16 @@ func transactionRequest(requestID string) TransactionRequest {
 		TenantID: "tenant_1", PrincipalID: "svc_orchestrator", IdempotencyKey: "idem_1", RequestSHA256: digestZero(), Result: result, ResultSHA256: resultDigest,
 		Updates: []ProjectionUpdate{{TenantID: "tenant_1", ProjectID: "prj_1", AggregateType: "project", AggregateID: "prj_1", ExpectedVersion: 0, NextVersion: 1, State: []byte(`{"state":"GOAL_NEGOTIATING","version":1}`)}},
 		Events:  []DomainEvent{{EventID: "evt_1", TenantID: "tenant_1", ProjectID: "prj_1", AggregateType: "project", AggregateID: "prj_1", AggregateVersion: 1, Type: "io.aor.project.created.v1", Payload: payload, PayloadSHA256: payloadDigest, OccurredAt: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC), CorrelationID: requestID}},
+	}
+}
+
+func projectionTransaction(tenantID, projectID, aggregateType, aggregateID string) TransactionRequest {
+	state := []byte(`{"id":"` + aggregateID + `"}`)
+	digest, _ := canonicaljson.Digest(state)
+	return TransactionRequest{
+		TenantID: tenantID, PrincipalID: "svc", IdempotencyKey: aggregateID, RequestSHA256: digestZero(), Result: state, ResultSHA256: digest,
+		Updates: []ProjectionUpdate{{TenantID: tenantID, ProjectID: projectID, AggregateType: aggregateType, AggregateID: aggregateID, ExpectedVersion: 0, NextVersion: 1, State: state}},
+		Events:  []DomainEvent{{EventID: "event-" + tenantID + "-" + projectID + "-" + aggregateID, TenantID: tenantID, ProjectID: projectID, AggregateType: aggregateType, AggregateID: aggregateID, AggregateVersion: 1, Type: "io.aor.test.v1", Payload: state, PayloadSHA256: digest, OccurredAt: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)}},
 	}
 }
 

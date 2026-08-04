@@ -106,3 +106,9 @@ type Store interface {
 type EventLog interface {
 	ListEvents(ctx context.Context, tenantID string) ([]DomainEvent, error)
 }
+
+// ProjectionList exposes tenant- and project-scoped aggregate queries without
+// allowing API callers to construct database predicates directly.
+type ProjectionList interface {
+	ListProjections(ctx context.Context, tenantID, projectID, aggregateType string) ([]Projection, error)
+}

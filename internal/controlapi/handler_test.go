@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,6 +16,8 @@ import (
 	"github.com/akimisaka/aor/internal/authz"
 	"github.com/akimisaka/aor/internal/eventing"
 	"github.com/akimisaka/aor/internal/state"
+	"github.com/akimisaka/aor/pkg/canonicaljson"
+	"github.com/akimisaka/aor/pkg/contracts"
 )
 
 const (
@@ -238,6 +241,39 @@ func TestProjectEventsResumeFromCursorAndRejectInvalidRoutes(t *testing.T) {
 	}
 }
 
+func TestTaskListUsesStableOpaqueCursor(t *testing.T) {
+	handler, store, _ := newTestHandler(t)
+	project := createTestProject(t, handler)
+	for index := 0; index < 101; index++ {
+		seedTaskProjection(t, store, project.ID, fmt.Sprintf("task_%03d", index))
+	}
+	first := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/tasks", nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if first.Code != http.StatusOK {
+		t.Fatalf("first page status=%d body=%s", first.Code, first.Body.String())
+	}
+	var firstPage struct {
+		Items      []state.ModuleTask `json:"items"`
+		NextCursor string             `json:"nextCursor"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &firstPage); err != nil {
+		t.Fatal(err)
+	}
+	if len(firstPage.Items) != 100 || firstPage.Items[0].ID != "task_000" || firstPage.Items[99].ID != "task_099" || len(firstPage.NextCursor) != 64 {
+		t.Fatalf("first page = %#v", firstPage)
+	}
+	second := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/tasks?cursor="+firstPage.NextCursor, nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	var secondPage struct {
+		Items []state.ModuleTask `json:"items"`
+	}
+	if second.Code != http.StatusOK || json.Unmarshal(second.Body.Bytes(), &secondPage) != nil || len(secondPage.Items) != 1 || secondPage.Items[0].ID != "task_100" {
+		t.Fatalf("second page status=%d body=%s", second.Code, second.Body.String())
+	}
+	unknown := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/tasks?cursor=unknown", nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if unknown.Code != http.StatusBadRequest {
+		t.Fatalf("unknown cursor status=%d body=%s", unknown.Code, unknown.Body.String())
+	}
+}
+
 func newTestHandler(t *testing.T) (*Handler, *eventing.MemoryStore, *recordingAuthorizer) {
 	t.Helper()
 	store := eventing.NewMemoryStore()
@@ -269,6 +305,32 @@ func createTestProject(t *testing.T, handler http.Handler) state.Project {
 		t.Fatal(err)
 	}
 	return project
+}
+
+func seedTaskProjection(t *testing.T, store *eventing.MemoryStore, projectID, taskID string) {
+	t.Helper()
+	task := state.ModuleTask{
+		TenantID: testTenantID, ProjectID: projectID, ID: taskID, State: contracts.TaskDefined, Version: 1,
+		ModuleSpecRef:   contracts.SpecRef{Version: 1, SHA256: "sha256:0000000000000000000000000000000000000000000000000000000000000000"},
+		AttemptSeriesID: "series_1", AttemptSeriesIDs: []string{"series_1"},
+	}
+	content, err := json.Marshal(task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := canonicaljson.Digest(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.Execute(context.Background(), eventing.TransactionRequest{
+		TenantID: testTenantID, PrincipalID: "test-seed", IdempotencyKey: taskID, RequestSHA256: digest,
+		Result: content, ResultSHA256: digest,
+		Updates: []eventing.ProjectionUpdate{{TenantID: testTenantID, ProjectID: projectID, AggregateType: "task", AggregateID: taskID, ExpectedVersion: 0, NextVersion: 1, State: content}},
+		Events:  []eventing.DomainEvent{{EventID: "event-" + taskID, TenantID: testTenantID, ProjectID: projectID, AggregateType: "task", AggregateID: taskID, AggregateVersion: 1, Type: "io.aor.module.defined.v1", Payload: content, PayloadSHA256: digest, OccurredAt: controlAPITestTime}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 func performRequest(handler http.Handler, method, path string, body []byte, headers map[string]string) *httptest.ResponseRecorder {

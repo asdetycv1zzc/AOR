@@ -57,6 +57,11 @@ type commandBody struct {
 	ExpectedVersion int64 `json:"expectedVersion"`
 }
 
+type page struct {
+	Items      any    `json:"items"`
+	NextCursor string `json:"nextCursor,omitempty"`
+}
+
 func New(config Config) (*Handler, error) {
 	if config.Store == nil || config.Authenticator == nil || config.Authorizer == nil {
 		return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "control api configuration"})
@@ -147,6 +152,18 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 		}
 		if request.Method == http.MethodGet {
 			handler.projectEvents(response, request, principal, projectID)
+			return
+		}
+		writeMethodNotAllowed(response, request)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "tasks" {
+		if !validProjectID(projectID) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		if request.Method == http.MethodGet {
+			handler.listTasks(response, request, principal, projectID)
 			return
 		}
 		writeMethodNotAllowed(response, request)
@@ -282,6 +299,69 @@ func (handler *Handler) getTask(response http.ResponseWriter, request *http.Requ
 	}
 	response.Header().Set("ETag", entityTag(task.Version))
 	writeJSON(response, http.StatusOK, task)
+}
+
+func (handler *Handler) listTasks(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string) {
+	query := request.URL.Query()
+	if len(query) > 1 || len(query) == 1 && len(query["cursor"]) != 1 {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "task cursor"}))
+		return
+	}
+	cursor := query.Get("cursor")
+	if len(cursor) > 512 || strings.ContainsAny(cursor, "\r\n\x00") {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "task cursor"}))
+		return
+	}
+	project, found, err := handler.orchestrator.Project(request.Context(), principal.TenantID, projectID)
+	if err != nil || !found {
+		if err == nil {
+			err = aorerrors.New(aorerrors.CodeNotFound, "", nil)
+		}
+		writeError(response, request, normalizeError(err))
+		return
+	}
+	if err := authorizeRead(request.Context(), handler.authorizer, principal, projectID, authz.ActionTaskRead, "task-list", projectID, string(project.State), project.Version, project.DataClassification); err != nil {
+		writeError(response, request, err)
+		return
+	}
+	tasks, err := handler.orchestrator.Tasks(request.Context(), principal.TenantID, projectID)
+	if err != nil {
+		writeError(response, request, normalizeError(err))
+		return
+	}
+	start := 0
+	if cursor != "" {
+		foundCursor := false
+		for index, task := range tasks {
+			if taskPageCursor(projectID, task.ID) == cursor {
+				start = index + 1
+				foundCursor = true
+				break
+			}
+		}
+		if !foundCursor {
+			writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "task cursor"}))
+			return
+		}
+	}
+	const pageSize = 100
+	end := start + pageSize
+	if end > len(tasks) {
+		end = len(tasks)
+	}
+	items := make([]state.ModuleTask, 0, end-start)
+	for _, task := range tasks[start:end] {
+		if err := authorizeTaskRead(request.Context(), handler.authorizer, principal, project, task); err != nil {
+			writeError(response, request, err)
+			return
+		}
+		items = append(items, task)
+	}
+	result := page{Items: items}
+	if end < len(tasks) && len(items) != 0 {
+		result.NextCursor = taskPageCursor(projectID, items[len(items)-1].ID)
+	}
+	writeJSON(response, http.StatusOK, result)
 }
 
 func (handler *Handler) projectEvents(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string) {
@@ -547,6 +627,11 @@ func projectIDFor(tenantID, principalID, idempotencyKey string) string {
 	value[8] = value[8]&0x3f | 0x80
 	encoded := hex.EncodeToString(value[:16])
 	return fmt.Sprintf("%s-%s-%s-%s-%s", encoded[:8], encoded[8:12], encoded[12:16], encoded[16:20], encoded[20:])
+}
+
+func taskPageCursor(projectID, taskID string) string {
+	digest := sha256.Sum256([]byte(projectID + "\x00" + taskID))
+	return hex.EncodeToString(digest[:])
 }
 
 func writeProject(response http.ResponseWriter, status int, project state.Project) {

@@ -57,6 +57,24 @@ func (s *MemoryStore) Load(_ context.Context, tenantID, aggregateType, aggregate
 	return cloneProjection(projection), found, nil
 }
 
+func (s *MemoryStore) ListProjections(_ context.Context, tenantID, projectID, aggregateType string) ([]Projection, error) {
+	if tenantID == "" || projectID == "" || aggregateType == "" {
+		return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "projection list"})
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	projections := make([]Projection, 0)
+	for _, projection := range s.projections {
+		if projection.TenantID == tenantID && projection.ProjectID == projectID && projection.AggregateType == aggregateType {
+			projections = append(projections, cloneProjection(projection))
+		}
+	}
+	sort.Slice(projections, func(left, right int) bool {
+		return projections[left].AggregateID < projections[right].AggregateID
+	})
+	return projections, nil
+}
+
 func (s *MemoryStore) Lookup(_ context.Context, tenantID, principalID, idempotencyKey, requestSHA256 string) (TransactionResult, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

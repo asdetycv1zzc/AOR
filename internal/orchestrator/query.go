@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 
+	"github.com/akimisaka/aor/internal/eventing"
 	"github.com/akimisaka/aor/internal/state"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
 )
@@ -41,4 +42,27 @@ func (s *Service) Task(ctx context.Context, tenantID, projectID, taskID string) 
 		return state.ModuleTask{}, false, aorerrors.New(aorerrors.CodeForbidden, "", nil)
 	}
 	return task, true, nil
+}
+
+func (s *Service) Tasks(ctx context.Context, tenantID, projectID string) ([]state.ModuleTask, error) {
+	lister, ok := s.store.(eventing.ProjectionList)
+	if !ok {
+		return nil, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "projection list"})
+	}
+	projections, err := lister.ListProjections(ctx, tenantID, projectID, "task")
+	if err != nil {
+		return nil, err
+	}
+	tasks := make([]state.ModuleTask, 0, len(projections))
+	for _, projection := range projections {
+		task, decodeErr := decodeTask(projection.State)
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		if task.TenantID != tenantID || task.ProjectID != projectID || task.ID != projection.AggregateID {
+			return nil, aorerrors.New(aorerrors.CodeInternalError, "", map[string]any{"scope": "task projection"})
+		}
+		tasks = append(tasks, task)
+	}
+	return tasks, nil
 }
