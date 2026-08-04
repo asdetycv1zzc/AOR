@@ -110,6 +110,36 @@ func TestOPAClientEvaluateLeaseGrantAcceptsProjectModelLease(t *testing.T) {
 	}
 }
 
+func TestOPAClientEvaluateLeaseGrantAcceptsTaskModelLease(t *testing.T) {
+	input := leaseGrantInput()
+	input.Principal.Role = authn.RoleModulePlanner
+	input.Project.State = "PLANNING"
+	input.Task.State = "PLANNING"
+	input.Action = authz.ActionModelGenerate
+	input.Resource = authz.Resource{Type: "model", ID: "model://planning/default"}
+	expected := authz.DecisionBinding{
+		PrincipalID: input.Principal.ID, TenantID: input.Project.TenantID,
+		ProjectID: input.Project.ID, ProjectVersion: input.Project.StateVersion,
+		TaskID: input.Task.ID, TaskVersion: input.Task.StateVersion, SpecDigest: input.Task.SpecDigest,
+		Role: input.Principal.Role, Action: input.Action, Resource: input.Resource,
+		ParameterDigest: input.ParameterDigest, BudgetAccountID: input.Budget.AccountID,
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != leaseGrantPath {
+			t.Fatalf("path = %q", request.URL.Path)
+		}
+		decision := validDecision(authz.DecisionAllow)
+		decision.Binding = &expected
+		_ = json.NewEncoder(writer).Encode(map[string]any{"result": decision})
+	}))
+	defer server.Close()
+
+	decision, err := mustOPAClient(t, server.URL).EvaluateLeaseGrant(context.Background(), input)
+	if err != nil || decision.Decision != authz.DecisionAllow || decision.Binding == nil || !reflect.DeepEqual(*decision.Binding, expected) {
+		t.Fatalf("EvaluateLeaseGrant() = %#v, %v", decision, err)
+	}
+}
+
 func TestOPAClientEvaluateLeaseGrantFailsClosedWithoutBinding(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != leaseGrantPath {

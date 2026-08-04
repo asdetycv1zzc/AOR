@@ -232,7 +232,7 @@ func leaseGrantActionAllowed(input PolicyInput) bool {
 	if input.Task.ID == "" {
 		return input.Action == ActionModelGenerate && !LeaseRoleRequiresTask(input.Principal.Role)
 	}
-	return IsSideEffect(input.Action)
+	return IsSideEffect(input.Action) || input.Action == ActionModelGenerate && taskModelLeaseRole(input.Principal.Role)
 }
 
 func reasonForError(err error) string {
@@ -330,7 +330,9 @@ func (e *Engine) defaultDecision(input PolicyInput, lease CapabilityLease, now t
 		}
 		return denyDecision(e.bundle.Version, "ROLE_DENIED")
 	case ActionModelGenerate:
-		if !LeaseRoleRequiresTask(input.Principal.Role) && input.Task.ID == "" && input.Resource.Type == "model" && input.Resource.ID != "" && !roleIn(input.Project.State, "ABORTED", "ARCHIVED", "FAILED_SYSTEM", "PAUSED") && input.Budget.Available {
+		projectScope := !LeaseRoleRequiresTask(input.Principal.Role) && input.Task.ID == ""
+		taskScope := taskModelLeaseRole(input.Principal.Role) && input.Task.ID != "" && !roleIn(input.Task.State, "CANCELED", "SUPERSEDED", "PASSED", "INTEGRATED")
+		if input.Principal.Type == authn.PrincipalAgentInstance && (projectScope || taskScope) && input.Resource.Type == "model" && input.Resource.ID != "" && !roleIn(input.Project.State, "ABORTED", "ARCHIVED", "FAILED_SYSTEM", "PAUSED") && input.Budget.Available {
 			return allowDecision(e.bundle.Version, "aor.model.invoke", "MODEL_POLICY_ALLOWED", "PROJECT_SCOPE_VALID")
 		}
 		return denyDecision(e.bundle.Version, "MODEL_SCOPE_DENIED")

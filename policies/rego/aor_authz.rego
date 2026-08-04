@@ -48,6 +48,13 @@ project_lease_roles := {
 	"PLAN_SUPERVISOR",
 }
 
+task_model_lease_roles := {
+	"MODULE_PLANNER",
+	"EXECUTOR",
+	"AUDITOR",
+	"MODULE_AUDITOR",
+}
+
 valid_project_scope if {
     input.principal.id != ""
     input.principal.type != ""
@@ -188,6 +195,16 @@ lease_grant_input_valid if {
 }
 
 lease_grant_input_valid if {
+	valid_task_scope
+	input.action == "model.generate"
+	not input.lease
+	input.parameterDigest != ""
+	input.task.specDigest != ""
+	input.budget.accountId != ""
+	input.budget.available
+}
+
+lease_grant_input_valid if {
 	valid_project_scope
 	input.principal.role in project_lease_roles
 	object.get(object.get(input, "task", {}), "id", "") == ""
@@ -261,6 +278,24 @@ model_generate_grant_allowed if {
 	input.project.state != "ARCHIVED"
 	input.project.state != "FAILED_SYSTEM"
 	input.project.state != "PAUSED"
+}
+
+model_generate_grant_allowed if {
+	lease_grant_input_valid
+	input.action == "model.generate"
+	input.resource.type == "model"
+	input.resource.id != ""
+	input.principal.type == "AGENT_INSTANCE"
+	input.principal.role in task_model_lease_roles
+	valid_task_scope
+	input.project.state != "ABORTED"
+	input.project.state != "ARCHIVED"
+	input.project.state != "FAILED_SYSTEM"
+	input.project.state != "PAUSED"
+	input.task.state != "CANCELED"
+	input.task.state != "SUPERSEDED"
+	input.task.state != "PASSED"
+	input.task.state != "INTEGRATED"
 }
 
 lease_grant_allowed if {

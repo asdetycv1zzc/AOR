@@ -34,6 +34,19 @@ project_grant_input := {
 	"budget": {"accountId": "budget_1", "available": true},
 }
 
+task_model_grant_input := {
+	"principal": {"id": "agent_planner", "type": "AGENT_INSTANCE", "role": "MODULE_PLANNER", "tenantId": "tenant_1"},
+	"project": {"id": "project_1", "tenantId": "tenant_1", "state": "PLANNING", "stateVersion": 7},
+	"task": {
+		"id": "task_1", "projectId": "project_1", "tenantId": "tenant_1", "state": "PLANNING", "stateVersion": 9,
+		"specDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+	},
+	"action": "model.generate",
+	"resource": {"type": "model", "id": "model://planning/default"},
+	"parameterDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+	"budget": {"accountId": "budget_1", "available": true},
+}
+
 test_unknown_action_is_denied if {
     result := authz.decision with input as object.union(base_input, {"action": "unknown.action"})
     result.decision == "DENY"
@@ -120,6 +133,18 @@ test_project_agent_lease_grant_has_no_task_binding if {
 	})
 	authorized := authz.decision with input as request
 	authorized.decision == "ALLOW"
+}
+
+test_task_model_lease_grant_is_task_bound if {
+	result := authz.lease_grant with input as task_model_grant_input
+	result.decision == "ALLOW"
+	result.binding.taskId == task_model_grant_input.task.id
+	result.binding.taskVersion == task_model_grant_input.task.stateVersion
+	result.binding.specDigest == task_model_grant_input.task.specDigest
+
+	terminal := object.union(task_model_grant_input, {"task": object.union(task_model_grant_input.task, {"state": "CANCELED"})})
+	terminal_result := authz.lease_grant with input as terminal
+	terminal_result.decision == "DENY"
 }
 
 test_task_agent_lease_grant_still_requires_task if {

@@ -206,6 +206,26 @@ func TestProjectAgentLeaseLifecycleDoesNotRequireTask(t *testing.T) {
 	}
 }
 
+func TestTaskModelLeaseLifecycleKeepsTaskBinding(t *testing.T) {
+	now := authzTestNow
+	manager, _ := testManager(t, func() time.Time { return now })
+	engine := testEngine(manager, func() time.Time { return now })
+	input := testInput()
+	input.Principal.Role = authn.RoleModulePlanner
+	input.Project.State = "PLANNING"
+	input.Task.State = "PLANNING"
+	input.Action = ActionModelGenerate
+	input.Resource = Resource{Type: "model", ID: "model://planning/default"}
+
+	lease, _ := issueForInput(t, manager, engine, input, now)
+	if lease.TaskID != input.Task.ID || lease.TaskVersion != input.Task.StateVersion || lease.SpecDigest != input.Task.SpecDigest {
+		t.Fatalf("task model lease lost binding: %#v", lease)
+	}
+	if _, err := manager.Validate(context.Background(), leaseCheckFor(lease, now)); err != nil {
+		t.Fatalf("validate task model lease: %v", err)
+	}
+}
+
 func TestTaskAgentLeaseStillRequiresTask(t *testing.T) {
 	manager, _ := testManager(t, func() time.Time { return authzTestNow })
 	engine := testEngine(manager, func() time.Time { return authzTestNow })

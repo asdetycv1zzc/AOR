@@ -202,6 +202,40 @@ func TestToolLeaseGrantRejectsTerminalTaskAndPausedProject(t *testing.T) {
 	}
 }
 
+func TestTaskModelLeaseGrantBindsActiveTask(t *testing.T) {
+	engine := testEngine(nil, func() time.Time { return authzTestNow })
+	for _, role := range []string{authn.RoleModulePlanner, authn.RoleExecutor, authn.RoleAuditor, "MODULE_AUDITOR"} {
+		t.Run(role, func(t *testing.T) {
+			input := testInput()
+			input.Principal.Role = role
+			input.Project.State = "PLANNING"
+			input.Task.State = "PLANNING"
+			input.Action = ActionModelGenerate
+			input.Resource = Resource{Type: "model", ID: "model://planning/default"}
+
+			decision, err := engine.EvaluateLeaseGrant(context.Background(), input)
+			if err != nil || decision.Decision != DecisionAllow || decision.Binding == nil || decision.Binding.TaskID != input.Task.ID || decision.Binding.TaskVersion != input.Task.StateVersion || decision.Binding.SpecDigest != input.Task.SpecDigest {
+				t.Fatalf("task model lease grant = %#v, err=%v", decision, err)
+			}
+		})
+	}
+
+	input := testInput()
+	input.Principal.Role = authn.RoleModulePlanner
+	input.Action = ActionModelGenerate
+	input.Resource = Resource{Type: "model", ID: "model://planning/default"}
+	input.Task.State = "CANCELED"
+	decision, err := engine.EvaluateLeaseGrant(context.Background(), input)
+	if err != nil || decision.Decision != DecisionDeny || decision.ReasonCodes[0] != "MODEL_SCOPE_DENIED" {
+		t.Fatalf("terminal task model grant = %#v, err=%v", decision, err)
+	}
+
+	input.Task = TaskScope{}
+	if _, err = engine.EvaluateLeaseGrant(context.Background(), input); err == nil {
+		t.Fatal("task model lease grant accepted without task scope")
+	}
+}
+
 func TestProductionUntrustedExecutionRequiresLinuxContainer(t *testing.T) {
 	manager, _ := testManager(t, func() time.Time { return authzTestNow })
 	engine := testEngine(manager, func() time.Time { return authzTestNow })

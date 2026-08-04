@@ -58,7 +58,7 @@ func (client *OPAClient) Evaluate(ctx context.Context, input authz.PolicyInput) 
 // EvaluateLeaseGrant calls the policy entrypoint that authorizes creation or
 // renewal of a capability lease. Issuance uses a separate fail-closed rule.
 func (client *OPAClient) EvaluateLeaseGrant(ctx context.Context, input authz.PolicyInput) (authz.PolicyDecision, error) {
-	taskLease := authz.IsSideEffect(input.Action) && input.Task.ID != "" && input.Task.SpecDigest != ""
+	taskLease := (authz.IsSideEffect(input.Action) || input.Action == authz.ActionModelGenerate) && input.Task.ID != "" && input.Task.SpecDigest != ""
 	projectModelLease := input.Action == authz.ActionModelGenerate && input.Task.ID == "" && input.Task.StateVersion == 0 && input.Task.SpecDigest == "" && !authz.LeaseRoleRequiresTask(input.Principal.Role)
 	if (!taskLease && !projectModelLease) || input.Lease != nil || input.ParameterDigest == "" || input.Budget.AccountID == "" || !input.Budget.Available {
 		return denied("INVALID_LEASE_GRANT_INPUT"), ErrInvalidPolicyResponse

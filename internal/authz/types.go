@@ -445,6 +445,15 @@ func LeaseRoleRequiresTask(role string) bool {
 	}
 }
 
+func taskModelLeaseRole(role string) bool {
+	switch role {
+	case authn.RoleModulePlanner, authn.RoleExecutor, authn.RoleAuditor, "MODULE_AUDITOR":
+		return true
+	default:
+		return false
+	}
+}
+
 func validLeaseTaskBinding(role, taskID string, taskVersion int64, specDigest string) bool {
 	if taskID == "" {
 		return !LeaseRoleRequiresTask(role) && taskVersion == 0 && specDigest == ""

@@ -438,7 +438,7 @@ func leaseActionAllowed(action, role, taskID string) bool {
 	if taskID == "" {
 		return action == ActionModelGenerate && !LeaseRoleRequiresTask(role)
 	}
-	return IsSideEffect(action)
+	return IsSideEffect(action) || action == ActionModelGenerate && taskModelLeaseRole(role)
 }
 
 func (m *LeaseManager) Renew(ctx context.Context, request LeaseRenewalRequest) (CapabilityLease, error) {
