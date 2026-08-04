@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"testing"
 	"time"
@@ -82,6 +83,15 @@ func TestVerifyStopsWhenContextIsCanceledDuringArtifactScan(t *testing.T) {
 	}))
 	if !errors.Is(err, context.Canceled) || called != 1 {
 		t.Fatalf("canceled restore result = %v, verifier calls=%d", err, called)
+	}
+}
+
+func TestPostgresSnapshotLoaderRequiresDatabase(t *testing.T) {
+	if _, err := NewPostgresSnapshotLoader(nil); !errors.Is(err, ErrInvalidSnapshot) {
+		t.Fatalf("nil database result = %v", err)
+	}
+	if _, err := VerifyPostgres(context.Background(), (*sql.DB)(nil), "tenant-1", artifactVerifier(func(context.Context, ArtifactRecord) error { return nil })); !errors.Is(err, ErrInvalidSnapshot) {
+		t.Fatalf("nil database verification result = %v", err)
 	}
 }
 
