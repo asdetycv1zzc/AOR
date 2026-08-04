@@ -20,8 +20,7 @@ func TestPostgresPlanPublicationSynchronizesExecutableRelations(t *testing.T) {
 	dsn := os.Getenv("AOR_TEST_POSTGRES_DSN")
 	appDSN := os.Getenv("AOR_TEST_POSTGRES_APP_DSN")
 	if dsn == "" || appDSN == "" {
-		t.Log("INCONCLUSIVE: Postgres integration environment is not configured; set AOR_TEST_POSTGRES_DSN and AOR_TEST_POSTGRES_APP_DSN to execute this test")
-		return
+		t.Skip("Postgres integration environment is not configured")
 	}
 	admin, err := sql.Open("pgx", dsn)
 	if err != nil {

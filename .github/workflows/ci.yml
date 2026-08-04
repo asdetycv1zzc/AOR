@@ -29,6 +29,50 @@ jobs:
           GOCACHE: ${{ github.workspace }}/.cache/go-build
         run: make verify
 
+  postgres-reconciliation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        env:
+          POSTGRES_DB: aor
+          POSTGRES_USER: aor
+          POSTGRES_PASSWORD: integration-admin
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U aor -d aor"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          persist-credentials: false
+      - name: Install pinned Go toolchain
+        uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Apply PostgreSQL migrations
+        env:
+          PGPASSWORD: integration-admin
+          AOR_APP_PASSWORD: integration-app
+        run: |
+          docker run --rm --network host \
+            -e PGPASSWORD -e AOR_APP_PASSWORD \
+            -v "${{ github.workspace }}/migrations/postgres:/migrations:ro" \
+            postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777 \
+            /bin/sh -ec 'for migration in /migrations/*.up.sql; do psql --host 127.0.0.1 --username aor --dbname aor --set ON_ERROR_STOP=1 --file "$migration"; done'
+      - name: Enforce durable PostgreSQL reconciliation
+        env:
+          GOCACHE: ${{ github.workspace }}/.cache/go-build-postgres-reconciliation
+          AOR_TEST_POSTGRES_DSN: host=127.0.0.1 port=5432 dbname=aor user=aor password=integration-admin sslmode=disable
+          AOR_TEST_POSTGRES_APP_DSN: host=127.0.0.1 port=5432 dbname=aor user=aor_app password=integration-app sslmode=disable
+        run: make postgres-reconciliation
+
   cross-platform:
     runs-on: ubuntu-24.04
     timeout-minutes: 20

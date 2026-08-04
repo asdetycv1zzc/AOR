@@ -1,4 +1,4 @@
-.PHONY: build test lint schema cross-language sdk backup-restore supply-chain release-tool release-package-check repository-check secret-scan security-corpus license-scan state-machine verify compose-check compose-check-secrets compose-pull compose-deps-up compose-aor-up compose-up compose-ps
+.PHONY: build test lint schema cross-language sdk backup-restore supply-chain release-tool release-package-check repository-check secret-scan security-corpus license-scan state-machine postgres-reconciliation verify compose-check compose-check-secrets compose-pull compose-deps-up compose-aor-up compose-up compose-ps
 
 GOCACHE ?= $(CURDIR)/.cache/go-build
 GOMODCACHE ?= $(CURDIR)/.cache/go-mod
@@ -62,6 +62,11 @@ license-scan:
 
 state-machine:
 	go run ./cmd/aor-conformance state-machine
+
+postgres-reconciliation:
+	@test -n "$(AOR_TEST_POSTGRES_DSN)"
+	@test -n "$(AOR_TEST_POSTGRES_APP_DSN)"
+	go test -race -p=1 ./internal/eventing ./internal/projection -run '^TestPostgres(LegacyReplayLoadsOnlyBoundCommandResult|PlanPublicationSynchronizesExecutableRelations|DurableReconciliationDetectsOnlineDrift)$$' -count=1
 
 verify: build lint test schema cross-language sdk backup-restore supply-chain repository-check secret-scan security-corpus license-scan state-machine
 
