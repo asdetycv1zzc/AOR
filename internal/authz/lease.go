@@ -75,7 +75,7 @@ func (lease CapabilityLease) ValidateShape() *aorerrors.Error {
 	if lease.PrincipalType == "" || !lease.ExpiresAt.After(lease.IssuedAt) || lease.LastHeartbeatAt.Before(lease.IssuedAt) || lease.LastHeartbeatAt.After(lease.ExpiresAt) {
 		return aorerrors.New(aorerrors.CodePolicyDenied, "", map[string]any{"scope": "lease"})
 	}
-	if !digestPattern.MatchString(lease.SpecDigest) || !digestPattern.MatchString(lease.ParameterDigest) {
+	if !digestPattern.MatchString(lease.SpecDigest) || !digestPattern.MatchString(lease.ParameterDigest) || !digestPattern.MatchString(lease.Nonce) {
 		return aorerrors.New(aorerrors.CodePolicyDenied, "", map[string]any{"scope": "lease digest"})
 	}
 	for _, capability := range lease.Capabilities {
@@ -183,7 +183,7 @@ func (s *MemoryLeaseStore) Get(ctx context.Context, id string) (CapabilityLease,
 	s.mu.RLock()
 	lease, ok := s.leases[id]
 	s.mu.RUnlock()
-	if !ok {
+	if !ok || leaseTenantID(ctx) != "" && lease.TenantID != leaseTenantID(ctx) {
 		return CapabilityLease{}, false, nil
 	}
 	return cloneLease(lease), true, nil
@@ -199,7 +199,7 @@ func (s *MemoryLeaseStore) CompareAndSwap(ctx context.Context, id string, expect
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	current, ok := s.leases[id]
-	if !ok || current.FencingToken != expected {
+	if !ok || current.FencingToken != expected || current.TenantID != replacement.TenantID || current.ID != replacement.ID {
 		return false, nil
 	}
 	s.leases[id] = cloneLease(replacement)
@@ -231,6 +231,7 @@ type LeaseRequest struct {
 
 type LeaseRenewalRequest struct {
 	LeaseID       string
+	TenantID      string
 	FencingToken  int64
 	PrincipalID   string
 	PrincipalType authn.PrincipalType
@@ -243,6 +244,7 @@ type LeaseRenewalRequest struct {
 
 type LeaseHeartbeatRequest struct {
 	LeaseID      string
+	TenantID     string
 	PrincipalID  string
 	FencingToken int64
 	Now          time.Time
@@ -403,10 +405,12 @@ func (m *LeaseManager) Issue(ctx context.Context, request LeaseRequest) (Capabil
 			return CapabilityLease{}, idErr
 		}
 	}
-	nonce, err := randomID("nonce_")
+	rawNonce, err := randomID("nonce_")
 	if err != nil {
 		return CapabilityLease{}, err
 	}
+	nonceSum := sha256.Sum256([]byte(rawNonce))
+	nonce := "sha256:" + hex.EncodeToString(nonceSum[:])
 	lease := CapabilityLease{ID: id, AgentInstanceID: request.AgentInstanceID, PrincipalID: request.Principal.ID, PrincipalType: request.Principal.Type, TenantID: request.TenantID, ProjectID: request.ProjectID, ProjectVersion: request.ProjectVersion, TaskID: request.TaskID, TaskVersion: request.TaskVersion, SpecDigest: request.SpecDigest, Role: request.Role, Action: request.Action, Resource: cloneResource(request.Resource), ParameterDigest: request.ParameterDigest, Capabilities: append([]string(nil), request.Capabilities...), IssuedAt: now, ExpiresAt: now.Add(ttl), LastHeartbeatAt: now, HeartbeatIntervalSeconds: int64(heartbeat / time.Second), PolicyVersion: request.PolicyVersion, BudgetAccountID: request.BudgetAccountID, Nonce: nonce, FencingToken: 1, State: LeaseActive}
 	if err := lease.ValidateShape(); err != nil {
 		return CapabilityLease{}, err
@@ -432,7 +436,7 @@ func (m *LeaseManager) Renew(ctx context.Context, request LeaseRenewalRequest) (
 		return CapabilityLease{}, aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", err, nil)
 	}
 	now := m.now()
-	current, found, err := m.store.Get(ctx, request.LeaseID)
+	current, found, err := m.store.Get(withLeaseTenant(ctx, request.TenantID), request.LeaseID)
 	if err != nil {
 		return CapabilityLease{}, err
 	}
@@ -502,7 +506,7 @@ func (m *LeaseManager) Heartbeat(ctx context.Context, request LeaseHeartbeatRequ
 		return CapabilityLease{}, aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", err, nil)
 	}
 	now := m.now()
-	current, found, err := m.store.Get(ctx, request.LeaseID)
+	current, found, err := m.store.Get(withLeaseTenant(ctx, request.TenantID), request.LeaseID)
 	if err != nil {
 		return CapabilityLease{}, err
 	}
@@ -550,7 +554,7 @@ func (m *LeaseManager) Revoke(ctx context.Context, request LeaseRevokeRequest) e
 		return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "revoke reason"})
 	}
 	now := m.now()
-	current, found, err := m.store.Get(ctx, request.LeaseID)
+	current, found, err := m.store.Get(withLeaseTenant(ctx, request.Actor.TenantID), request.LeaseID)
 	if err != nil {
 		return err
 	}
@@ -591,7 +595,7 @@ func (m *LeaseManager) Validate(ctx context.Context, check LeaseCheck) (Capabili
 		return CapabilityLease{}, aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", err, nil)
 	}
 	now := m.now()
-	current, found, err := m.store.Get(ctx, check.LeaseID)
+	current, found, err := m.store.Get(withLeaseTenant(ctx, check.TenantID), check.LeaseID)
 	if err != nil {
 		return CapabilityLease{}, err
 	}

@@ -426,6 +426,44 @@ func TestConcurrentRenewalHasOneFencingWinner(t *testing.T) {
 	}
 }
 
+func TestLeasePersistsOnlyNonceDigest(t *testing.T) {
+	manager, _ := testManager(t, func() time.Time { return authzTestNow })
+	engine := testEngine(manager, func() time.Time { return authzTestNow })
+	lease, _ := issueForInput(t, manager, engine, testInput(), authzTestNow)
+	if !digestPattern.MatchString(lease.Nonce) {
+		t.Fatalf("nonce is not a digest: %q", lease.Nonce)
+	}
+}
+
+func TestMemoryLeaseStoreHonorsTenantContext(t *testing.T) {
+	manager, store := testManager(t, func() time.Time { return authzTestNow })
+	engine := testEngine(manager, func() time.Time { return authzTestNow })
+	lease, _ := issueForInput(t, manager, engine, testInput(), authzTestNow)
+	if _, found, err := store.Get(withLeaseTenant(context.Background(), "tenant_other"), lease.ID); err != nil || found {
+		t.Fatalf("cross-tenant lease lookup: found=%v err=%v", found, err)
+	}
+	loaded, found, err := store.Get(withLeaseTenant(context.Background(), lease.TenantID), lease.ID)
+	if err != nil || !found || loaded.ID != lease.ID {
+		t.Fatalf("same-tenant lease lookup: found=%v lease=%#v err=%v", found, loaded, err)
+	}
+}
+
+func TestPostgresLeaseCASRejectsBindingMutation(t *testing.T) {
+	manager, _ := testManager(t, func() time.Time { return authzTestNow })
+	engine := testEngine(manager, func() time.Time { return authzTestNow })
+	lease, _ := issueForInput(t, manager, engine, testInput(), authzTestNow)
+	renewed := cloneLease(lease)
+	renewed.ExpiresAt = renewed.ExpiresAt.Add(time.Minute)
+	renewed.FencingToken++
+	if !sameLeaseBinding(lease, renewed) {
+		t.Fatal("valid lease lifecycle update changed immutable binding")
+	}
+	renewed.Resource.Path = "internal/state/project.go"
+	if sameLeaseBinding(lease, renewed) {
+		t.Fatal("mutated resource retained the lease binding")
+	}
+}
+
 func assertAuthzErrorCode(t *testing.T, err error, expected aorerrors.Code) {
 	t.Helper()
 	var typed *aorerrors.Error

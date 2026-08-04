@@ -1,0 +1,9 @@
+BEGIN;
+
+GRANT SELECT, INSERT, UPDATE ON TABLE agent_instances TO aor_app;
+GRANT SELECT, INSERT, UPDATE ON TABLE agent_leases TO aor_app;
+GRANT SELECT, INSERT ON TABLE model_calls TO aor_app;
+GRANT SELECT, INSERT, UPDATE ON TABLE tool_invocations TO aor_app;
+GRANT SELECT, INSERT, UPDATE ON TABLE artifacts TO aor_app;
+
+COMMIT;

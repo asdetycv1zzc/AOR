@@ -60,11 +60,24 @@ services:
         fi
         test -s /run/secrets/postgres_app_password
         export AOR_APP_PASSWORD="$$(cat /run/secrets/postgres_app_password)"
-        psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000003_runtime_app_role.up.sql
+        runtime_role_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'aor_app')")"
+        if [ "$$runtime_role_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000003_runtime_app_role.up.sql
+        else
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/postgres-app-password.sql
+        fi
         psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000004_model_authorizer_reads.up.sql
         runtime_records_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT to_regclass('public.agent_leases') IS NOT NULL")"
         if [ "$$runtime_records_installed" != "t" ]; then
           psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000005_runtime_records.up.sql
+        fi
+        lease_fencing_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT to_regprocedure('public.aor_advance_task_fencing(uuid,uuid,uuid,bigint)') IS NOT NULL")"
+        if [ "$$lease_fencing_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000006_lease_fencing_function.up.sql
+        fi
+        runtime_record_grants_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT has_table_privilege('aor_app', 'public.agent_leases', 'INSERT')")"
+        if [ "$$runtime_record_grants_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000007_runtime_record_grants.up.sql
         fi
         unset AOR_APP_PASSWORD
     secrets: [postgres_password, postgres_app_password]
@@ -74,6 +87,9 @@ services:
       - ../../migrations/postgres/000003_runtime_app_role.up.sql:/migrations/000003_runtime_app_role.up.sql:ro
       - ../../migrations/postgres/000004_model_authorizer_reads.up.sql:/migrations/000004_model_authorizer_reads.up.sql:ro
       - ../../migrations/postgres/000005_runtime_records.up.sql:/migrations/000005_runtime_records.up.sql:ro
+      - ../../migrations/postgres/000006_lease_fencing_function.up.sql:/migrations/000006_lease_fencing_function.up.sql:ro
+      - ../../migrations/postgres/000007_runtime_record_grants.up.sql:/migrations/000007_runtime_record_grants.up.sql:ro
+      - ./postgres-app-password.sql:/migrations/postgres-app-password.sql:ro
     read_only: true
     tmpfs: [/tmp]
     security_opt: [no-new-privileges:true]

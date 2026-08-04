@@ -36,6 +36,20 @@
       "file": "000005_runtime_records.up.sql",
       "sha256": "sha256:76b1f5754f9d79d4f064e273678845e874493ade0551a7624cd4bfebcb6c2cdc",
       "destructive": false
+    },
+    {
+      "version": 6,
+      "mode": "EXPAND",
+      "file": "000006_lease_fencing_function.up.sql",
+      "sha256": "sha256:714caad1cfc62d8ad1f951bb64c7459f7c17b2822626c459bc9270651b106d19",
+      "destructive": false
+    },
+    {
+      "version": 7,
+      "mode": "EXPAND",
+      "file": "000007_runtime_record_grants.up.sql",
+      "sha256": "sha256:3e58c6d68238a597890467cae57222b60d268cbe20fdab795bffb5684ba0e08f",
+      "destructive": false
     }
   ]
 }
