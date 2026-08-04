@@ -178,6 +178,7 @@ type IndexSnapshot struct {
 }
 
 type Repository interface {
+	Initialize(context.Context, string, string, time.Time) (Manifest, error)
 	Head(context.Context, string, string) (string, error)
 	Load(context.Context, string, string, string) (Snapshot, error)
 	Commit(context.Context, CommitRequest) (Manifest, error)

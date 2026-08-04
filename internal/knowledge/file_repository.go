@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
 )
@@ -45,6 +46,56 @@ func NewFileRepository(root string) (*FileRepository, error) {
 		return nil, unauthorizedPath()
 	}
 	return &FileRepository{root: absolute}, nil
+}
+
+// Initialize creates the immutable empty baseline used by a newly created
+// project. Repeated and concurrent calls return the first committed baseline.
+func (repository *FileRepository) Initialize(ctx context.Context, tenantID, projectID string, createdAt time.Time) (Manifest, error) {
+	if repository == nil {
+		return Manifest{}, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", nil)
+	}
+	if createdAt.IsZero() {
+		return Manifest{}, invalid("snapshot metadata")
+	}
+	createdAt = createdAt.UTC()
+	current, err := repository.Head(ctx, tenantID, projectID)
+	if err != nil {
+		return Manifest{}, err
+	}
+	if current != "" {
+		snapshot, loadErr := repository.Load(ctx, tenantID, projectID, current)
+		if loadErr != nil {
+			return Manifest{}, loadErr
+		}
+		return snapshot.Manifest, nil
+	}
+
+	manifest, err := repository.Commit(ctx, CommitRequest{
+		TenantID: tenantID, ProjectID: projectID,
+		Snapshot: Snapshot{
+			Manifest: Manifest{
+				Version: 1, TenantID: tenantID, ProjectID: projectID, CreatedAt: createdAt,
+				Parents: []ParentSnapshot{}, Overrides: []string{}, Documents: []DocumentMetadata{},
+			},
+			Documents: map[string]StoredDocument{},
+		},
+	})
+	if err == nil {
+		return manifest, nil
+	}
+	var conflict *aorerrors.Error
+	if !errors.As(err, &conflict) || conflict.Code != aorerrors.CodeStateVersionConflict {
+		return Manifest{}, err
+	}
+	current, err = repository.Head(ctx, tenantID, projectID)
+	if err != nil {
+		return Manifest{}, err
+	}
+	snapshot, err := repository.Load(ctx, tenantID, projectID, current)
+	if err != nil {
+		return Manifest{}, err
+	}
+	return snapshot.Manifest, nil
 }
 
 func (repository *FileRepository) Head(ctx context.Context, tenantID, projectID string) (string, error) {
@@ -645,9 +696,15 @@ func sameStrings(left, right []string) bool {
 }
 
 func cloneManifest(input Manifest) Manifest {
-	input.Parents = append([]ParentSnapshot(nil), input.Parents...)
-	input.Overrides = append([]string(nil), input.Overrides...)
-	input.Documents = append([]DocumentMetadata(nil), input.Documents...)
+	if input.Parents != nil {
+		input.Parents = append([]ParentSnapshot{}, input.Parents...)
+	}
+	if input.Overrides != nil {
+		input.Overrides = append([]string{}, input.Overrides...)
+	}
+	if input.Documents != nil {
+		input.Documents = append([]DocumentMetadata{}, input.Documents...)
+	}
 	for index := range input.Documents {
 		input.Documents[index] = cloneMetadata(input.Documents[index])
 	}
