@@ -112,6 +112,7 @@ type BudgetLedger struct {
 	accounts       map[string]BudgetAccount
 	reservations   map[string]Reservation
 	adjustments    map[string]memoryBudgetAdjustment
+	modelCalls     map[string]ModelCall
 	clock          func() time.Time
 	reservationTTL time.Duration
 }
@@ -125,7 +126,7 @@ func NewBudgetLedger(clock func() time.Time) *BudgetLedger {
 	if clock == nil {
 		clock = time.Now
 	}
-	return &BudgetLedger{accounts: make(map[string]BudgetAccount), reservations: make(map[string]Reservation), adjustments: make(map[string]memoryBudgetAdjustment), clock: clock, reservationTTL: defaultReservationTTL}
+	return &BudgetLedger{accounts: make(map[string]BudgetAccount), reservations: make(map[string]Reservation), adjustments: make(map[string]memoryBudgetAdjustment), modelCalls: make(map[string]ModelCall), clock: clock, reservationTTL: defaultReservationTTL}
 }
 
 func (l *BudgetLedger) CreateAccount(ctx context.Context, account BudgetAccount) error {
@@ -448,6 +449,14 @@ func (l *BudgetLedger) usageFromAccountLocked(account BudgetAccount) BudgetUsage
 	for _, reservation := range l.reservations {
 		if reservation.TenantID == account.TenantID && reservation.AccountID == account.ID && inBudgetPeriod(reservation.CreatedAt, account.PeriodStart, account.PeriodEnd) {
 			usage.ReservationCount++
+		}
+	}
+	for _, call := range l.modelCalls {
+		if call.TenantID == account.TenantID && call.ProjectID == account.ScopeID && inBudgetPeriod(call.CreatedAt, account.PeriodStart, account.PeriodEnd) {
+			usage.CallCount++
+			usage.InputTokens += call.InputTokens
+			usage.OutputTokens += call.OutputTokens
+			usage.CostMicros += call.CostMicros
 		}
 	}
 	return usage

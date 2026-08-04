@@ -57,6 +57,13 @@
       "file": "000008_budget_account_scope_unique.up.sql",
       "sha256": "sha256:a26a2263e343f66ad500bb5ed6b8229646bf3c0a60ed251b5b27c8f530a65a8f",
       "destructive": false
+    },
+    {
+      "version": 9,
+      "mode": "EXPAND",
+      "file": "000009_model_calls_project_scope.up.sql",
+      "sha256": "sha256:8f9e365782101929cc8a7da68bfbde543db47dee60e817a6eaf4986b02275c6e",
+      "destructive": false
     }
   ]
 }

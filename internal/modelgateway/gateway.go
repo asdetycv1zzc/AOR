@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
+
+	"github.com/akimisaka/aor/pkg/canonicaljson"
 )
 
 const (
@@ -24,6 +26,7 @@ type Gateway struct {
 	allowed                map[string]map[string]bool
 	pricing                map[string]Pricing
 	ledger                 BudgetLedgerBackend
+	callFinalizer          ModelCallFinalizer
 	clock                  func() time.Time
 	circuits               map[string]providerCircuit
 	initialProviderBackoff time.Duration
@@ -62,7 +65,8 @@ func NewGatewayWithConfig(ledger BudgetLedgerBackend, clock func() time.Time, co
 	if config.MaximumProviderBackoff < config.InitialProviderBackoff {
 		config.MaximumProviderBackoff = 5 * time.Minute
 	}
-	return &Gateway{adapters: make(map[string]ModelAdapter), allowed: make(map[string]map[string]bool), pricing: make(map[string]Pricing), ledger: ledger, clock: clock, circuits: make(map[string]providerCircuit), initialProviderBackoff: config.InitialProviderBackoff, maximumProviderBackoff: config.MaximumProviderBackoff}
+	finalizer, _ := ledger.(ModelCallFinalizer)
+	return &Gateway{adapters: make(map[string]ModelAdapter), allowed: make(map[string]map[string]bool), pricing: make(map[string]Pricing), ledger: ledger, callFinalizer: finalizer, clock: clock, circuits: make(map[string]providerCircuit), initialProviderBackoff: config.InitialProviderBackoff, maximumProviderBackoff: config.MaximumProviderBackoff}
 }
 
 func (g *Gateway) Register(provider, model string, adapter ModelAdapter, pricing Pricing) error {
@@ -116,24 +120,39 @@ func (g *Gateway) Stream(ctx context.Context, request NormalizedRequest, options
 	if ctx == nil {
 		return nil, ErrInvalidRequest
 	}
-	adapter, key, capabilities, reservation, err := g.prepare(ctx, request, options, true)
+	adapter, key, capabilities, estimate, reservation, err := g.prepare(ctx, request, options, true)
 	if err != nil {
+		return nil, err
+	}
+	startedAt := g.clock().UTC()
+	call, err := newModelCall(request, options.Provider, capabilities.ActualModelVersion, estimate.InputTokens, startedAt)
+	if err != nil {
+		if releaseErr := g.releaseReservation(ctx, request.TenantID, reservation); releaseErr != nil {
+			return nil, releaseErr
+		}
 		return nil, err
 	}
 	stream, err := adapter.Stream(ctx, request)
 	if err != nil {
 		g.recordProviderFailure(key, err)
-		if failureErr := g.resolveStartFailure(ctx, request.TenantID, reservation, err); failureErr != nil {
+		disposition := ReservationDispositionReconcile
+		call.Status = ModelCallReconcile
+		var providerFailure *ProviderFailure
+		if errors.As(err, &providerFailure) && providerFailure.OutcomeKnown {
+			disposition = ReservationDispositionRelease
+			call.Status = ModelCallFailedProvider
+		}
+		call.LatencyMilliseconds = elapsedMilliseconds(startedAt, g.clock().UTC())
+		if failureErr := g.finalizeModelCall(ctx, ModelCallFinalization{ReservationID: reservation, Disposition: disposition, Call: call}); failureErr != nil {
 			return nil, failureErr
 		}
 		return nil, redactError(err)
 	}
-	if !capabilities.SupportsStreaming {
+	call.Status = ModelCallReconcile
+	call.LatencyMilliseconds = elapsedMilliseconds(startedAt, g.clock().UTC())
+	if err := g.finalizeModelCall(ctx, ModelCallFinalization{ReservationID: reservation, Disposition: ReservationDispositionReconcile, Call: call}); err != nil {
 		_ = stream.Close()
-		if err := g.releaseReservation(ctx, request.TenantID, reservation); err != nil {
-			return nil, err
-		}
-		return nil, ErrProviderNotAllowed
+		return nil, err
 	}
 	return &budgetedStream{stream: stream, ledger: g.ledger, tenantID: request.TenantID, reservationID: reservation, context: ctx}, nil
 }
@@ -184,6 +203,9 @@ func (g *Gateway) CancelStream(ctx context.Context, tenantID, reservationID, pro
 }
 
 func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, options GenerateOptions) (NormalizedResponse, error) {
+	if ctx == nil {
+		return NormalizedResponse{}, ErrInvalidRequest
+	}
 	if err := validateRequest(request); err != nil {
 		return NormalizedResponse{}, err
 	}
@@ -214,6 +236,9 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 		g.recordProviderFailure(key, err)
 		return NormalizedResponse{}, redactError(err)
 	}
+	if estimate.InputTokens < 0 || estimate.InputTokens > int64(capabilities.MaxInputTokens) {
+		return NormalizedResponse{}, ErrInvalidRequest
+	}
 	inputCost, err := multiplyCost(estimate.InputTokens, pricing.InputMicrosPerToken)
 	if err != nil {
 		return NormalizedResponse{}, err
@@ -229,11 +254,19 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 	if request.WorstCaseCostMicros > worst {
 		worst = request.WorstCaseCostMicros
 	}
-	if estimate.InputTokens < 0 || worst < 0 || worst > math.MaxInt64/int64(options.MaxAttempts) {
+	if worst < 0 || worst > math.MaxInt64/int64(options.MaxAttempts) {
 		return NormalizedResponse{}, ErrInvalidRequest
 	}
 	reserved := worst * int64(options.MaxAttempts)
 	if _, err := g.ledger.Reserve(ctx, request.TenantID, options.AccountID, options.ReservationID, request.RequestID, reserved); err != nil {
+		return NormalizedResponse{}, err
+	}
+	startedAt := g.clock().UTC()
+	call, err := newModelCall(request, options.Provider, capabilities.ActualModelVersion, 0, startedAt)
+	if err != nil {
+		if releaseErr := g.releaseReservation(ctx, request.TenantID, options.ReservationID); releaseErr != nil {
+			return NormalizedResponse{}, releaseErr
+		}
 		return NormalizedResponse{}, err
 	}
 	var lastErr error
@@ -243,16 +276,19 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 		if generateErr != nil {
 			g.recordProviderFailure(key, generateErr)
 			var providerFailure *ProviderFailure
+			disposition := ReservationDispositionReconcile
+			call.Status = ModelCallReconcile
 			if errors.As(generateErr, &providerFailure) && providerFailure.OutcomeKnown {
 				if incurred == 0 {
-					err = g.ledger.Release(ctx, request.TenantID, options.ReservationID)
+					disposition = ReservationDispositionRelease
 				} else {
-					_, err = g.ledger.Settle(ctx, request.TenantID, options.ReservationID, incurred)
+					disposition = ReservationDispositionSettle
 				}
-			} else {
-				_, err = g.ledger.RequireReconciliation(ctx, request.TenantID, options.ReservationID)
+				call.Status = ModelCallFailedProvider
 			}
-			if err != nil {
+			call.CostMicros = incurred
+			call.LatencyMilliseconds = elapsedMilliseconds(startedAt, g.clock().UTC())
+			if err := g.finalizeModelCall(ctx, ModelCallFinalization{ReservationID: options.ReservationID, Disposition: disposition, ActualMicros: incurred, Call: call}); err != nil {
 				return NormalizedResponse{}, err
 			}
 			return NormalizedResponse{}, redactError(generateErr)
@@ -266,24 +302,50 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 			attemptCost = worst
 		}
 		incurred, err = addCost(incurred, attemptCost)
+		if err == nil {
+			call.InputTokens, err = addCost(call.InputTokens, response.Usage.InputTokens)
+		}
+		if err == nil {
+			call.OutputTokens, err = addCost(call.OutputTokens, response.Usage.OutputTokens)
+		}
 		if err != nil {
+			call.Status = ModelCallReconcile
+			call.CostMicros = incurred
+			call.LatencyMilliseconds = elapsedMilliseconds(startedAt, g.clock().UTC())
+			if finalizeErr := g.finalizeModelCall(ctx, ModelCallFinalization{ReservationID: options.ReservationID, Disposition: ReservationDispositionReconcile, ActualMicros: incurred, Call: call}); finalizeErr != nil {
+				return NormalizedResponse{}, finalizeErr
+			}
 			return NormalizedResponse{}, err
 		}
 		if response.ModelVersion == "" {
 			response.ModelVersion = capabilities.ActualModelVersion
 		}
+		if response.ModelVersion == "" {
+			response.ModelVersion = "NON_REPRODUCIBLE_PROVIDER"
+		}
+		call.ActualModelVersion = response.ModelVersion
+		call.ProviderRequestID = response.ProviderRequestID
+		if response.Usage.ProviderRequestID != "" {
+			call.ProviderRequestID = response.Usage.ProviderRequestID
+		}
+		call.OutputSHA256 = digestBytes(response.Content)
+		call.CostMicros = incurred
 		if response.RequestID != "" && response.RequestID != request.RequestID {
 			lastErr = ErrOutputSchema
 			continue
 		}
 		if len(response.Content) > MaximumResponseBytes {
-			if _, err := g.ledger.Settle(ctx, request.TenantID, options.ReservationID, incurred); err != nil {
+			call.Status = ModelCallFailedOutputSize
+			call.LatencyMilliseconds = elapsedMilliseconds(startedAt, g.clock().UTC())
+			if err := g.finalizeModelCall(ctx, ModelCallFinalization{ReservationID: options.ReservationID, Disposition: ReservationDispositionSettle, ActualMicros: incurred, Call: call}); err != nil {
 				return NormalizedResponse{}, err
 			}
 			return NormalizedResponse{}, ErrOutputTooLarge
 		}
 		if containsCredentialLike(string(response.Content)) {
-			if _, err := g.ledger.Settle(ctx, request.TenantID, options.ReservationID, incurred); err != nil {
+			call.Status = ModelCallFailedCredential
+			call.LatencyMilliseconds = elapsedMilliseconds(startedAt, g.clock().UTC())
+			if err := g.finalizeModelCall(ctx, ModelCallFinalization{ReservationID: options.ReservationID, Disposition: ReservationDispositionSettle, ActualMicros: incurred, Call: call}); err != nil {
 				return NormalizedResponse{}, err
 			}
 			return NormalizedResponse{}, ErrCredentialDetected
@@ -298,12 +360,17 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 		if response.Usage.ModelVersion == "" {
 			response.Usage.ModelVersion = response.ModelVersion
 		}
-		if _, settleErr := g.ledger.Settle(ctx, request.TenantID, options.ReservationID, incurred); settleErr != nil {
-			return NormalizedResponse{}, settleErr
+		call.Status = ModelCallSucceeded
+		call.LatencyMilliseconds = elapsedMilliseconds(startedAt, g.clock().UTC())
+		if err := g.finalizeModelCall(ctx, ModelCallFinalization{ReservationID: options.ReservationID, Disposition: ReservationDispositionSettle, ActualMicros: incurred, Call: call}); err != nil {
+			return NormalizedResponse{}, err
 		}
 		return response, nil
 	}
-	if _, err := g.ledger.Settle(ctx, request.TenantID, options.ReservationID, incurred); err != nil {
+	call.Status = ModelCallFailedOutputSchema
+	call.CostMicros = incurred
+	call.LatencyMilliseconds = elapsedMilliseconds(startedAt, g.clock().UTC())
+	if err := g.finalizeModelCall(ctx, ModelCallFinalization{ReservationID: options.ReservationID, Disposition: ReservationDispositionSettle, ActualMicros: incurred, Call: call}); err != nil {
 		return NormalizedResponse{}, err
 	}
 	if lastErr != nil {
@@ -312,62 +379,111 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 	return NormalizedResponse{}, ErrOutputSchema
 }
 
-func (g *Gateway) prepare(ctx context.Context, request NormalizedRequest, options GenerateOptions, requireStreaming bool) (ModelAdapter, string, ModelCapabilities, string, error) {
+func newModelCall(request NormalizedRequest, provider, actualModelVersion string, inputTokens int64, createdAt time.Time) (ModelCall, error) {
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		return ModelCall{}, ErrInvalidRequest
+	}
+	inputDigest, err := canonicaljson.Digest(encoded)
+	if err != nil {
+		return ModelCall{}, ErrInvalidRequest
+	}
+	if actualModelVersion == "" {
+		actualModelVersion = "NON_REPRODUCIBLE_PROVIDER"
+	}
+	return ModelCall{
+		TenantID: request.TenantID, RequestID: request.RequestID, ProjectID: request.ProjectID,
+		TaskID: request.TaskID, AgentInstanceID: request.AgentInstanceID, Provider: provider,
+		LogicalModel: request.Model, ActualModelVersion: actualModelVersion,
+		PromptBundleVersion: request.PromptBundleVersion, InputSHA256: inputDigest,
+		InputTokens: inputTokens, CreatedAt: createdAt.UTC(),
+	}, nil
+}
+
+func (g *Gateway) finalizeModelCall(ctx context.Context, finalization ModelCallFinalization) error {
+	finalizeContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if g.callFinalizer != nil {
+		_, err := g.callFinalizer.FinalizeModelCall(finalizeContext, finalization)
+		return err
+	}
+	switch finalization.Disposition {
+	case ReservationDispositionSettle:
+		_, err := g.ledger.Settle(finalizeContext, finalization.Call.TenantID, finalization.ReservationID, finalization.ActualMicros)
+		return err
+	case ReservationDispositionRelease:
+		return g.ledger.Release(finalizeContext, finalization.Call.TenantID, finalization.ReservationID)
+	case ReservationDispositionReconcile:
+		_, err := g.ledger.RequireReconciliation(finalizeContext, finalization.Call.TenantID, finalization.ReservationID)
+		return err
+	default:
+		return ErrInvalidRequest
+	}
+}
+
+func elapsedMilliseconds(startedAt, completedAt time.Time) int64 {
+	if startedAt.IsZero() || completedAt.Before(startedAt) {
+		return 0
+	}
+	return completedAt.Sub(startedAt).Milliseconds()
+}
+
+func (g *Gateway) prepare(ctx context.Context, request NormalizedRequest, options GenerateOptions, requireStreaming bool) (ModelAdapter, string, ModelCapabilities, TokenEstimate, string, error) {
 	if err := validateRequest(request); err != nil {
-		return nil, "", ModelCapabilities{}, "", err
+		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", err
 	}
 	if options.MaxAttempts <= 0 {
 		options.MaxAttempts = 3
 	}
 	if options.MaxAttempts > 3 || options.Provider == "" || options.AccountID == "" || options.ReservationID == "" {
-		return nil, "", ModelCapabilities{}, "", ErrInvalidRequest
+		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", ErrInvalidRequest
 	}
 	key := options.Provider + "\x00" + request.Model
 	adapter, pricing, allowed := g.provider(key, options.Provider, request.Model)
 	if adapter == nil || !allowed {
-		return nil, "", ModelCapabilities{}, "", ErrProviderNotAllowed
+		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", ErrProviderNotAllowed
 	}
 	if !g.providerReady(key, g.clock().UTC()) {
-		return nil, "", ModelCapabilities{}, "", ErrProviderUnavailable
+		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", ErrProviderUnavailable
 	}
 	capabilities, err := adapter.Capabilities(ctx, request.Model)
 	if err != nil {
 		g.recordProviderFailure(key, err)
-		return nil, "", ModelCapabilities{}, "", redactError(err)
+		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", redactError(err)
 	}
 	if request.MaxOutputTokens > capabilities.MaxOutputTokens || request.MaxOutputTokens <= 0 || requireStreaming && !capabilities.SupportsStreaming {
-		return nil, "", ModelCapabilities{}, "", ErrProviderNotAllowed
+		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", ErrProviderNotAllowed
 	}
 	estimate, err := adapter.CountTokens(ctx, request)
 	if err != nil {
 		g.recordProviderFailure(key, err)
-		return nil, "", ModelCapabilities{}, "", redactError(err)
+		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", redactError(err)
 	}
 	if estimate.InputTokens < 0 || estimate.InputTokens > int64(capabilities.MaxInputTokens) {
-		return nil, "", ModelCapabilities{}, "", ErrInvalidRequest
+		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", ErrInvalidRequest
 	}
 	inputCost, err := multiplyCost(estimate.InputTokens, pricing.InputMicrosPerToken)
 	if err != nil {
-		return nil, "", ModelCapabilities{}, "", err
+		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", err
 	}
 	outputCost, err := multiplyCost(int64(request.MaxOutputTokens), pricing.OutputMicrosPerToken)
 	if err != nil {
-		return nil, "", ModelCapabilities{}, "", err
+		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", err
 	}
 	worst, err := addCost(inputCost, outputCost)
 	if err != nil {
-		return nil, "", ModelCapabilities{}, "", err
+		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", err
 	}
 	if request.WorstCaseCostMicros > worst {
 		worst = request.WorstCaseCostMicros
 	}
 	if worst < 0 || worst > math.MaxInt64/int64(options.MaxAttempts) {
-		return nil, "", ModelCapabilities{}, "", ErrInvalidRequest
+		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", ErrInvalidRequest
 	}
 	if _, err := g.ledger.Reserve(ctx, request.TenantID, options.AccountID, options.ReservationID, request.RequestID, worst*int64(options.MaxAttempts)); err != nil {
-		return nil, "", ModelCapabilities{}, "", err
+		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", err
 	}
-	return adapter, key, capabilities, options.ReservationID, nil
+	return adapter, key, capabilities, estimate, options.ReservationID, nil
 }
 
 func (g *Gateway) resolveStartFailure(ctx context.Context, tenantID, reservationID string, generateErr error) error {

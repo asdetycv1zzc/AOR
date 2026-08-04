@@ -104,6 +104,54 @@ func TestGatewayRetriesInvalidStructuredOutputAtMostTwice(t *testing.T) {
 	}
 }
 
+func TestGatewayPersistsModelCallUsageWithBudgetSettlement(t *testing.T) {
+	now := time.Date(2030, 2, 3, 4, 5, 6, 0, time.UTC)
+	ledger := NewBudgetLedger(func() time.Time { return now })
+	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "acct", TenantID: "ten", ScopeType: "PROJECT", ScopeID: "prj", LimitMicros: 1_000}); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &mockAdapter{responses: []NormalizedResponse{{
+		RequestID: "recorded", ProviderRequestID: "provider-request", ModelVersion: "model-2026-08-04",
+		Content: json.RawMessage(`{"ok":true}`), Usage: Usage{InputTokens: 12, OutputTokens: 7, CostMicros: 19},
+	}}}
+	gateway := NewGateway(ledger, func() time.Time { return now })
+	if err := gateway.Register("mock", "model", adapter, Pricing{InputMicrosPerToken: 1, OutputMicrosPerToken: 1}); err != nil {
+		t.Fatal(err)
+	}
+	request := NormalizedRequest{RequestID: "recorded", TenantID: "ten", ProjectID: "prj", TaskID: "task", AgentInstanceID: "agent", Role: "EXECUTOR", Model: "model", PromptBundleVersion: "prompt-v1", Messages: []Message{{Role: "user", Content: "hello"}}, MaxOutputTokens: 10, DataClassification: "INTERNAL"}
+	if _, err := gateway.Generate(context.Background(), request, GenerateOptions{Provider: "mock", AccountID: "acct", ReservationID: "reservation", MaxAttempts: 1}); err != nil {
+		t.Fatal(err)
+	}
+	call, found := ledger.ModelCall("ten", "recorded")
+	if !found || call.Status != ModelCallSucceeded || call.InputTokens != 12 || call.OutputTokens != 7 || call.CostMicros != 19 || call.ActualModelVersion != "model-2026-08-04" || call.ProviderRequestID != "provider-request" || !validModelDigest(call.InputSHA256) || !validModelDigest(call.OutputSHA256) {
+		t.Fatalf("model call = %#v, found=%t", call, found)
+	}
+	usage, err := ledger.Usage(context.Background(), "ten", "prj")
+	if err != nil || usage.CallCount != 1 || usage.InputTokens != 12 || usage.OutputTokens != 7 || usage.CostMicros != 19 {
+		t.Fatalf("usage = %#v, err=%v", usage, err)
+	}
+}
+
+func TestGatewayRecordsUnknownProviderOutcomeForReconciliation(t *testing.T) {
+	ledger := NewBudgetLedger(time.Now)
+	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "acct", TenantID: "ten", ScopeType: "PROJECT", ScopeID: "prj", LimitMicros: 100}); err != nil {
+		t.Fatal(err)
+	}
+	gateway := NewGateway(ledger, time.Now)
+	if err := gateway.Register("mock", "model", &mockAdapter{}, Pricing{InputMicrosPerToken: 1, OutputMicrosPerToken: 1}); err != nil {
+		t.Fatal(err)
+	}
+	request := NormalizedRequest{RequestID: "unknown", TenantID: "ten", ProjectID: "prj", TaskID: "task", AgentInstanceID: "agent", Role: "EXECUTOR", Model: "model", PromptBundleVersion: "prompt-v1", Messages: []Message{{Role: "user", Content: "hello"}}, MaxOutputTokens: 10, DataClassification: "INTERNAL"}
+	if _, err := gateway.Generate(context.Background(), request, GenerateOptions{Provider: "mock", AccountID: "acct", ReservationID: "reservation", MaxAttempts: 1}); err == nil {
+		t.Fatal("unknown provider outcome was accepted")
+	}
+	call, found := ledger.ModelCall("ten", "unknown")
+	reservation, reservationFound := ledger.Reservation("ten", "reservation")
+	if !found || call.Status != ModelCallReconcile || !reservationFound || reservation.State != ReservationReconcile {
+		t.Fatalf("call=%#v found=%t reservation=%#v reservationFound=%t", call, found, reservation, reservationFound)
+	}
+}
+
 func TestGatewayBoundsResponsesAndChargesFailedProviderCalls(t *testing.T) {
 	ledger := NewBudgetLedger(func() time.Time { return time.Unix(0, 0) })
 	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "acct", TenantID: "ten", LimitMicros: 10_000_000}); err != nil {

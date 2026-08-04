@@ -83,6 +83,10 @@ services:
         if [ "$$budget_scope_index_installed" != "t" ]; then
           psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000008_budget_account_scope_unique.up.sql
         fi
+        model_calls_project_scope_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT is_nullable = 'YES' FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'model_calls' AND column_name = 'task_id'")"
+        if [ "$$model_calls_project_scope_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000009_model_calls_project_scope.up.sql
+        fi
         unset AOR_APP_PASSWORD
     secrets: [postgres_password, postgres_app_password]
     volumes:
@@ -94,6 +98,7 @@ services:
       - ../../migrations/postgres/000006_lease_fencing_function.up.sql:/migrations/000006_lease_fencing_function.up.sql:ro
       - ../../migrations/postgres/000007_runtime_record_grants.up.sql:/migrations/000007_runtime_record_grants.up.sql:ro
       - ../../migrations/postgres/000008_budget_account_scope_unique.up.sql:/migrations/000008_budget_account_scope_unique.up.sql:ro
+      - ../../migrations/postgres/000009_model_calls_project_scope.up.sql:/migrations/000009_model_calls_project_scope.up.sql:ro
       - ./postgres-app-password.sql:/migrations/postgres-app-password.sql:ro
     read_only: true
     tmpfs: [/tmp]
