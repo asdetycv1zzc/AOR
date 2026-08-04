@@ -65,6 +65,28 @@ type Principal struct {
 	Attributes map[string]string `json:"attributes,omitempty"`
 }
 
+type principalContextKey struct{}
+
+// ContextWithPrincipal carries only an already verified, normalized identity.
+// Raw credentials must never be placed in context values.
+func ContextWithPrincipal(ctx context.Context, principal Principal) (context.Context, error) {
+	if ctx == nil || principal.Validate() != nil {
+		return nil, aorerrors.New(aorerrors.CodeUnauthorized, "", nil)
+	}
+	return context.WithValue(ctx, principalContextKey{}, principal), nil
+}
+
+func PrincipalFromContext(ctx context.Context) (Principal, bool) {
+	if ctx == nil {
+		return Principal{}, false
+	}
+	principal, ok := ctx.Value(principalContextKey{}).(Principal)
+	if !ok || principal.Validate() != nil {
+		return Principal{}, false
+	}
+	return principal, true
+}
+
 // Validate checks only the shape and safe identity fields. Scope checks that
 // require a project or task belong to authz and are repeated there.
 func (p Principal) Validate() *aorerrors.Error {

@@ -30,9 +30,13 @@ func (d Decision) Allowed() bool { return d == DecisionAllow }
 // Action names used by the reference policy. Deployments may add action names
 // in a signed bundle, but unknown actions remain denied by the default rules.
 const (
+	ActionProjectCreate   = "project.create"
+	ActionProjectRead     = "project.read"
+	ActionProjectCommand  = "project.command"
 	ActionGoalRead        = "goal.read"
 	ActionPlanRead        = "plan.read"
 	ActionTaskRead        = "task.read"
+	ActionTaskCommand     = "task.command"
 	ActionRepoRead        = "repo.read"
 	ActionRepoWrite       = "repo.write"
 	ActionRepoApplyPatch  = "repo.apply_patch"

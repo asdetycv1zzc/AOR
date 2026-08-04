@@ -1,7 +1,7 @@
 {
   "aor": {
     "policy": {
-      "version": "sha256:661a8986a4f8810263c2319b993a68b85c70f917925af462174cd21fdeddb991",
+      "version": "sha256:ff66a524d00258784701414f5b0bb5c58c3e1b7cc8b073fb30ccbd3c67fdc9c7",
       "defaultDecision": "DENY",
       "maxWriteBytes": 1048576,
       "leaseTTLSeconds": 300,

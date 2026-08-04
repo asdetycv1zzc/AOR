@@ -20,24 +20,58 @@ side_effect_actions := {
 }
 
 read_actions := {
+	"project.read",
     "goal.read",
     "plan.read",
     "task.read",
     "knowledge.read",
 }
 
-valid_scope if {
+human_control_actions := {
+	"project.create",
+	"project.command",
+	"task.command",
+}
+
+valid_project_scope if {
     input.principal.id != ""
     input.principal.type != ""
     input.project.tenantId != ""
     input.project.id != ""
-    input.task.tenantId == input.project.tenantId
     input.principal.tenantId in {"", input.project.tenantId}
 }
 
+valid_task_scope if {
+	valid_project_scope
+	input.task.tenantId == input.project.tenantId
+	input.task.projectId == input.project.id
+	input.task.id != ""
+}
+
 read_allowed if {
-    valid_scope
+	valid_project_scope
     input.action in read_actions
+	input.action != "task.read"
+}
+
+read_allowed if {
+	valid_task_scope
+	input.action == "task.read"
+}
+
+human_control_allowed if {
+	valid_project_scope
+	input.action in human_control_actions
+	input.principal.type in {"USER", "BREAK_GLASS_ADMIN"}
+	input.principal.role in {"USER", "BREAK_GLASS_ADMIN"}
+	input.action != "task.command"
+}
+
+human_control_allowed if {
+	valid_task_scope
+	input.action == "task.command"
+	input.principal.type in {"USER", "BREAK_GLASS_ADMIN"}
+	input.principal.role in {"USER", "BREAK_GLASS_ADMIN"}
 }
 
 active_lease if {
@@ -48,7 +82,7 @@ active_lease if {
 }
 
 repo_write_allowed if {
-    valid_scope
+	valid_task_scope
     input.action in {"repo.write", "repo.apply_patch"}
     input.principal.type == "AGENT_INSTANCE"
     input.principal.role == "EXECUTOR"
@@ -66,6 +100,15 @@ decision := {
     "ruleId": "aor.read",
 } if {
     read_allowed
+}
+
+decision := {
+	"decision": "ALLOW",
+	"policyVersion": data.aor.policy.version,
+	"reasonCodes": ["HUMAN_CONTROL_ALLOWED", "PROJECT_SCOPE_VALID"],
+	"ruleId": "aor.human.control",
+} if {
+	human_control_allowed
 }
 
 decision := {
@@ -90,7 +133,7 @@ decision := {
     "reasonCodes": ["CURATOR_APPROVAL_REQUIRED"],
     "ruleId": "aor.approval.required",
 } if {
-    valid_scope
+    valid_project_scope
     input.action == "knowledge.write"
     input.principal.role == "KNOWLEDGE_CURATOR"
     not input.approval.id
@@ -106,18 +149,22 @@ matched if {
 }
 
 matched if {
+	human_control_allowed
+}
+
+matched if {
     repo_write_allowed
 }
 
 matched if {
-    valid_scope
+    valid_project_scope
     input.action == "knowledge.write"
     input.principal.role == "KNOWLEDGE_CURATOR"
     not input.approval.id
 }
 
 matched if {
-    valid_scope
+    valid_project_scope
     input.action == "knowledge.write"
     input.principal.role == "KNOWLEDGE_CURATOR"
     input.approval.id != ""
@@ -125,7 +172,7 @@ matched if {
 }
 
 matched if {
-    valid_scope
+    valid_project_scope
     input.action in side_effect_actions
     not active_lease
     not curator_missing_approval
@@ -138,7 +185,7 @@ decision := {
     "ruleId": "aor.knowledge.write",
     "constraints": {"expiresAt": input.lease.expiresAt},
 } if {
-    valid_scope
+    valid_project_scope
     input.action == "knowledge.write"
     input.principal.role == "KNOWLEDGE_CURATOR"
     input.approval.id != ""
@@ -151,7 +198,7 @@ decision := {
     "reasonCodes": ["LEASE_REQUIRED"],
     "ruleId": "aor.lease.required",
 } if {
-    valid_scope
+    valid_project_scope
     input.action in side_effect_actions
     not active_lease
     not curator_missing_approval

@@ -31,6 +31,7 @@ type Config struct {
 	NATS          NATSConfig
 	S3            S3Config
 	OPA           OPAConfig
+	Identity      IdentityConfig
 	ModelGateway  ModelGatewayConfig
 	Services      ServiceEndpoints
 	Sandbox       SandboxConfig
@@ -71,6 +72,14 @@ type S3Config struct {
 
 type OPAConfig struct {
 	URL string
+}
+
+type IdentityConfig struct {
+	Issuer          string
+	JWKSURL         string
+	Audience        string
+	DefaultTenantID string
+	DefaultRole     string
 }
 
 type ModelGatewayConfig struct {
@@ -133,6 +142,13 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 			SecretKeyRef: value(lookup, "AOR_S3_SECRET_KEY_REF", ""),
 		},
 		OPA: OPAConfig{URL: value(lookup, "AOR_OPA_URL", "http://opa:8181")},
+		Identity: IdentityConfig{
+			Issuer:          value(lookup, "AOR_OIDC_ISSUER", "http://identity:5556/dex"),
+			JWKSURL:         value(lookup, "AOR_OIDC_JWKS_URL", "http://identity:5556/dex/keys"),
+			Audience:        value(lookup, "AOR_OIDC_AUDIENCE", "aor-control-plane"),
+			DefaultTenantID: value(lookup, "AOR_OIDC_DEFAULT_TENANT_ID", ""),
+			DefaultRole:     value(lookup, "AOR_OIDC_DEFAULT_ROLE", ""),
+		},
 		Services: ServiceEndpoints{
 			API:          value(lookup, "AOR_API_URL", "http://aor-api:8080"),
 			ModelGateway: value(lookup, "AOR_MODEL_GATEWAY_URL", "http://aor-model-gateway:8080"),
@@ -199,8 +215,17 @@ func (config Config) Validate() error {
 	if needsOPA(config.Component) && !validURL(config.OPA.URL, "http", "https") {
 		return ErrInvalidConfiguration
 	}
+	if needsIdentity(config.Component) && (!validURL(config.Identity.Issuer, "http", "https") || !validURL(config.Identity.JWKSURL, "http", "https") || config.Identity.Audience == "" || len(config.Identity.Audience) > 512 || strings.ContainsAny(config.Identity.Audience, "\r\n\x00")) {
+		return ErrInvalidConfiguration
+	}
+	if (config.Identity.DefaultTenantID == "") != (config.Identity.DefaultRole == "") || config.Identity.DefaultTenantID != "" && (!validUUID(config.Identity.DefaultTenantID) || len(config.Identity.DefaultRole) > 128 || strings.ContainsAny(config.Identity.DefaultRole, "\r\n\x00/\\")) {
+		return ErrInvalidConfiguration
+	}
+	if config.Environment != EnvironmentDevelopment && config.Environment != EnvironmentTest && (config.Identity.DefaultTenantID != "" || config.Identity.DefaultRole != "") {
+		return ErrInvalidConfiguration
+	}
 	if config.Environment == EnvironmentProduction {
-		if (needsS3(config.Component) && !strings.HasPrefix(config.S3.Endpoint, "https://")) || (needsOPA(config.Component) && !strings.HasPrefix(config.OPA.URL, "https://")) || (needsNATS(config.Component) && !strings.HasPrefix(config.NATS.URL, "tls://")) {
+		if (needsS3(config.Component) && !strings.HasPrefix(config.S3.Endpoint, "https://")) || (needsOPA(config.Component) && !strings.HasPrefix(config.OPA.URL, "https://")) || (needsNATS(config.Component) && !strings.HasPrefix(config.NATS.URL, "tls://")) || (needsIdentity(config.Component) && (!strings.HasPrefix(config.Identity.Issuer, "https://") || !strings.HasPrefix(config.Identity.JWKSURL, "https://"))) {
 			return ErrInvalidConfiguration
 		}
 	}
@@ -319,6 +344,21 @@ func validListenAddress(address string) bool {
 	return err == nil && parsed > 0 && parsed <= 65535 && !strings.ContainsAny(host, "\r\n")
 }
 
+func validUUID(value string) bool {
+	if len(value) != 36 || value[8] != '-' || value[13] != '-' || value[18] != '-' || value[23] != '-' || value[14] < '1' || value[14] > '8' || !strings.ContainsRune("89abAB", rune(value[19])) {
+		return false
+	}
+	for index, character := range value {
+		if index == 8 || index == 13 || index == 18 || index == 23 {
+			continue
+		}
+		if !strings.ContainsRune("0123456789abcdefABCDEF", character) {
+			return false
+		}
+	}
+	return true
+}
+
 func oneOf(value string, options ...string) bool {
 	for _, option := range options {
 		if value == option {
@@ -350,6 +390,10 @@ func needsS3(component string) bool {
 
 func needsOPA(component string) bool {
 	return oneOf(component, "aor-server", "aor-tool-broker", "aor-worker")
+}
+
+func needsIdentity(component string) bool {
+	return oneOf(component, "aor-server", "aor-model-gateway", "aor-tool-broker")
 }
 
 func configurationError(key string) error {

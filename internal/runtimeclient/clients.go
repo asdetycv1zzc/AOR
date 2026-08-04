@@ -111,6 +111,11 @@ func Open(ctx context.Context, config runtimeconfig.Config, resolver *credential
 			return nil, unavailable("opa")
 		}
 	}
+	if requiresIdentity(config.Component) {
+		if err := checkHTTPHealth(ctx, clients.http, config.Identity.JWKSURL); err != nil {
+			return nil, unavailable("identity")
+		}
+	}
 	if config.Component == "aor-worker" {
 		for name, endpoint := range map[string]string{
 			"aor-api":           config.Services.API,
@@ -193,6 +198,11 @@ func (clients *Clients) Ready(ctx context.Context) error {
 	if requiresOPA(clients.config.Component) {
 		if err := checkHTTPHealth(ctx, clients.http, clients.config.OPA.URL+"/health"); err != nil {
 			return unavailable("opa")
+		}
+	}
+	if requiresIdentity(clients.config.Component) {
+		if err := checkHTTPHealth(ctx, clients.http, clients.config.Identity.JWKSURL); err != nil {
+			return unavailable("identity")
 		}
 	}
 	return nil
@@ -359,6 +369,10 @@ func requiresS3(component string) bool {
 
 func requiresOPA(component string) bool {
 	return component == "aor-server" || component == "aor-tool-broker" || component == "aor-worker"
+}
+
+func requiresIdentity(component string) bool {
+	return component == "aor-server" || component == "aor-model-gateway" || component == "aor-tool-broker"
 }
 
 func clear(value []byte) {
