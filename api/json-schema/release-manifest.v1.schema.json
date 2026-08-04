@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aor.local/supply-chain/release-manifest.v1.schema.json",
+  "title": "AOR Release Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "releaseVersion",
+    "sourceUri",
+    "sourceCommit",
+    "builderIdentity",
+    "buildType",
+    "materials",
+    "artifacts",
+    "sbomSha256",
+    "provenanceSha256",
+    "releaseEvidenceSha256",
+    "signature"
+  ],
+  "properties": {
+    "schemaVersion": {"const": "1.0"},
+    "releaseVersion": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "sourceUri": {"type": "string", "minLength": 1},
+    "sourceCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "builderIdentity": {"$ref": "#/$defs/identifier"},
+    "buildType": {"$ref": "#/$defs/identifier"},
+    "materials": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/material"}
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/artifact"}
+    },
+    "sbomSha256": {"$ref": "#/$defs/digest"},
+    "provenanceSha256": {"$ref": "#/$defs/digest"},
+    "releaseEvidenceSha256": {"$ref": "#/$defs/digest"},
+    "signature": {"$ref": "#/$defs/signature"}
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,255}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "material": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uri", "sha256"],
+      "properties": {
+        "uri": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "size", "kind", "mediaType", "signature"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/digest"},
+        "size": {"type": "integer", "minimum": 0},
+        "kind": {
+          "enum": [
+            "binary",
+            "container-image",
+            "deployment",
+            "license",
+            "notice",
+            "third-party-notices",
+            "sbom",
+            "provenance",
+            "release-evidence"
+          ]
+        },
+        "mediaType": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*(?:;[ -~]+)?$"
+        },
+        "signature": {"$ref": "#/$defs/signature"}
+      }
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "kid", "value"],
+      "properties": {
+        "algorithm": {"const": "Ed25519"},
+        "kid": {"$ref": "#/$defs/identifier"},
+        "value": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}
