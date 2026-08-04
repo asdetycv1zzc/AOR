@@ -78,10 +78,14 @@ type testRecorder struct{ calls int }
 
 func (r *testRecorder) Record(context.Context, Invocation) error { r.calls++; return nil }
 
-type testArtifacts struct{ called bool }
+type testArtifacts struct {
+	called    bool
+	mediaType string
+}
 
-func (a *testArtifacts) Put(_ context.Context, data []byte, _ string) (ArtifactRef, error) {
+func (a *testArtifacts) Put(_ context.Context, data []byte, mediaType string) (ArtifactRef, error) {
 	a.called = true
+	a.mediaType = mediaType
 	return ArtifactRef{URI: "artifact://out", SHA256: "sha256:out", Size: int64(len(data))}, nil
 }
 
@@ -134,8 +138,26 @@ func TestBrokerSpillsLargeOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := broker.Invoke(context.Background(), request())
-	if err != nil || result.Artifact == nil || !artifacts.called {
+	if err != nil || result.Artifact == nil || !artifacts.called || artifacts.mediaType != "application/json" {
 		t.Fatalf("artifact result = %#v err=%v", result, err)
+	}
+}
+
+func TestBrokerValidatesLargeOutputBeforeArtifactPublication(t *testing.T) {
+	d := descriptor()
+	d.MaxOutputBytes = 10
+	d.OutputSchema = []byte(`{"type":"object","required":["ok"]}`)
+	artifacts := &testArtifacts{}
+	executor := &testExecutor{output: []byte(`{"large":"123456789012345"}`)}
+	broker := New(&testLease{}, testPolicy{}, executor, artifacts, &testRecorder{}, nil, func() time.Time { return brokerTestNow })
+	if err := broker.Register(d); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := broker.Invoke(context.Background(), request()); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("large invalid output error = %v", err)
+	}
+	if artifacts.called {
+		t.Fatal("schema-invalid output was published as an artifact")
 	}
 }
 

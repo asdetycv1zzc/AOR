@@ -210,15 +210,12 @@ func (b *Broker) Invoke(ctx context.Context, request ToolRequest) (result ToolRe
 	// Authorization is deliberately evaluated before serving an idempotency
 	// replay. A revoked lease or policy must not turn the cache into an access
 	// control bypass, even though the underlying side effect remains coalesced.
-	if result, cached, conflict := b.cached(cacheKey, digest); cached || conflict {
-		if conflict {
-			return ToolResult{}, ErrIdempotencyConflict
-		}
-		return result, nil
-	}
-	call, owner, conflict := b.beginInvocation(cacheKey, digest)
+	call, cachedResult, owner, cached, conflict := b.beginInvocation(cacheKey, digest)
 	if conflict {
 		return ToolResult{}, ErrIdempotencyConflict
+	}
+	if cached {
+		return cachedResult, nil
 	}
 	if !owner {
 		select {
@@ -275,11 +272,14 @@ func (b *Broker) Invoke(ctx context.Context, request ToolRequest) (result ToolRe
 	}
 	redactedOutput, redacted := redact(output)
 	output = redactedOutput
+	if err := validateSchema(descriptor.OutputSchemaRef, descriptor.OutputSchema, output); err != nil {
+		return ToolResult{}, err
+	}
 	if len(output) > descriptor.MaxOutputBytes || len(output) > maxOutputBytes {
 		if b.artifacts == nil {
 			return ToolResult{}, ErrOutputTooLarge
 		}
-		artifact, artifactErr := b.artifacts.Put(ctx, output, "application/octet-stream")
+		artifact, artifactErr := b.artifacts.Put(ctx, output, "application/json")
 		if artifactErr != nil {
 			return ToolResult{}, artifactErr
 		}
@@ -291,9 +291,6 @@ func (b *Broker) Invoke(ctx context.Context, request ToolRequest) (result ToolRe
 		b.storeCached(cacheKey, digest, result)
 		return result, nil
 	}
-	if err := validateSchema(descriptor.OutputSchemaRef, descriptor.OutputSchema, output); err != nil {
-		return ToolResult{}, err
-	}
 	sum := sha256.Sum256(output)
 	result = ToolResult{InvocationID: stableInvocationID(request), Output: output, OutputSHA256: "sha256:" + hex.EncodeToString(sum[:]), TrustLevel: "UNTRUSTED", Redacted: redacted}
 	if err := b.record(executionCtx, request, descriptor, decision, result); err != nil {
@@ -303,15 +300,24 @@ func (b *Broker) Invoke(ctx context.Context, request ToolRequest) (result ToolRe
 	return result, nil
 }
 
-func (b *Broker) beginInvocation(key, digest string) (*inFlightInvocation, bool, bool) {
+func (b *Broker) beginInvocation(key, digest string) (*inFlightInvocation, ToolResult, bool, bool, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if entry, ok := b.cache[key]; ok {
+		if b.clock().UTC().Sub(entry.createdAt) > cacheTTL {
+			delete(b.cache, key)
+		} else if entry.digest != digest {
+			return nil, ToolResult{}, false, false, true
+		} else {
+			return nil, cloneResult(entry.result), false, true, false
+		}
+	}
 	if existing, ok := b.inflight[key]; ok {
-		return existing, false, existing.digest != digest
+		return existing, ToolResult{}, false, false, existing.digest != digest
 	}
 	call := &inFlightInvocation{digest: digest, done: make(chan struct{})}
 	b.inflight[key] = call
-	return call, true, false
+	return call, ToolResult{}, true, false, false
 }
 
 func (b *Broker) finishInvocation(key string, call *inFlightInvocation, result ToolResult, err error) {
@@ -321,23 +327,6 @@ func (b *Broker) finishInvocation(key string, call *inFlightInvocation, result T
 	delete(b.inflight, key)
 	close(call.done)
 	b.mu.Unlock()
-}
-
-func (b *Broker) cached(key, digest string) (ToolResult, bool, bool) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	entry, ok := b.cache[key]
-	if !ok {
-		return ToolResult{}, false, false
-	}
-	if b.clock().UTC().Sub(entry.createdAt) > cacheTTL {
-		delete(b.cache, key)
-		return ToolResult{}, false, false
-	}
-	if entry.digest != digest {
-		return ToolResult{}, false, true
-	}
-	return cloneResult(entry.result), true, false
 }
 
 func (b *Broker) storeCached(key, digest string, result ToolResult) {
