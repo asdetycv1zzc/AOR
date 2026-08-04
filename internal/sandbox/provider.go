@@ -48,6 +48,22 @@ type Provider struct {
 	mounts   []string
 }
 
+// Ready verifies that the backing execution runtime is available and still
+// advertises the security profile required by this provider. A worker must
+// fail closed when this check cannot complete.
+func (p *Provider) Ready(ctx context.Context) error {
+	if p == nil || p.backend == nil || ctx == nil {
+		return ErrBackendUnavailable
+	}
+	if checker, ok := p.backend.(interface{ Ready(context.Context) error }); ok {
+		return checker.Ready(ctx)
+	}
+	if p.platform == PlatformWindows {
+		return nil
+	}
+	return ErrBackendUnavailable
+}
+
 func NewLinuxProvider(backend Backend, runtimeName string, clock func() time.Time) *Provider {
 	return NewLinuxProviderWithOptions(backend, LinuxProviderOptions{RuntimeName: runtimeName}, clock)
 }

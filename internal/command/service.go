@@ -74,12 +74,24 @@ func runServer(component string, factory HandlerFactory) error {
 		if err != nil || domain == nil {
 			return ErrInvalidCommand
 		}
+		if closeable, ok := domain.(interface{ Close() error }); ok {
+			defer closeable.Close()
+		}
+	}
+	readiness := clients.Ready
+	if domainReady, ok := domain.(interface{ Ready() error }); ok {
+		readiness = func(checkCtx context.Context) error {
+			if err := clients.Ready(checkCtx); err != nil {
+				return err
+			}
+			return domainReady.Ready()
+		}
 	}
 	listener, err := net.Listen("tcp", config.ListenAddress)
 	if err != nil {
 		return err
 	}
-	return ServeWithHandler(ctx, component, listener, clients.Ready, domain)
+	return ServeWithHandler(ctx, component, listener, readiness, domain)
 }
 
 // Serve runs a bounded health and identity surface. Domain APIs remain owned

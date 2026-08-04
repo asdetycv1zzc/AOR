@@ -94,6 +94,16 @@ func NewDockerBackend(options DockerBackendOptions) (*DockerBackend, error) {
 	return &DockerBackend{binary: options.Binary, runtime: options.RuntimeName, seccomp: options.SeccompProfile, mandatoryPolicy: options.MandatoryPolicy, holdCommand: append([]string(nil), options.HoldCommand...), runner: options.Runner, blobs: options.BlobStore, maxOutput: options.MaxInlineOutputBytes}, nil
 }
 
+// Ready performs a non-mutating engine and security capability probe. It does
+// not create a container or pull an image.
+func (b *DockerBackend) Ready(ctx context.Context) error {
+	if b == nil || ctx == nil {
+		return ErrBackendUnavailable
+	}
+	_, err := b.inspectEngine(ctx)
+	return err
+}
+
 func (b *DockerBackend) Create(ctx context.Context, spec SandboxSpec) (attestation Attestation, err error) {
 	if spec.Platform != PlatformLinux || spec.NetworkPolicy.Mode != "DENY_ALL" {
 		return Attestation{}, ErrUnsupported

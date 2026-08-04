@@ -68,6 +68,13 @@ func TestLinuxProviderPinsHardenedAttestation(t *testing.T) {
 	}
 }
 
+func TestLinuxProviderReadinessFailsClosedWithoutBackendProbe(t *testing.T) {
+	provider := NewLinuxProvider(&fakeBackend{}, "runc", time.Now)
+	if err := provider.Ready(context.Background()); !errors.Is(err, ErrBackendUnavailable) {
+		t.Fatalf("readiness without probe = %v", err)
+	}
+}
+
 func TestWindowsProviderReportsNoneAndRejectsUnsafeWork(t *testing.T) {
 	provider := NewWindowsProvider(&fakeBackend{}, time.Now)
 	spec := linuxSpec()
