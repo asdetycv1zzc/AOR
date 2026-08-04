@@ -152,6 +152,14 @@ services:
         if [ "$$project_erasure_installed" != "t" ]; then
           psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000016_project_erasure.up.sql
         fi
+        relational_projection_sync_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT to_regclass('public.relational_spec_artifact_lookup_idx') IS NOT NULL")"
+        if [ "$$relational_projection_sync_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000017_relational_projection_sync.up.sql
+        fi
+        repository_submissions_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'submissions' AND column_name = 'request_sha256')")"
+        if [ "$$repository_submissions_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000018_repository_submissions.up.sql
+        fi
         unset AOR_APP_PASSWORD
     secrets: [postgres_password, postgres_app_password]
     volumes:
@@ -171,6 +179,8 @@ services:
       - ../../migrations/postgres/000014_project_initialization_selection.up.sql:/migrations/000014_project_initialization_selection.up.sql:ro
       - ../../migrations/postgres/000015_model_call_replays.up.sql:/migrations/000015_model_call_replays.up.sql:ro
       - ../../migrations/postgres/000016_project_erasure.up.sql:/migrations/000016_project_erasure.up.sql:ro
+      - ../../migrations/postgres/000017_relational_projection_sync.up.sql:/migrations/000017_relational_projection_sync.up.sql:ro
+      - ../../migrations/postgres/000018_repository_submissions.up.sql:/migrations/000018_repository_submissions.up.sql:ro
       - ./postgres-app-password.sql:/migrations/postgres-app-password.sql:ro
     read_only: true
     tmpfs: [/tmp]
@@ -460,6 +470,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/compose/Dockerfile
+      target: tool-broker-runtime
       network: host
       args:
         AOR_COMPONENT: aor-tool-broker
@@ -500,7 +511,11 @@ services:
       AOR_OIDC_AUDIENCE: aor-control-plane
       AOR_OIDC_DEFAULT_TENANT_ID: 11111111-1111-4111-8111-111111111111
       AOR_OIDC_DEFAULT_ROLE: USER
+      AOR_REPOSITORY_ROOT: /var/lib/aor/repositories
     secrets: [postgres_app_password, lease_signing_key, minio_root_user, minio_root_password]
+    volumes:
+      - repository-data:/var/lib/aor/repositories
+    cap_drop: [ALL]
     ports:
       - 127.0.0.1:8092:8080
 
@@ -574,6 +589,7 @@ volumes:
   postgres-data:
   nats-data:
   minio-data:
+  repository-data:
 
 secrets:
   postgres_password:

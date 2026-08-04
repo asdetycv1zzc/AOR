@@ -28,9 +28,20 @@ func TestDeploymentProfilesFailClosed(t *testing.T) {
 		"AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON", "AOR_SANDBOX_SHARED_ROOT",
 		"AOR_LEASE_SIGNING_KEY_REF: secret://lease_signing_key",
 		"000010_outbox_tenant_discovery.up.sql", "000012_artifact_project_uri_scope.up.sql",
+		"000017_relational_projection_sync.up.sql", "000018_repository_submissions.up.sql",
+		"target: tool-broker-runtime", "AOR_REPOSITORY_ROOT: /var/lib/aor/repositories", "repository-data:/var/lib/aor/repositories",
 	} {
 		if !strings.Contains(composeText, value) {
 			t.Errorf("compose missing %q", value)
+		}
+	}
+	dockerfile, err := os.ReadFile("../../deploy/compose/Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"FROM ${GO_IMAGE} AS tool-broker-runtime", "git=2.52.0-r0", "USER 65532:65532"} {
+		if !strings.Contains(string(dockerfile), value) {
+			t.Errorf("Dockerfile missing %q", value)
 		}
 	}
 	dex, err := os.ReadFile("../../deploy/compose/dex.yaml")
