@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "corpusVersion": "1.0.0",
+  "category": "model-output",
+  "cases": [
+    {
+      "id": "model-json-injection-001",
+      "vector": "json-injection",
+      "payload": "{\"action\":\"read\"}{\"action\":\"delete\"}",
+      "expectedDecision": "DENY",
+      "invariant": "Exactly one bounded JSON value is parsed and authorized."
+    },
+    {
+      "id": "model-schema-bypass-001",
+      "vector": "schema-bypass",
+      "payload": "{\"action\":\"read\",\"additionalAdminAction\":\"delete\"}",
+      "expectedDecision": "DENY",
+      "invariant": "Unknown or type-confused structured fields cannot bypass the declared Schema."
+    },
+    {
+      "id": "model-unicode-spoofing-001",
+      "vector": "unicode-spoofing",
+      "payload": "adm\u0131n and report\u202ejson",
+      "expectedDecision": "DENY",
+      "invariant": "Unicode confusables and bidirectional controls cannot alter identity or resource interpretation."
+    }
+  ]
+}

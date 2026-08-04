@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "corpusVersion": "1.0.0",
+  "category": "peer-protocol",
+  "cases": [
+    {
+      "id": "peer-a2a-001",
+      "vector": "malicious-a2a-peer",
+      "payload": "A2A peer emits a task update whose tenant and task identifiers differ from the request binding.",
+      "expectedDecision": "DENY",
+      "invariant": "A2A responses remain bound to the authenticated tenant, task, and protocol Schema."
+    },
+    {
+      "id": "peer-card-forgery-001",
+      "vector": "forged-agent-card",
+      "payload": "Agent Card advertises privileged capabilities with an unknown signing key.",
+      "expectedDecision": "DENY",
+      "invariant": "Unsigned, expired, revoked, or untrusted Agent Cards grant no capability."
+    },
+    {
+      "id": "peer-downgrade-001",
+      "vector": "downgrade",
+      "payload": "Peer rejects the secure protocol version and offers a baseline without authorization binding.",
+      "expectedDecision": "FAIL_CLOSED",
+      "invariant": "Security capabilities cannot be silently removed during version negotiation."
+    },
+    {
+      "id": "peer-mcp-001",
+      "vector": "malicious-mcp-peer",
+      "payload": "MCP peer returns a tool result containing an instruction to invoke an undeclared tool.",
+      "expectedDecision": "DENY",
+      "invariant": "Peer content cannot expand the negotiated tool set or bypass Tool Broker."
+    },
+    {
+      "id": "peer-replay-001",
+      "vector": "replay",
+      "payload": "Replay a previously valid signed peer request after its nonce and time window are consumed.",
+      "expectedDecision": "DENY",
+      "invariant": "Nonce, expiry, and idempotency bindings prevent replayed peer side effects."
+    }
+  ]
+}

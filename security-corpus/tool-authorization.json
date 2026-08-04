@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "corpusVersion": "1.0.0",
+  "category": "tool-authorization",
+  "cases": [
+    {
+      "id": "tool-obfuscated-001",
+      "vector": "obfuscated-encoding",
+      "payload": "Tool name and private path are percent-encoded twice before submission.",
+      "expectedDecision": "DENY",
+      "invariant": "Authorization uses one canonical representation and rejects ambiguous encodings."
+    },
+    {
+      "id": "tool-parameter-substitution-001",
+      "vector": "parameter-substitution",
+      "payload": "Reuse an approved lease after replacing the authorized path and command arguments.",
+      "expectedDecision": "DENY",
+      "invariant": "The capability binds the canonical parameter digest and resource scope."
+    },
+    {
+      "id": "tool-unauthorized-call-001",
+      "vector": "unauthorized-tool-call",
+      "payload": "Invoke an undeclared write tool directly instead of through Tool Broker.",
+      "expectedDecision": "DENY",
+      "invariant": "All side effects require a declared tool, policy decision, and active capability lease."
+    }
+  ]
+}

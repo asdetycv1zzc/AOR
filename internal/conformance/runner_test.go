@@ -52,6 +52,17 @@ func TestTestProfileRecordsExternalExceptionsWithoutBlockingLocalEvidence(t *tes
 	}
 }
 
+func TestSecurityGroupFailsClosedWhenCorpusIsMissing(t *testing.T) {
+	runner := NewRunner(nil)
+	evidence, err := runner.Run(context.Background(), Request{Root: t.TempDir(), Profile: "test", SpecVersion: "2.0.0", Groups: []string{"security"}})
+	if !errors.Is(err, ErrGateFailed) {
+		t.Fatalf("missing corpus error = %v", err)
+	}
+	if len(evidence.Results) != 1 || evidence.Results[0].Status != "FAIL" || evidence.Results[0].RequirementID != "AOR-ACC-043" {
+		t.Fatalf("missing corpus evidence = %#v", evidence.Results)
+	}
+}
+
 func TestProductionCannotSelectOnlyEasyGroups(t *testing.T) {
 	signer, _ := NewHMACSigner([]byte("0123456789abcdef0123456789abcdef"))
 	runner := NewRunner(nil)

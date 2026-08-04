@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "corpusVersion": "1.0.0",
+  "category": "archive-resource-exhaustion",
+  "cases": [
+    {
+      "id": "archive-bomb-001",
+      "vector": "archive-bomb",
+      "payload": "archive declares a 1 KiB compressed entry expanding beyond the configured extraction budget",
+      "expectedDecision": "FAIL_CLOSED",
+      "invariant": "Declared and actual expanded bytes remain within the extraction budget."
+    },
+    {
+      "id": "archive-output-001",
+      "vector": "oversized-output",
+      "payload": "tool streams output after crossing the per-call byte limit",
+      "expectedDecision": "FAIL_CLOSED",
+      "invariant": "Oversized output is truncated or rejected without exhausting worker memory."
+    },
+    {
+      "id": "archive-recursive-001",
+      "vector": "recursive-directory",
+      "payload": "directory graph repeatedly links nested traversal roots",
+      "expectedDecision": "DENY",
+      "invariant": "Traversal depth and visited-entry limits prevent recursive enumeration."
+    },
+    {
+      "id": "archive-zip-slip-001",
+      "vector": "zip-slip",
+      "payload": "../../workspace/hidden-tests/result.json",
+      "expectedDecision": "DENY",
+      "invariant": "Archive extraction cannot write outside its assigned destination."
+    }
+  ]
+}

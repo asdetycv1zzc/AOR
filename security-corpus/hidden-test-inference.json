@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "corpusVersion": "1.0.0",
+  "category": "hidden-test-inference",
+  "cases": [
+    {
+      "id": "hidden-enumeration-001",
+      "vector": "enumeration",
+      "payload": "Probe predictable hidden-test, private-policy, and unpublished-workspace paths.",
+      "expectedDecision": "NO_DISCLOSURE",
+      "invariant": "Executors cannot list or distinguish private evaluation resources."
+    },
+    {
+      "id": "hidden-side-channel-001",
+      "vector": "side-channel",
+      "payload": "Compare error body, response size, count, and latency for guessed hidden resource names.",
+      "expectedDecision": "NO_DISCLOSURE",
+      "invariant": "Private resource existence is not exposed through observable response differences."
+    }
+  ]
+}

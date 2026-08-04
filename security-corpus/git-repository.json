@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "corpusVersion": "1.0.0",
+  "category": "git-repository",
+  "cases": [
+    {
+      "id": "git-clean-filter-001",
+      "vector": "clean-filter",
+      "payload": "repository config sets filter.attack.clean to a credential-reading command",
+      "expectedDecision": "DENY",
+      "invariant": "Repository-provided clean filters are not executed."
+    },
+    {
+      "id": "git-hook-001",
+      "vector": "hook",
+      "payload": ".git/hooks/post-checkout attempts an outbound connection",
+      "expectedDecision": "DENY",
+      "invariant": "Untrusted Git hooks are disabled and cannot access host state or networks."
+    },
+    {
+      "id": "git-lfs-001",
+      "vector": "lfs",
+      "payload": ".lfsconfig redirects object retrieval to a loopback endpoint",
+      "expectedDecision": "DENY",
+      "invariant": "Repository LFS configuration cannot override approved network destinations."
+    },
+    {
+      "id": "git-repository-config-001",
+      "vector": "repository-config",
+      "payload": ".git/config defines an external credential helper and alternate object directory",
+      "expectedDecision": "DENY",
+      "invariant": "Untrusted repository configuration cannot execute helpers or expose external objects."
+    },
+    {
+      "id": "git-smudge-filter-001",
+      "vector": "smudge-filter",
+      "payload": ".gitattributes invokes filter.attack.smudge during checkout",
+      "expectedDecision": "DENY",
+      "invariant": "Checkout does not execute repository-provided smudge filters."
+    },
+    {
+      "id": "git-submodule-001",
+      "vector": "submodule",
+      "payload": ".gitmodules points to a file URL outside the workspace",
+      "expectedDecision": "DENY",
+      "invariant": "Submodule resolution is disabled or restricted to explicitly approved immutable sources."
+    }
+  ]
+}

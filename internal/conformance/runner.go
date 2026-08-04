@@ -75,7 +75,7 @@ type Runner struct {
 	clock func() time.Time
 }
 
-var productionGroups = []string{"contracts", "state-machine", "idempotency", "a2a", "aop", "mcp", "authn", "authz", "budget", "tool-broker", "sandbox-linux", "sandbox-windows", "knowledge", "audit", "integration", "observability", "backup-restore", "chaos", "performance", "supply-chain", "full"}
+var productionGroups = []string{"contracts", "state-machine", "idempotency", "a2a", "aop", "mcp", "security", "authn", "authz", "budget", "tool-broker", "sandbox-linux", "sandbox-windows", "knowledge", "audit", "integration", "observability", "backup-restore", "chaos", "performance", "supply-chain", "full"}
 
 func NewRunner(clock func() time.Time) *Runner {
 	if clock == nil {
@@ -189,7 +189,13 @@ func runGroup(ctx context.Context, root, group string) ([]RequirementResult, err
 			return []RequirementResult{result}, err, false
 		}
 		return []RequirementResult{pass("AOR-INV-001", "artifact://conformance/state-machine")}, nil, false
-	case "security", "authn", "authz", "tool-broker", "sandbox-linux", "sandbox-windows", "budget", "knowledge", "audit":
+	case "security":
+		if findings := bootstrap.ValidateSecurityCorpus(root); len(findings) > 0 {
+			result, err := fail("AOR-ACC-043", findings[0].Code+": "+findings[0].Path+": "+findings[0].Message)
+			return []RequirementResult{result}, err, false
+		}
+		return []RequirementResult{inconclusive("AOR-ACC-043", "artifact://security-corpus/manifest.json")}, nil, true
+	case "authn", "authz", "tool-broker", "sandbox-linux", "sandbox-windows", "budget", "knowledge", "audit":
 		return []RequirementResult{inconclusive(environmentRequirement(group), "artifact://conformance/security/"+group)}, nil, true
 	case "observability":
 		return []RequirementResult{inconclusive("AOR-ACC-078", "artifact://conformance/observability")}, nil, true

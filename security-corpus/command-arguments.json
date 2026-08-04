@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "corpusVersion": "1.0.0",
+  "category": "command-arguments",
+  "cases": [
+    {
+      "id": "command-cmd-001",
+      "vector": "cmd",
+      "payload": "filename.txt & set",
+      "expectedDecision": "DENY",
+      "invariant": "cmd.exe metacharacters remain inert data and cannot start a second command."
+    },
+    {
+      "id": "command-powershell-001",
+      "vector": "powershell",
+      "payload": "filename.txt; Get-ChildItem Env:",
+      "expectedDecision": "DENY",
+      "invariant": "PowerShell arguments cannot be reinterpreted as script source."
+    },
+    {
+      "id": "command-shell-001",
+      "vector": "shell",
+      "payload": "--output=$(id)",
+      "expectedDecision": "DENY",
+      "invariant": "POSIX shell substitution is never evaluated from an untrusted argument."
+    }
+  ]
+}

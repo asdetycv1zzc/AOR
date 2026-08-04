@@ -1,4 +1,4 @@
-.PHONY: build test lint schema cross-language sdk backup-restore supply-chain repository-check secret-scan license-scan state-machine verify compose-check compose-check-secrets compose-pull compose-deps-up compose-aor-up compose-up compose-ps
+.PHONY: build test lint schema cross-language sdk backup-restore supply-chain repository-check secret-scan security-corpus license-scan state-machine verify compose-check compose-check-secrets compose-pull compose-deps-up compose-aor-up compose-up compose-ps
 
 GOCACHE ?= $(CURDIR)/.cache/go-build
 GOMODCACHE ?= $(CURDIR)/.cache/go-mod
@@ -46,13 +46,16 @@ repository-check:
 secret-scan:
 	go run ./cmd/aor-conformance secrets
 
+security-corpus:
+	go run ./cmd/aor-conformance security-corpus
+
 license-scan:
 	go run ./cmd/aor-conformance licenses
 
 state-machine:
 	go run ./cmd/aor-conformance state-machine
 
-verify: build lint test schema cross-language sdk backup-restore supply-chain repository-check secret-scan license-scan state-machine
+verify: build lint test schema cross-language sdk backup-restore supply-chain repository-check secret-scan security-corpus license-scan state-machine
 
 compose-check-secrets:
 	test -s deploy/compose/secrets/postgres_password

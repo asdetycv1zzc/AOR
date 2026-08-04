@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "corpusVersion": "1.0.0",
+  "category": "ssrf",
+  "cases": [
+    {
+      "id": "ssrf-dns-rebinding-001",
+      "vector": "dns-rebinding",
+      "payload": "https://rebind.invalid/data resolves publicly during validation and privately during dial",
+      "expectedDecision": "DENY",
+      "invariant": "The validated address set is bound to the actual connection."
+    },
+    {
+      "id": "ssrf-ipv4-ambiguity-001",
+      "vector": "ipv4-ambiguity",
+      "payload": "http://2130706433/admin",
+      "expectedDecision": "DENY",
+      "invariant": "Alternative IPv4 representations cannot disguise loopback or private addresses."
+    },
+    {
+      "id": "ssrf-ipv6-ambiguity-001",
+      "vector": "ipv6-ambiguity",
+      "payload": "http://[::ffff:127.0.0.1]/admin",
+      "expectedDecision": "DENY",
+      "invariant": "IPv4-mapped and compressed IPv6 forms receive the same address policy."
+    },
+    {
+      "id": "ssrf-loopback-001",
+      "vector": "loopback",
+      "payload": "http://127.0.0.1:8080/admin",
+      "expectedDecision": "DENY",
+      "invariant": "Loopback destinations are never reachable through network tools."
+    },
+    {
+      "id": "ssrf-metadata-001",
+      "vector": "cloud-metadata",
+      "payload": "http://169.254.169.254/latest/meta-data/",
+      "expectedDecision": "DENY",
+      "invariant": "Link-local cloud metadata endpoints are blocked."
+    },
+    {
+      "id": "ssrf-private-network-001",
+      "vector": "private-network",
+      "payload": "http://10.0.0.8/internal",
+      "expectedDecision": "DENY",
+      "invariant": "Private and otherwise non-global destinations are blocked."
+    },
+    {
+      "id": "ssrf-redirect-001",
+      "vector": "redirect",
+      "payload": "https://public.invalid/redirect-to-private",
+      "expectedDecision": "DENY",
+      "invariant": "Every redirect target is independently authorized and dial-bound."
+    }
+  ]
+}

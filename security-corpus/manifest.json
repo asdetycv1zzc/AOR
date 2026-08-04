@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "corpusVersion": "1.0.0",
+  "categories": [
+    {
+      "id": "archive-resource-exhaustion",
+      "file": "archive-resource-exhaustion.json",
+      "requirementIds": ["AOR-ACC-047"]
+    },
+    {
+      "id": "audit-evidence",
+      "file": "audit-evidence.json",
+      "requirementIds": ["AOR-ACC-048"]
+    },
+    {
+      "id": "budget-recursion",
+      "file": "budget-recursion.json",
+      "requirementIds": ["AOR-ACC-006", "AOR-ACC-072"]
+    },
+    {
+      "id": "command-arguments",
+      "file": "command-arguments.json",
+      "requirementIds": ["AOR-ACC-042", "AOR-ACC-047"]
+    },
+    {
+      "id": "git-repository",
+      "file": "git-repository.json",
+      "requirementIds": ["AOR-ACC-047"]
+    },
+    {
+      "id": "hidden-test-inference",
+      "file": "hidden-test-inference.json",
+      "requirementIds": ["AOR-ACC-043", "AOR-ACC-049"]
+    },
+    {
+      "id": "model-output",
+      "file": "model-output.json",
+      "requirementIds": ["AOR-ACC-053"]
+    },
+    {
+      "id": "path-boundary",
+      "file": "path-boundary.json",
+      "requirementIds": ["AOR-ACC-012", "AOR-ACC-046"]
+    },
+    {
+      "id": "peer-protocol",
+      "file": "peer-protocol.json",
+      "requirementIds": ["AOR-ACC-028", "AOR-ACC-030"]
+    },
+    {
+      "id": "prompt-context-injection",
+      "file": "prompt-injection.json",
+      "requirementIds": ["AOR-ACC-043"]
+    },
+    {
+      "id": "ssrf",
+      "file": "ssrf.json",
+      "requirementIds": ["AOR-ACC-045"]
+    },
+    {
+      "id": "tenant-isolation",
+      "file": "tenant-isolation.json",
+      "requirementIds": ["AOR-ACC-052"]
+    },
+    {
+      "id": "tool-authorization",
+      "file": "tool-authorization.json",
+      "requirementIds": ["AOR-ACC-042", "AOR-ACC-043"]
+    }
+  ]
+}

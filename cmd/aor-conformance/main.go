@@ -68,6 +68,8 @@ func main() {
 		}
 	case "secrets":
 		findings = bootstrap.ScanSecrets(root)
+	case "security-corpus":
+		findings = bootstrap.ValidateSecurityCorpus(root)
 	case "licenses":
 		findings = bootstrap.ValidateLicenseBaseline(root)
 	default:

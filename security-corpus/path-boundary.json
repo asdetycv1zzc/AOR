@@ -1,13 +1,42 @@
 {
-  "corpusVersion": "1.0",
+  "schemaVersion": 1,
+  "corpusVersion": "1.0.0",
+  "category": "path-boundary",
   "cases": [
-    {"id": "path-001", "input": "../outside", "expected": "DENY"},
-    {"id": "path-002", "input": ".git/config", "expected": "DENY"},
-    {"id": "path-003", "input": "owned/file.go", "expected": "ALLOW_IF_OWNED"},
-    {"id": "path-004", "input": ".GIT/config", "expected": "DENY"},
-    {"id": "path-005", "input": "owned/caf\u00e9.go", "expected": "DENY"},
-    {"id": "path-006", "input": "owned/cafe\u0301.go", "expected": "DENY"},
-    {"id": "path-007", "input": "junction-or-reparse-point", "expected": "DENY"},
-    {"id": "path-008", "input": "hard-link", "expected": "DENY"}
+    {
+      "id": "path-hard-link-001",
+      "vector": "hard-link",
+      "payload": "owned/alias-to-private-policy",
+      "expectedDecision": "DENY",
+      "invariant": "A hard link cannot make an unowned inode writable or readable."
+    },
+    {
+      "id": "path-junction-001",
+      "vector": "junction",
+      "payload": "owned/junction-to-hidden-tests",
+      "expectedDecision": "DENY",
+      "invariant": "Windows junctions and reparse points cannot escape the authorized root."
+    },
+    {
+      "id": "path-normalization-001",
+      "vector": "normalization",
+      "payload": ".GIT/../owned/cafe\u0301.go versus owned/caf\u00e9.go",
+      "expectedDecision": "DENY",
+      "invariant": "Case folding and Unicode normalization cannot bypass reserved or ownership checks."
+    },
+    {
+      "id": "path-symlink-001",
+      "vector": "symlink",
+      "payload": "owned/link-to-../../audit/private-policy",
+      "expectedDecision": "DENY",
+      "invariant": "Symlink resolution remains beneath the authorized root and target class."
+    },
+    {
+      "id": "path-traversal-001",
+      "vector": "traversal",
+      "payload": "owned/../../hidden-tests/case.json",
+      "expectedDecision": "DENY",
+      "invariant": "Parent traversal cannot leave the owned workspace."
+    }
   ]
 }

@@ -778,9 +778,18 @@ requirements:
     status: implemented
   - id: AOR-ACC-043
     title: Prompt injection cannot bypass Tool Broker knowledge policy or hidden-test isolation
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/toolbroker/broker.go
+      - internal/knowledge/service.go
+      - internal/sandbox/provider.go
+    tests:
+      - internal/bootstrap/security_corpus_test.go
+      - internal/toolbroker/broker_test.go
+      - internal/knowledge/service_test.go
+      - security-corpus/prompt-injection.json
+      - security-corpus/hidden-test-inference.json
+      - security-corpus/tool-authorization.json
+    evidenceType: versioned-security-corpus+go-test+live-agent-and-container-gate-required
     owner: security
     status: planned
   - id: AOR-ACC-044
@@ -802,7 +811,9 @@ requirements:
       - internal/toolbroker/network.go
     tests:
       - internal/toolbroker/network_test.go
-    evidenceType: go-test+resolved-dial-binding
+      - internal/bootstrap/security_corpus_test.go
+      - security-corpus/ssrf.json
+    evidenceType: go-test+versioned-security-corpus+resolved-dial-binding
     owner: security
     status: implemented
   - id: AOR-ACC-046
@@ -813,15 +824,25 @@ requirements:
       - internal/repository/file_open_windows.go
     tests:
       - internal/repository/service_test.go
+      - internal/bootstrap/security_corpus_test.go
       - security-corpus/path-boundary.json
-    evidenceType: go-test+cross-platform-filesystem-gate
+    evidenceType: go-test+versioned-security-corpus+cross-platform-filesystem-gate-required
     owner: security
     status: planned
   - id: AOR-ACC-047
     title: Malicious Linux dependency scripts cannot reach host credentials or unauthorized networks
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/sandbox/provider.go
+      - internal/sandbox/docker_backend.go
+      - internal/toolbroker/network.go
+    tests:
+      - internal/sandbox/provider_test.go
+      - internal/sandbox/docker_backend_test.go
+      - internal/bootstrap/security_corpus_test.go
+      - security-corpus/command-arguments.json
+      - security-corpus/git-repository.json
+      - security-corpus/archive-resource-exhaustion.json
+    evidenceType: versioned-security-corpus+go-test+live-linux-container-adversarial-gate-required
     owner: security
     status: planned
   - id: AOR-ACC-048
@@ -839,9 +860,15 @@ requirements:
     status: implemented
   - id: AOR-ACC-049
     title: Executors cannot read hidden tests private audit policy or unpublished workspaces
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/sandbox/provider.go
+      - internal/sandbox/docker_backend.go
+    tests:
+      - internal/sandbox/provider_test.go
+      - internal/sandbox/docker_backend_test.go
+      - internal/bootstrap/security_corpus_test.go
+      - security-corpus/hidden-test-inference.json
+    evidenceType: versioned-security-corpus+go-test+live-linux-container-isolation-gate-required
     owner: security
     status: planned
   - id: AOR-ACC-050
@@ -862,9 +889,14 @@ requirements:
     status: planned
   - id: AOR-ACC-052
     title: Tenant existence cannot be inferred through errors timing counts or enumeration
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/controlapi/handler.go
+      - internal/authz/engine.go
+    tests:
+      - internal/controlapi/handler_test.go
+      - internal/bootstrap/security_corpus_test.go
+      - security-corpus/tenant-isolation.json
+    evidenceType: versioned-security-corpus+go-test+preproduction-cross-tenant-timing-gate-required
     owner: security
     status: planned
   - id: AOR-ACC-053

@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "corpusVersion": "1.0.0",
+  "category": "tenant-isolation",
+  "cases": [
+    {
+      "id": "tenant-count-001",
+      "vector": "count-enumeration",
+      "payload": "Compare collection totals before and after another tenant creates a project.",
+      "expectedDecision": "NO_DISCLOSURE",
+      "invariant": "Counts and pagination are computed only over the authenticated tenant scope."
+    },
+    {
+      "id": "tenant-error-001",
+      "vector": "error-oracle",
+      "payload": "Compare errors for a nonexistent project ID and an existing project ID owned by another tenant.",
+      "expectedDecision": "NO_DISCLOSURE",
+      "invariant": "Cross-tenant and absent resources have equivalent public error semantics."
+    },
+    {
+      "id": "tenant-resource-id-001",
+      "vector": "resource-id-guessing",
+      "payload": "Request a known artifact identifier while authenticated to a different tenant.",
+      "expectedDecision": "NO_DISCLOSURE",
+      "invariant": "Resource identifiers never bypass tenant predicates and row-level security."
+    },
+    {
+      "id": "tenant-timing-001",
+      "vector": "timing-oracle",
+      "payload": "Measure repeated access latency for absent and cross-tenant project identifiers.",
+      "expectedDecision": "NO_DISCLOSURE",
+      "invariant": "Response timing does not provide a reliable tenant-existence oracle."
+    }
+  ]
+}
