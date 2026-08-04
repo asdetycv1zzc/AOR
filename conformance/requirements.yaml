@@ -875,9 +875,13 @@ requirements:
     title: Images binaries SBOM provenance and release manifests verify offline
     implementation:
       - internal/supplychain/verify.go
+      - internal/supplychain/bundle.go
+      - cmd/aor-release/main.go
+      - api/json-schema/release-manifest.v1.schema.json
     tests:
       - internal/supplychain/verify_test.go
-    evidenceType: offline-digest+ed25519-signature+sbom-provenance
+      - internal/supplychain/package_test.go
+    evidenceType: offline-digest+per-artifact-ed25519+signed-release-evidence+sbom-provenance-binding
     owner: security
     status: implemented
   - id: AOR-ACC-051
@@ -1329,16 +1333,20 @@ requirements:
   - id: AOR-ACC-097
     title: Deployment packages include licenses notices SBOM and provenance
     implementation:
-      - internal/supplychain/verify.go
+      - internal/supplychain/package.go
+      - internal/supplychain/bundle.go
+      - cmd/aor-release/main.go
+      - api/json-schema/release-input.v1.schema.json
+      - api/json-schema/release-manifest.v1.schema.json
       - LICENSE
       - NOTICE
       - deploy/
     tests:
+      - internal/supplychain/package_test.go
       - internal/supplychain/verify_test.go
-      - internal/bootstrap/validate_test.go
-    evidenceType: package-manifest+offline-sbom-provenance-gate
+    evidenceType: deterministic-package-assembly+license-notices+offline-sbom-provenance-signature-gate
     owner: operations
-    status: planned
+    status: implemented
   - id: AOR-ACC-098
     title: Repository has no unowned deferred work or skipped tests
     implementation:
