@@ -89,11 +89,24 @@ func (starter *ProjectLifecycleStarter) Start(ctx context.Context, request Proje
 	if starter == nil || starter.client == nil || ctx == nil || !validProjectLifecycleRequest(request) {
 		return ProjectLifecycleStartResult{}, ErrInvalidProjectLifecycle
 	}
-	workflowID := projectLifecycleWorkflowID(request.TenantID, request.ProjectID)
 	input := ProjectLifecycleInput{
 		TenantID: request.TenantID, ProjectID: request.ProjectID, CreatedBy: request.CreatedBy,
 		GoalAgentCount: request.GoalAgentCount, State: contracts.ProjectCreated, ProjectVersion: 1,
 	}
+	return starter.Ensure(ctx, input)
+}
+
+// Ensure starts a lifecycle at a durable projection checkpoint. Starting from
+// a later checkpoint allows deployments to adopt projects that predate the
+// lifecycle worker without requiring synthetic historical transitions.
+func (starter *ProjectLifecycleStarter) Ensure(ctx context.Context, input ProjectLifecycleInput) (ProjectLifecycleStartResult, error) {
+	if starter == nil || starter.client == nil || ctx == nil {
+		return ProjectLifecycleStartResult{}, ErrInvalidProjectLifecycle
+	}
+	if err := validateProjectLifecycleInput(input); err != nil {
+		return ProjectLifecycleStartResult{}, err
+	}
+	workflowID := projectLifecycleWorkflowID(input.TenantID, input.ProjectID)
 	run, err := starter.client.ExecuteWorkflow(ctx, temporalclient.StartWorkflowOptions{
 		ID: workflowID, TaskQueue: starter.taskQueue,
 		WorkflowIDReusePolicy:                    enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
