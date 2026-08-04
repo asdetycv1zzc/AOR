@@ -24,8 +24,24 @@ func TestToolBrokerRequiresDatabaseConfiguration(t *testing.T) {
 		t.Fatalf("missing tool broker database error = %v", err)
 	}
 	config, err := Load("aor-tool-broker", environment(map[string]string{"AOR_DATABASE_PASSWORD_REF": "secret://postgres/password", "AOR_LEASE_SIGNING_KEY_REF": "secret://authz/lease-signing-key", "AOR_DEPLOYMENT_PROFILE": "TEST", "AOR_S3_ACCESS_KEY_REF": "secret://minio/access-key", "AOR_S3_SECRET_KEY_REF": "secret://minio/secret-key"}))
-	if err != nil || config.Database.PasswordRef == "" || config.S3.AccessKeyRef == "" || config.S3.SecretKeyRef == "" {
+	if err != nil || config.Database.PasswordRef == "" || config.S3.AccessKeyRef == "" || config.S3.SecretKeyRef == "" || config.RepositoryRoot != "/var/lib/aor/repositories" {
 		t.Fatalf("tool broker config database=%#v s3=%#v err=%v", config.Database, config.S3, err)
+	}
+}
+
+func TestToolBrokerRejectsUnsafeRepositoryRoot(t *testing.T) {
+	for _, root := range []string{"relative/repositories", "/", "/var/lib/aor/../repositories", "/var/lib/aor/repositories\n"} {
+		_, err := Load("aor-tool-broker", environment(map[string]string{
+			"AOR_DATABASE_PASSWORD_REF": "secret://postgres/password",
+			"AOR_LEASE_SIGNING_KEY_REF": "secret://authz/lease-signing-key",
+			"AOR_DEPLOYMENT_PROFILE":    "TEST",
+			"AOR_S3_ACCESS_KEY_REF":     "secret://minio/access-key",
+			"AOR_S3_SECRET_KEY_REF":     "secret://minio/secret-key",
+			"AOR_REPOSITORY_ROOT":       root,
+		}))
+		if !errors.Is(err, ErrInvalidConfiguration) {
+			t.Fatalf("repository root %q error = %v", root, err)
+		}
 	}
 }
 

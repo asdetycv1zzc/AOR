@@ -30,6 +30,7 @@ type Config struct {
 	LeaseSigningKeyRef string
 	ListenAddress      string
 	KnowledgeRoot      string
+	RepositoryRoot     string
 	Database           DatabaseConfig
 	Temporal           TemporalConfig
 	NATS               NATSConfig
@@ -147,6 +148,7 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 		LeaseSigningKeyRef: value(lookup, "AOR_LEASE_SIGNING_KEY_REF", ""),
 		ListenAddress:      value(lookup, "AOR_LISTEN_ADDR", ":8080"),
 		KnowledgeRoot:      strictValue(lookup, "AOR_KNOWLEDGE_ROOT", "/var/lib/aor/knowledge"),
+		RepositoryRoot:     strictValue(lookup, "AOR_REPOSITORY_ROOT", "/var/lib/aor/repositories"),
 		Database: DatabaseConfig{
 			Host:        value(lookup, "AOR_DATABASE_HOST", "postgres"),
 			Name:        value(lookup, "AOR_DATABASE_NAME", "aor"),
@@ -259,7 +261,7 @@ func (config Config) Validate() error {
 	if !knownComponent(config.Component) || !oneOf(config.Environment, EnvironmentDevelopment, EnvironmentTest, EnvironmentPreproduction, EnvironmentProduction) || !validListenAddress(config.ListenAddress) {
 		return ErrInvalidConfiguration
 	}
-	if config.Component == "aor-tool-broker" && (!validSecretReference(config.LeaseSigningKeyRef) || !validDeploymentProfile(config.DeploymentProfile)) {
+	if config.Component == "aor-tool-broker" && (!validSecretReference(config.LeaseSigningKeyRef) || !validDeploymentProfile(config.DeploymentProfile) || !validKnowledgeRoot(config.RepositoryRoot)) {
 		return ErrInvalidConfiguration
 	}
 	if config.Component == "aor-server" && !validKnowledgeRoot(config.KnowledgeRoot) {
