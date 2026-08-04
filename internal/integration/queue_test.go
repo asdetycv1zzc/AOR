@@ -56,10 +56,33 @@ func (echoGate) Validate(_ context.Context, request Request) (VerifiedRequest, e
 
 type mismatchedGate struct{ echoGate }
 
+type revokingGate struct {
+	mu     sync.Mutex
+	calls  int
+	failAt int
+}
+
 func (mismatchedGate) Validate(ctx context.Context, request Request) (VerifiedRequest, error) {
 	verified, err := (echoGate{}).Validate(ctx, request)
 	verified.ExpectedVersion++
 	return verified, err
+}
+
+func (gate *revokingGate) Validate(ctx context.Context, request Request) (VerifiedRequest, error) {
+	gate.mu.Lock()
+	gate.calls++
+	revoked := gate.failAt > 0 && gate.calls >= gate.failAt
+	gate.mu.Unlock()
+	if revoked {
+		return VerifiedRequest{}, errors.New("authorization revoked")
+	}
+	return (echoGate{}).Validate(ctx, request)
+}
+
+func (gate *revokingGate) callCount() int {
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+	return gate.calls
 }
 
 func TestQueueRequiresAnAuthoritativeGate(t *testing.T) {
@@ -113,6 +136,44 @@ func TestQueueRejectsPathAndInterfaceConflictsBeforeMerge(t *testing.T) {
 	}
 	if _, err := queue.Merge(context.Background(), request); !errors.Is(err, ErrConflict) {
 		t.Fatalf("merge conflict error = %v", err)
+	}
+}
+
+func TestQueueRevalidatesAuthorizationImmediatelyBeforeMerge(t *testing.T) {
+	store := NewMemoryStore()
+	merger := &fakeMerger{commit: commit(7)}
+	gate := &revokingGate{failAt: 2}
+	queue, err := NewVerifiedQueue(store, merger, gate, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := validRequest()
+	result, err := queue.Merge(context.Background(), request)
+	if !errors.Is(err, ErrNotAudited) || !result.Pending {
+		t.Fatalf("commit-time authorization error = %v result=%#v", err, result)
+	}
+	stored, found, storeErr := store.Get(context.Background(), request.TenantID, request.IntegrationID)
+	if storeErr != nil || !found || !stored.Pending || merger.callCount() != 0 || gate.callCount() != 2 {
+		t.Fatalf("revoked merge state=%#v found=%t storeErr=%v merges=%d validations=%d", stored, found, storeErr, merger.callCount(), gate.callCount())
+	}
+}
+
+func TestQueueDoesNotAcceptMergeResultAfterAuthorizationRevocation(t *testing.T) {
+	store := NewMemoryStore()
+	merger := &fakeMerger{commit: commit(7)}
+	gate := &revokingGate{failAt: 3}
+	queue, err := NewVerifiedQueue(store, merger, gate, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := validRequest()
+	result, err := queue.Merge(context.Background(), request)
+	if !errors.Is(err, ErrNotAudited) || !result.Pending {
+		t.Fatalf("post-merge authorization error = %v result=%#v", err, result)
+	}
+	stored, found, storeErr := store.Get(context.Background(), request.TenantID, request.IntegrationID)
+	if storeErr != nil || !found || !stored.Pending || stored.Commit != "" || merger.callCount() != 1 || gate.callCount() != 3 {
+		t.Fatalf("revoked merge result state=%#v found=%t storeErr=%v merges=%d validations=%d", stored, found, storeErr, merger.callCount(), gate.callCount())
 	}
 }
 

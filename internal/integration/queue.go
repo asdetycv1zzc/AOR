@@ -124,8 +124,15 @@ func (q *Queue) Merge(ctx context.Context, request Request) (MergeResult, error)
 		if recovered, found, lookupErr := q.executor.Lookup(ctx, verified.IntegrationID); lookupErr != nil {
 			return MergeResult{}, lookupErr
 		} else if found {
+			if _, verifyErr := q.reverifyReservation(ctx, request, reservation); verifyErr != nil {
+				return reservation, verifyErr
+			}
 			return q.completeRecovered(ctx, reservation, recovered)
 		}
+	}
+	verified, err = q.reverifyReservation(ctx, request, reservation)
+	if err != nil {
+		return reservation, err
 	}
 	commits := make([]string, 0, len(verified.Candidates))
 	for _, candidate := range verified.Candidates {
@@ -136,7 +143,22 @@ func (q *Queue) Merge(ctx context.Context, request Request) (MergeResult, error)
 	if err != nil {
 		return MergeResult{TenantID: verified.TenantID, IntegrationID: verified.IntegrationID, ProjectID: verified.ProjectID, Audit: audit, Pending: true}, fmt.Errorf("%w: %v", ErrMergeConflict, err)
 	}
+	if _, err := q.reverifyReservation(ctx, request, reservation); err != nil {
+		return reservation, err
+	}
 	return q.completeRecovered(ctx, reservation, commit)
+}
+
+func (q *Queue) reverifyReservation(ctx context.Context, request Request, reservation MergeResult) (VerifiedRequest, error) {
+	verified, err := q.verify(ctx, request)
+	if err != nil {
+		return VerifiedRequest{}, err
+	}
+	digest, err := requestDigest(request, verified)
+	if err != nil || digest != reservation.RequestDigest {
+		return VerifiedRequest{}, ErrNotAudited
+	}
+	return verified, nil
 }
 
 func (q *Queue) completeRecovered(ctx context.Context, reservation MergeResult, commit string) (MergeResult, error) {

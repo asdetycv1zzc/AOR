@@ -229,16 +229,9 @@ func (b *Broker) Invoke(ctx context.Context, request ToolRequest) (result ToolRe
 	if !b.allowRate(descriptor, request, b.clock().UTC()) {
 		return ToolResult{}, ErrRateLimited
 	}
-	if descriptor.SideEffect != SideEffectNone {
-		if b.revalidate == nil {
-			return ToolResult{}, ErrPolicyDenied
-		}
-		validation, err = b.leaseValidation(request, descriptor, b.clock().UTC())
-		if err != nil || b.lease.Validate(ctx, validation) != nil {
-			return ToolResult{}, ErrLeaseInvalid
-		}
-		if err := b.revalidate(ctx, request, descriptor); err != nil {
-			return ToolResult{}, fmt.Errorf("%w: %v", ErrPolicyDenied, err)
+	if descriptorWrites(descriptor) {
+		if err := b.revalidatePermanentEffect(ctx, request, descriptor); err != nil {
+			return ToolResult{}, err
 		}
 	}
 	if b.executor == nil {
@@ -275,7 +268,13 @@ func (b *Broker) Invoke(ctx context.Context, request ToolRequest) (result ToolRe
 	if err := validateSchema(descriptor.OutputSchemaRef, descriptor.OutputSchema, output); err != nil {
 		return ToolResult{}, err
 	}
-	if len(output) > descriptor.MaxOutputBytes || len(output) > maxOutputBytes {
+	oversized := len(output) > descriptor.MaxOutputBytes || len(output) > maxOutputBytes
+	if descriptorWrites(descriptor) || oversized {
+		if err := b.revalidatePermanentEffect(ctx, request, descriptor); err != nil {
+			return ToolResult{}, err
+		}
+	}
+	if oversized {
 		if b.artifacts == nil {
 			return ToolResult{}, ErrOutputTooLarge
 		}
@@ -298,6 +297,26 @@ func (b *Broker) Invoke(ctx context.Context, request ToolRequest) (result ToolRe
 	}
 	b.storeCached(cacheKey, digest, result)
 	return result, nil
+}
+
+func (b *Broker) revalidatePermanentEffect(ctx context.Context, request ToolRequest, descriptor ToolDescriptor) error {
+	if b.revalidate == nil {
+		return ErrPolicyDenied
+	}
+	if descriptor.RequiresApproval == ApprovalAlways && !validApproval(request.Approval, b.clock()) {
+		return ErrApprovalRequired
+	}
+	validation, err := b.leaseValidation(request, descriptor, b.clock().UTC())
+	if err != nil {
+		return err
+	}
+	if err := b.lease.Validate(ctx, validation); err != nil {
+		return fmt.Errorf("%w: %v", ErrLeaseInvalid, err)
+	}
+	if err := b.revalidate(ctx, request, descriptor); err != nil {
+		return fmt.Errorf("%w: %v", ErrPolicyDenied, err)
+	}
+	return nil
 }
 
 func (b *Broker) beginInvocation(key, digest string) (*inFlightInvocation, ToolResult, bool, bool, bool) {

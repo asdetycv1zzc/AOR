@@ -2,10 +2,12 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,11 +18,37 @@ type testLeaseValidator struct{}
 
 type testSubmissionSigner struct{}
 
+type revokingLeaseValidator struct {
+	mu     sync.Mutex
+	calls  int
+	failAt int
+}
+
 func (testLeaseValidator) Validate(_ context.Context, validation LeaseValidation) error {
 	if validation.Proof.ID == "" || validation.Proof.FencingToken < 1 || validation.TenantID == "" || validation.ProjectID == "" || validation.TaskID == "" || validation.AttemptSeriesID == "" || validation.ModuleSpecRef.Validate() != nil || validation.AgentInstanceID == "" || validation.Role != "EXECUTOR" || validation.Action == "" || validation.ResourcePath == "" || !strings.HasPrefix(validation.ParameterDigest, "sha256:") {
 		return ErrLeaseStale
 	}
 	return nil
+}
+
+func (validator *revokingLeaseValidator) Validate(ctx context.Context, validation LeaseValidation) error {
+	if err := (testLeaseValidator{}).Validate(ctx, validation); err != nil {
+		return err
+	}
+	validator.mu.Lock()
+	defer validator.mu.Unlock()
+	validator.calls++
+	if validator.failAt > 0 && validator.calls >= validator.failAt {
+		return ErrLeaseStale
+	}
+	return nil
+}
+
+func (validator *revokingLeaseValidator) arm(failAt int) {
+	validator.mu.Lock()
+	validator.calls = 0
+	validator.failAt = failAt
+	validator.mu.Unlock()
 }
 
 func (testSubmissionSigner) Sign(_ context.Context, payload []byte) (*contracts.Signature, error) {
@@ -143,6 +171,108 @@ func TestServiceRejectsStaleLeaseAndSymlinkEscape(t *testing.T) {
 		if err := service.WriteFile(context.Background(), WriteRequest{WorkspaceID: workspace.ID, Path: "owned/case.txt", Content: []byte("denied"), Lease: lease}); err != ErrPathDenied {
 			t.Fatalf("case-folded alias error = %v", err)
 		}
+	}
+}
+
+func TestServiceRevalidatesLeaseAtEveryRepositoryCommitBoundary(t *testing.T) {
+	source := t.TempDir()
+	if _, err := runGit(source, "init", "-b", "main"); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, source, "owned/base.txt", "base\n")
+	writeTestFile(t, source, "owned/delete.txt", "delete\n")
+	if _, err := runGit(source, "add", "."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(source, "commit", "-m", "initial"); err != nil {
+		t.Fatal(err)
+	}
+	base, err := runGit(source, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base = strings.TrimSpace(base)
+	validator := &revokingLeaseValidator{}
+	store := NewMemorySubmissionStore()
+	service, err := NewService(t.TempDir(), validator, store, testSubmissionSigner{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := LeaseProof{ID: "lease-1", FencingToken: 7, ExpiresAt: time.Now().Add(time.Hour)}
+	workspace, err := service.CreateWorkspace(context.Background(), WorkspaceRequest{RepositoryPath: source, TenantID: "tenant-1", ProjectID: "project-1", TaskID: "task-1", Attempt: 1, AttemptSeriesID: "series-1", BaseCommit: base, ModuleSpec: testModule(), AgentIdentity: contracts.AgentIdentity{AgentInstanceID: "agent-1", Role: "EXECUTOR", LeaseID: lease.ID}, Lease: lease})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	validator.arm(2)
+	if err := service.WriteFile(context.Background(), WriteRequest{WorkspaceID: workspace.ID, Path: "owned/base.txt", Content: []byte("revoked\n"), Lease: lease}); !errors.Is(err, ErrLeaseStale) {
+		t.Fatalf("revoked write error = %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(workspace.Path, "owned", "base.txt"))
+	if err != nil || string(content) != "base\n" {
+		t.Fatalf("revoked write changed file: %q error=%v", content, err)
+	}
+
+	validator.arm(2)
+	deletePath := filepath.Join(workspace.Path, "owned", "delete.txt")
+	if err := service.DeleteFile(context.Background(), DeleteRequest{WorkspaceID: workspace.ID, Path: "owned/delete.txt", Lease: lease}); !errors.Is(err, ErrLeaseStale) {
+		t.Fatalf("revoked delete error = %v", err)
+	}
+	if _, err := os.Stat(deletePath); err != nil {
+		t.Fatalf("revoked delete removed file: %v", err)
+	}
+
+	validator.arm(0)
+	if err := service.WriteFile(context.Background(), WriteRequest{WorkspaceID: workspace.ID, Path: "owned/changed.txt", Content: []byte("changed\n"), Lease: lease}); err != nil {
+		t.Fatal(err)
+	}
+	submit := SubmissionRequest{WorkspaceID: workspace.ID, Attempt: 1, ClaimedCriteria: []string{"criterion-1"}, IdempotencyKey: "submit-race", Lease: lease}
+	validator.arm(2)
+	if _, err := service.Submit(context.Background(), submit); !errors.Is(err, ErrLeaseStale) {
+		t.Fatalf("lease revoked before git commit error = %v", err)
+	}
+	head, err := runGit(workspace.Path, "rev-parse", "HEAD")
+	if err != nil || strings.TrimSpace(head) != base {
+		t.Fatalf("revoked submission created commit %q error=%v", head, err)
+	}
+
+	validator.arm(4)
+	if _, err := service.Submit(context.Background(), submit); !errors.Is(err, ErrLeaseStale) {
+		t.Fatalf("lease revoked before submission publication error = %v", err)
+	}
+	if _, found, err := store.Get(context.Background(), workspace.TenantID, workspace.TaskID, workspace.AttemptSeriesID, workspace.Attempt); err != nil || found {
+		t.Fatalf("revoked submission was accepted: found=%t error=%v", found, err)
+	}
+}
+
+func TestServiceRevalidatesLeaseBeforeWorkspaceRegistration(t *testing.T) {
+	source := t.TempDir()
+	if _, err := runGit(source, "init", "-b", "main"); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, source, "owned/base.txt", "base\n")
+	if _, err := runGit(source, "add", "."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(source, "commit", "-m", "initial"); err != nil {
+		t.Fatal(err)
+	}
+	base, err := runGit(source, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	validator := &revokingLeaseValidator{failAt: 2}
+	service, err := NewService(t.TempDir(), validator, nil, testSubmissionSigner{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := LeaseProof{ID: "lease-1", FencingToken: 7, ExpiresAt: time.Now().Add(time.Hour)}
+	request := WorkspaceRequest{RepositoryPath: source, TenantID: "tenant-1", ProjectID: "project-1", TaskID: "task-1", Attempt: 1, AttemptSeriesID: "series-1", BaseCommit: strings.TrimSpace(base), ModuleSpec: testModule(), AgentIdentity: contracts.AgentIdentity{AgentInstanceID: "agent-1", Role: "EXECUTOR", LeaseID: lease.ID}, Lease: lease}
+	if _, err := service.CreateWorkspace(context.Background(), request); !errors.Is(err, ErrLeaseStale) {
+		t.Fatalf("revoked workspace registration error = %v", err)
+	}
+	if _, found := service.Workspace(workspaceID(request)); found {
+		t.Fatal("workspace created under revoked lease was registered")
 	}
 }
 

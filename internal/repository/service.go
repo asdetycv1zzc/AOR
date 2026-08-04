@@ -97,7 +97,8 @@ func (s *Service) CreateWorkspace(ctx context.Context, request WorkspaceRequest)
 	if err != nil {
 		return Workspace{}, err
 	}
-	if err := s.validateLease(ctx, LeaseValidation{Proof: request.Lease, Action: LeaseActionCreateWorkspace, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, AttemptSeriesID: request.AttemptSeriesID, Attempt: request.Attempt, ModuleSpecRef: moduleSpecRef, AgentInstanceID: request.AgentIdentity.AgentInstanceID, Role: request.AgentIdentity.Role, ResourcePath: directory, ParameterDigest: parameterDigest}); err != nil {
+	validation := LeaseValidation{Proof: request.Lease, Action: LeaseActionCreateWorkspace, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, AttemptSeriesID: request.AttemptSeriesID, Attempt: request.Attempt, ModuleSpecRef: moduleSpecRef, AgentInstanceID: request.AgentIdentity.AgentInstanceID, Role: request.AgentIdentity.Role, ResourcePath: directory, ParameterDigest: parameterDigest}
+	if err := s.validateLease(ctx, validation); err != nil {
 		return Workspace{}, err
 	}
 	if err := os.MkdirAll(filepath.Dir(directory), 0o700); err != nil {
@@ -114,6 +115,9 @@ func (s *Service) CreateWorkspace(ctx context.Context, request WorkspaceRequest)
 	}
 	workspace := Workspace{ID: id, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, Attempt: request.Attempt, AttemptSeriesID: request.AttemptSeriesID, Path: directory, Branch: workspaceBranch(request), BaseCommit: request.BaseCommit, AllowedPaths: append([]string(nil), request.ModuleSpec.AllowedPaths...), ForbiddenPaths: append([]string(nil), request.ModuleSpec.ForbiddenPaths...), AcceptanceCriteria: append([]string(nil), request.ModuleSpec.AcceptanceCriteria...), ModuleSpecRef: moduleSpecRef, AgentIdentity: request.AgentIdentity}
 	if err := checkoutCommit(ctx, workspace, request.BaseCommit); err != nil {
+		return Workspace{}, err
+	}
+	if err := s.validateLease(ctx, validation); err != nil {
 		return Workspace{}, err
 	}
 	s.mu.Lock()
@@ -151,6 +155,9 @@ func (s *Service) WriteFile(ctx context.Context, request WriteRequest) error {
 	}
 	if info, statErr := os.Lstat(target); statErr == nil && unsafePathInfo(info) {
 		return ErrPathDenied
+	}
+	if err := s.validateWorkspaceLease(ctx, workspace, request.Lease, LeaseActionWriteFile, relative, parameterDigest); err != nil {
+		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return err
@@ -195,6 +202,9 @@ func (s *Service) DeleteFile(ctx context.Context, request DeleteRequest) error {
 	}
 	target := filepath.Join(workspace.Path, filepath.FromSlash(relative))
 	if err := rejectSymlinkTree(workspace.Path, target); err != nil {
+		return err
+	}
+	if err := s.validateWorkspaceLease(ctx, workspace, request.Lease, LeaseActionDeleteFile, relative, parameterDigest); err != nil {
 		return err
 	}
 	if err := os.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -268,7 +278,7 @@ func (s *Service) Submit(ctx context.Context, request SubmissionRequest) (Submis
 		}
 		return cloneSubmission(prior), nil
 	}
-	changed, deleted, created, err := s.commitWorkspace(ctx, workspace, request.Lease, request.IdempotencyKey)
+	changed, deleted, created, err := s.commitWorkspace(ctx, workspace, request.Lease, requestDigest, request.IdempotencyKey)
 	if err != nil {
 		return Submission{}, err
 	}
@@ -295,6 +305,9 @@ func (s *Service) Submit(ctx context.Context, request SubmissionRequest) (Submis
 		return Submission{}, err
 	}
 	submission := Submission{Manifest: manifest, Workspace: cloneWorkspace(workspace), CommitAt: s.clock().UTC(), IdempotencyKey: request.IdempotencyKey, RequestSHA256: requestDigest}
+	if err := s.validateWorkspaceLease(ctx, workspace, request.Lease, LeaseActionSubmit, workspace.Path, requestDigest); err != nil {
+		return Submission{}, err
+	}
 	if err := s.store.Put(ctx, submission); err != nil {
 		return Submission{}, err
 	}
@@ -343,7 +356,7 @@ func (s *Service) validateLease(ctx context.Context, validation LeaseValidation)
 	return nil
 }
 
-func (s *Service) commitWorkspace(ctx context.Context, workspace Workspace, lease LeaseProof, idempotencyKey string) ([]string, []string, []string, error) {
+func (s *Service) commitWorkspace(ctx context.Context, workspace Workspace, lease LeaseProof, requestDigest, idempotencyKey string) ([]string, []string, []string, error) {
 	if !safeCommitMetadata(idempotencyKey) {
 		return nil, nil, nil, ErrInvalidRequest
 	}
@@ -376,11 +389,17 @@ func (s *Service) commitWorkspace(ctx context.Context, workspace Workspace, leas
 			return nil, nil, nil, pathErr
 		}
 	}
+	if err := s.validateWorkspaceLease(ctx, workspace, lease, LeaseActionSubmit, workspace.Path, requestDigest); err != nil {
+		return nil, nil, nil, err
+	}
 	if _, err := git(ctx, workspace.Path, "add", "--all", "."); err != nil {
 		return nil, nil, nil, ErrGitUnavailable
 	}
 	if _, err := git(ctx, workspace.Path, "diff", "--cached", "--check"); err != nil {
 		return nil, nil, nil, ErrRepositoryDirty
+	}
+	if err := s.validateWorkspaceLease(ctx, workspace, lease, LeaseActionSubmit, workspace.Path, requestDigest); err != nil {
+		return nil, nil, nil, err
 	}
 	if _, err := git(ctx, workspace.Path, "commit", "--no-verify", "-m", expectedMessage); err != nil {
 		return nil, nil, nil, ErrGitUnavailable

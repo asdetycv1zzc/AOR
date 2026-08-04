@@ -135,7 +135,7 @@ func TestBrokerSpillsLargeOutput(t *testing.T) {
 	d.MaxOutputBytes = 10
 	artifacts := &testArtifacts{}
 	executor := &testExecutor{output: []byte(`{"large":"123456789012345"}`)}
-	broker := New(&testLease{}, testPolicy{}, executor, artifacts, &testRecorder{}, nil, func() time.Time { return brokerTestNow })
+	broker := New(&testLease{}, testPolicy{}, executor, artifacts, &testRecorder{}, func(context.Context, ToolRequest, ToolDescriptor) error { return nil }, func() time.Time { return brokerTestNow })
 	if err := broker.Register(d); err != nil {
 		t.Fatal(err)
 	}
@@ -181,6 +181,54 @@ func TestBrokerRevalidatesExactLeaseBeforeEverySideEffect(t *testing.T) {
 	}
 	if len(lease.validations) != 2 || executor.calls != 0 {
 		t.Fatalf("side effect ran without second lease validation: validations=%d executions=%d", len(lease.validations), executor.calls)
+	}
+}
+
+func TestBrokerTreatsScopedFilesystemWritesAsPermanentEffects(t *testing.T) {
+	d := descriptor()
+	d.ToolID = "repo.inspect"
+	d.SideEffect = SideEffectNone
+	d.FilesystemAccess = FilesystemScopedWrite
+	lease := &testLease{failAt: 2}
+	executor := &testExecutor{output: []byte(`{}`)}
+	broker := New(lease, testPolicy{}, executor, nil, &testRecorder{}, func(context.Context, ToolRequest, ToolDescriptor) error { return nil }, func() time.Time { return brokerTestNow })
+	if err := broker.Register(d); err != nil {
+		t.Fatal(err)
+	}
+	changed := request()
+	changed.ToolID = d.ToolID
+	if _, err := broker.Invoke(context.Background(), changed); !errors.Is(err, ErrLeaseInvalid) {
+		t.Fatalf("scoped write with revoked lease error = %v", err)
+	}
+	if len(lease.validations) != 2 || executor.calls != 0 {
+		t.Fatalf("scoped write bypassed commit-time validation: validations=%d executions=%d", len(lease.validations), executor.calls)
+	}
+}
+
+func TestBrokerRejectsRevocationBeforePublishingExecutorResult(t *testing.T) {
+	d := descriptor()
+	d.ToolID = "repo.update"
+	d.SideEffect = SideEffectReversible
+	d.FilesystemAccess = FilesystemScopedWrite
+	d.MaxOutputBytes = 10
+	lease := &testLease{failAt: 3}
+	executor := &testExecutor{output: []byte(`{"large":"123456789012345"}`)}
+	artifacts := &testArtifacts{}
+	recorder := &testRecorder{}
+	broker := New(lease, testPolicy{}, executor, artifacts, recorder, func(context.Context, ToolRequest, ToolDescriptor) error { return nil }, func() time.Time { return brokerTestNow })
+	if err := broker.Register(d); err != nil {
+		t.Fatal(err)
+	}
+	changed := request()
+	changed.ToolID = d.ToolID
+	if _, err := broker.Invoke(context.Background(), changed); !errors.Is(err, ErrLeaseInvalid) {
+		t.Fatalf("post-execution revocation error = %v", err)
+	}
+	broker.mu.RLock()
+	cached := len(broker.cache)
+	broker.mu.RUnlock()
+	if len(lease.validations) != 3 || executor.calls != 1 || artifacts.called || recorder.calls != 0 || cached != 0 {
+		t.Fatalf("revoked result became trusted: validations=%d executions=%d artifact=%t records=%d cache=%d", len(lease.validations), executor.calls, artifacts.called, recorder.calls, cached)
 	}
 }
 
