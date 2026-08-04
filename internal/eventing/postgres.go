@@ -234,6 +234,9 @@ ORDER BY aggregate_type, aggregate_id`, tenantID)
 	if err := rows.Close(); err != nil {
 		return ReconciliationSnapshot{}, err
 	}
+	if err := validateRelationalProjectionSnapshot(ctx, tx, tenantID); err != nil {
+		return ReconciliationSnapshot{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return ReconciliationSnapshot{}, err
 	}

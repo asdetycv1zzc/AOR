@@ -782,6 +782,164 @@ func relationalDigest(parts ...string) [32]byte {
 	return sha256.Sum256(input)
 }
 
+func validateRelationalProjectionSnapshot(ctx context.Context, tx *sql.Tx, tenantID string) error {
+	checks := []struct {
+		table string
+		query string
+	}{
+		{table: "projects", query: `
+WITH online AS (
+  SELECT id::text AS id, state, state_version, active_goal_spec_id, active_plan_spec_id
+  FROM projects
+  WHERE tenant_id = $1::uuid
+), authoritative AS (
+  SELECT aggregate_id AS id, project_id::text AS project_id, aggregate_version, state_jsonb
+  FROM aggregate_projections
+  WHERE tenant_id = $1::uuid AND aggregate_type = 'project'
+)
+SELECT COALESCE(online.id, authoritative.id)
+FROM online
+FULL OUTER JOIN authoritative USING (id)
+WHERE online.id IS NULL OR authoritative.id IS NULL
+   OR authoritative.project_id <> online.id
+   OR authoritative.aggregate_version <> online.state_version
+   OR authoritative.state_jsonb->>'tenantId' <> $1::uuid::text
+   OR authoritative.state_jsonb->>'id' <> online.id
+   OR authoritative.state_jsonb->>'state' <> online.state
+   OR (authoritative.state_jsonb->>'version')::bigint <> online.state_version
+   OR COALESCE(jsonb_typeof(authoritative.state_jsonb->'plan') = 'object', false) <> (online.active_plan_spec_id IS NOT NULL)
+   OR COALESCE(authoritative.state_jsonb->'goal'->>'status' = 'APPROVED', false) <> (online.active_goal_spec_id IS NOT NULL)
+   OR (online.active_plan_spec_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1
+        FROM plan_specs AS plan
+        WHERE plan.tenant_id = $1::uuid AND plan.id = online.active_plan_spec_id
+          AND plan.project_id::text = online.id AND plan.status = 'PUBLISHED'
+          AND plan.version = (authoritative.state_jsonb->'plan'->>'version')::integer
+          AND plan.content_sha256 = authoritative.state_jsonb->'plan'->>'sha256'
+      ))
+   OR (online.active_goal_spec_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1
+        FROM goal_specs AS goal
+        WHERE goal.tenant_id = $1::uuid AND goal.id = online.active_goal_spec_id
+          AND goal.project_id::text = online.id AND goal.status = 'APPROVED'
+          AND goal.version = (authoritative.state_jsonb->'goal'->>'version')::integer
+          AND goal.content_sha256 = authoritative.state_jsonb->'goal'->>'sha256'
+      ))
+LIMIT 1`},
+		{table: "module_tasks", query: `
+WITH online AS (
+  SELECT task.id::text AS id, task.project_id::text AS project_id, task.state, task.state_version,
+         task.attempt_count, task.active_attempt_series_id::text AS active_attempt_series_id,
+         task.latest_fencing_token, spec.version AS module_version, spec.content_sha256 AS module_sha256
+  FROM module_tasks AS task
+  JOIN module_specs AS spec ON spec.tenant_id = task.tenant_id AND spec.id = task.module_spec_id
+  WHERE task.tenant_id = $1::uuid
+), authoritative AS (
+  SELECT aggregate_id AS id, project_id::text AS project_id, aggregate_version, state_jsonb
+  FROM aggregate_projections
+  WHERE tenant_id = $1::uuid AND aggregate_type = 'task'
+)
+SELECT COALESCE(online.id, authoritative.id)
+FROM online
+FULL OUTER JOIN authoritative USING (id)
+WHERE online.id IS NULL OR authoritative.id IS NULL
+   OR online.project_id <> authoritative.project_id
+   OR online.state_version <> authoritative.aggregate_version
+   OR authoritative.state_jsonb->>'tenantId' <> $1::uuid::text
+   OR authoritative.state_jsonb->>'projectId' <> online.project_id
+   OR authoritative.state_jsonb->>'id' <> online.id
+   OR authoritative.state_jsonb->>'state' <> online.state
+   OR (authoritative.state_jsonb->>'version')::bigint <> online.state_version
+   OR COALESCE((authoritative.state_jsonb->>'attempt')::integer, 0) <> online.attempt_count
+   OR authoritative.state_jsonb->>'attemptSeriesId' <> online.active_attempt_series_id
+   OR COALESCE((authoritative.state_jsonb->>'fencingToken')::bigint, 0) <> online.latest_fencing_token
+   OR (authoritative.state_jsonb->'moduleSpecRef'->>'version')::integer <> online.module_version
+   OR authoritative.state_jsonb->'moduleSpecRef'->>'sha256' <> online.module_sha256
+LIMIT 1`},
+		{table: "plan_specs", query: `
+SELECT plan.id::text
+FROM plan_specs AS plan
+JOIN projects AS project ON project.tenant_id = plan.tenant_id AND project.id = plan.project_id
+WHERE plan.tenant_id = $1::uuid
+  AND (
+    plan.schema_version <> 1
+    OR plan.project_id::text <> plan.content_jsonb->>'projectId'
+    OR plan.version <> (plan.content_jsonb->>'planSpecVersion')::integer
+    OR plan.content_sha256 <> plan.content_jsonb->>'sha256'
+    OR plan.status <> CASE WHEN project.active_plan_spec_id = plan.id THEN 'PUBLISHED' ELSE 'SUPERSEDED' END
+    OR NOT EXISTS (
+      SELECT 1
+      FROM goal_specs AS goal
+      WHERE goal.tenant_id = plan.tenant_id AND goal.id = plan.goal_spec_id
+        AND goal.project_id = plan.project_id
+        AND goal.version = (plan.content_jsonb->'goalSpecRef'->>'version')::integer
+        AND goal.content_sha256 = plan.content_jsonb->'goalSpecRef'->>'sha256'
+    )
+    OR NOT EXISTS (
+      SELECT 1
+      FROM aggregate_projections AS artifact
+      WHERE artifact.tenant_id = plan.tenant_id AND artifact.project_id = plan.project_id
+        AND artifact.aggregate_type = 'spec_artifact'
+        AND artifact.state_jsonb->>'kind' = 'PLAN_SPEC'
+        AND artifact.state_jsonb->>'version' = plan.version::text
+        AND artifact.state_jsonb->>'contentSha256' = plan.content_sha256
+        AND artifact.state_jsonb->>'createdBy' = plan.created_by_agent_id
+        AND (artifact.state_jsonb->>'createdAt')::timestamptz = plan.created_at
+        AND convert_from(decode(artifact.state_jsonb->>'content', 'base64'), 'UTF8')::jsonb = plan.content_jsonb
+    )
+  )
+LIMIT 1`},
+		{table: "module_specs", query: `
+SELECT module.id::text
+FROM module_specs AS module
+JOIN plan_specs AS plan ON plan.tenant_id = module.tenant_id AND plan.id = module.plan_spec_id
+WHERE module.tenant_id = $1::uuid
+  AND (
+    module.schema_version <> 1
+    OR module.project_id <> plan.project_id
+    OR module.project_id::text <> module.content_jsonb->>'projectId'
+    OR module.module_id <> module.content_jsonb->>'moduleId'
+    OR module.version <> (module.content_jsonb->>'moduleSpecVersion')::integer
+    OR module.content_sha256 <> module.content_jsonb->>'sha256'
+    OR module.execution_platform <> module.content_jsonb->>'executionPlatform'
+    OR module.isolation_level <> module.content_jsonb->>'sandboxLevel'
+    OR plan.version <> (module.content_jsonb->>'planVersion')::integer
+    OR NOT EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements(plan.content_jsonb->'modules') AS planned
+      WHERE planned->>'moduleId' = module.module_id
+        AND planned->>'risk' = module.risk_level
+        AND planned->>'executionPlatform' = module.execution_platform
+        AND planned->>'sandboxLevel' = module.isolation_level
+    )
+    OR NOT EXISTS (
+      SELECT 1
+      FROM aggregate_projections AS artifact
+      WHERE artifact.tenant_id = module.tenant_id AND artifact.project_id = module.project_id
+        AND artifact.aggregate_type = 'spec_artifact'
+        AND artifact.state_jsonb->>'kind' = 'MODULE_SPEC'
+        AND artifact.state_jsonb->>'version' = module.version::text
+        AND artifact.state_jsonb->>'contentSha256' = module.content_sha256
+        AND (artifact.state_jsonb->>'createdAt')::timestamptz = module.created_at
+        AND convert_from(decode(artifact.state_jsonb->>'content', 'base64'), 'UTF8')::jsonb = module.content_jsonb
+    )
+  )
+LIMIT 1`},
+	}
+	for _, check := range checks {
+		var rowID string
+		err := tx.QueryRowContext(ctx, check.query, tenantID).Scan(&rowID)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("validate %s relational projection: %w", check.table, err)
+		}
+		return fmt.Errorf("%w: %s/%s", ErrRelationalProjectionDrift, check.table, rowID)
+	}
+	return nil
+}
+
 func relationalError(scope string) error {
 	return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": scope})
 }

@@ -48,12 +48,25 @@ func TestPostgresDurableReconciliationDetectsOnlineDrift(t *testing.T) {
 	if _, err := admin.ExecContext(ctx, `INSERT INTO tenants (id, name) VALUES ($1::uuid, $2)`, tenantID, "projection-reconciliation"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := admin.ExecContext(ctx, `
-INSERT INTO projects
-  (id, tenant_id, name, state, state_version, data_classification, deployment_targets_jsonb,
-   risk_tolerance, goal_agent_count, created_by, created_at, updated_at)
-VALUES ($1::uuid, $2::uuid, 'projection reconciliation', 'PLANNING', 1, 'INTERNAL', '[]'::jsonb,
-        'MEDIUM', 1, 'test', $3, $3)`, projectID, tenantID, now); err != nil {
+	store := eventing.NewPostgresStore(app)
+	projectState := reconciliationProjectState(t, tenantID, projectID)
+	projectDigest, err := canonicaljson.Digest(projectState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Execute(ctx, eventing.TransactionRequest{
+		TenantID: tenantID, PrincipalID: "projection-reconciliation", IdempotencyKey: "create-project",
+		RequestSHA256: "sha256:" + strings.Repeat("4", 64), Result: projectState, ResultSHA256: projectDigest,
+		Updates: []eventing.ProjectionUpdate{{
+			TenantID: tenantID, ProjectID: projectID, AggregateType: "project", AggregateID: projectID,
+			ExpectedVersion: 0, NextVersion: 1, State: projectState,
+		}},
+		Events: []eventing.DomainEvent{{
+			EventID: uuid.Must(uuid.NewV7()).String(), TenantID: tenantID, ProjectID: projectID,
+			AggregateType: "project", AggregateID: projectID, AggregateVersion: 1,
+			Type: "io.aor.project.created.v1", Payload: projectState, PayloadSHA256: projectDigest, OccurredAt: now,
+		}},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	assertReplayStatePairRejected(t, ctx, admin, tenantID, projectID, nil, "sha256:"+strings.Repeat("7", 64), now)
@@ -64,7 +77,6 @@ VALUES ($1::uuid, $2::uuid, 'projection reconciliation', 'PLANNING', 1, 'INTERNA
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := eventing.NewPostgresStore(app)
 	if _, err := store.Execute(ctx, eventing.TransactionRequest{
 		TenantID:       tenantID,
 		PrincipalID:    "projection-reconciliation",
@@ -85,8 +97,17 @@ VALUES ($1::uuid, $2::uuid, 'projection reconciliation', 'PLANNING', 1, 'INTERNA
 	}
 
 	report, err := VerifyDurable(ctx, store, tenantID)
-	if err != nil || !report.Converged || report.EventCount != 1 || report.OnlineCount != 1 {
+	if err != nil || !report.Converged || report.EventCount != 2 || report.OnlineCount != 2 {
 		t.Fatalf("durable report=%#v error=%v", report, err)
+	}
+	if _, err := admin.ExecContext(ctx, `UPDATE projects SET state = 'PAUSED' WHERE tenant_id = $1::uuid AND id = $2::uuid`, tenantID, projectID); err != nil {
+		t.Fatal(err)
+	}
+	if report, err = VerifyDurable(ctx, store, tenantID); !errors.Is(err, ErrProjectionDrift) || report.Converged {
+		t.Fatalf("relational drift report=%#v error=%v", report, err)
+	}
+	if _, err := admin.ExecContext(ctx, `UPDATE projects SET state = 'PLANNING' WHERE tenant_id = $1::uuid AND id = $2::uuid`, tenantID, projectID); err != nil {
+		t.Fatal(err)
 	}
 	drifted := reconciliationState(t, tenantID, projectID, aggregateID, "DRIFTED")
 	if _, err := admin.ExecContext(ctx, `
@@ -127,6 +148,21 @@ func reconciliationState(t *testing.T, tenantID, projectID, aggregateID, state s
 	t.Helper()
 	encoded, err := json.Marshal(map[string]any{
 		"tenantId": tenantID, "projectId": projectID, "id": aggregateID, "version": 1, "state": state,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
+func reconciliationProjectState(t *testing.T, tenantID, projectID string) json.RawMessage {
+	t.Helper()
+	encoded, err := json.Marshal(map[string]any{
+		"tenantId": tenantID, "id": projectID, "state": "PLANNING", "version": 1,
+		"name": "projection reconciliation", "goalAgentCount": 1,
+		"dataClassification": "INTERNAL", "deploymentTargets": []string{},
+		"riskTolerance": "MEDIUM", "createdBy": "projection-reconciliation",
+		"budgetCurrency": "USD", "budgetHardLimitMinor": 100, "budgetSoftLimitMinor": 80,
 	})
 	if err != nil {
 		t.Fatal(err)

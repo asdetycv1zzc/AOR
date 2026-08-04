@@ -146,6 +146,9 @@ func ReconcileDurable(ctx context.Context, source eventing.ReconciliationSource,
 func VerifyDurable(ctx context.Context, source eventing.ReconciliationSource, tenantID string) (ReconciliationReport, error) {
 	report, err := ReconcileDurable(ctx, source, tenantID)
 	if err != nil {
+		if errors.Is(err, eventing.ErrRelationalProjectionDrift) {
+			return ReconciliationReport{}, fmt.Errorf("%w: %v", ErrProjectionDrift, err)
+		}
 		return ReconciliationReport{}, err
 	}
 	if !report.Converged {

@@ -153,6 +153,9 @@ func TestVerifyDurableUsesAuthoritativeAtomicSnapshotAndFailsOnDrift(t *testing.
 	if _, err := ReconcileDurable(ctx, staticReconciliationSource{snapshot: snapshot}, "tenant_1"); err == nil {
 		t.Fatal("tampered immutable replay state was accepted")
 	}
+	if _, err := VerifyDurable(ctx, staticReconciliationSource{err: eventing.ErrRelationalProjectionDrift}, "tenant_1"); !errors.Is(err, ErrProjectionDrift) {
+		t.Fatalf("relational drift error=%v", err)
+	}
 }
 
 type staticProjectionCatalog struct {
@@ -161,11 +164,15 @@ type staticProjectionCatalog struct {
 
 type staticReconciliationSource struct {
 	snapshot eventing.ReconciliationSnapshot
+	err      error
 }
 
 func (source staticReconciliationSource) LoadReconciliationSnapshot(ctx context.Context, tenantID string) (eventing.ReconciliationSnapshot, error) {
 	if err := ctx.Err(); err != nil {
 		return eventing.ReconciliationSnapshot{}, err
+	}
+	if source.err != nil {
+		return eventing.ReconciliationSnapshot{}, source.err
 	}
 	return source.snapshot, nil
 }

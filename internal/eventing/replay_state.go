@@ -10,7 +10,10 @@ import (
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 )
 
-var ErrReplayStateUnavailable = errors.New("authoritative replay state is unavailable")
+var (
+	ErrReplayStateUnavailable    = errors.New("authoritative replay state is unavailable")
+	ErrRelationalProjectionDrift = errors.New("relational projection differs from authoritative aggregate state")
+)
 
 type replayResultCandidate struct {
 	EventIDs     []string

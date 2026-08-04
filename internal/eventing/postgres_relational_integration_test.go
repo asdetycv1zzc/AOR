@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -142,6 +143,56 @@ VALUES ($1::uuid, $2::uuid, $3::uuid, 1, 'APPROVED', 1, '{}'::jsonb, $4,
 	}
 	if storedState != "DEFINED" || activeSeries != seriesID {
 		t.Fatalf("task state=%q active series=%q", storedState, activeSeries)
+	}
+	checks := []struct {
+		name        string
+		driftSQL    string
+		driftArgs   []any
+		restoreSQL  string
+		restoreArgs []any
+	}{
+		{
+			name:        "projects",
+			driftSQL:    `UPDATE projects SET state = 'PAUSED' WHERE tenant_id = $1::uuid AND id = $2::uuid`,
+			driftArgs:   []any{tenantID, projectID},
+			restoreSQL:  `UPDATE projects SET state = 'EXECUTING' WHERE tenant_id = $1::uuid AND id = $2::uuid`,
+			restoreArgs: []any{tenantID, projectID},
+		},
+		{
+			name:        "module_tasks",
+			driftSQL:    `UPDATE module_tasks SET state = 'PLANNING' WHERE tenant_id = $1::uuid AND id = $2::uuid`,
+			driftArgs:   []any{tenantID, taskID},
+			restoreSQL:  `UPDATE module_tasks SET state = 'DEFINED' WHERE tenant_id = $1::uuid AND id = $2::uuid`,
+			restoreArgs: []any{tenantID, taskID},
+		},
+		{
+			name:        "plan_specs",
+			driftSQL:    `UPDATE plan_specs SET content_jsonb = '{}'::jsonb WHERE tenant_id = $1::uuid AND project_id = $2::uuid`,
+			driftArgs:   []any{tenantID, projectID},
+			restoreSQL:  `UPDATE plan_specs SET content_jsonb = $3::jsonb WHERE tenant_id = $1::uuid AND project_id = $2::uuid`,
+			restoreArgs: []any{tenantID, projectID, planContent},
+		},
+		{
+			name:        "module_specs",
+			driftSQL:    `UPDATE module_specs SET content_jsonb = '{}'::jsonb WHERE tenant_id = $1::uuid AND project_id = $2::uuid`,
+			driftArgs:   []any{tenantID, projectID},
+			restoreSQL:  `UPDATE module_specs SET content_jsonb = $3::jsonb WHERE tenant_id = $1::uuid AND project_id = $2::uuid`,
+			restoreArgs: []any{tenantID, projectID, moduleContent},
+		},
+	}
+	for _, check := range checks {
+		if _, err := admin.ExecContext(ctx, check.driftSQL, check.driftArgs...); err != nil {
+			t.Fatalf("drift %s: %v", check.name, err)
+		}
+		if _, err := store.LoadReconciliationSnapshot(ctx, tenantID); !errors.Is(err, ErrRelationalProjectionDrift) {
+			t.Fatalf("%s drift error=%v", check.name, err)
+		}
+		if _, err := admin.ExecContext(ctx, check.restoreSQL, check.restoreArgs...); err != nil {
+			t.Fatalf("restore %s: %v", check.name, err)
+		}
+	}
+	if _, err := store.LoadReconciliationSnapshot(ctx, tenantID); err != nil {
+		t.Fatalf("restored relational projection: %v", err)
 	}
 }
 
