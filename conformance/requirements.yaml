@@ -744,18 +744,24 @@ requirements:
       - internal/projection/projector.go
       - internal/eventing/memory.go
       - internal/eventing/postgres.go
+      - internal/eventing/postgres_relational.go
       - internal/eventing/replay_state.go
       - internal/projection/replay.go
       - migrations/postgres/000021_event_replay_state.up.sql
+      - Makefile
+      - .github/workflows/ci.yml
     tests:
       - tests/integration/state_replay_test.go
       - internal/projection/projector_test.go
       - internal/projection/replay_test.go
       - internal/projection/postgres_integration_test.go
       - internal/eventing/postgres_relational_integration_test.go
+      - internal/eventing/postgres_replay_integration_test.go
+      - Makefile
+      - .github/workflows/ci.yml
     evidenceType: event-replay-digest+durable-full-reconciliation-required
     owner: persistence
-    status: planned
+    status: implemented
   - id: AOR-ACC-041
     title: Credentials are redacted and excluded from Agent-facing boundaries
     implementation:
