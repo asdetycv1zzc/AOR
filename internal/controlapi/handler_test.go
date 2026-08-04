@@ -73,7 +73,7 @@ func TestCreateProjectIsAuthenticatedAuthorizedAndIdempotent(t *testing.T) {
 	if err := json.Unmarshal(first.Body.Bytes(), &project); err != nil {
 		t.Fatal(err)
 	}
-	if project.ID != projectIDFor(testTenantID, "user-1", "project-create-1") || project.Version != 1 || first.Header().Get("ETag") != `"v1"` {
+	if !validProjectID(project.ID) || project.Version != 1 || first.Header().Get("ETag") != `"v1"` {
 		t.Fatalf("unexpected project response: %#v etag=%q", project, first.Header().Get("ETag"))
 	}
 
@@ -84,6 +84,10 @@ func TestCreateProjectIsAuthenticatedAuthorizedAndIdempotent(t *testing.T) {
 	})
 	if second.Code != http.StatusCreated {
 		t.Fatalf("duplicate status = %d body=%s", second.Code, second.Body.String())
+	}
+	var duplicate state.Project
+	if err := json.Unmarshal(second.Body.Bytes(), &duplicate); err != nil || duplicate.ID != project.ID {
+		t.Fatalf("duplicate project = %#v err=%v", duplicate, err)
 	}
 	events, err := store.ListEvents(context.Background(), testTenantID)
 	if err != nil || len(events) != 1 {

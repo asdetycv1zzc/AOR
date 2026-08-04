@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -23,6 +22,7 @@ import (
 	"github.com/akimisaka/aor/internal/orchestrator"
 	"github.com/akimisaka/aor/internal/state"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
+	"github.com/google/uuid"
 )
 
 const maximumRequestBytes = 1 << 20
@@ -206,7 +206,12 @@ func (handler *Handler) createProject(response http.ResponseWriter, request *htt
 		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "project create"}))
 		return
 	}
-	projectID := projectIDFor(principal.TenantID, principal.ID, idempotencyKey)
+	projectUUID, err := uuid.NewV7()
+	if err != nil {
+		writeError(response, request, aorerrors.Wrap(aorerrors.CodeInternalError, "", err, nil))
+		return
+	}
+	projectID := projectUUID.String()
 	if err := authorizeVirtualProject(request.Context(), handler.authorizer, principal, projectID, "project.create", body.DataClassification); err != nil {
 		writeError(response, request, err)
 		return
@@ -618,15 +623,6 @@ func oneOf(value string, options ...string) bool {
 		}
 	}
 	return false
-}
-
-func projectIDFor(tenantID, principalID, idempotencyKey string) string {
-	value := sha256.Sum256([]byte(tenantID + "\x00" + principalID + "\x00" + idempotencyKey))
-	value[0] = value[0]&0x0f | 0xa0
-	value[6] = value[6]&0x0f | 0x50
-	value[8] = value[8]&0x3f | 0x80
-	encoded := hex.EncodeToString(value[:16])
-	return fmt.Sprintf("%s-%s-%s-%s-%s", encoded[:8], encoded[8:12], encoded[12:16], encoded[16:20], encoded[20:])
 }
 
 func taskPageCursor(projectID, taskID string) string {

@@ -59,6 +59,9 @@ func TestCoreMigrationContainsAtomicityAndIsolationConstraints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !strings.Contains(string(modelAuthorizerContent), "GRANT SELECT ON TABLE public.module_specs, public.module_tasks TO aor_app") {
+		t.Fatal("model authorizer migration is missing task and spec reads")
+	}
 	roleSQL := string(roleContent)
 	for _, value := range []string{
 		"CREATE ROLE aor_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS",
@@ -76,20 +79,28 @@ func TestCoreMigrationContainsAtomicityAndIsolationConstraints(t *testing.T) {
 	}
 	var manifest struct {
 		Migrations []struct {
-			File   string `json:"file"`
-			SHA256 string `json:"sha256"`
+			Version int    `json:"version"`
+			File    string `json:"file"`
+			SHA256  string `json:"sha256"`
 		} `json:"migrations"`
 	}
 	if err := json.Unmarshal(manifestContent, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	for index, migration := range []struct {
-		file    string
-		content []byte
-	}{{file: "000001_core.up.sql", content: content}, {file: "000002_inbox_claims.up.sql", content: claimContent}, {file: "000003_runtime_app_role.up.sql", content: roleContent}, {file: "000004_model_authorizer_reads.up.sql", content: modelAuthorizerContent}} {
-		sum := sha256.Sum256(migration.content)
+	if len(manifest.Migrations) == 0 {
+		t.Fatal("migration manifest is empty")
+	}
+	for index, migration := range manifest.Migrations {
+		if migration.Version != index+1 {
+			t.Fatalf("migration version %d is out of order", migration.Version)
+		}
+		migrationContent, readErr := os.ReadFile(filepath.Join("..", "..", "migrations", "postgres", migration.File))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		sum := sha256.Sum256(migrationContent)
 		digest := "sha256:" + hex.EncodeToString(sum[:])
-		if len(manifest.Migrations) != 4 || manifest.Migrations[index].File != migration.file || manifest.Migrations[index].SHA256 != digest {
+		if migration.SHA256 != digest {
 			t.Fatalf("migration manifest digest does not match %s", digest)
 		}
 	}

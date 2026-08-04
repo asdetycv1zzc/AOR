@@ -58,6 +58,28 @@ func TestServiceIsSoleIdempotentProjectStateWriter(t *testing.T) {
 	}
 }
 
+func TestCreateIdempotencyReturnsFirstUnpredictableProjectID(t *testing.T) {
+	store := eventing.NewMemoryStore()
+	service := newTestService(store)
+	request := ProjectRequest{
+		TenantID: "tenant_1", ProjectID: "01989f4d-0000-7000-8000-000000000001", PrincipalID: "usr_1", IdempotencyKey: "idem_create_random", ExpectedVersion: 0,
+		Command: state.ProjectCommand{Type: state.ProjectCommandCreate, Name: "project", GoalAgentCount: 1, DataClassification: "INTERNAL"},
+	}
+	first, err := service.HandleProject(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry := request
+	retry.ProjectID = "01989f4d-0000-7000-8000-000000000002"
+	second, err := service.HandleProject(context.Background(), retry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.Duplicate || second.Project.ID != first.Project.ID {
+		t.Fatalf("duplicate outcome = %#v first = %#v", second, first)
+	}
+}
+
 func TestServiceRejectsChangedIdempotentRequestAndStaleVersion(t *testing.T) {
 	store := eventing.NewMemoryStore()
 	service := newTestService(store)

@@ -76,7 +76,13 @@ func (s *Service) HandleProject(ctx context.Context, request ProjectRequest) (Pr
 	command.ProjectID = request.ProjectID
 	command.ActorID = request.PrincipalID
 	command.At = time.Time{}
-	digest, err := commandDigest(request.ExpectedVersion, command)
+	digestCommand := command
+	if digestCommand.Type == state.ProjectCommandCreate {
+		// The server allocates a fresh unpredictable ID for every attempt. The
+		// principal-scoped idempotency record returns the first committed ID.
+		digestCommand.ProjectID = ""
+	}
+	digest, err := commandDigest(request.ExpectedVersion, digestCommand)
 	if err != nil {
 		return ProjectOutcome{}, err
 	}
