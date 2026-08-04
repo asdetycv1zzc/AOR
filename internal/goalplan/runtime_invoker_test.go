@@ -62,6 +62,29 @@ func TestRuntimeAgentInvokerFailsClosedOnPreparationMismatch(t *testing.T) {
 	}
 }
 
+func TestRuntimeAgentInvokerFailsClosedOnModuleTaskMismatch(t *testing.T) {
+	now := time.Date(2035, 2, 3, 4, 5, 6, 0, time.UTC)
+	gateway := &runtimeInvokerGateway{response: modelgateway.NormalizedResponse{RequestID: "request_goal", Content: json.RawMessage(`{"ok":true}`)}}
+	runtime := newGoalPlanRuntime(t, now, gateway, &runtimeInvokerAuthority{})
+	prepared := initialGoalRuntimeInvocation(t, now)
+	prepared.Declaration.Role = agentruntime.RoleModulePlanner
+	prepared.Declaration.TaskID = "task_other"
+	prepared.Lease.Role = agentruntime.RoleModulePlanner
+	prepared.Lease.TaskID = "task_other"
+	prepared.Intent = aop.IntentDefineModule
+	invoker, _ := NewRuntimeAgentInvoker(runtime, runtimeInvocationPreparerFunc(func(context.Context, AgentInvocation) (RuntimeInvocation, error) {
+		return prepared, nil
+	}))
+	request := AgentInvocation{InvocationID: "run_goal", TenantID: "tenant_goal", ProjectID: "project_goal", TaskID: "task_module", Role: agentruntime.RoleModulePlanner, Stage: "MODULE_SPEC"}
+
+	if _, err := invoker.Invoke(context.Background(), request); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("mismatched module task error = %v", err)
+	}
+	if gateway.Calls() != 0 {
+		t.Fatalf("provider called after task mismatch: %d", gateway.Calls())
+	}
+}
+
 func TestRuntimeAgentInvokerRejectsInvalidStructuredOutput(t *testing.T) {
 	now := time.Date(2035, 2, 3, 4, 5, 6, 0, time.UTC)
 	gateway := &runtimeInvokerGateway{response: modelgateway.NormalizedResponse{RequestID: "request_goal", Content: json.RawMessage(`{"wrong":true}`)}}

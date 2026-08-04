@@ -89,6 +89,12 @@ func TestPlannerAutomaticallyAllocatesStableProductionTaskIdentities(t *testing.
 	if len(result.Publication.Tasks) != 2 || len(invoker.invocations) != 3 {
 		t.Fatalf("automatic planning result = %#v invocations=%d", result.Publication, len(invoker.invocations))
 	}
+	invocationTasks := make(map[string]bool, 2)
+	for _, invocation := range invoker.invocations {
+		if invocation.Role == agentruntime.RoleModulePlanner {
+			invocationTasks[invocation.TaskID] = true
+		}
+	}
 	firstIDs := make(map[string]string, len(result.Publication.Tasks))
 	for _, task := range result.Publication.Tasks {
 		if _, err := uuid.Parse(task.ID); err != nil {
@@ -96,6 +102,9 @@ func TestPlannerAutomaticallyAllocatesStableProductionTaskIdentities(t *testing.
 		}
 		if _, err := uuid.Parse(task.AttemptSeriesID); err != nil {
 			t.Fatalf("attempt series ID %q is not a UUID: %v", task.AttemptSeriesID, err)
+		}
+		if !invocationTasks[task.ID] {
+			t.Fatalf("module planner was not bound to task %q", task.ID)
 		}
 		firstIDs[task.ModuleSpecRef.SHA256] = task.ID + "/" + task.AttemptSeriesID
 	}

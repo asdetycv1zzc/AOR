@@ -212,7 +212,8 @@ func (p *Planner) loadOrGenerateModule(ctx context.Context, request PlanningRequ
 	payload, _ := json.Marshal(module)
 	record, err := p.invoker.Invoke(ctx, AgentInvocation{
 		InvocationID: request.IdempotencyKey + ":module-planner:" + module.ModuleID, TenantID: request.TenantID, ProjectID: request.ProjectID,
-		Role: agentruntime.RoleModulePlanner, Stage: "MODULE_SPEC", Inputs: []ArtifactPointer{artifactPointer(goal), artifactPointer(planArtifact)}, Payload: payload,
+		TaskID: request.ModuleTaskIDs[module.ModuleID], Role: agentruntime.RoleModulePlanner, Stage: "MODULE_SPEC",
+		Inputs: []ArtifactPointer{artifactPointer(goal), artifactPointer(planArtifact)}, Payload: payload,
 	})
 	if err != nil {
 		return contracts.ModuleSpec{}, SpecArtifact{}, err

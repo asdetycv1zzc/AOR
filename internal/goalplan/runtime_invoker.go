@@ -108,12 +108,15 @@ func (invoker *RuntimeAgentInvoker) completedRecord(request AgentInvocation, pre
 }
 
 func validAgentInvocation(request AgentInvocation) bool {
-	return request.InvocationID != "" && request.TenantID != "" && request.ProjectID != "" && request.Role.Valid() && request.Stage != "" && expectedRuntimeIntent(request) != ""
+	if request.InvocationID == "" || request.TenantID == "" || request.ProjectID == "" || !request.Role.Valid() || request.Stage == "" || expectedRuntimeIntent(request) == "" {
+		return false
+	}
+	return (request.Role == agentruntime.RoleModulePlanner) == (request.TaskID != "")
 }
 
 func validateRuntimeInvocation(request AgentInvocation, prepared RuntimeInvocation) error {
 	declaration := prepared.Declaration
-	if declaration.RunID != request.InvocationID || declaration.TenantID != request.TenantID || declaration.ProjectID != request.ProjectID || declaration.Role != request.Role || declaration.AgentInstanceID == "" || prepared.Lease.AgentInstanceID != declaration.AgentInstanceID || prepared.Lease.TenantID != request.TenantID || prepared.Lease.ProjectID != request.ProjectID || prepared.Lease.Role != request.Role || prepared.Intent != expectedRuntimeIntent(request) || prepared.ModelCall.RequestID == "" {
+	if declaration.RunID != request.InvocationID || declaration.TenantID != request.TenantID || declaration.ProjectID != request.ProjectID || declaration.TaskID != request.TaskID || declaration.Role != request.Role || declaration.AgentInstanceID == "" || prepared.Lease.AgentInstanceID != declaration.AgentInstanceID || prepared.Lease.TenantID != request.TenantID || prepared.Lease.ProjectID != request.ProjectID || prepared.Lease.TaskID != request.TaskID || prepared.Lease.Role != request.Role || prepared.Intent != expectedRuntimeIntent(request) || prepared.ModelCall.RequestID == "" {
 		return ErrInvalidRequest
 	}
 	return nil

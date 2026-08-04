@@ -23,6 +23,7 @@ type AgentInvocation struct {
 	InvocationID string
 	TenantID     string
 	ProjectID    string
+	TaskID       string
 	Role         agentruntime.Role
 	Stage        string
 	Inputs       []ArtifactPointer
