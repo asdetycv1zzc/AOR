@@ -75,6 +75,30 @@ func (s *MemoryStore) ListProjections(_ context.Context, tenantID, projectID, ag
 	return projections, nil
 }
 
+func (s *MemoryStore) ListTenantProjections(ctx context.Context, tenantID string) ([]Projection, error) {
+	if ctx == nil || tenantID == "" {
+		return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "tenant projection catalog"})
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	projections := make([]Projection, 0, len(s.projections))
+	for _, projection := range s.projections {
+		if projection.TenantID == tenantID {
+			projections = append(projections, cloneProjection(projection))
+		}
+	}
+	sort.Slice(projections, func(left, right int) bool {
+		if projections[left].AggregateType != projections[right].AggregateType {
+			return projections[left].AggregateType < projections[right].AggregateType
+		}
+		return projections[left].AggregateID < projections[right].AggregateID
+	})
+	return projections, nil
+}
+
 func (s *MemoryStore) Lookup(_ context.Context, tenantID, principalID, idempotencyKey, requestSHA256 string) (TransactionResult, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

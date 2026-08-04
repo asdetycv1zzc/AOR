@@ -91,6 +91,62 @@ func TestRebuildConvergesAfterCommitPublishAndDeliveryFaults(t *testing.T) {
 	}
 }
 
+func TestReconcileReportsDurableProjectionDriftDeterministically(t *testing.T) {
+	ctx := context.Background()
+	store := eventing.NewMemoryStore()
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := store.Execute(ctx, rebuildTransaction(t, 1, now)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Execute(ctx, rebuildTransaction(t, 2, now.Add(time.Second))); err != nil {
+		t.Fatal(err)
+	}
+	reducers := map[string]Reducer{"project": StateReducer}
+	report, err := Reconcile(ctx, store, store, "tenant_1", reducers)
+	if err != nil || !report.Converged || len(report.Drifts) != 0 || report.ReportSHA256 == "" || report.RebuiltSHA256 != report.OnlineSHA256 {
+		t.Fatalf("converged report=%#v err=%v", report, err)
+	}
+
+	projections, err := store.ListTenantProjections(ctx, "tenant_1")
+	if err != nil || len(projections) != 1 {
+		t.Fatalf("projections=%#v err=%v", projections, err)
+	}
+	drifted := append([]eventing.Projection(nil), projections...)
+	drifted[0].State = json.RawMessage(`{"id":"prj_1","version":2,"state":"DRIFTED"}`)
+	drifted = append(drifted, eventing.Projection{TenantID: "tenant_1", ProjectID: "prj_orphan", AggregateType: "project", AggregateID: "prj_orphan", Version: 1, State: json.RawMessage(`{"id":"prj_orphan","version":1}`)})
+	report, err = Reconcile(ctx, store, staticProjectionCatalog{projections: drifted}, "tenant_1", reducers)
+	if err != nil || report.Converged || len(report.Drifts) != 2 || report.Drifts[0].Kind != DriftState || report.Drifts[1].Kind != DriftOrphanOnline {
+		t.Fatalf("drift report=%#v err=%v", report, err)
+	}
+	again, err := Reconcile(ctx, store, staticProjectionCatalog{projections: drifted}, "tenant_1", reducers)
+	if err != nil || again.ReportSHA256 != report.ReportSHA256 {
+		t.Fatalf("report digest first=%q second=%q err=%v", report.ReportSHA256, again.ReportSHA256, err)
+	}
+
+	missing, err := Reconcile(ctx, store, staticProjectionCatalog{}, "tenant_1", reducers)
+	if err != nil || len(missing.Drifts) != 1 || missing.Drifts[0].Kind != DriftMissingOnline {
+		t.Fatalf("missing report=%#v err=%v", missing, err)
+	}
+}
+
+type staticProjectionCatalog struct {
+	projections []eventing.Projection
+}
+
+func (catalog staticProjectionCatalog) ListTenantProjections(ctx context.Context, tenantID string) ([]eventing.Projection, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	result := make([]eventing.Projection, 0, len(catalog.projections))
+	for _, projection := range catalog.projections {
+		if projection.TenantID == tenantID {
+			projection.State = append(json.RawMessage(nil), projection.State...)
+			result = append(result, projection)
+		}
+	}
+	return result, nil
+}
+
 type replayDeliveryBus struct {
 	projector *Projector
 	failFirst map[string]bool

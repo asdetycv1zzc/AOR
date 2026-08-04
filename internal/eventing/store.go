@@ -112,3 +112,10 @@ type EventLog interface {
 type ProjectionList interface {
 	ListProjections(ctx context.Context, tenantID, projectID, aggregateType string) ([]Projection, error)
 }
+
+// ProjectionCatalog exposes the complete tenant projection inventory used by
+// offline reconciliation. It is intentionally separate from Store so runtime
+// command paths do not gain broad enumeration authority by accident.
+type ProjectionCatalog interface {
+	ListTenantProjections(ctx context.Context, tenantID string) ([]Projection, error)
+}

@@ -90,6 +90,46 @@ ORDER BY aggregate_id`, tenantID, projectID, aggregateType)
 	return projections, nil
 }
 
+func (s *PostgresStore) ListTenantProjections(ctx context.Context, tenantID string) ([]Projection, error) {
+	if s == nil || s.db == nil || ctx == nil || tenantID == "" {
+		return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "tenant projection catalog"})
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := setTenant(ctx, tx, tenantID); err != nil {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, `
+SELECT tenant_id::text, project_id::text, aggregate_type, aggregate_id, aggregate_version, state_jsonb
+FROM aggregate_projections
+WHERE tenant_id = $1::uuid
+ORDER BY aggregate_type, aggregate_id`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	projections := make([]Projection, 0)
+	for rows.Next() {
+		var projection Projection
+		var state []byte
+		if err := rows.Scan(&projection.TenantID, &projection.ProjectID, &projection.AggregateType, &projection.AggregateID, &projection.Version, &state); err != nil {
+			return nil, err
+		}
+		projection.State = cloneJSON(state)
+		projections = append(projections, projection)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return projections, nil
+}
+
 func (s *PostgresStore) Lookup(ctx context.Context, tenantID, principalID, idempotencyKey, requestSHA256 string) (TransactionResult, bool, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
