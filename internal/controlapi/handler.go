@@ -16,9 +16,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/akimisaka/aor/internal/artifact"
 	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/authz"
 	"github.com/akimisaka/aor/internal/eventing"
+	"github.com/akimisaka/aor/internal/knowledge"
 	"github.com/akimisaka/aor/internal/modelgateway"
 	"github.com/akimisaka/aor/internal/observability"
 	"github.com/akimisaka/aor/internal/orchestrator"
@@ -39,7 +41,15 @@ type Config struct {
 	Authorizer    authz.PolicyEvaluator
 	Database      *sql.DB
 	Budgets       modelgateway.BudgetAdministration
+	Artifacts     artifact.Catalog
+	Knowledge     KnowledgeReader
 	Clock         func() time.Time
+}
+
+type KnowledgeReader interface {
+	Search(context.Context, knowledge.SearchRequest) (knowledge.SearchResponse, error)
+	ReadRange(context.Context, knowledge.ReadRangeRequest) (knowledge.ReadRangeResponse, error)
+	Manifest(context.Context, knowledge.Access, string) (knowledge.Manifest, error)
 }
 
 type Handler struct {
@@ -50,6 +60,8 @@ type Handler struct {
 	authorizer    authz.PolicyEvaluator
 	database      *sql.DB
 	budgets       modelgateway.BudgetAdministration
+	artifacts     artifact.Catalog
+	knowledge     KnowledgeReader
 	autoBudget    bool
 	clock         func() time.Time
 }
@@ -91,6 +103,20 @@ type goalChangeBody struct {
 	SHA256          string   `json:"sha256"`
 	Message         string   `json:"message"`
 	ImpactedTaskIDs []string `json:"impactedTaskIds"`
+}
+
+type knowledgeSearchBody struct {
+	Path  string   `json:"path,omitempty"`
+	Title string   `json:"title,omitempty"`
+	Tags  []string `json:"tags,omitempty"`
+	Text  string   `json:"text,omitempty"`
+	Limit int      `json:"limit,omitempty"`
+}
+
+type knowledgeReadRangeBody struct {
+	Reference knowledge.Reference `json:"reference"`
+	LineStart int                 `json:"lineStart,omitempty"`
+	LineEnd   int                 `json:"lineEnd,omitempty"`
 }
 
 type page struct {
@@ -171,6 +197,8 @@ func New(config Config) (*Handler, error) {
 		authorizer:    config.Authorizer,
 		database:      config.Database,
 		budgets:       config.Budgets,
+		artifacts:     config.Artifacts,
+		knowledge:     config.Knowledge,
 		autoBudget:    autoBudget,
 		clock:         config.Clock,
 	}
@@ -302,6 +330,66 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 		}
 		if hasAction && request.Method == http.MethodPost && (action == "approve" || action == "reject") {
 			handler.decideGoalSpec(response, request, principal, projectID, version, action)
+			return
+		}
+		writeMethodNotAllowed(response, request)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "artifacts" {
+		if !validProjectID(projectID) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		if request.Method == http.MethodGet {
+			handler.listArtifacts(response, request, principal, projectID)
+			return
+		}
+		writeMethodNotAllowed(response, request)
+		return
+	}
+	if len(parts) == 3 && parts[1] == "artifacts" {
+		if !validProjectID(projectID) || !validArtifactID(parts[2]) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		if request.Method == http.MethodGet {
+			handler.getArtifact(response, request, principal, projectID, parts[2])
+			return
+		}
+		writeMethodNotAllowed(response, request)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "knowledge:search" {
+		if !validProjectID(projectID) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		if request.Method == http.MethodPost {
+			handler.searchKnowledge(response, request, principal, projectID)
+			return
+		}
+		writeMethodNotAllowed(response, request)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "knowledge:read-range" {
+		if !validProjectID(projectID) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		if request.Method == http.MethodPost {
+			handler.readKnowledgeRange(response, request, principal, projectID)
+			return
+		}
+		writeMethodNotAllowed(response, request)
+		return
+	}
+	if len(parts) == 3 && parts[1] == "knowledge" && parts[2] == "manifest" {
+		if !validProjectID(projectID) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		if request.Method == http.MethodGet {
+			handler.getKnowledgeManifest(response, request, principal, projectID)
 			return
 		}
 		writeMethodNotAllowed(response, request)
@@ -933,6 +1021,200 @@ func (handler *Handler) authorizeProjectResourceRead(ctx context.Context, princi
 	return project, nil
 }
 
+func (handler *Handler) listArtifacts(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string) {
+	if handler.artifacts == nil {
+		writeError(response, request, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "artifact catalog"}))
+		return
+	}
+	query := request.URL.Query()
+	if len(query) > 1 || len(query) == 1 && len(query["cursor"]) != 1 {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "artifact cursor"}))
+		return
+	}
+	if _, err := handler.authorizeProjectResourceRead(request.Context(), principal, projectID, authz.ActionProjectRead, "artifact-list", projectID); err != nil {
+		writeError(response, request, err)
+		return
+	}
+	result, err := handler.artifacts.List(request.Context(), principal.TenantID, projectID, query.Get("cursor"), 100)
+	if err != nil {
+		writeError(response, request, normalizeArtifactError(err))
+		return
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInternalError, "", map[string]any{"scope": "artifact page"}))
+		return
+	}
+	digest, err := canonicaljson.Digest(encoded)
+	if err != nil {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInternalError, "", map[string]any{"scope": "artifact page"}))
+		return
+	}
+	response.Header().Set("ETag", `"`+digest+`"`)
+	response.Header().Set("Cache-Control", "private, no-store")
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (handler *Handler) getArtifact(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID, artifactID string) {
+	if handler.artifacts == nil {
+		writeError(response, request, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "artifact catalog"}))
+		return
+	}
+	download, err := artifactDownloadQuery(request)
+	if err != nil {
+		writeError(response, request, err)
+		return
+	}
+	if _, err := handler.authorizeProjectResourceRead(request.Context(), principal, projectID, authz.ActionProjectRead, "artifact", artifactID); err != nil {
+		writeError(response, request, err)
+		return
+	}
+	if !download {
+		record, err := handler.artifacts.Get(request.Context(), principal.TenantID, projectID, artifactID)
+		if err != nil {
+			writeError(response, request, normalizeArtifactError(err))
+			return
+		}
+		response.Header().Set("ETag", `"`+record.SHA256+`"`)
+		response.Header().Set("Cache-Control", "private, no-store")
+		writeJSON(response, http.StatusOK, record)
+		return
+	}
+	record, reader, err := handler.artifacts.Open(request.Context(), principal.TenantID, projectID, artifactID)
+	if err != nil {
+		writeError(response, request, normalizeArtifactError(err))
+		return
+	}
+	defer reader.Close()
+	response.Header().Set("Content-Type", record.ContentType)
+	response.Header().Set("Content-Disposition", `attachment; filename="`+record.ID+`"`)
+	response.Header().Set("Content-Length", strconv.FormatInt(record.SizeBytes, 10))
+	response.Header().Set("ETag", `"`+record.SHA256+`"`)
+	response.Header().Set("X-AOR-Artifact-URI", record.URI)
+	response.Header().Set("Cache-Control", "private, no-store")
+	response.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(response, reader)
+}
+
+func (handler *Handler) searchKnowledge(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string) {
+	if handler.knowledge == nil {
+		writeError(response, request, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "knowledge service"}))
+		return
+	}
+	if len(request.URL.Query()) != 0 {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "knowledge query"}))
+		return
+	}
+	if _, err := handler.authorizeProjectResourceRead(request.Context(), principal, projectID, authz.ActionKnowledgeRead, "knowledge.snapshot", projectID); err != nil {
+		writeError(response, request, err)
+		return
+	}
+	var body knowledgeSearchBody
+	if err := decodeJSON(request, &body); err != nil {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "knowledge search"}))
+		return
+	}
+	result, err := handler.knowledge.Search(request.Context(), knowledge.SearchRequest{Access: knowledgeAccess(principal, projectID), Path: body.Path, Title: body.Title, Tags: append([]string(nil), body.Tags...), Text: body.Text, Limit: body.Limit})
+	if err != nil {
+		writeError(response, request, normalizeKnowledgeError(err))
+		return
+	}
+	response.Header().Set("ETag", `"`+result.Revision+`"`)
+	response.Header().Set("Cache-Control", "private, no-store")
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (handler *Handler) readKnowledgeRange(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string) {
+	if handler.knowledge == nil {
+		writeError(response, request, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "knowledge service"}))
+		return
+	}
+	if len(request.URL.Query()) != 0 {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "knowledge query"}))
+		return
+	}
+	if _, err := handler.authorizeProjectResourceRead(request.Context(), principal, projectID, authz.ActionKnowledgeRead, "knowledge.reference", projectID); err != nil {
+		writeError(response, request, err)
+		return
+	}
+	var body knowledgeReadRangeBody
+	if err := decodeJSON(request, &body); err != nil {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "knowledge read range"}))
+		return
+	}
+	result, err := handler.knowledge.ReadRange(request.Context(), knowledge.ReadRangeRequest{Access: knowledgeAccess(principal, projectID), Reference: body.Reference, LineStart: body.LineStart, LineEnd: body.LineEnd})
+	if err != nil {
+		writeError(response, request, normalizeKnowledgeError(err))
+		return
+	}
+	response.Header().Set("ETag", `"`+result.Reference.SHA256+`"`)
+	response.Header().Set("Cache-Control", "private, no-store")
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (handler *Handler) getKnowledgeManifest(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string) {
+	if handler.knowledge == nil {
+		writeError(response, request, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "knowledge service"}))
+		return
+	}
+	query := request.URL.Query()
+	if len(query) > 1 || len(query) == 1 && len(query["revision"]) != 1 {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "knowledge revision"}))
+		return
+	}
+	if _, err := handler.authorizeProjectResourceRead(request.Context(), principal, projectID, authz.ActionKnowledgeRead, "knowledge.manifest", projectID); err != nil {
+		writeError(response, request, err)
+		return
+	}
+	manifest, err := handler.knowledge.Manifest(request.Context(), knowledgeAccess(principal, projectID), query.Get("revision"))
+	if err != nil {
+		writeError(response, request, normalizeKnowledgeError(err))
+		return
+	}
+	response.Header().Set("ETag", `"`+manifest.Revision+`"`)
+	response.Header().Set("Cache-Control", "private, no-store")
+	writeJSON(response, http.StatusOK, manifest)
+}
+
+func artifactDownloadQuery(request *http.Request) (bool, error) {
+	query := request.URL.Query()
+	if len(query) == 0 {
+		return false, nil
+	}
+	values, found := query["download"]
+	if len(query) != 1 || !found || len(values) != 1 || values[0] != "true" && values[0] != "false" {
+		return false, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "artifact download"})
+	}
+	return values[0] == "true", nil
+}
+
+func knowledgeAccess(principal authn.Principal, projectID string) knowledge.Access {
+	return knowledge.Access{Principal: principal, TenantID: principal.TenantID, ProjectID: projectID}
+}
+
+func normalizeArtifactError(err error) error {
+	switch {
+	case errors.Is(err, artifact.ErrInvalidRequest):
+		return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "artifact"})
+	case errors.Is(err, artifact.ErrNotFound):
+		return aorerrors.New(aorerrors.CodeArtifactNotAvailable, "", nil)
+	case errors.Is(err, artifact.ErrIntegrity):
+		return aorerrors.New(aorerrors.CodeArtifactHashMismatch, "", nil)
+	case errors.Is(err, artifact.ErrConflict):
+		return aorerrors.New(aorerrors.CodeConflict, "", map[string]any{"scope": "artifact"})
+	default:
+		return aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "artifact catalog"})
+	}
+}
+
+func normalizeKnowledgeError(err error) error {
+	var typed *aorerrors.Error
+	if errors.As(err, &typed) {
+		return typed
+	}
+	return aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "knowledge service"})
+}
+
 func (handler *Handler) getBudgets(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string) {
 	project, err := handler.authorizeBudgetRead(request, principal, projectID, "budget")
 	if err != nil {
@@ -1487,6 +1769,10 @@ func writeMethodNotAllowed(response http.ResponseWriter, request *http.Request) 
 }
 
 func validProjectID(value string) bool {
+	return uuidPattern.MatchString(value)
+}
+
+func validArtifactID(value string) bool {
 	return uuidPattern.MatchString(value)
 }
 

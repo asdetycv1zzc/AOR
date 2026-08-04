@@ -7,9 +7,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/akimisaka/aor/internal/artifact"
 	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/controlapi"
 	"github.com/akimisaka/aor/internal/eventing"
+	"github.com/akimisaka/aor/internal/knowledge"
 	"github.com/akimisaka/aor/internal/policy"
 	"github.com/akimisaka/aor/internal/runtimeclient"
 	"github.com/akimisaka/aor/internal/runtimeconfig"
@@ -51,7 +53,7 @@ func (handler *controlHandler) Close() error {
 }
 
 func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (http.Handler, error) {
-	if clients == nil || clients.Database() == nil || clients.JetStream() == nil || clients.Temporal() == nil {
+	if clients == nil || clients.Database() == nil || clients.JetStream() == nil || clients.S3() == nil || clients.Temporal() == nil {
 		return nil, runtimeclient.ErrInvalidClientConfig
 	}
 	authenticator, err := oidcAuthenticator(config)
@@ -67,9 +69,25 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	if err != nil {
 		return nil, err
 	}
+	artifactCatalog, err := artifact.NewPostgresS3Catalog(clients.Database(), clients.S3(), config.S3.Bucket, time.Now)
+	if err != nil {
+		return nil, err
+	}
+	knowledgeRepository, err := knowledge.NewFileRepository(config.KnowledgeRoot)
+	if err != nil {
+		return nil, err
+	}
+	knowledgeScopes, err := knowledge.NewEventingScopeResolver(store)
+	if err != nil {
+		return nil, err
+	}
+	knowledgeService, err := knowledge.NewService(knowledge.ServiceConfig{Repository: knowledgeRepository, Authorizer: authorizer, Scopes: knowledgeScopes, Clock: time.Now})
+	if err != nil {
+		return nil, err
+	}
 	domain, err := controlapi.New(controlapi.Config{
 		Store: lifecycleStore, Authenticator: authenticator, Authorizer: authorizer,
-		Database: clients.Database(), Clock: time.Now,
+		Database: clients.Database(), Artifacts: artifactCatalog, Knowledge: knowledgeService, Clock: time.Now,
 	})
 	if err != nil {
 		return nil, err

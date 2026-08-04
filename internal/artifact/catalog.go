@@ -213,6 +213,10 @@ func (catalog *PostgresS3Catalog) Open(ctx context.Context, tenantID, projectID,
 	if err := validateObjectInfo(info, record.SHA256, record.SizeBytes); err != nil {
 		return Record{}, nil, err
 	}
+	// Verify before callers commit response headers; the returned stream verifies again against replacement races.
+	if err := catalog.verifyObject(ctx, objectName, record.SHA256, record.SizeBytes); err != nil {
+		return Record{}, nil, err
+	}
 	object, err := catalog.objects.GetObject(ctx, catalog.bucket, objectName, minio.GetObjectOptions{})
 	if err != nil {
 		return Record{}, nil, err
@@ -318,7 +322,7 @@ INSERT INTO artifacts
    classification, created_by_principal, metadata_jsonb, created_at, retention_until)
 VALUES
   ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12)
-ON CONFLICT (tenant_id, uri) DO NOTHING
+ON CONFLICT (tenant_id, project_id, uri) DO NOTHING
 RETURNING id::text`, record.ID, record.TenantID, record.ProjectID, record.URI, record.SHA256,
 		record.SizeBytes, record.ContentType, record.Classification, record.CreatedByPrincipal,
 		metadataBytes, record.CreatedAt, record.RetentionUntil).Scan(&inserted)
@@ -328,7 +332,7 @@ SELECT id::text, tenant_id::text, project_id::text, uri, sha256, size_bytes,
        content_type, classification, created_by_principal, metadata_jsonb,
        created_at, retention_until
 FROM artifacts
-WHERE tenant_id = $1::uuid AND uri = $2`, publication.TenantID, uri))
+WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND uri = $3`, publication.TenantID, publication.ProjectID, uri))
 		if lookupErr != nil || !samePublication(existing, record) {
 			return Record{}, ErrConflict
 		}
@@ -370,6 +374,9 @@ func scanRecord(scanner rowScanner) (Record, error) {
 func validateRecord(record Record) error {
 	digest, _, err := ParseURI(record.URI)
 	if err != nil || digest != record.SHA256 || !uuidValuePattern.MatchString(record.ID) || !uuidValuePattern.MatchString(record.TenantID) || !uuidValuePattern.MatchString(record.ProjectID) || record.SizeBytes < 0 || !safeText(record.CreatedByPrincipal, 256) || record.Metadata == nil || record.CreatedAt.IsZero() {
+		return ErrIntegrity
+	}
+	if !safeText(record.ContentType, 256) {
 		return ErrIntegrity
 	}
 	if _, _, err := mime.ParseMediaType(record.ContentType); err != nil {
@@ -446,7 +453,7 @@ func decodeCatalogCursor(projectID, cursor string) (catalogCursor, error) {
 		return catalogCursor{}, ErrInvalidRequest
 	}
 	content, err := base64.RawURLEncoding.DecodeString(cursor)
-	if err != nil || len(content) > 512 {
+	if err != nil || len(content) > 512 || base64.RawURLEncoding.EncodeToString(content) != cursor {
 		return catalogCursor{}, ErrInvalidRequest
 	}
 	decoder := json.NewDecoder(bytes.NewReader(content))
@@ -488,13 +495,22 @@ func validateObjectInfo(info minio.ObjectInfo, digest string, size int64) error 
 func (catalog *PostgresS3Catalog) verifyObject(ctx context.Context, objectName, digest string, size int64) error {
 	object, err := catalog.objects.GetObject(ctx, catalog.bucket, objectName, minio.GetObjectOptions{})
 	if err != nil {
+		if minioObjectMissing(err) {
+			return ErrNotFound
+		}
 		return err
 	}
 	verified := newVerifyingReader(ctx, object, PublishedObject{URI: artifactURIPrefix + strings.TrimPrefix(digest, "sha256:"), SHA256: digest, Size: size})
 	_, copyErr := io.CopyBuffer(io.Discard, verified, make([]byte, verificationBufferBytes))
 	closeErr := verified.Close()
 	if copyErr != nil {
+		if minioObjectMissing(copyErr) {
+			return ErrNotFound
+		}
 		return copyErr
+	}
+	if closeErr != nil && minioObjectMissing(closeErr) {
+		return ErrNotFound
 	}
 	return closeErr
 }

@@ -2,6 +2,7 @@ package aor
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/url"
@@ -82,5 +83,42 @@ func TestClientRejectsUnsafeBaseURLAndMissingPath(t *testing.T) {
 	}
 	if _, err := client.GetProject(context.Background(), RequestOptions{PathParameters: map[string]string{"projectId": "project-1"}}); err != nil {
 		t.Fatalf("nil headers caused a request failure: %v", err)
+	}
+}
+
+func TestArtifactAndKnowledgeOperationsUseTypedRoutes(t *testing.T) {
+	type observedRequest struct {
+		method      string
+		url         string
+		contentType string
+		body        map[string]any
+	}
+	observed := make([]observedRequest, 0, 2)
+	client, err := NewClient("https://api.example.test", &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		entry := observedRequest{method: request.Method, url: request.URL.String(), contentType: request.Header.Get("Content-Type")}
+		if request.Body != nil {
+			if err := json.NewDecoder(request.Body).Decode(&entry.body); err != nil {
+				t.Fatal(err)
+			}
+		}
+		observed = append(observed, entry)
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`)), Request: request}, nil
+	})}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectID := "22222222-2222-4222-8222-222222222222"
+	artifactID := "33333333-3333-4333-8333-333333333333"
+	if _, err := client.SearchKnowledge(context.Background(), RequestOptions{PathParameters: map[string]string{"projectId": projectID}, Body: map[string]any{"text": "authentication", "limit": 5}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.GetArtifact(context.Background(), RequestOptions{PathParameters: map[string]string{"projectId": projectID, "artifactId": artifactID}, Query: url.Values{"download": {"true"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(observed) != 2 || observed[0].method != http.MethodPost || observed[0].url != "https://api.example.test/v1/projects/"+projectID+"/knowledge:search" || observed[0].contentType != "application/json" || observed[0].body["text"] != "authentication" {
+		t.Fatalf("knowledge request=%#v", observed)
+	}
+	if observed[1].method != http.MethodGet || observed[1].url != "https://api.example.test/v1/projects/"+projectID+"/artifacts/"+artifactID+"?download=true" {
+		t.Fatalf("artifact request=%#v", observed[1])
 	}
 }

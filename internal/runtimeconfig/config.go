@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -28,6 +29,7 @@ type Config struct {
 	DeploymentProfile  string
 	LeaseSigningKeyRef string
 	ListenAddress      string
+	KnowledgeRoot      string
 	Database           DatabaseConfig
 	Temporal           TemporalConfig
 	NATS               NATSConfig
@@ -139,6 +141,7 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 		DeploymentProfile:  value(lookup, "AOR_DEPLOYMENT_PROFILE", ""),
 		LeaseSigningKeyRef: value(lookup, "AOR_LEASE_SIGNING_KEY_REF", ""),
 		ListenAddress:      value(lookup, "AOR_LISTEN_ADDR", ":8080"),
+		KnowledgeRoot:      strictValue(lookup, "AOR_KNOWLEDGE_ROOT", "/var/lib/aor/knowledge"),
 		Database: DatabaseConfig{
 			Host:        value(lookup, "AOR_DATABASE_HOST", "postgres"),
 			Name:        value(lookup, "AOR_DATABASE_NAME", "aor"),
@@ -235,6 +238,9 @@ func (config Config) Validate() error {
 		return ErrInvalidConfiguration
 	}
 	if config.Component == "aor-tool-broker" && (!validSecretReference(config.LeaseSigningKeyRef) || !validDeploymentProfile(config.DeploymentProfile)) {
+		return ErrInvalidConfiguration
+	}
+	if config.Component == "aor-server" && !validKnowledgeRoot(config.KnowledgeRoot) {
 		return ErrInvalidConfiguration
 	}
 	if needsDatabase(config.Component) {
@@ -492,6 +498,10 @@ func validDeploymentProfile(value string) bool {
 	return oneOf(value, "LOCAL", "TEST", "PREPRODUCTION", "PRODUCTION")
 }
 
+func validKnowledgeRoot(value string) bool {
+	return value != "" && len(value) <= 4096 && filepath.IsAbs(value) && filepath.Clean(value) == value && value != string(filepath.Separator) && !strings.ContainsAny(value, "\r\n\x00")
+}
+
 func validSandboxEngineEndpoint(value string) bool {
 	if !strings.HasPrefix(value, "unix:///") || strings.ContainsAny(value, "\r\n\x00%") {
 		return false
@@ -574,7 +584,7 @@ func needsNATS(component string) bool {
 }
 
 func needsS3(component string) bool {
-	return component == "aor-server" || component == "aor-worker"
+	return component == "aor-server" || component == "aor-tool-broker" || component == "aor-worker"
 }
 
 func needsOPA(component string) bool {

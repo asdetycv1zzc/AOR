@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/akimisaka/aor/internal/artifact"
 	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/authz"
 	"github.com/akimisaka/aor/internal/credentials"
@@ -59,7 +60,7 @@ func (handler *closedToolBrokerHandler) Close() error {
 }
 
 func ToolBroker(config runtimeconfig.Config, clients *runtimeclient.Clients) (http.Handler, error) {
-	if clients == nil || clients.Database() == nil || clients.JetStream() == nil {
+	if clients == nil || clients.Database() == nil || clients.JetStream() == nil || clients.S3() == nil {
 		return nil, runtimeclient.ErrInvalidClientConfig
 	}
 	secretResolver := credentials.NewSecretResolver(os.Getenv("AOR_SECRET_ROOT"))
@@ -114,7 +115,15 @@ func ToolBroker(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	}
 	policyEvaluator := toolbroker.OPAPolicyEvaluator{Policy: policyClient, Scopes: scopes, Clock: time.Now}
 	leaseChecker := toolbroker.AuthzLeaseChecker{Manager: leaseManager, Scopes: scopes}
-	broker := toolbroker.New(leaseChecker, policyEvaluator, nil, nil, invocationRecorder, policyEvaluator.Revalidate, time.Now)
+	artifactCatalog, err := artifact.NewPostgresS3Catalog(clients.Database(), clients.S3(), config.S3.Bucket, time.Now)
+	if err != nil {
+		return nil, err
+	}
+	artifactPublisher, err := toolbroker.NewArtifactPublisher(artifactCatalog)
+	if err != nil {
+		return nil, err
+	}
+	broker := toolbroker.New(leaseChecker, policyEvaluator, nil, artifactPublisher, invocationRecorder, policyEvaluator.Revalidate, time.Now)
 	host, err := toolbroker.NewHost(broker)
 	if err != nil {
 		return nil, err

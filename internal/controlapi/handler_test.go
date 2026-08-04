@@ -6,15 +6,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/akimisaka/aor/internal/artifact"
 	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/authz"
 	"github.com/akimisaka/aor/internal/eventing"
+	"github.com/akimisaka/aor/internal/knowledge"
 	"github.com/akimisaka/aor/internal/modelgateway"
 	"github.com/akimisaka/aor/internal/orchestrator"
 	"github.com/akimisaka/aor/internal/state"
@@ -46,6 +49,64 @@ type recordingAuthorizer struct {
 	inputs []authz.PolicyInput
 	deny   bool
 	err    error
+}
+
+type testArtifactCatalog struct {
+	record  artifact.Record
+	content string
+	err     error
+}
+
+func (catalog *testArtifactCatalog) List(context.Context, string, string, string, int) (artifact.Page, error) {
+	if catalog.err != nil {
+		return artifact.Page{}, catalog.err
+	}
+	return artifact.Page{Items: []artifact.Record{catalog.record}, NextCursor: "next-artifact"}, nil
+}
+
+func (catalog *testArtifactCatalog) Get(context.Context, string, string, string) (artifact.Record, error) {
+	if catalog.err != nil {
+		return artifact.Record{}, catalog.err
+	}
+	return catalog.record, nil
+}
+
+func (catalog *testArtifactCatalog) Open(context.Context, string, string, string) (artifact.Record, io.ReadCloser, error) {
+	if catalog.err != nil {
+		return artifact.Record{}, nil, catalog.err
+	}
+	return catalog.record, io.NopCloser(strings.NewReader(catalog.content)), nil
+}
+
+type testKnowledgeReader struct {
+	searchRequest knowledge.SearchRequest
+	readRequest   knowledge.ReadRangeRequest
+	manifest      knowledge.Manifest
+	reference     knowledge.Reference
+	err           error
+}
+
+func (reader *testKnowledgeReader) Search(_ context.Context, request knowledge.SearchRequest) (knowledge.SearchResponse, error) {
+	reader.searchRequest = request
+	if reader.err != nil {
+		return knowledge.SearchResponse{}, reader.err
+	}
+	return knowledge.SearchResponse{Revision: reader.reference.ScopeRevision, References: []knowledge.Reference{reader.reference}}, nil
+}
+
+func (reader *testKnowledgeReader) ReadRange(_ context.Context, request knowledge.ReadRangeRequest) (knowledge.ReadRangeResponse, error) {
+	reader.readRequest = request
+	if reader.err != nil {
+		return knowledge.ReadRangeResponse{}, reader.err
+	}
+	return knowledge.ReadRangeResponse{Reference: reader.reference, Content: "selected knowledge\n"}, nil
+}
+
+func (reader *testKnowledgeReader) Manifest(context.Context, knowledge.Access, string) (knowledge.Manifest, error) {
+	if reader.err != nil {
+		return knowledge.Manifest{}, reader.err
+	}
+	return reader.manifest, nil
 }
 
 func (authorizer *recordingAuthorizer) Evaluate(_ context.Context, input authz.PolicyInput) (authz.PolicyDecision, error) {
@@ -419,6 +480,92 @@ func TestGoalAPIRejectsUnsafeHeadersBodiesHashesAndUnresolvedApproval(t *testing
 	})
 	if wrongHash.Code != http.StatusConflict || !strings.Contains(wrongHash.Body.String(), string(aorerrors.CodeGoalHashMismatch)) {
 		t.Fatalf("wrong hash status=%d body=%s", wrongHash.Code, wrongHash.Body.String())
+	}
+}
+
+func TestArtifactEndpointsListMetadataDownloadAndMapFailures(t *testing.T) {
+	handler, _, authorizer := newTestHandler(t)
+	project := createTestProject(t, handler)
+	content := `{"artifact":true}`
+	digest, err := canonicaljson.Digest([]byte(content))
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := artifact.Record{
+		ID: "22222222-2222-4222-8222-222222222222", ProjectID: project.ID,
+		URI: "artifact://sha256/" + strings.TrimPrefix(digest, "sha256:"), SHA256: digest,
+		SizeBytes: int64(len(content)), ContentType: "application/json", Classification: "INTERNAL",
+		CreatedByPrincipal: "agent-1", Metadata: map[string]any{"taskId": "task-1"}, CreatedAt: controlAPITestTime,
+	}
+	catalog := &testArtifactCatalog{record: record, content: content}
+	handler.artifacts = catalog
+
+	listed := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/artifacts", nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if listed.Code != http.StatusOK || listed.Header().Get("ETag") == "" || !strings.Contains(listed.Body.String(), record.ID) || !strings.Contains(listed.Body.String(), "next-artifact") {
+		t.Fatalf("list status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	metadata := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/artifacts/"+record.ID, nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if metadata.Code != http.StatusOK || metadata.Header().Get("ETag") != `"`+digest+`"` || !strings.Contains(metadata.Body.String(), record.URI) {
+		t.Fatalf("metadata status=%d etag=%q body=%s", metadata.Code, metadata.Header().Get("ETag"), metadata.Body.String())
+	}
+	download := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/artifacts/"+record.ID+"?download=true", nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if download.Code != http.StatusOK || download.Body.String() != content || download.Header().Get("Content-Type") != "application/json" || download.Header().Get("X-AOR-Artifact-URI") != record.URI {
+		t.Fatalf("download status=%d headers=%v body=%s", download.Code, download.Header(), download.Body.String())
+	}
+	if last := authorizer.inputs[len(authorizer.inputs)-1]; last.Action != authz.ActionProjectRead || last.Resource.Type != "artifact" || last.Resource.ID != record.ID {
+		t.Fatalf("artifact policy input=%#v", last)
+	}
+
+	catalog.err = artifact.ErrNotFound
+	missing := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/artifacts/"+record.ID, nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if missing.Code != http.StatusNotFound || !strings.Contains(missing.Body.String(), string(aorerrors.CodeArtifactNotAvailable)) {
+		t.Fatalf("missing status=%d body=%s", missing.Code, missing.Body.String())
+	}
+	catalog.err = artifact.ErrIntegrity
+	corrupt := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/artifacts/"+record.ID, nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if corrupt.Code != http.StatusConflict || !strings.Contains(corrupt.Body.String(), string(aorerrors.CodeArtifactHashMismatch)) {
+		t.Fatalf("corrupt status=%d body=%s", corrupt.Code, corrupt.Body.String())
+	}
+	invalidQuery := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/artifacts/"+record.ID+"?download=1", nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if invalidQuery.Code != http.StatusBadRequest {
+		t.Fatalf("invalid download status=%d body=%s", invalidQuery.Code, invalidQuery.Body.String())
+	}
+}
+
+func TestKnowledgeEndpointsReturnReferencesAndPreserveRevisionBinding(t *testing.T) {
+	handler, _, authorizer := newTestHandler(t)
+	project := createTestProject(t, handler)
+	revision := "sha256:" + strings.Repeat("1", 64)
+	documentDigest := "sha256:" + strings.Repeat("2", 64)
+	reference := knowledge.Reference{
+		ResourceURI: "file:///var/lib/aor/knowledge/document.md", LocalPath: "/var/lib/aor/knowledge/document.md",
+		ScopeRevision: revision, SourceProjectID: project.ID, Path: "architecture/document.md", Revision: revision,
+		SHA256: documentDigest, LineStart: 1, LineEnd: 2, Encoding: "utf-8", LineEnding: "LF",
+		ContentType: "text/markdown", Title: "Document", Tags: []string{"architecture"}, TrustLevel: knowledge.TrustCurated,
+	}
+	reader := &testKnowledgeReader{reference: reference, manifest: knowledge.Manifest{Version: 1, TenantID: testTenantID, ProjectID: project.ID, Revision: revision, CreatedAt: controlAPITestTime, Documents: []knowledge.DocumentMetadata{{Path: reference.Path, SHA256: reference.SHA256, LineCount: 2, TrustLevel: reference.TrustLevel, ContentType: reference.ContentType}}}}
+	handler.knowledge = reader
+
+	search := performRequest(handler, http.MethodPost, "/v1/projects/"+project.ID+"/knowledge:search", []byte(`{"text":"document","limit":5}`), map[string]string{"Authorization": "Bearer " + testBearer, "Content-Type": "application/json"})
+	if search.Code != http.StatusOK || search.Header().Get("ETag") != `"`+revision+`"` || !strings.Contains(search.Body.String(), documentDigest) || reader.searchRequest.Access.ProjectID != project.ID || reader.searchRequest.Text != "document" {
+		t.Fatalf("search status=%d request=%#v body=%s", search.Code, reader.searchRequest, search.Body.String())
+	}
+	readBody, err := json.Marshal(knowledgeReadRangeBody{Reference: reference, LineStart: 1, LineEnd: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := performRequest(handler, http.MethodPost, "/v1/projects/"+project.ID+"/knowledge:read-range", readBody, map[string]string{"Authorization": "Bearer " + testBearer, "Content-Type": "application/json"})
+	if read.Code != http.StatusOK || read.Header().Get("ETag") != `"`+documentDigest+`"` || reader.readRequest.Reference.Revision != revision || reader.readRequest.Reference.SHA256 != documentDigest {
+		t.Fatalf("read status=%d request=%#v body=%s", read.Code, reader.readRequest, read.Body.String())
+	}
+	manifest := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/knowledge/manifest?revision="+revision, nil, map[string]string{"Authorization": "Bearer " + testBearer})
+	if manifest.Code != http.StatusOK || manifest.Header().Get("ETag") != `"`+revision+`"` || !strings.Contains(manifest.Body.String(), reference.Path) {
+		t.Fatalf("manifest status=%d etag=%q body=%s", manifest.Code, manifest.Header().Get("ETag"), manifest.Body.String())
+	}
+	for _, input := range authorizer.inputs[len(authorizer.inputs)-3:] {
+		if input.Action != authz.ActionKnowledgeRead {
+			t.Fatalf("knowledge policy input=%#v", input)
+		}
 	}
 }
 

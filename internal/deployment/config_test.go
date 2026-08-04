@@ -24,7 +24,7 @@ func TestDeploymentProfilesFailClosed(t *testing.T) {
 		"aor-sandbox-runtime:", "aor-sandbox-preflight:", "target: worker-runtime",
 		"AOR_SANDBOX_ENGINE_ENDPOINT: unix:///run/aor-sandbox/engine.sock", "apparmor=aor-sandbox",
 		"sandbox-preflight.sh", "AOR_SANDBOX_ENGINE_SOCKET", "network_mode: none",
-		"000010_outbox_tenant_discovery.up.sql",
+		"000010_outbox_tenant_discovery.up.sql", "000012_artifact_project_uri_scope.up.sql",
 	} {
 		if !strings.Contains(composeText, value) {
 			t.Errorf("compose missing %q", value)
@@ -119,5 +119,40 @@ func TestComposeSandboxRuntimeCannotDowngradeIsolation(t *testing.T) {
 		if ValidateCompose([]byte(candidate)) == nil {
 			t.Fatalf("compose downgrade %q accepted", replacement.new)
 		}
+	}
+}
+
+func TestComposeArtifactAndKnowledgeDependenciesCannotBeDropped(t *testing.T) {
+	compose, err := os.ReadFile("../../deploy/compose/docker-compose.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	composeText := string(compose)
+	for _, replacement := range []struct {
+		old string
+		new string
+	}{
+		{old: "AOR_KNOWLEDGE_ROOT: /var/lib/aor/knowledge", new: "AOR_KNOWLEDGE_ROOT: /tmp/knowledge"},
+		{old: ":/var/lib/aor/knowledge:ro", new: ":/var/lib/aor/knowledge:rw"},
+	} {
+		candidate := strings.Replace(composeText, replacement.old, replacement.new, 1)
+		if candidate == composeText || ValidateCompose([]byte(candidate)) == nil {
+			t.Fatalf("compose dependency downgrade %q accepted", replacement.new)
+		}
+	}
+
+	brokerStart := strings.Index(composeText, "\n  aor-tool-broker:")
+	workerStart := strings.Index(composeText, "\n  aor-worker:")
+	if brokerStart < 0 || workerStart <= brokerStart {
+		t.Fatal("compose tool broker section not found")
+	}
+	brokerSection := composeText[brokerStart:workerStart]
+	withoutS3 := strings.Replace(brokerSection, "AOR_S3_ACCESS_KEY_REF: secret://minio_root_user", "AOR_S3_ACCESS_KEY_REF: missing", 1)
+	if withoutS3 == brokerSection {
+		t.Fatal("tool broker S3 fixture not found")
+	}
+	candidate := composeText[:brokerStart] + withoutS3 + composeText[workerStart:]
+	if ValidateCompose([]byte(candidate)) == nil {
+		t.Fatal("compose tool broker without S3 credentials accepted")
 	}
 }

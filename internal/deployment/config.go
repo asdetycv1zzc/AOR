@@ -139,6 +139,11 @@ func ValidateCompose(input []byte) error {
 	worker, workerFound := document.Services["aor-worker"]
 	preflight, preflightFound := document.Services["aor-sandbox-preflight"]
 	runtimeImage, runtimeFound := document.Services["aor-sandbox-runtime"]
+	api, apiFound := document.Services["aor-api"]
+	toolBroker, toolBrokerFound := document.Services["aor-tool-broker"]
+	if !apiFound || !toolBrokerFound || api.Environment["AOR_KNOWLEDGE_ROOT"] != "/var/lib/aor/knowledge" || !hasReadOnlyVolume(api.Volumes, "AOR_KNOWLEDGE_HOST_PATH", "/var/lib/aor/knowledge") || !hasS3Environment(api.Environment) || !hasS3Environment(toolBroker.Environment) {
+		return ErrInvalidDeployment
+	}
 	if !workerFound || !preflightFound || !runtimeFound || !worker.ReadOnly || !preflight.ReadOnly || !runtimeImage.ReadOnly || runtimeImage.NetworkMode != "none" || preflight.NetworkMode != "none" || worker.Build.Target != "worker-runtime" {
 		return ErrInvalidDeployment
 	}
@@ -201,6 +206,19 @@ func hasVolume(volumes []string, sourceFragment, target string) bool {
 		}
 	}
 	return false
+}
+
+func hasReadOnlyVolume(volumes []string, sourceFragment, target string) bool {
+	for _, volume := range volumes {
+		if strings.Contains(volume, sourceFragment) && strings.Contains(volume, ":"+target+":ro") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasS3Environment(environment map[string]string) bool {
+	return environment["AOR_S3_ENDPOINT"] != "" && environment["AOR_S3_BUCKET"] != "" && environment["AOR_S3_REGION"] != "" && strings.HasPrefix(environment["AOR_S3_ACCESS_KEY_REF"], "secret://") && strings.HasPrefix(environment["AOR_S3_SECRET_KEY_REF"], "secret://")
 }
 
 func ValidateHelmValues(input []byte) error {

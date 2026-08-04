@@ -14,7 +14,7 @@ func TestLoadServerConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load server config: %v", err)
 	}
-	if config.Database.Address() != "postgres:5432" || config.Temporal.Namespace != "aor" || config.NATS.Stream != "AOR_EVENTS" || !config.S3.UsePathStyle {
+	if config.Database.Address() != "postgres:5432" || config.Temporal.Namespace != "aor" || config.NATS.Stream != "AOR_EVENTS" || !config.S3.UsePathStyle || config.KnowledgeRoot != "/var/lib/aor/knowledge" {
 		t.Fatalf("unexpected defaults: %+v", config)
 	}
 }
@@ -23,9 +23,23 @@ func TestToolBrokerRequiresDatabaseConfiguration(t *testing.T) {
 	if _, err := Load("aor-tool-broker", environment(nil)); !errors.Is(err, ErrInvalidConfiguration) {
 		t.Fatalf("missing tool broker database error = %v", err)
 	}
-	config, err := Load("aor-tool-broker", environment(map[string]string{"AOR_DATABASE_PASSWORD_REF": "secret://postgres/password", "AOR_LEASE_SIGNING_KEY_REF": "secret://authz/lease-signing-key", "AOR_DEPLOYMENT_PROFILE": "TEST"}))
-	if err != nil || config.Database.PasswordRef == "" {
-		t.Fatalf("tool broker config = %#v err=%v", config.Database, err)
+	config, err := Load("aor-tool-broker", environment(map[string]string{"AOR_DATABASE_PASSWORD_REF": "secret://postgres/password", "AOR_LEASE_SIGNING_KEY_REF": "secret://authz/lease-signing-key", "AOR_DEPLOYMENT_PROFILE": "TEST", "AOR_S3_ACCESS_KEY_REF": "secret://minio/access-key", "AOR_S3_SECRET_KEY_REF": "secret://minio/secret-key"}))
+	if err != nil || config.Database.PasswordRef == "" || config.S3.AccessKeyRef == "" || config.S3.SecretKeyRef == "" {
+		t.Fatalf("tool broker config database=%#v s3=%#v err=%v", config.Database, config.S3, err)
+	}
+}
+
+func TestServerRejectsUnsafeKnowledgeRoot(t *testing.T) {
+	for _, root := range []string{"relative/knowledge", "/", "/var/lib/aor/../knowledge", "/var/lib/aor/knowledge\n"} {
+		_, err := Load("aor-server", environment(map[string]string{
+			"AOR_DATABASE_PASSWORD_REF": "secret://postgres/password",
+			"AOR_S3_ACCESS_KEY_REF":     "secret://minio/access-key",
+			"AOR_S3_SECRET_KEY_REF":     "secret://minio/secret-key",
+			"AOR_KNOWLEDGE_ROOT":        root,
+		}))
+		if !errors.Is(err, ErrInvalidConfiguration) {
+			t.Fatalf("knowledge root %q error = %v", root, err)
+		}
 	}
 }
 

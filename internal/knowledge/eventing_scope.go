@@ -33,7 +33,7 @@ func (resolver *EventingScopeResolver) ResolveProject(ctx context.Context, tenan
 		return authz.ProjectScope{}, aorerrors.New(aorerrors.CodeNotFound, "", nil)
 	}
 	var project state.Project
-	if json.Unmarshal(projection.State, &project) != nil || project.TenantID != tenantID || project.ID != projectID || project.Version != projection.Version {
+	if projection.TenantID != tenantID || projection.ProjectID != projectID || projection.AggregateType != "project" || projection.AggregateID != projectID || json.Unmarshal(projection.State, &project) != nil || project.TenantID != tenantID || project.ID != projectID || project.Version != projection.Version {
 		return authz.ProjectScope{}, aorerrors.New(aorerrors.CodeArtifactHashMismatch, "", nil)
 	}
 	return authz.ProjectScope{TenantID: tenantID, ID: projectID, State: string(project.State), StateVersion: project.Version, Classification: project.DataClassification}, nil
@@ -51,7 +51,7 @@ func (resolver *EventingScopeResolver) ResolveTask(ctx context.Context, tenantID
 		return authz.TaskScope{}, aorerrors.New(aorerrors.CodeNotFound, "", nil)
 	}
 	var task state.ModuleTask
-	if json.Unmarshal(projection.State, &task) != nil || projection.ProjectID != projectID || task.TenantID != tenantID || task.ProjectID != projectID || task.ID != taskID || task.Version != projection.Version {
+	if projection.TenantID != tenantID || projection.ProjectID != projectID || projection.AggregateType != "task" || projection.AggregateID != taskID || json.Unmarshal(projection.State, &task) != nil || task.TenantID != tenantID || task.ProjectID != projectID || task.ID != taskID || task.Version != projection.Version {
 		return authz.TaskScope{}, aorerrors.New(aorerrors.CodeArtifactHashMismatch, "", nil)
 	}
 	return authz.TaskScope{TenantID: tenantID, ProjectID: projectID, ID: taskID, State: string(task.State), StateVersion: task.Version, SpecDigest: task.ModuleSpecRef.SHA256}, nil

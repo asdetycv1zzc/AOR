@@ -340,7 +340,7 @@ class AORClient:
 	for _, item := range operations {
 		fmt.Fprintf(&output, "    def %s(self, options=None):\n        return self._request(%q, %q, options)\n\n", snake(item.ID), item.Method, item.Path)
 	}
-	return output.Bytes()
+	return append(bytes.TrimRight(output.Bytes(), "\n"), '\n')
 }
 
 func exported(value string) string {

@@ -78,6 +78,13 @@
       "file": "000011_goal_spec_runtime_grants.up.sql",
       "sha256": "sha256:f54c16d50cf335020742ccdc533a7f66335c10b129fa9ea8fe37838927226baa",
       "destructive": false
+    },
+    {
+      "version": 12,
+      "mode": "EXPAND",
+      "file": "000012_artifact_project_uri_scope.up.sql",
+      "sha256": "sha256:cb43faf33233f4bf4870de6ed8a1025257a3b3042799e1dd14728ce606ea7d7a",
+      "destructive": false
     }
   ]
 }

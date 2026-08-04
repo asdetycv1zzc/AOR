@@ -55,9 +55,13 @@ ${EDITOR:-vi} deploy/compose/secrets/model_provider_openai_key
 ${EDITOR:-vi} deploy/compose/secrets/model_provider_deepseek_key
 ```
 
-The secret values are mounted as files. They are not committed or placed in AOR container environment variables. PostgreSQL migrations use the admin-only `postgres_password` to apply schema changes and configure the least-privilege `aor_app` role; API, Model Gateway, Tool Broker, and worker use `secret://postgres_app_password`. AOR refers to mounted files only through `secret://` references. API and worker use the MinIO root access and secret files for local S3 access; the Model Gateway uses one mounted file for each provider family. The Tool Broker uses the independent `lease_signing_key` only to verify and renew persistent capability leases.
+The secret values are mounted as files. They are not committed or placed in AOR container environment variables. PostgreSQL migrations use the admin-only `postgres_password` to apply schema changes and configure the least-privilege `aor_app` role; API, Model Gateway, Tool Broker, and worker use `secret://postgres_app_password`. AOR refers to mounted files only through `secret://` references. API, Tool Broker, and worker use the MinIO root access and secret files for local S3 access; the Model Gateway uses one mounted file for each provider family. The Tool Broker uses the independent `lease_signing_key` to verify and renew persistent capability leases.
 
 The Model Gateway defaults to OpenAI and DeepSeek OpenAI-compatible endpoints and models. Set `AOR_OPENAI_BASE_URL`, `AOR_OPENAI_MODEL`, `AOR_DEEPSEEK_BASE_URL`, or `AOR_DEEPSEEK_MODEL` in the host environment before `make compose-up` to select compatible endpoints or approved models. Provider credentials always remain in the two provider secret files.
+
+## Knowledge Root
+
+The API bind-mounts `knowledge/` at `/var/lib/aor/knowledge` as read-only. Set `AOR_KNOWLEDGE_HOST_PATH` to an absolute host directory to serve a curated snapshot tree from another location. Its directories and files must be readable by container UID `65532`; only the separate curator process may write them. An empty root is valid, but knowledge searches and manifest reads return not found until a revision is published.
 
 ## Start
 
@@ -73,7 +77,7 @@ The target performs these stages in order:
 2. Pull all Compose dependency images, including the pinned Docker CLI and Linux sandbox runtime image.
 3. Validate the dedicated rootless OCI engine, pull the pinned runtime into it, and execute the hardened sandbox probe.
 4. Start PostgreSQL, Temporal, NATS, MinIO, OPA, and Dex, then wait for their health checks and initialization jobs.
-5. Apply PostgreSQL migrations `000001_core.up.sql` through `000010_outbox_tenant_discovery.up.sql` in order; reruns detect the installed schema, rotate the fixed `aor_app` password without revoking later grants, and keep permissions idempotent. The app password is supplied through the ignored secret file and is not printed.
+5. Apply every PostgreSQL migration listed in `migrations/postgres/manifest.json` in order; reruns detect the installed schema, rotate the fixed `aor_app` password without revoking later grants, and keep permissions idempotent. The app password is supplied through the ignored secret file and is not printed.
 6. Build the four AOR images serially from the current source. The worker image includes only the Docker CLI needed to reach the preflighted rootless engine; it does not contain or start a daemon.
 7. Start AOR only after every dependency, initializer, and sandbox preflight has completed successfully, then wait for every process readiness endpoint.
 
