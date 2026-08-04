@@ -99,6 +99,31 @@ func TestTaskDefinitionRejectsInvalidDependantsAndAttemptSeriesReuse(t *testing.
 	}
 }
 
+func TestPlanningTaskBindsScopeBeforeImmutableModuleSpec(t *testing.T) {
+	planRef := contracts.SpecRef{Version: 2, SHA256: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+	moduleRef := contracts.SpecRef{Version: 1, SHA256: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+	task := applyTask(t, ModuleTask{}, TaskCommand{
+		Type: TaskCommandQueuePlanning, TenantID: "tenant_1", ProjectID: "prj_1", TaskID: "task_1", ModuleID: "module_api",
+		PlanningSpecRef: planRef, DependentTaskIDs: []string{"task_2"}, At: testTime(),
+	})
+	if task.State != contracts.TaskQueuedPlanning || task.PlanningSpecRef != planRef || task.ModuleSpecRef != (contracts.SpecRef{}) || task.AttemptSeriesID != "" {
+		t.Fatalf("queued planning task = %#v", task)
+	}
+
+	task = applyTask(t, task, TaskCommand{Type: TaskCommandStartPlanning, At: testTime()})
+	if task.State != contracts.TaskPlanning {
+		t.Fatalf("started planning task = %#v", task)
+	}
+	task = applyTask(t, task, TaskCommand{Type: TaskCommandAttachModuleSpec, ModuleSpecRef: moduleRef, AttemptSeriesID: "series_1", At: testTime()})
+	if task.State != contracts.TaskDefined || task.ModuleSpecRef != moduleRef || task.AttemptSeriesID != "series_1" || len(task.AttemptSeriesIDs) != 1 {
+		t.Fatalf("defined planning task = %#v", task)
+	}
+
+	if _, err := DecideTask(task, TaskCommand{Type: TaskCommandAttachModuleSpec, ModuleSpecRef: moduleRef, AttemptSeriesID: "series_2", At: testTime()}); err == nil {
+		t.Fatal("immutable ModuleSpec binding was replaced")
+	}
+}
+
 func readyTask(t *testing.T) ModuleTask {
 	t.Helper()
 	ref := contracts.SpecRef{Version: 1, SHA256: digestZero()}

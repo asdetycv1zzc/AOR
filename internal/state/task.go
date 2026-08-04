@@ -12,8 +12,10 @@ type ModuleTask struct {
 	TenantID           string                    `json:"tenantId"`
 	ProjectID          string                    `json:"projectId"`
 	ID                 string                    `json:"id"`
+	ModuleID           string                    `json:"moduleId,omitempty"`
 	State              contracts.ModuleTaskState `json:"state"`
 	Version            int64                     `json:"version"`
+	PlanningSpecRef    contracts.SpecRef         `json:"planningSpecRef,omitempty"`
 	ModuleSpecRef      contracts.SpecRef         `json:"moduleSpecRef"`
 	AttemptSeriesID    string                    `json:"attemptSeriesId"`
 	AttemptSeriesIDs   []string                  `json:"attemptSeriesIds"`
@@ -29,6 +31,9 @@ type TaskCommandType string
 
 const (
 	TaskCommandDefine               TaskCommandType = "DEFINE_TASK"
+	TaskCommandQueuePlanning        TaskCommandType = "QUEUE_PLANNING"
+	TaskCommandStartPlanning        TaskCommandType = "START_PLANNING"
+	TaskCommandAttachModuleSpec     TaskCommandType = "ATTACH_MODULE_SPEC"
 	TaskCommandReadyExecution       TaskCommandType = "READY_EXECUTION"
 	TaskCommandLeaseExecution       TaskCommandType = "LEASE_EXECUTION"
 	TaskCommandSubmit               TaskCommandType = "SUBMIT_IMPLEMENTATION"
@@ -50,6 +55,8 @@ type TaskCommand struct {
 	TenantID              string
 	ProjectID             string
 	TaskID                string
+	ModuleID              string
+	PlanningSpecRef       contracts.SpecRef
 	ModuleSpecRef         contracts.SpecRef
 	AttemptSeriesID       string
 	FencingToken          int64
@@ -92,6 +99,31 @@ func DecideTask(current ModuleTask, command TaskCommand) (TaskEvent, *aorerrors.
 			ModuleSpecRef: command.ModuleSpecRef, AttemptSeriesID: command.AttemptSeriesID, AttemptSeriesIDs: []string{command.AttemptSeriesID}, DependentTaskIDs: append([]string(nil), command.DependentTaskIDs...),
 		}
 		eventType = "io.aor.module.defined.v1"
+	case TaskCommandQueuePlanning:
+		if current.Version != 0 || current.ID != "" || command.TenantID == "" || command.ProjectID == "" || command.TaskID == "" || command.ModuleID == "" || command.PlanningSpecRef.Validate() != nil || invalidDependents(command.TaskID, command.DependentTaskIDs) {
+			return TaskEvent{}, invalidTask(command, "planning task guard")
+		}
+		next = ModuleTask{
+			TenantID: command.TenantID, ProjectID: command.ProjectID, ID: command.TaskID, ModuleID: command.ModuleID,
+			State: contracts.TaskQueuedPlanning, PlanningSpecRef: command.PlanningSpecRef,
+			DependentTaskIDs: append([]string(nil), command.DependentTaskIDs...),
+		}
+		eventType = "io.aor.module.planning-queued.v1"
+	case TaskCommandStartPlanning:
+		if current.State != contracts.TaskQueuedPlanning || current.ModuleID == "" || current.PlanningSpecRef.Validate() != nil || current.ModuleSpecRef != (contracts.SpecRef{}) || current.AttemptSeriesID != "" || len(current.AttemptSeriesIDs) != 0 {
+			return TaskEvent{}, transitionTask(command, current.State)
+		}
+		next.State = contracts.TaskPlanning
+		eventType = "io.aor.module.planning-started.v1"
+	case TaskCommandAttachModuleSpec:
+		if current.State != contracts.TaskPlanning || current.ModuleID == "" || current.PlanningSpecRef.Validate() != nil || current.ModuleSpecRef != (contracts.SpecRef{}) || command.ModuleSpecRef.Validate() != nil || command.AttemptSeriesID == "" {
+			return TaskEvent{}, transitionTask(command, current.State)
+		}
+		next.ModuleSpecRef = command.ModuleSpecRef
+		next.AttemptSeriesID = command.AttemptSeriesID
+		next.AttemptSeriesIDs = []string{command.AttemptSeriesID}
+		next.State = contracts.TaskDefined
+		eventType = "io.aor.module.spec-attached.v1"
 	case TaskCommandReadyExecution:
 		if current.State != contracts.TaskDefined && current.State != contracts.TaskReworkRequired {
 			if current.State == contracts.TaskBlockedUserDecision {
