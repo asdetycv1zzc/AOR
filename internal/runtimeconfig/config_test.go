@@ -19,6 +19,16 @@ func TestLoadServerConfiguration(t *testing.T) {
 	}
 }
 
+func TestToolBrokerRequiresDatabaseConfiguration(t *testing.T) {
+	if _, err := Load("aor-tool-broker", environment(nil)); !errors.Is(err, ErrInvalidConfiguration) {
+		t.Fatalf("missing tool broker database error = %v", err)
+	}
+	config, err := Load("aor-tool-broker", environment(map[string]string{"AOR_DATABASE_PASSWORD_REF": "secret://postgres/password", "AOR_LEASE_SIGNING_KEY_REF": "secret://authz/lease-signing-key", "AOR_DEPLOYMENT_PROFILE": "TEST"}))
+	if err != nil || config.Database.PasswordRef == "" {
+		t.Fatalf("tool broker config = %#v err=%v", config.Database, err)
+	}
+}
+
 func TestModelGatewayRequiresTwoProviderFamilies(t *testing.T) {
 	base := map[string]string{
 		"AOR_DATABASE_PASSWORD_REF": "secret://postgres/password",
@@ -93,6 +103,22 @@ func TestLoadRejectsUnknownProviderFieldsAndTrailingJSON(t *testing.T) {
 		if !errors.Is(err, ErrInvalidConfiguration) {
 			t.Fatalf("provider JSON %q error = %v", value, err)
 		}
+	}
+}
+
+func TestProviderCapabilityProfilePreservesExplicitFalse(t *testing.T) {
+	config, err := Load("aor-model-gateway", environment(map[string]string{
+		"AOR_DATABASE_PASSWORD_REF": "secret://postgres/password",
+		"AOR_MODEL_PROVIDERS_JSON": `[
+			{"id":"one","provider":"openai","baseUrl":"https://one.example","apiKeyRef":"secret://model/one","models":["m"],"supportsStreaming":false,"supportsToolCalls":false,"supportsJsonSchema":false,"supportsSeed":false,"supportsPromptCaching":false,"maxInputTokens":1024,"maxOutputTokens":256,"dataResidency":["US"],"retentionPolicy":"none","modalities":["text"]},
+			{"id":"two","provider":"deepseek","baseUrl":"https://two.example","apiKeyRef":"secret://model/two","models":["m"],"supportsStreaming":true,"supportsToolCalls":false,"supportsJsonSchema":false,"supportsSeed":false,"supportsPromptCaching":false,"maxInputTokens":1024,"maxOutputTokens":256,"dataResidency":["CN"],"retentionPolicy":"none","modalities":["text"]}
+		]`,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.ModelGateway.Providers[0].SupportsStreaming || config.ModelGateway.Providers[0].SupportsToolCalls {
+		t.Fatalf("explicit capability false was overwritten: %#v", config.ModelGateway.Providers[0])
 	}
 }
 

@@ -67,6 +67,7 @@ func New(config Config) (*Adapter, error) {
 			return nil, modelgateway.ErrInvalidRequest
 		}
 		capabilities.DataResidency = append([]string(nil), capabilities.DataResidency...)
+		capabilities.Modalities = append([]string(nil), capabilities.Modalities...)
 		models[model] = capabilities
 	}
 	if config.RequestTimeout == 0 {
@@ -112,6 +113,7 @@ func (a *Adapter) Capabilities(ctx context.Context, model string) (modelgateway.
 		return modelgateway.ModelCapabilities{}, modelgateway.ErrProviderNotAllowed
 	}
 	capabilities.DataResidency = append([]string(nil), capabilities.DataResidency...)
+	capabilities.Modalities = append([]string(nil), capabilities.Modalities...)
 	return capabilities, nil
 }
 

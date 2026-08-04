@@ -23,18 +23,20 @@ const (
 type LookupEnv func(string) (string, bool)
 
 type Config struct {
-	Component     string
-	Environment   string
-	ListenAddress string
-	Database      DatabaseConfig
-	Temporal      TemporalConfig
-	NATS          NATSConfig
-	S3            S3Config
-	OPA           OPAConfig
-	Identity      IdentityConfig
-	ModelGateway  ModelGatewayConfig
-	Services      ServiceEndpoints
-	Sandbox       SandboxConfig
+	Component          string
+	Environment        string
+	DeploymentProfile  string
+	LeaseSigningKeyRef string
+	ListenAddress      string
+	Database           DatabaseConfig
+	Temporal           TemporalConfig
+	NATS               NATSConfig
+	S3                 S3Config
+	OPA                OPAConfig
+	Identity           IdentityConfig
+	ModelGateway       ModelGatewayConfig
+	Services           ServiceEndpoints
+	Sandbox            SandboxConfig
 }
 
 type DatabaseConfig struct {
@@ -87,13 +89,24 @@ type ModelGatewayConfig struct {
 }
 
 type ProviderConfig struct {
-	ID                   string   `json:"id"`
-	Provider             string   `json:"provider"`
-	BaseURL              string   `json:"baseUrl"`
-	APIKeyRef            string   `json:"apiKeyRef"`
-	Models               []string `json:"models"`
-	InputMicrosPerToken  int64    `json:"inputMicrosPerToken"`
-	OutputMicrosPerToken int64    `json:"outputMicrosPerToken"`
+	ID                     string   `json:"id"`
+	Provider               string   `json:"provider"`
+	BaseURL                string   `json:"baseUrl"`
+	APIKeyRef              string   `json:"apiKeyRef"`
+	Models                 []string `json:"models"`
+	InputMicrosPerToken    int64    `json:"inputMicrosPerToken"`
+	OutputMicrosPerToken   int64    `json:"outputMicrosPerToken"`
+	SupportsStreaming      bool     `json:"supportsStreaming"`
+	SupportsToolCalls      bool     `json:"supportsToolCalls"`
+	SupportsJSONSchema     bool     `json:"supportsJsonSchema"`
+	SupportsSeed           bool     `json:"supportsSeed"`
+	SupportsPromptCaching  bool     `json:"supportsPromptCaching"`
+	MaxInputTokens         int      `json:"maxInputTokens"`
+	MaxOutputTokens        int      `json:"maxOutputTokens"`
+	DataResidency          []string `json:"dataResidency"`
+	RetentionPolicy        string   `json:"retentionPolicy"`
+	Modalities             []string `json:"modalities"`
+	capabilitiesConfigured bool
 }
 
 type ServiceEndpoints struct {
@@ -115,9 +128,11 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 		return Config{}, ErrInvalidConfiguration
 	}
 	config := Config{
-		Component:     component,
-		Environment:   value(lookup, "AOR_ENVIRONMENT", EnvironmentDevelopment),
-		ListenAddress: value(lookup, "AOR_LISTEN_ADDR", ":8080"),
+		Component:          component,
+		Environment:        value(lookup, "AOR_ENVIRONMENT", EnvironmentDevelopment),
+		DeploymentProfile:  value(lookup, "AOR_DEPLOYMENT_PROFILE", ""),
+		LeaseSigningKeyRef: value(lookup, "AOR_LEASE_SIGNING_KEY_REF", ""),
+		ListenAddress:      value(lookup, "AOR_LISTEN_ADDR", ":8080"),
 		Database: DatabaseConfig{
 			Host:        value(lookup, "AOR_DATABASE_HOST", "postgres"),
 			Name:        value(lookup, "AOR_DATABASE_NAME", "aor"),
@@ -184,7 +199,11 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 			return Config{}, configurationError("AOR_MODEL_PROVIDERS_JSON")
 		}
+		if err := markProviderCapabilityConfiguration(raw, config.ModelGateway.Providers); err != nil {
+			return Config{}, configurationError("AOR_MODEL_PROVIDERS_JSON")
+		}
 	}
+	applyProviderCapabilityDefaults(config.ModelGateway.Providers)
 	if err := config.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -193,6 +212,9 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 
 func (config Config) Validate() error {
 	if !knownComponent(config.Component) || !oneOf(config.Environment, EnvironmentDevelopment, EnvironmentTest, EnvironmentPreproduction, EnvironmentProduction) || !validListenAddress(config.ListenAddress) {
+		return ErrInvalidConfiguration
+	}
+	if config.Component == "aor-tool-broker" && (!validSecretReference(config.LeaseSigningKeyRef) || !validDeploymentProfile(config.DeploymentProfile)) {
 		return ErrInvalidConfiguration
 	}
 	if needsDatabase(config.Component) {
@@ -252,7 +274,7 @@ func validateProviders(providers []ProviderConfig) error {
 	ids := make(map[string]struct{}, len(providers))
 	families := make(map[string]struct{}, len(providers))
 	for _, provider := range providers {
-		if provider.ID == "" || provider.Provider == "" || !validURL(provider.BaseURL, "http", "https") || !validSecretReference(provider.APIKeyRef) || len(provider.Models) == 0 || provider.InputMicrosPerToken < 0 || provider.OutputMicrosPerToken < 0 {
+		if provider.ID == "" || provider.Provider == "" || !validURL(provider.BaseURL, "http", "https") || !validSecretReference(provider.APIKeyRef) || len(provider.Models) == 0 || provider.InputMicrosPerToken < 0 || provider.OutputMicrosPerToken < 0 || provider.MaxInputTokens <= 0 || provider.MaxOutputTokens <= 0 || strings.TrimSpace(provider.RetentionPolicy) == "" || len(provider.DataResidency) == 0 || len(provider.Modalities) == 0 {
 			return ErrInvalidConfiguration
 		}
 		if _, duplicate := ids[provider.ID]; duplicate {
@@ -270,9 +292,72 @@ func validateProviders(providers []ProviderConfig) error {
 			}
 			models[model] = struct{}{}
 		}
+		for _, residency := range provider.DataResidency {
+			if strings.TrimSpace(residency) == "" || len(residency) > 128 || strings.ContainsAny(residency, "\r\n\x00") {
+				return ErrInvalidConfiguration
+			}
+		}
+		for _, modality := range provider.Modalities {
+			if strings.TrimSpace(modality) == "" || len(modality) > 64 || strings.ContainsAny(modality, "\r\n\x00") {
+				return ErrInvalidConfiguration
+			}
+		}
+		if len(provider.RetentionPolicy) > 256 || strings.ContainsAny(provider.RetentionPolicy, "\r\n\x00") {
+			return ErrInvalidConfiguration
+		}
 	}
 	if len(families) < 2 {
 		return ErrInvalidConfiguration
+	}
+	return nil
+}
+
+// Capability defaults are deliberately conservative for providers that do not
+// publish a complete static model catalogue. Deployments can override every
+// value in AOR_MODEL_PROVIDERS_JSON; unsupported optional features stay off.
+func applyProviderCapabilityDefaults(providers []ProviderConfig) {
+	for index := range providers {
+		provider := &providers[index]
+		if provider.capabilitiesConfigured {
+			continue
+		}
+		if provider.MaxInputTokens == 0 {
+			provider.MaxInputTokens = 32768
+		}
+		if provider.MaxOutputTokens == 0 {
+			provider.MaxOutputTokens = 4096
+		}
+		if len(provider.DataResidency) == 0 {
+			provider.DataResidency = []string{"provider-defined"}
+		}
+		if len(provider.Modalities) == 0 {
+			provider.Modalities = []string{"text"}
+		}
+		if provider.RetentionPolicy == "" {
+			provider.RetentionPolicy = "provider-defined"
+		}
+		if !provider.SupportsStreaming {
+			// OpenAI-compatible providers in the supported deployment profile
+			// expose Chat Completions streaming. Explicit false remains useful
+			// only when a provider entry supplies a complete capability profile.
+			provider.SupportsStreaming = true
+		}
+	}
+}
+
+func markProviderCapabilityConfiguration(raw string, providers []ProviderConfig) error {
+	var entries []map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil || len(entries) != len(providers) {
+		return ErrInvalidConfiguration
+	}
+	keys := []string{"supportsStreaming", "supportsToolCalls", "supportsJsonSchema", "supportsSeed", "supportsPromptCaching", "maxInputTokens", "maxOutputTokens", "dataResidency", "retentionPolicy", "modalities"}
+	for index, entry := range entries {
+		for _, key := range keys {
+			if _, found := entry[key]; found {
+				providers[index].capabilitiesConfigured = true
+				break
+			}
+		}
 	}
 	return nil
 }
@@ -372,8 +457,12 @@ func knownComponent(component string) bool {
 	return oneOf(component, "aor-server", "aor-model-gateway", "aor-tool-broker", "aor-worker")
 }
 
+func validDeploymentProfile(value string) bool {
+	return oneOf(value, "LOCAL", "TEST", "PREPRODUCTION", "PRODUCTION")
+}
+
 func needsDatabase(component string) bool {
-	return oneOf(component, "aor-server", "aor-model-gateway", "aor-worker")
+	return oneOf(component, "aor-server", "aor-model-gateway", "aor-tool-broker", "aor-worker")
 }
 
 func needsTemporal(component string) bool {
@@ -389,7 +478,7 @@ func needsS3(component string) bool {
 }
 
 func needsOPA(component string) bool {
-	return oneOf(component, "aor-server", "aor-tool-broker", "aor-worker")
+	return oneOf(component, "aor-server", "aor-model-gateway", "aor-tool-broker", "aor-worker")
 }
 
 func needsIdentity(component string) bool {

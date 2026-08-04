@@ -27,6 +27,7 @@ type ModelCapabilities struct {
 	MaxOutputTokens       int      `json:"maxOutputTokens"`
 	DataResidency         []string `json:"dataResidency"`
 	RetentionPolicy       string   `json:"retentionPolicy"`
+	Modalities            []string `json:"modalities"`
 	ActualModelVersion    string   `json:"actualModelVersion"`
 }
 

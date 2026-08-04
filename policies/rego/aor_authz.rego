@@ -33,6 +33,13 @@ human_control_actions := {
 	"task.command",
 }
 
+model_actions := {
+    "model.generate",
+    "model.stream",
+    "model.cancel",
+    "model.capabilities",
+}
+
 valid_project_scope if {
     input.principal.id != ""
     input.principal.type != ""
@@ -65,6 +72,36 @@ human_control_allowed if {
 	input.principal.type in {"USER", "BREAK_GLASS_ADMIN"}
 	input.principal.role in {"USER", "BREAK_GLASS_ADMIN"}
 	input.action != "task.command"
+}
+
+model_scope_valid if {
+    valid_project_scope
+    input.action in model_actions
+    input.principal.role != ""
+    input.project.state != "ABORTED"
+    input.project.state != "ARCHIVED"
+    input.project.state != "FAILED_SYSTEM"
+    not input.task.id
+}
+
+model_scope_valid if {
+    valid_task_scope
+    input.action in model_actions
+    input.principal.role != ""
+    input.project.state != "ABORTED"
+    input.project.state != "ARCHIVED"
+    input.project.state != "FAILED_SYSTEM"
+}
+
+model_allowed if {
+    model_scope_valid
+    input.action == "model.capabilities"
+}
+
+model_allowed if {
+    model_scope_valid
+    input.action != "model.capabilities"
+    input.budget.available
 }
 
 human_control_allowed if {
@@ -114,6 +151,15 @@ decision := {
 decision := {
     "decision": "ALLOW",
     "policyVersion": data.aor.policy.version,
+    "reasonCodes": ["MODEL_POLICY_ALLOWED", "PROJECT_SCOPE_VALID"],
+    "ruleId": "aor.model.invoke",
+} if {
+    model_allowed
+}
+
+decision := {
+    "decision": "ALLOW",
+    "policyVersion": data.aor.policy.version,
     "reasonCodes": ["ROLE_ALLOWED", "TASK_OWNS_PATH", "LEASE_VALID"],
     "ruleId": "aor.repo.owned_path",
     "constraints": {
@@ -150,6 +196,10 @@ matched if {
 
 matched if {
 	human_control_allowed
+}
+
+matched if {
+    model_allowed
 }
 
 matched if {

@@ -31,15 +31,17 @@ type HTTPAuthorizer interface {
 }
 
 type ModelAuthorizationRequest struct {
-	Operation       string
-	Provider        string
-	Model           string
-	RequestID       string
-	ReservationID   string
-	ProjectID       string
-	TaskID          string
-	AgentInstanceID string
-	Role            string
+	Operation         string
+	Provider          string
+	Model             string
+	RequestID         string
+	AccountID         string
+	ReservationID     string
+	ProviderRequestID string
+	ProjectID         string
+	TaskID            string
+	AgentInstanceID   string
+	Role              string
 }
 
 type ModelAuthorization struct {
@@ -190,12 +192,16 @@ func (s *HTTPService) serveCancel(writer http.ResponseWriter, request *http.Requ
 		writeHTTPError(writer, traceParent, err)
 		return
 	}
-	authorization, err := s.authorize(request.Context(), ModelAuthorizationRequest{Operation: "cancel", Provider: input.Provider, Model: input.Model, ReservationID: input.ReservationID})
+	authorization, err := s.authorize(request.Context(), ModelAuthorizationRequest{
+		Operation: "cancel", Provider: input.Provider, Model: input.Model, RequestID: input.RequestID,
+		AccountID: input.AccountID, ReservationID: input.ReservationID, ProviderRequestID: input.ProviderRequestID,
+		ProjectID: input.ProjectID, TaskID: input.TaskID, AgentInstanceID: input.AgentInstanceID, Role: input.Role,
+	})
 	if err != nil {
 		writeHTTPError(writer, traceParent, err)
 		return
 	}
-	if input.Provider != authorization.Provider || input.AccountID != authorization.AccountID || input.Provider == "" || input.Model == "" || input.ProviderRequestID == "" || input.ReservationID == "" || input.AccountID == "" {
+	if input.Provider != authorization.Provider || input.AccountID != authorization.AccountID || input.ProjectID != "" && input.ProjectID != authorization.ProjectID || input.TaskID != "" && input.TaskID != authorization.TaskID || input.AgentInstanceID != "" && input.AgentInstanceID != authorization.AgentInstanceID || input.Role != "" && input.Role != authorization.Role || input.Provider == "" || input.Model == "" || input.ProviderRequestID == "" || input.ReservationID == "" || input.AccountID == "" {
 		writeHTTPError(writer, traceParent, ErrAuthorizationDenied)
 		return
 	}
@@ -208,12 +214,12 @@ func (s *HTTPService) serveCancel(writer http.ResponseWriter, request *http.Requ
 
 func (s *HTTPService) serveCapabilities(writer http.ResponseWriter, request *http.Request, traceParent string) {
 	query := request.URL.Query()
-	if len(query) != 2 || len(query["provider"]) != 1 || len(query["model"]) != 1 {
+	if len(query) != 3 || len(query["provider"]) != 1 || len(query["model"]) != 1 || len(query["projectId"]) != 1 {
 		writeHTTPError(writer, traceParent, ErrInvalidRequest)
 		return
 	}
-	provider, model := query.Get("provider"), query.Get("model")
-	authorization, err := s.authorize(request.Context(), ModelAuthorizationRequest{Operation: "capabilities", Provider: provider, Model: model})
+	provider, model, projectID := query.Get("provider"), query.Get("model"), query.Get("projectId")
+	authorization, err := s.authorize(request.Context(), ModelAuthorizationRequest{Operation: "capabilities", Provider: provider, Model: model, ProjectID: projectID})
 	if err != nil {
 		writeHTTPError(writer, traceParent, err)
 		return
@@ -233,6 +239,7 @@ func (s *HTTPService) serveCapabilities(writer http.ResponseWriter, request *htt
 func (s *HTTPService) authorizeGenerate(ctx context.Context, operation string, request NormalizedRequest, options GenerateOptions) (NormalizedRequest, GenerateOptions, error) {
 	authorization, err := s.authorize(ctx, ModelAuthorizationRequest{
 		Operation: operation, Provider: options.Provider, Model: request.Model, RequestID: request.RequestID,
+		AccountID: options.AccountID, ReservationID: options.ReservationID,
 		ProjectID: request.ProjectID, TaskID: request.TaskID, AgentInstanceID: request.AgentInstanceID, Role: request.Role,
 	})
 	if err != nil {
@@ -352,6 +359,11 @@ type transportCancelRequest struct {
 	ProviderRequestID string `json:"providerRequestId"`
 	AccountID         string `json:"accountId"`
 	ReservationID     string `json:"reservationId"`
+	RequestID         string `json:"requestId"`
+	ProjectID         string `json:"projectId"`
+	TaskID            string `json:"taskId"`
+	AgentInstanceID   string `json:"agentInstanceId"`
+	Role              string `json:"role"`
 }
 
 type httpError struct {

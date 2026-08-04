@@ -91,7 +91,7 @@ func TestHTTPServiceBindsAuthorizationBeforeGateway(t *testing.T) {
 
 func TestHTTPServiceCapabilitiesCancelAndStreaming(t *testing.T) {
 	service, adapter, ledger := newHTTPService(t)
-	capabilities := httptest.NewRequest(http.MethodGet, "/v1/model/capabilities?provider=provider&model=model", nil)
+	capabilities := httptest.NewRequest(http.MethodGet, "/v1/model/capabilities?provider=provider&model=model&projectId=project", nil)
 	capabilitiesWriter := httptest.NewRecorder()
 	service.ServeHTTP(capabilitiesWriter, capabilities)
 	if capabilitiesWriter.Code != http.StatusOK {
@@ -101,7 +101,7 @@ func TestHTTPServiceCapabilitiesCancelAndStreaming(t *testing.T) {
 	if _, err := ledger.Reserve(context.Background(), "tenant", "account", "cancel-reservation", "cancel-request", 1); err != nil {
 		t.Fatal(err)
 	}
-	cancelBody := marshalTransport(t, transportCancelRequest{Provider: "provider", Model: "model", ProviderRequestID: "provider-request-1", AccountID: "account", ReservationID: "cancel-reservation"})
+	cancelBody := marshalTransport(t, transportCancelRequest{Provider: "provider", Model: "model", ProviderRequestID: "provider-request-1", AccountID: "account", ReservationID: "cancel-reservation", RequestID: "cancel-request", ProjectID: "project", TaskID: "task", AgentInstanceID: "agent", Role: "EXECUTOR"})
 	cancelRequest := httptest.NewRequest(http.MethodPost, "/v1/model/cancel", bytes.NewReader(cancelBody))
 	cancelRequest.Header.Set("Content-Type", "application/json")
 	cancelWriter := httptest.NewRecorder()

@@ -368,7 +368,7 @@ func requiresS3(component string) bool {
 }
 
 func requiresOPA(component string) bool {
-	return component == "aor-server" || component == "aor-tool-broker" || component == "aor-worker"
+	return component == "aor-server" || component == "aor-model-gateway" || component == "aor-tool-broker" || component == "aor-worker"
 }
 
 func requiresIdentity(component string) bool {
