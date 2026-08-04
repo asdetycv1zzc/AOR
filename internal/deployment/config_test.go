@@ -171,3 +171,24 @@ func TestComposeArtifactAndKnowledgeDependenciesCannotBeDropped(t *testing.T) {
 		t.Fatal("compose tool broker without S3 credentials accepted")
 	}
 }
+
+func TestComposeControlAPICannotDropLeaseAuthorityConfiguration(t *testing.T) {
+	compose, err := os.ReadFile("../../deploy/compose/docker-compose.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	composeText := string(compose)
+	for _, replacement := range []struct {
+		old string
+		new string
+	}{
+		{old: "AOR_DEPLOYMENT_PROFILE: TEST", new: "AOR_DEPLOYMENT_PROFILE: missing"},
+		{old: "AOR_LEASE_SIGNING_KEY_REF: secret://lease_signing_key", new: "AOR_LEASE_SIGNING_KEY_REF: missing"},
+		{old: "secrets: [postgres_app_password, lease_signing_key, minio_root_user, minio_root_password]", new: "secrets: [postgres_app_password, minio_root_user, minio_root_password]"},
+	} {
+		candidate := strings.Replace(composeText, replacement.old, replacement.new, 1)
+		if candidate == composeText || ValidateCompose([]byte(candidate)) == nil {
+			t.Fatalf("compose lease authority downgrade %q accepted", replacement.new)
+		}
+	}
+}

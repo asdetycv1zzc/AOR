@@ -264,7 +264,7 @@ func (config Config) Validate() error {
 	if config.Component == "aor-tool-broker" && (!validSecretReference(config.LeaseSigningKeyRef) || !validDeploymentProfile(config.DeploymentProfile) || !validKnowledgeRoot(config.RepositoryRoot)) {
 		return ErrInvalidConfiguration
 	}
-	if config.Component == "aor-server" && !validKnowledgeRoot(config.KnowledgeRoot) {
+	if config.Component == "aor-server" && (!validKnowledgeRoot(config.KnowledgeRoot) || !validSecretReference(config.LeaseSigningKeyRef) || !validDeploymentProfile(config.DeploymentProfile)) {
 		return ErrInvalidConfiguration
 	}
 	if needsDatabase(config.Component) {

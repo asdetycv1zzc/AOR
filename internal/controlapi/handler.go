@@ -48,6 +48,7 @@ type Config struct {
 	Knowledge     KnowledgeReader
 	TaskHistory   TaskHistoryReader
 	Eraser        ProjectEraser
+	Leases        LeaseAuthority
 	Clock         func() time.Time
 }
 
@@ -85,6 +86,7 @@ type Handler struct {
 	knowledge     KnowledgeReader
 	taskHistory   TaskHistoryReader
 	eraser        ProjectEraser
+	leases        LeaseAuthority
 	autoBudget    bool
 	clock         func() time.Time
 }
@@ -267,6 +269,7 @@ func New(config Config) (*Handler, error) {
 		knowledge:     config.Knowledge,
 		taskHistory:   config.TaskHistory,
 		eraser:        config.Eraser,
+		leases:        config.Leases,
 		autoBudget:    autoBudget,
 		clock:         config.Clock,
 	}
@@ -605,6 +608,14 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 			return
 		}
 		writeMethodNotAllowed(response, request)
+		return
+	}
+	if len(parts) == 4 && parts[1] == "tasks" && strings.HasPrefix(parts[3], "leases") {
+		if !validProjectID(projectID) || !validAPIIdentifier(parts[2]) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		handler.manageTaskLease(response, request, principal, projectID, parts[2], parts[3])
 		return
 	}
 	if len(parts) == 4 && parts[1] == "tasks" && (parts[3] == "submissions" || parts[3] == "audits") {

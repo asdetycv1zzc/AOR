@@ -2,16 +2,21 @@ package servicebootstrap
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/akimisaka/aor/internal/artifact"
 	"github.com/akimisaka/aor/internal/authn"
+	"github.com/akimisaka/aor/internal/authz"
 	"github.com/akimisaka/aor/internal/controlapi"
+	"github.com/akimisaka/aor/internal/credentials"
 	"github.com/akimisaka/aor/internal/eventing"
 	"github.com/akimisaka/aor/internal/knowledge"
+	"github.com/akimisaka/aor/internal/leaseauthority"
 	"github.com/akimisaka/aor/internal/observability"
 	"github.com/akimisaka/aor/internal/policy"
 	"github.com/akimisaka/aor/internal/runtimeclient"
@@ -101,10 +106,14 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	if err != nil {
 		return nil, err
 	}
+	leaseService, err := controlLeaseAuthority(config, clients.Database(), authorizer)
+	if err != nil {
+		return nil, err
+	}
 	domain, err := controlapi.New(controlapi.Config{
 		Store: lifecycleStore, Authenticator: authenticator, Authorizer: authorizer,
 		Database: clients.Database(), Artifacts: artifactCatalog, Knowledge: knowledgeService,
-		Eraser: artifactProjectEraser{catalog: artifactCatalog}, Clock: time.Now,
+		Eraser: artifactProjectEraser{catalog: artifactCatalog}, Leases: leaseService, Clock: time.Now,
 	})
 	if err != nil {
 		return nil, err
@@ -127,6 +136,43 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	done := make(chan error, 1)
 	go func() { done <- dispatcher.Run(dispatchContext) }()
 	return &controlHandler{Handler: withRequestTrace(domain), dispatcher: dispatcher, cancel: cancel, done: done}, nil
+}
+
+func controlLeaseAuthority(config runtimeconfig.Config, database *sql.DB, authorizer authz.LeaseGrantEvaluator) (*leaseauthority.Service, error) {
+	if database == nil || authorizer == nil {
+		return nil, runtimeclient.ErrInvalidClientConfig
+	}
+	resolveContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	leaseKey, err := credentials.NewSecretResolver(os.Getenv("AOR_SECRET_ROOT")).Resolve(resolveContext, config.LeaseSigningKeyRef)
+	cancel()
+	if err != nil {
+		return nil, runtimeconfig.ErrInvalidConfiguration
+	}
+	leaseSigner, err := authz.NewHMACSigner(leaseKey)
+	clearBytes(leaseKey)
+	if err != nil {
+		return nil, runtimeconfig.ErrInvalidConfiguration
+	}
+	leaseStore, err := authz.NewPostgresLeaseStore(database)
+	if err != nil {
+		return nil, runtimeconfig.ErrInvalidConfiguration
+	}
+	leaseManager, err := authz.NewLeaseManager(authz.LeaseManagerConfig{
+		Store: leaseStore, Signer: leaseSigner, Clock: time.Now,
+		DefaultTTL: 5 * time.Minute, MaxTTL: 15 * time.Minute, HeartbeatInterval: 30 * time.Second,
+	})
+	if err != nil {
+		return nil, runtimeconfig.ErrInvalidConfiguration
+	}
+	leaseScopes, err := leaseauthority.NewPostgresScopeResolver(database, config.DeploymentProfile)
+	if err != nil {
+		return nil, runtimeconfig.ErrInvalidConfiguration
+	}
+	service, err := leaseauthority.New(leaseauthority.Config{Manager: leaseManager, Policy: authorizer, Scopes: leaseScopes, Clock: time.Now})
+	if err != nil {
+		return nil, runtimeconfig.ErrInvalidConfiguration
+	}
+	return service, nil
 }
 
 func withRequestTrace(next http.Handler) http.Handler {

@@ -3,7 +3,7 @@ import json
 from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
-OPENAPI_SHA256 = "sha256:c3cf62b6a0426fbda0866dd99d4cc0f7fd27c4f5dc114c97b622bb53c778a69b"
+OPENAPI_SHA256 = "sha256:34acd9164a385b7daca8ca94c675a40da683431ba36cd59bb2029883beb79a9b"
 
 
 class AORClient:
@@ -107,6 +107,12 @@ class AORClient:
     def get_usage(self, options=None):
         return self._request("GET", "/v1/projects/{projectId}/usage", options)
 
+    def heartbeat_task_lease(self, options=None):
+        return self._request("POST", "/v1/projects/{projectId}/tasks/{taskId}/leases:heartbeat", options)
+
+    def issue_task_lease(self, options=None):
+        return self._request("POST", "/v1/projects/{projectId}/tasks/{taskId}/leases", options)
+
     def list_artifacts(self, options=None):
         return self._request("GET", "/v1/projects/{projectId}/artifacts", options)
 
@@ -149,11 +155,17 @@ class AORClient:
     def release_project_legal_hold(self, options=None):
         return self._request("POST", "/v1/projects/{projectId}/legal-holds/{holdId}:release", options)
 
+    def renew_task_lease(self, options=None):
+        return self._request("POST", "/v1/projects/{projectId}/tasks/{taskId}/leases:renew", options)
+
     def request_project_deletion(self, options=None):
         return self._request("POST", "/v1/projects/{projectId}:request-deletion", options)
 
     def resume_project(self, options=None):
         return self._request("POST", "/v1/projects/{projectId}:resume", options)
+
+    def revoke_task_lease(self, options=None):
+        return self._request("POST", "/v1/projects/{projectId}/tasks/{taskId}/leases:revoke", options)
 
     def run_doctor(self, options=None):
         return self._request("POST", "/v1/admin/doctor", options)

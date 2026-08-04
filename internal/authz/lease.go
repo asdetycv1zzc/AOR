@@ -247,16 +247,21 @@ type LeaseRenewalRequest struct {
 type LeaseHeartbeatRequest struct {
 	LeaseID      string
 	TenantID     string
+	ProjectID    string
+	TaskID       string
 	PrincipalID  string
 	FencingToken int64
 	Now          time.Time
 }
 
 type LeaseRevokeRequest struct {
-	LeaseID string
-	Actor   authn.Principal
-	Reason  string
-	Now     time.Time
+	LeaseID       string
+	ProjectID     string
+	TaskID        string
+	Actor         authn.Principal
+	Reason        string
+	RequestDigest string
+	Now           time.Time
 }
 
 type LeaseCheck struct {
@@ -530,7 +535,7 @@ func (m *LeaseManager) Heartbeat(ctx context.Context, request LeaseHeartbeatRequ
 	if current.State != LeaseActive || current.IsExpired(now) {
 		return CapabilityLease{}, aorerrors.New(aorerrors.CodeLeaseExpired, "", nil)
 	}
-	if request.PrincipalID == "" || request.PrincipalID != current.PrincipalID || request.FencingToken != current.FencingToken {
+	if request.ProjectID == "" || request.ProjectID != current.ProjectID || request.TaskID == "" || request.TaskID != current.TaskID || request.PrincipalID == "" || request.PrincipalID != current.PrincipalID || request.FencingToken != current.FencingToken {
 		return CapabilityLease{}, aorerrors.New(aorerrors.CodeForbidden, "", map[string]any{"scope": "lease fencing"})
 	}
 	if now.Before(current.LastHeartbeatAt) {
@@ -561,7 +566,7 @@ func (m *LeaseManager) Revoke(ctx context.Context, request LeaseRevokeRequest) e
 	if err := request.Actor.Validate(); err != nil {
 		return err
 	}
-	if request.Reason == "" || len(request.Reason) > 256 || strings.ContainsAny(request.Reason, "\r\n\x00") {
+	if request.ProjectID == "" || request.TaskID == "" || request.Reason == "" || len(request.Reason) > 256 || strings.ContainsAny(request.Reason, "\r\n\x00") || !digestPattern.MatchString(request.RequestDigest) {
 		return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "revoke reason"})
 	}
 	now := m.now()
@@ -575,16 +580,23 @@ func (m *LeaseManager) Revoke(ctx context.Context, request LeaseRevokeRequest) e
 	if err := m.verify(current); err != nil {
 		return err
 	}
-	if current.State != LeaseActive {
-		return nil
+	if current.ProjectID != request.ProjectID || current.TaskID != request.TaskID {
+		return aorerrors.New(aorerrors.CodeForbidden, "", map[string]any{"scope": "lease revoke binding"})
 	}
 	if request.Actor.ID != current.PrincipalID && request.Actor.Type != authn.PrincipalBreakGlassAdmin && request.Actor.Role != authn.RoleBreakGlassAdmin {
 		return aorerrors.New(aorerrors.CodeForbidden, "", map[string]any{"scope": "lease revoke"})
+	}
+	if current.State != LeaseActive {
+		if current.State == LeaseRevoked && current.Nonce == request.RequestDigest {
+			return nil
+		}
+		return aorerrors.New(aorerrors.CodeIdempotencyConflict, "", map[string]any{"scope": "lease revoke"})
 	}
 	updated := cloneLease(current)
 	updated.State = LeaseRevoked
 	updated.RevokedAt = &now
 	updated.FencingToken++
+	updated.Nonce = request.RequestDigest
 	if err := m.sign(&updated); err != nil {
 		return err
 	}
@@ -593,6 +605,10 @@ func (m *LeaseManager) Revoke(ctx context.Context, request LeaseRevokeRequest) e
 		return err
 	}
 	if !ok {
+		latest, found, lookupErr := m.store.Get(withLeaseTenant(ctx, request.Actor.TenantID), request.LeaseID)
+		if lookupErr == nil && found && latest.State == LeaseRevoked && latest.Nonce == request.RequestDigest {
+			return nil
+		}
 		return aorerrors.New(aorerrors.CodeConflict, "", nil)
 	}
 	return nil

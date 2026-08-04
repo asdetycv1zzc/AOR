@@ -81,13 +81,19 @@ type RenewRequest struct {
 
 type HeartbeatRequest struct {
 	TenantID     string
+	ProjectID    string
+	TaskID       string
 	LeaseID      string
 	FencingToken int64
 }
 
 type RevokeRequest struct {
-	LeaseID string
-	Reason  string
+	TenantID       string
+	ProjectID      string
+	TaskID         string
+	LeaseID        string
+	Reason         string
+	IdempotencyKey string
 }
 
 func New(config Config) (*Service, error) {
@@ -182,26 +188,33 @@ func (service *Service) Renew(ctx context.Context, principal authn.Principal, re
 }
 
 func (service *Service) Heartbeat(ctx context.Context, principal authn.Principal, request HeartbeatRequest) (authz.CapabilityLease, error) {
-	if err := service.validateCaller(ctx, principal, request.TenantID, ""); err != nil || request.LeaseID == "" || request.FencingToken < 1 {
+	if err := service.validateCaller(ctx, principal, request.TenantID, request.ProjectID); err != nil || request.TaskID == "" || request.LeaseID == "" || request.FencingToken < 1 {
 		if err != nil {
 			return authz.CapabilityLease{}, err
 		}
 		return authz.CapabilityLease{}, invalidRequest()
 	}
 	return service.manager.Heartbeat(ctx, authz.LeaseHeartbeatRequest{
-		LeaseID: request.LeaseID, TenantID: request.TenantID,
+		LeaseID: request.LeaseID, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID,
 		PrincipalID: principal.ID, FencingToken: request.FencingToken,
 	})
 }
 
 func (service *Service) Revoke(ctx context.Context, principal authn.Principal, request RevokeRequest) error {
-	if err := service.validateCaller(ctx, principal, principal.TenantID, principal.ProjectID); err != nil {
+	if err := service.validateCaller(ctx, principal, request.TenantID, request.ProjectID); err != nil {
 		return err
 	}
-	if request.LeaseID == "" {
+	if request.TaskID == "" || request.LeaseID == "" || !validIdempotencyKey(request.IdempotencyKey) {
 		return invalidRequest()
 	}
-	return service.manager.Revoke(ctx, authz.LeaseRevokeRequest{LeaseID: request.LeaseID, Actor: principal, Reason: request.Reason})
+	digest, err := revokeRequestDigest(principal, request)
+	if err != nil {
+		return aorerrors.Wrap(aorerrors.CodeInvalidArgument, "", err, map[string]any{"scope": "lease revoke idempotency"})
+	}
+	return service.manager.Revoke(ctx, authz.LeaseRevokeRequest{
+		LeaseID: request.LeaseID, ProjectID: request.ProjectID, TaskID: request.TaskID,
+		Actor: principal, Reason: request.Reason, RequestDigest: digest,
+	})
 }
 
 func (service *Service) authorizeGrant(ctx context.Context, principal authn.Principal, request GrantRequest) (authz.PolicyInput, authz.PolicyDecision, error) {
@@ -290,6 +303,26 @@ func grantRequestDigest(principal authn.Principal, input authz.PolicyInput, gran
 		Action: input.Action, Resource: input.Resource, ParameterDigest: input.ParameterDigest,
 		Budget: input.Budget, ApprovalID: request.ApprovalID, IdempotencyKey: request.IdempotencyKey, PolicyVersion: grant.PolicyVersion,
 		Constraints: grant.Constraints, TTLNanoseconds: int64(request.TTL),
+	})
+	if err != nil {
+		return "", err
+	}
+	return canonicaljson.Digest(encoded)
+}
+
+func revokeRequestDigest(principal authn.Principal, request RevokeRequest) (string, error) {
+	encoded, err := json.Marshal(struct {
+		Principal      authn.Principal `json:"principal"`
+		TenantID       string          `json:"tenantId"`
+		ProjectID      string          `json:"projectId"`
+		TaskID         string          `json:"taskId"`
+		LeaseID        string          `json:"leaseId"`
+		Reason         string          `json:"reason"`
+		IdempotencyKey string          `json:"idempotencyKey"`
+	}{
+		Principal: principal, TenantID: request.TenantID, ProjectID: request.ProjectID,
+		TaskID: request.TaskID, LeaseID: request.LeaseID, Reason: request.Reason,
+		IdempotencyKey: request.IdempotencyKey,
 	})
 	if err != nil {
 		return "", err

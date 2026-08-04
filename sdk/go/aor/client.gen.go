@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-const OpenAPISHA256 = "sha256:c3cf62b6a0426fbda0866dd99d4cc0f7fd27c4f5dc114c97b622bb53c778a69b"
+const OpenAPISHA256 = "sha256:34acd9164a385b7daca8ca94c675a40da683431ba36cd59bb2029883beb79a9b"
 
 type TokenProvider func(context.Context) (string, error)
 
@@ -187,6 +187,14 @@ func (c *Client) GetUsage(ctx context.Context, options RequestOptions) (*http.Re
 	return c.request(ctx, "GET", "/v1/projects/{projectId}/usage", options)
 }
 
+func (c *Client) HeartbeatTaskLease(ctx context.Context, options RequestOptions) (*http.Response, error) {
+	return c.request(ctx, "POST", "/v1/projects/{projectId}/tasks/{taskId}/leases:heartbeat", options)
+}
+
+func (c *Client) IssueTaskLease(ctx context.Context, options RequestOptions) (*http.Response, error) {
+	return c.request(ctx, "POST", "/v1/projects/{projectId}/tasks/{taskId}/leases", options)
+}
+
 func (c *Client) ListArtifacts(ctx context.Context, options RequestOptions) (*http.Response, error) {
 	return c.request(ctx, "GET", "/v1/projects/{projectId}/artifacts", options)
 }
@@ -243,12 +251,20 @@ func (c *Client) ReleaseProjectLegalHold(ctx context.Context, options RequestOpt
 	return c.request(ctx, "POST", "/v1/projects/{projectId}/legal-holds/{holdId}:release", options)
 }
 
+func (c *Client) RenewTaskLease(ctx context.Context, options RequestOptions) (*http.Response, error) {
+	return c.request(ctx, "POST", "/v1/projects/{projectId}/tasks/{taskId}/leases:renew", options)
+}
+
 func (c *Client) RequestProjectDeletion(ctx context.Context, options RequestOptions) (*http.Response, error) {
 	return c.request(ctx, "POST", "/v1/projects/{projectId}:request-deletion", options)
 }
 
 func (c *Client) ResumeProject(ctx context.Context, options RequestOptions) (*http.Response, error) {
 	return c.request(ctx, "POST", "/v1/projects/{projectId}:resume", options)
+}
+
+func (c *Client) RevokeTaskLease(ctx context.Context, options RequestOptions) (*http.Response, error) {
+	return c.request(ctx, "POST", "/v1/projects/{projectId}/tasks/{taskId}/leases:revoke", options)
 }
 
 func (c *Client) RunDoctor(ctx context.Context, options RequestOptions) (*http.Response, error) {

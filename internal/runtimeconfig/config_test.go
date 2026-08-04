@@ -8,6 +8,8 @@ import (
 func TestLoadServerConfiguration(t *testing.T) {
 	config, err := Load("aor-server", environment(map[string]string{
 		"AOR_DATABASE_PASSWORD_REF": "secret://postgres/password",
+		"AOR_DEPLOYMENT_PROFILE":    "TEST",
+		"AOR_LEASE_SIGNING_KEY_REF": "secret://authz/lease-signing-key",
 		"AOR_S3_ACCESS_KEY_REF":     "secret://minio/access-key",
 		"AOR_S3_SECRET_KEY_REF":     "secret://minio/secret-key",
 	}))
@@ -49,6 +51,8 @@ func TestServerRejectsUnsafeKnowledgeRoot(t *testing.T) {
 	for _, root := range []string{"relative/knowledge", "/", "/var/lib/aor/../knowledge", "/var/lib/aor/knowledge\n"} {
 		_, err := Load("aor-server", environment(map[string]string{
 			"AOR_DATABASE_PASSWORD_REF": "secret://postgres/password",
+			"AOR_DEPLOYMENT_PROFILE":    "TEST",
+			"AOR_LEASE_SIGNING_KEY_REF": "secret://authz/lease-signing-key",
 			"AOR_S3_ACCESS_KEY_REF":     "secret://minio/access-key",
 			"AOR_S3_SECRET_KEY_REF":     "secret://minio/secret-key",
 			"AOR_KNOWLEDGE_ROOT":        root,
@@ -130,6 +134,8 @@ func TestLoadRejectsSecretValuesAndUnsafeReferences(t *testing.T) {
 	for _, reference := range []string{"plain-password", "secret:///absolute", "secret://postgres/../password", "secret://postgres/password?version=1"} {
 		_, err := Load("aor-server", environment(map[string]string{
 			"AOR_DATABASE_PASSWORD_REF": reference,
+			"AOR_DEPLOYMENT_PROFILE":    "TEST",
+			"AOR_LEASE_SIGNING_KEY_REF": "secret://authz/lease-signing-key",
 			"AOR_S3_ACCESS_KEY_REF":     "secret://minio/access-key",
 			"AOR_S3_SECRET_KEY_REF":     "secret://minio/secret-key",
 		}))
@@ -143,11 +149,33 @@ func TestProductionRequiresAuthenticatedEncryptedDependencies(t *testing.T) {
 	_, err := Load("aor-server", environment(map[string]string{
 		"AOR_ENVIRONMENT":           EnvironmentProduction,
 		"AOR_DATABASE_PASSWORD_REF": "secret://postgres/password",
+		"AOR_DEPLOYMENT_PROFILE":    "PRODUCTION",
+		"AOR_LEASE_SIGNING_KEY_REF": "secret://authz/lease-signing-key",
 		"AOR_S3_ACCESS_KEY_REF":     "secret://minio/access-key",
 		"AOR_S3_SECRET_KEY_REF":     "secret://minio/secret-key",
 	}))
 	if !errors.Is(err, ErrInvalidConfiguration) {
 		t.Fatalf("production plaintext error = %v", err)
+	}
+}
+
+func TestServerRequiresLeaseAuthorityConfiguration(t *testing.T) {
+	base := map[string]string{
+		"AOR_DATABASE_PASSWORD_REF": "secret://postgres/password",
+		"AOR_DEPLOYMENT_PROFILE":    "TEST",
+		"AOR_LEASE_SIGNING_KEY_REF": "secret://authz/lease-signing-key",
+		"AOR_S3_ACCESS_KEY_REF":     "secret://minio/access-key",
+		"AOR_S3_SECRET_KEY_REF":     "secret://minio/secret-key",
+	}
+	for _, key := range []string{"AOR_DEPLOYMENT_PROFILE", "AOR_LEASE_SIGNING_KEY_REF"} {
+		values := make(map[string]string, len(base))
+		for name, value := range base {
+			values[name] = value
+		}
+		delete(values, key)
+		if _, err := Load("aor-server", environment(values)); !errors.Is(err, ErrInvalidConfiguration) {
+			t.Fatalf("missing %s error = %v", key, err)
+		}
 	}
 }
 

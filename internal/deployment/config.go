@@ -142,7 +142,7 @@ func ValidateCompose(input []byte) error {
 	runtimeImage, runtimeFound := document.Services["aor-sandbox-runtime"]
 	api, apiFound := document.Services["aor-api"]
 	toolBroker, toolBrokerFound := document.Services["aor-tool-broker"]
-	if !apiFound || !toolBrokerFound || api.Environment["AOR_KNOWLEDGE_ROOT"] != "/var/lib/aor/knowledge" || !hasReadOnlyVolume(api.Volumes, "AOR_KNOWLEDGE_HOST_PATH", "/var/lib/aor/knowledge") || !hasS3Environment(api.Environment) || !hasS3Environment(toolBroker.Environment) || toolBroker.Build.Target != "tool-broker-runtime" || toolBroker.Environment["AOR_REPOSITORY_ROOT"] != "/var/lib/aor/repositories" || !hasVolume(toolBroker.Volumes, "repository-data", "/var/lib/aor/repositories") || !containsString(toolBroker.CapDrop, "ALL") {
+	if !apiFound || !toolBrokerFound || api.Environment["AOR_KNOWLEDGE_ROOT"] != "/var/lib/aor/knowledge" || !hasReadOnlyVolume(api.Volumes, "AOR_KNOWLEDGE_HOST_PATH", "/var/lib/aor/knowledge") || !hasS3Environment(api.Environment) || api.Environment["AOR_DEPLOYMENT_PROFILE"] != "TEST" || api.Environment["AOR_LEASE_SIGNING_KEY_REF"] != "secret://lease_signing_key" || !containsString(api.Secrets, "lease_signing_key") || !hasS3Environment(toolBroker.Environment) || toolBroker.Build.Target != "tool-broker-runtime" || toolBroker.Environment["AOR_REPOSITORY_ROOT"] != "/var/lib/aor/repositories" || !hasVolume(toolBroker.Volumes, "repository-data", "/var/lib/aor/repositories") || !containsString(toolBroker.CapDrop, "ALL") {
 		return ErrInvalidDeployment
 	}
 	if !workerFound || !preflightFound || !runtimeFound || !worker.ReadOnly || !preflight.ReadOnly || !runtimeImage.ReadOnly || runtimeImage.NetworkMode != "none" || preflight.NetworkMode != "none" || worker.Build.Target != "worker-runtime" {

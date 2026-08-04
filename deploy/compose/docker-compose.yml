@@ -399,6 +399,8 @@ services:
       AOR_DATABASE_NAME: aor
       AOR_DATABASE_USER: aor_app
       AOR_DATABASE_PASSWORD_REF: secret://postgres_app_password
+      AOR_DEPLOYMENT_PROFILE: TEST
+      AOR_LEASE_SIGNING_KEY_REF: secret://lease_signing_key
       AOR_TEMPORAL_ADDRESS: temporal:7233
       AOR_TEMPORAL_NAMESPACE: aor
       AOR_NATS_URL: nats://nats:4222
@@ -414,7 +416,7 @@ services:
       AOR_OIDC_AUDIENCE: aor-control-plane
       AOR_OIDC_DEFAULT_TENANT_ID: 11111111-1111-4111-8111-111111111111
       AOR_OIDC_DEFAULT_ROLE: USER
-    secrets: [postgres_app_password, minio_root_user, minio_root_password]
+    secrets: [postgres_app_password, lease_signing_key, minio_root_user, minio_root_password]
     volumes:
       - "${AOR_KNOWLEDGE_HOST_PATH:-../../knowledge}:/var/lib/aor/knowledge:ro"
     ports:

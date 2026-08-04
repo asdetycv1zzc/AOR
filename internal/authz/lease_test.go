@@ -116,7 +116,7 @@ func TestCapabilityLeaseLifecycleAndFencing(t *testing.T) {
 	}
 
 	now = now.Add(10 * time.Second)
-	if _, err := manager.Heartbeat(context.Background(), LeaseHeartbeatRequest{LeaseID: lease.ID, PrincipalID: lease.PrincipalID, FencingToken: lease.FencingToken, Now: now}); err != nil {
+	if _, err := manager.Heartbeat(context.Background(), LeaseHeartbeatRequest{LeaseID: lease.ID, TenantID: lease.TenantID, ProjectID: lease.ProjectID, TaskID: lease.TaskID, PrincipalID: lease.PrincipalID, FencingToken: lease.FencingToken, Now: now}); err != nil {
 		t.Fatalf("heartbeat: %v", err)
 	}
 	grantInput := testInput()
@@ -145,9 +145,20 @@ func TestCapabilityLeaseLifecycleAndFencing(t *testing.T) {
 	if err != nil || decision.Decision != DecisionAllow {
 		t.Fatalf("renewed lease rejected: decision=%#v err=%v", decision, err)
 	}
-	if err := manager.Revoke(context.Background(), LeaseRevokeRequest{LeaseID: renewed.ID, Actor: testPrincipal(), Reason: "task canceled", Now: now}); err != nil {
+	revoke := LeaseRevokeRequest{LeaseID: renewed.ID, ProjectID: renewed.ProjectID, TaskID: renewed.TaskID, Actor: testPrincipal(), Reason: "task canceled", RequestDigest: testParamsDigest, Now: now}
+	if err := manager.Revoke(context.Background(), revoke); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}
+	if err := manager.Revoke(context.Background(), revoke); err != nil {
+		t.Fatalf("idempotent revoke: %v", err)
+	}
+	unauthorized := revoke
+	unauthorized.Actor.ID = "agent_other"
+	err = manager.Revoke(context.Background(), unauthorized)
+	assertAuthzErrorCode(t, err, aorerrors.CodeForbidden)
+	revoke.RequestDigest = testSpecDigest
+	err = manager.Revoke(context.Background(), revoke)
+	assertAuthzErrorCode(t, err, aorerrors.CodeIdempotencyConflict)
 	decision, err = engine.Authorize(context.Background(), renewedInput)
 	if decision.Decision != DecisionDeny || err == nil {
 		t.Fatalf("revoked lease accepted: decision=%#v err=%v", decision, err)
@@ -283,7 +294,8 @@ func TestLeaseHeartbeatUsesTrustedTime(t *testing.T) {
 		lease, _ := issueForInput(t, manager, engine, testInput(), trustedNow)
 		trustedNow = trustedNow.Add(10 * time.Second)
 		updated, err := manager.Heartbeat(context.Background(), LeaseHeartbeatRequest{
-			LeaseID: lease.ID, PrincipalID: lease.PrincipalID, FencingToken: lease.FencingToken,
+			LeaseID: lease.ID, TenantID: lease.TenantID, ProjectID: lease.ProjectID, TaskID: lease.TaskID,
+			PrincipalID: lease.PrincipalID, FencingToken: lease.FencingToken,
 			Now: trustedNow.Add(4 * time.Minute),
 		})
 		if err != nil {
@@ -301,7 +313,8 @@ func TestLeaseHeartbeatUsesTrustedTime(t *testing.T) {
 		lease, _ := issueForInput(t, manager, engine, testInput(), trustedNow)
 		trustedNow = trustedNow.Add(90 * time.Second)
 		_, err := manager.Heartbeat(context.Background(), LeaseHeartbeatRequest{
-			LeaseID: lease.ID, PrincipalID: lease.PrincipalID, FencingToken: lease.FencingToken,
+			LeaseID: lease.ID, TenantID: lease.TenantID, ProjectID: lease.ProjectID, TaskID: lease.TaskID,
+			PrincipalID: lease.PrincipalID, FencingToken: lease.FencingToken,
 			Now: authzTestNow.Add(10 * time.Second),
 		})
 		assertAuthzErrorCode(t, err, aorerrors.CodeLeaseExpired)
@@ -322,7 +335,7 @@ func TestLeaseRevokeUsesTrustedTime(t *testing.T) {
 			engine := testEngine(manager, func() time.Time { return trustedNow })
 			lease, _ := issueForInput(t, manager, engine, testInput(), trustedNow)
 			trustedNow = trustedNow.Add(20 * time.Second)
-			if err := manager.Revoke(context.Background(), LeaseRevokeRequest{LeaseID: lease.ID, Actor: testPrincipal(), Reason: "trusted-time test", Now: test.forged}); err != nil {
+			if err := manager.Revoke(context.Background(), LeaseRevokeRequest{LeaseID: lease.ID, ProjectID: lease.ProjectID, TaskID: lease.TaskID, Actor: testPrincipal(), Reason: "trusted-time test", RequestDigest: testParamsDigest, Now: test.forged}); err != nil {
 				t.Fatal(err)
 			}
 			revoked, found, err := manager.Get(context.Background(), lease.ID)

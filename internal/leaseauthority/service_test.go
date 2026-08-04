@@ -133,14 +133,31 @@ func TestServiceHeartbeatAndRevocationUseAuthenticatedPrincipal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	heartbeat, err := service.Heartbeat(ctx, principal, HeartbeatRequest{TenantID: principal.TenantID, LeaseID: lease.ID, FencingToken: lease.FencingToken})
+	if _, err := service.Heartbeat(ctx, principal, HeartbeatRequest{TenantID: principal.TenantID, ProjectID: principal.ProjectID, TaskID: "task_other", LeaseID: lease.ID, FencingToken: lease.FencingToken}); errorCode(err) != aorerrors.CodeForbidden {
+		t.Fatalf("cross-task heartbeat error = %v", err)
+	}
+	heartbeat, err := service.Heartbeat(ctx, principal, HeartbeatRequest{TenantID: principal.TenantID, ProjectID: principal.ProjectID, TaskID: lease.TaskID, LeaseID: lease.ID, FencingToken: lease.FencingToken})
 	if err != nil || heartbeat.ID != lease.ID {
 		t.Fatalf("heartbeat = %#v, err=%v", heartbeat, err)
 	}
-	if err := service.Revoke(ctx, principal, RevokeRequest{LeaseID: lease.ID, Reason: "task canceled"}); err != nil {
+	revoke := RevokeRequest{TenantID: principal.TenantID, ProjectID: principal.ProjectID, TaskID: lease.TaskID, LeaseID: lease.ID, Reason: "task canceled", IdempotencyKey: "revoke-1"}
+	wrongTask := revoke
+	wrongTask.TaskID = "task_other"
+	if err := service.Revoke(ctx, principal, wrongTask); errorCode(err) != aorerrors.CodeForbidden {
+		t.Fatalf("cross-task revoke error = %v", err)
+	}
+	if err := service.Revoke(ctx, principal, revoke); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Heartbeat(ctx, principal, HeartbeatRequest{TenantID: principal.TenantID, LeaseID: lease.ID, FencingToken: lease.FencingToken + 1}); err == nil {
+	if err := service.Revoke(ctx, principal, revoke); err != nil {
+		t.Fatalf("idempotent revoke: %v", err)
+	}
+	changed := revoke
+	changed.Reason = "different reason"
+	if err := service.Revoke(ctx, principal, changed); errorCode(err) != aorerrors.CodeIdempotencyConflict {
+		t.Fatalf("changed idempotent revoke error = %v", err)
+	}
+	if _, err := service.Heartbeat(ctx, principal, HeartbeatRequest{TenantID: principal.TenantID, ProjectID: principal.ProjectID, TaskID: lease.TaskID, LeaseID: lease.ID, FencingToken: lease.FencingToken + 1}); err == nil {
 		t.Fatal("revoked lease accepted heartbeat")
 	}
 }

@@ -127,11 +127,12 @@ func (store *PostgresLeaseStore) CompareAndSwap(ctx context.Context, id string, 
 	result, err := tx.ExecContext(ctx, `
 UPDATE agent_leases
 SET expires_at = $4, last_heartbeat_at = $5, fencing_token = $6, state = $7,
-    revoked_at = $8, signature = $9
+    revoked_at = $8, nonce_hash = $9, signature = $10
 WHERE tenant_id = $1::uuid AND id = $2 AND fencing_token = $3`,
 		replacement.TenantID, id, expected, replacement.ExpiresAt.UTC(),
 		replacement.LastHeartbeatAt.UTC(), replacement.FencingToken,
-		string(replacement.State), nullableLeaseTime(replacement.RevokedAt), replacement.Signature)
+		string(replacement.State), nullableLeaseTime(replacement.RevokedAt),
+		replacement.Nonce, replacement.Signature)
 	if err != nil {
 		return false, err
 	}
@@ -264,6 +265,7 @@ func sameLeaseBinding(current, replacement CapabilityLease) bool {
 	current.FencingToken = replacement.FencingToken
 	current.State = replacement.State
 	current.RevokedAt = cloneTimePointer(replacement.RevokedAt)
+	current.Nonce = replacement.Nonce
 	current.Signature = replacement.Signature
 	return reflect.DeepEqual(current, replacement)
 }
