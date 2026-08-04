@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/akimisaka/aor/internal/authn"
+	"github.com/akimisaka/aor/internal/authz"
 )
 
 func TestPostgresScopeResolverRequiresDatabaseAndDeploymentProfile(t *testing.T) {
@@ -20,6 +21,30 @@ func TestPostgresScopeResolverRequiresDatabaseAndDeploymentProfile(t *testing.T)
 	}
 	if _, err := NewPostgresScopeResolver(PostgresScopeResolverConfig{Database: database, DeploymentProfile: "PRODUCTION"}); err != nil {
 		t.Fatalf("valid resolver error = %v", err)
+	}
+}
+
+func TestDetachedPlanningScopeOnlyAllowsModulePlannerModelGeneration(t *testing.T) {
+	query := ToolAuthorizationScopeQuery{
+		ProjectID: "project-1", TaskID: "task-1", PrincipalID: "project-1:MODULE_PLANNER:task-1",
+		Role: authn.RoleModulePlanner, Action: authz.ActionModelGenerate,
+	}
+	if !allowsDetachedPlanningScope(query) {
+		t.Fatal("ModulePlanner model generation was rejected")
+	}
+	query.Action = authz.ActionToolInvoke
+	if allowsDetachedPlanningScope(query) {
+		t.Fatal("detached planning task accepted tool invocation")
+	}
+	query.Action = authz.ActionModelGenerate
+	query.Role = authn.RoleExecutor
+	if allowsDetachedPlanningScope(query) {
+		t.Fatal("detached planning task accepted non-planner role")
+	}
+	query.Role = authn.RoleModulePlanner
+	query.PrincipalID = "project-1:MODULE_PLANNER:other-task"
+	if allowsDetachedPlanningScope(query) {
+		t.Fatal("detached planning task accepted another task planner")
 	}
 }
 

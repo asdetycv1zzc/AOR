@@ -26,7 +26,7 @@ func (resolver *PostgresScopeResolver) Resolve(ctx context.Context, query ScopeQ
 	scope, err := resolver.resolver.ResolveToolAuthorizationScope(ctx, toolbroker.ToolAuthorizationScopeQuery{
 		TenantID: query.TenantID, ProjectID: query.ProjectID, TaskID: query.TaskID,
 		BudgetAccountID: query.BudgetAccountID, ApprovalID: query.ApprovalID,
-		PrincipalID: query.PrincipalID, Role: query.Role,
+		PrincipalID: query.PrincipalID, Role: query.Role, Action: query.Action,
 	})
 	if err != nil {
 		return Scope{}, err

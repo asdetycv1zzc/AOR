@@ -40,7 +40,7 @@ func (resolver *PostgresScopeResolver) ResolveExecutionScope(ctx context.Context
 	}
 	defer func() { _ = tx.Rollback() }()
 	_, task, err := resolver.loadProjectTask(ctx, tx, tenantID, projectID, taskID)
-	if err != nil {
+	if err != nil || !task.moduleSpecAttached {
 		return ExecutionScope{}, ErrLeaseInvalid
 	}
 	if err := tx.Commit(); err != nil {
@@ -50,7 +50,7 @@ func (resolver *PostgresScopeResolver) ResolveExecutionScope(ctx context.Context
 }
 
 func (resolver *PostgresScopeResolver) ResolveToolAuthorizationScope(ctx context.Context, query ToolAuthorizationScopeQuery) (ToolAuthorizationScope, error) {
-	if resolver == nil || resolver.database == nil || query.BudgetAccountID == "" || !trustedRequestScope(ctx, query.TenantID, query.ProjectID) {
+	if resolver == nil || resolver.database == nil || query.BudgetAccountID == "" || query.Action == "" || !trustedRequestScope(ctx, query.TenantID, query.ProjectID) {
 		return ToolAuthorizationScope{}, ErrPolicyDenied
 	}
 	tx, err := resolver.begin(ctx, query.TenantID)
@@ -68,7 +68,7 @@ func (resolver *PostgresScopeResolver) ResolveToolAuthorizationScope(ctx context
 	} else {
 		project, taskRecord, err = resolver.loadProjectTask(ctx, tx, query.TenantID, query.ProjectID, query.TaskID)
 	}
-	if err != nil {
+	if err != nil || query.TaskID != "" && query.Role == authn.RoleModulePlanner && !hasPlanningAgentAuthority(ctx, tx, query) || query.TaskID != "" && !taskRecord.moduleSpecAttached && !allowsDetachedPlanningScope(query) {
 		return ToolAuthorizationScope{}, ErrPolicyDenied
 	}
 	budget, err := loadToolBudget(ctx, tx, query)
@@ -85,9 +85,33 @@ func (resolver *PostgresScopeResolver) ResolveToolAuthorizationScope(ctx context
 	return ToolAuthorizationScope{Project: project, Task: taskRecord.scope, Budget: budget, Approval: approval}, nil
 }
 
+func allowsDetachedPlanningScope(query ToolAuthorizationScopeQuery) bool {
+	return query.Action == authz.ActionModelGenerate && allowsPlanningAgentIdentity(query)
+}
+
+func hasPlanningAgentAuthority(ctx context.Context, tx *sql.Tx, query ToolAuthorizationScopeQuery) bool {
+	if !allowsPlanningAgentIdentity(query) {
+		return false
+	}
+	var exists bool
+	err := tx.QueryRowContext(ctx, `
+SELECT EXISTS (
+  SELECT 1
+  FROM agent_instances
+  WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND id = $3 AND role = 'MODULE_PLANNER'
+)`, query.TenantID, query.ProjectID, query.PrincipalID).Scan(&exists)
+	return err == nil && exists
+}
+
+func allowsPlanningAgentIdentity(query ToolAuthorizationScopeQuery) bool {
+	return query.Role == authn.RoleModulePlanner && query.TaskID != "" &&
+		query.PrincipalID == query.ProjectID+":MODULE_PLANNER:"+query.TaskID
+}
+
 type postgresTaskScope struct {
-	projectVersion int64
-	scope          authz.TaskScope
+	projectVersion     int64
+	moduleSpecAttached bool
+	scope              authz.TaskScope
 }
 
 func (resolver *PostgresScopeResolver) loadProject(ctx context.Context, tx *sql.Tx, tenantID, projectID string) (authz.ProjectScope, error) {
@@ -107,37 +131,54 @@ WHERE tenant_id = $1::uuid AND id = $2::uuid`, tenantID, projectID).Scan(
 func (resolver *PostgresScopeResolver) loadProjectTask(ctx context.Context, tx *sql.Tx, tenantID, projectID, taskID string) (authz.ProjectScope, postgresTaskScope, error) {
 	var project authz.ProjectScope
 	var task authz.TaskScope
-	var moduleJSON []byte
-	var platform, sandboxLevel string
+	var scopeJSON []byte
+	var moduleSpecAttached bool
+	var platform, sandboxLevel, planStatus string
 	err := tx.QueryRowContext(ctx, `
 SELECT p.state, p.state_version, p.data_classification,
-       t.state, t.state_version, ms.content_sha256, ms.execution_platform,
-       ms.isolation_level, ms.content_jsonb
+	       t.state, t.state_version, COALESCE(ms.content_sha256, plan.content_sha256),
+	       COALESCE(ms.execution_platform, planned.content_jsonb->>'executionPlatform'),
+	       COALESCE(ms.isolation_level, planned.content_jsonb->>'sandboxLevel'),
+	       COALESCE(ms.content_jsonb, planned.content_jsonb), t.module_spec_id IS NOT NULL,
+	       plan.status
 FROM projects p
 JOIN module_tasks t ON t.tenant_id = p.tenant_id AND t.project_id = p.id
-JOIN module_specs ms ON ms.tenant_id = t.tenant_id AND ms.id = t.module_spec_id
+JOIN plan_specs plan ON plan.tenant_id = t.tenant_id AND plan.id = t.planning_spec_id
+JOIN LATERAL (
+	  SELECT module AS content_jsonb
+	  FROM jsonb_array_elements(plan.content_jsonb->'modules') AS module
+	  WHERE module->>'moduleId' = t.module_id
+) AS planned ON true
+LEFT JOIN module_specs ms ON ms.tenant_id = t.tenant_id AND ms.id = t.module_spec_id
 WHERE p.tenant_id = $1::uuid AND p.id = $2::uuid AND t.id = $3::uuid`, tenantID, projectID, taskID).Scan(
 		&project.State, &project.StateVersion, &project.Classification,
 		&task.State, &task.StateVersion, &task.SpecDigest, &platform,
-		&sandboxLevel, &moduleJSON,
+		&sandboxLevel, &scopeJSON, &moduleSpecAttached, &planStatus,
 	)
 	if err != nil {
 		return authz.ProjectScope{}, postgresTaskScope{}, err
 	}
-	var module contracts.ModuleSpec
-	if json.Unmarshal(moduleJSON, &module) != nil || module.ProjectID != projectID || string(module.ExecutionPlatform) != platform || string(module.SandboxLevel) != sandboxLevel || len(module.AllowedPaths) > 256 {
-		return authz.ProjectScope{}, postgresTaskScope{}, ErrPolicyDenied
-	}
 	project.TenantID, project.ID = tenantID, projectID
 	task.TenantID, task.ProjectID, task.ID = tenantID, projectID, taskID
-	task.OwnedPaths = append([]string(nil), module.AllowedPaths...)
-	task.ExecutionPlatform, task.SandboxLevel = platform, sandboxLevel
-	task.WorkloadTrust = string(module.WorkloadProfile.Trust)
 	task.DeploymentProfile = resolver.deploymentProfile
-	task.HostileMultiTenant = module.WorkloadProfile.HostileMultiTenant
-	task.RequiresNetworkIsolation = module.WorkloadProfile.RequiresNetworkIsolation
-	task.RequiresHiddenConfidentiality = module.WorkloadProfile.RequiresHiddenTestConfidentiality
-	return project, postgresTaskScope{projectVersion: project.StateVersion, scope: task}, nil
+	if moduleSpecAttached {
+		var module contracts.ModuleSpec
+		if json.Unmarshal(scopeJSON, &module) != nil || module.ProjectID != projectID || string(module.ExecutionPlatform) != platform || string(module.SandboxLevel) != sandboxLevel || len(module.AllowedPaths) > 256 {
+			return authz.ProjectScope{}, postgresTaskScope{}, ErrPolicyDenied
+		}
+		task.ExecutionPlatform, task.SandboxLevel = platform, sandboxLevel
+		task.OwnedPaths = append([]string(nil), module.AllowedPaths...)
+		task.WorkloadTrust = string(module.WorkloadProfile.Trust)
+		task.HostileMultiTenant = module.WorkloadProfile.HostileMultiTenant
+		task.RequiresNetworkIsolation = module.WorkloadProfile.RequiresNetworkIsolation
+		task.RequiresHiddenConfidentiality = module.WorkloadProfile.RequiresHiddenTestConfidentiality
+	} else {
+		var module contracts.PlanModule
+		if json.Unmarshal(scopeJSON, &module) != nil || module.ModuleID == "" || string(module.ExecutionPlatform) != platform || string(module.SandboxLevel) != sandboxLevel || len(module.OwnedPaths) > 256 || planStatus != "DRAFT" || task.State != "QUEUED_PLANNING" && task.State != "PLANNING" {
+			return authz.ProjectScope{}, postgresTaskScope{}, ErrPolicyDenied
+		}
+	}
+	return project, postgresTaskScope{projectVersion: project.StateVersion, moduleSpecAttached: moduleSpecAttached, scope: task}, nil
 }
 
 func loadToolBudget(ctx context.Context, tx *sql.Tx, query ToolAuthorizationScopeQuery) (authz.BudgetScope, error) {

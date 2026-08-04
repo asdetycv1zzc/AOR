@@ -286,7 +286,7 @@ func (authorizer *modelGatewayAuthorizer) AuthorizeModel(ctx context.Context, re
 		return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
 	}
 
-	project, task, account, reservation, err := authorizer.loadScope(ctx, principal.TenantID, projectID, request.TaskID, request.AccountID, request.ReservationID, request.RequestID)
+	project, task, account, reservation, err := authorizer.loadScope(ctx, principal.TenantID, projectID, request.TaskID, request.AccountID, request.ReservationID, request.RequestID, principal.ID, role, request.Operation)
 	if err != nil {
 		return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
 	}
@@ -379,7 +379,7 @@ type modelReservationProjection struct {
 	State     string
 }
 
-func (authorizer *modelGatewayAuthorizer) loadScope(ctx context.Context, tenantID, projectID, taskID, accountID, reservationID, requestID string) (modelProjectProjection, authz.TaskScope, modelAccountProjection, modelReservationProjection, error) {
+func (authorizer *modelGatewayAuthorizer) loadScope(ctx context.Context, tenantID, projectID, taskID, accountID, reservationID, requestID, principalID, role, operation string) (modelProjectProjection, authz.TaskScope, modelAccountProjection, modelReservationProjection, error) {
 	tx, err := authorizer.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return modelProjectProjection{}, authz.TaskScope{}, modelAccountProjection{}, modelReservationProjection{}, err
@@ -395,21 +395,56 @@ func (authorizer *modelGatewayAuthorizer) loadScope(ctx context.Context, tenantI
 	var task authz.TaskScope
 	if taskID != "" {
 		task.TenantID, task.ProjectID, task.ID = tenantID, projectID, taskID
-		var specDigest, platform, isolation string
+		var specDigest, planStatus string
+		var platform, isolation sql.NullString
 		var moduleJSON []byte
-		if err := tx.QueryRowContext(ctx, `SELECT t.state, t.state_version, ms.content_sha256, ms.execution_platform, ms.isolation_level, ms.content_jsonb FROM module_tasks t JOIN module_specs ms ON ms.tenant_id = t.tenant_id AND ms.id = t.module_spec_id WHERE t.tenant_id = $1::uuid AND t.project_id = $2::uuid AND t.id = $3::uuid`, tenantID, projectID, taskID).Scan(&task.State, &task.StateVersion, &specDigest, &platform, &isolation, &moduleJSON); err != nil {
+		var moduleSpecAttached bool
+		if err := tx.QueryRowContext(ctx, `
+SELECT t.state, t.state_version, COALESCE(ms.content_sha256, plan.content_sha256),
+       ms.execution_platform, ms.isolation_level, ms.content_jsonb,
+       t.module_spec_id IS NOT NULL, plan.status
+FROM module_tasks t
+JOIN plan_specs plan ON plan.tenant_id = t.tenant_id AND plan.id = t.planning_spec_id
+LEFT JOIN module_specs ms ON ms.tenant_id = t.tenant_id AND ms.id = t.module_spec_id
+WHERE t.tenant_id = $1::uuid AND t.project_id = $2::uuid AND t.id = $3::uuid
+  AND EXISTS (
+    SELECT 1 FROM jsonb_array_elements(plan.content_jsonb->'modules') AS planned
+    WHERE planned->>'moduleId' = t.module_id
+  )`, tenantID, projectID, taskID).Scan(
+			&task.State, &task.StateVersion, &specDigest, &platform, &isolation, &moduleJSON,
+			&moduleSpecAttached, &planStatus,
+		); err != nil {
 			return modelProjectProjection{}, authz.TaskScope{}, modelAccountProjection{}, modelReservationProjection{}, err
 		}
-		var module contracts.ModuleSpec
-		if err := json.Unmarshal(moduleJSON, &module); err != nil || module.ProjectID != projectID || string(module.ExecutionPlatform) != platform || string(module.SandboxLevel) != isolation {
+		task.SpecDigest = specDigest
+		if role == authn.RoleModulePlanner {
+			if principalID != projectID+":MODULE_PLANNER:"+taskID {
+				return modelProjectProjection{}, authz.TaskScope{}, modelAccountProjection{}, modelReservationProjection{}, modelgateway.ErrAuthorizationDenied
+			}
+			var authoritative bool
+			if err := tx.QueryRowContext(ctx, `
+SELECT EXISTS (
+  SELECT 1
+  FROM agent_instances
+  WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND id = $3 AND role = 'MODULE_PLANNER'
+)`, tenantID, projectID, principalID).Scan(&authoritative); err != nil || !authoritative {
+				return modelProjectProjection{}, authz.TaskScope{}, modelAccountProjection{}, modelReservationProjection{}, modelgateway.ErrAuthorizationDenied
+			}
+		}
+		if moduleSpecAttached {
+			var module contracts.ModuleSpec
+			if err := json.Unmarshal(moduleJSON, &module); err != nil || module.ProjectID != projectID || string(module.ExecutionPlatform) != platform.String || string(module.SandboxLevel) != isolation.String || !platform.Valid || !isolation.Valid {
+				return modelProjectProjection{}, authz.TaskScope{}, modelAccountProjection{}, modelReservationProjection{}, modelgateway.ErrAuthorizationDenied
+			}
+			task.ExecutionPlatform, task.SandboxLevel = platform.String, isolation.String
+			task.WorkloadTrust = string(module.WorkloadProfile.Trust)
+			task.DeploymentProfile = authorizer.deploymentProfile
+			task.HostileMultiTenant = module.WorkloadProfile.HostileMultiTenant
+			task.RequiresNetworkIsolation = module.WorkloadProfile.RequiresNetworkIsolation
+			task.RequiresHiddenConfidentiality = module.WorkloadProfile.RequiresHiddenTestConfidentiality
+		} else if role != authn.RoleModulePlanner || operation != "generate" || planStatus != "DRAFT" || task.State != "QUEUED_PLANNING" && task.State != "PLANNING" || platform.Valid || isolation.Valid || len(moduleJSON) != 0 {
 			return modelProjectProjection{}, authz.TaskScope{}, modelAccountProjection{}, modelReservationProjection{}, modelgateway.ErrAuthorizationDenied
 		}
-		task.SpecDigest, task.ExecutionPlatform, task.SandboxLevel = specDigest, platform, isolation
-		task.WorkloadTrust = string(module.WorkloadProfile.Trust)
-		task.DeploymentProfile = authorizer.deploymentProfile
-		task.HostileMultiTenant = module.WorkloadProfile.HostileMultiTenant
-		task.RequiresNetworkIsolation = module.WorkloadProfile.RequiresNetworkIsolation
-		task.RequiresHiddenConfidentiality = module.WorkloadProfile.RequiresHiddenTestConfidentiality
 	}
 	var account modelAccountProjection
 	if accountID != "" {

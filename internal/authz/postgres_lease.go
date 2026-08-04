@@ -294,7 +294,7 @@ func nullableLeaseString(value string) any {
 }
 
 func advanceTaskFencing(ctx context.Context, tx *sql.Tx, lease CapabilityLease) error {
-	if lease.TaskID == "" {
+	if lease.TaskID == "" || !IsSideEffect(lease.Action) {
 		return nil
 	}
 	var advanced sql.NullBool

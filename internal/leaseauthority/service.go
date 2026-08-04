@@ -31,6 +31,7 @@ type ScopeQuery struct {
 	ApprovalID      string
 	PrincipalID     string
 	Role            string
+	Action          string
 }
 
 type ScopeResolver interface {
@@ -230,7 +231,7 @@ func (service *Service) authorizeGrant(ctx context.Context, principal authn.Prin
 	scope, err := service.scopes.Resolve(ctx, ScopeQuery{
 		TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID,
 		BudgetAccountID: request.BudgetAccountID, ApprovalID: request.ApprovalID,
-		PrincipalID: principal.ID, Role: principal.Role,
+		PrincipalID: principal.ID, Role: principal.Role, Action: request.Action,
 	})
 	if err != nil {
 		return authz.PolicyInput{}, authz.PolicyDecision{}, aorerrors.Wrap(aorerrors.CodePolicyDenied, "", err, map[string]any{"scope": "lease authority"})

@@ -24,9 +24,15 @@ func (policy *capturedAuthzPolicy) Evaluate(_ context.Context, input authz.Polic
 	return authz.PolicyDecision{Decision: authz.DecisionAllow, PolicyVersion: "policy-1", ReasonCodes: []string{"LEASE_VALID"}}, nil
 }
 
-type fixedToolScopes struct{ scope ToolAuthorizationScope }
+type fixedToolScopes struct {
+	scope ToolAuthorizationScope
+	query *ToolAuthorizationScopeQuery
+}
 
-func (resolver fixedToolScopes) ResolveToolAuthorizationScope(context.Context, ToolAuthorizationScopeQuery) (ToolAuthorizationScope, error) {
+func (resolver fixedToolScopes) ResolveToolAuthorizationScope(_ context.Context, query ToolAuthorizationScopeQuery) (ToolAuthorizationScope, error) {
+	if resolver.query != nil {
+		*resolver.query = query
+	}
 	return resolver.scope, nil
 }
 
@@ -38,7 +44,8 @@ func TestOPAPolicyEvaluatorUsesAuthoritativeCompleteScope(t *testing.T) {
 		Task:    authz.TaskScope{TenantID: "tenant-1", ProjectID: "project-1", ID: "task-1", State: "EXECUTING", StateVersion: 7, SpecDigest: testSHA256("spec"), OwnedPaths: []string{"src/**"}, ExecutionPlatform: "LINUX", SandboxLevel: "CONTAINER", WorkloadTrust: "UNTRUSTED", DeploymentProfile: "PRODUCTION"},
 		Budget:  authz.BudgetScope{AccountID: "budget-1", Available: true},
 	}
-	evaluator := OPAPolicyEvaluator{Policy: policy, Scopes: fixedToolScopes{scope: scope}, Clock: func() time.Time { return now }}
+	var scopeQuery ToolAuthorizationScopeQuery
+	evaluator := OPAPolicyEvaluator{Policy: policy, Scopes: fixedToolScopes{scope: scope, query: &scopeQuery}, Clock: func() time.Time { return now }}
 	request := request()
 	request.TenantID = "tenant-1"
 	request.ProjectID = "project-1"
@@ -52,6 +59,9 @@ func TestOPAPolicyEvaluatorUsesAuthoritativeCompleteScope(t *testing.T) {
 	digest, _ := canonicaljson.Digest(request.Parameters)
 	if policy.input.Project.StateVersion != 4 || policy.input.Task.StateVersion != 7 || policy.input.ParameterDigest != digest || policy.input.Resource.ID != "tool://repo/repo.read@1.0.0" || policy.input.Principal.TenantID != "tenant-1" || policy.input.Lease == nil || policy.input.Lease.FencingToken != 1 {
 		t.Fatalf("OPA input was not exact: %#v", policy.input)
+	}
+	if scopeQuery.Action != authz.ActionToolInvoke {
+		t.Fatalf("scope action = %q", scopeQuery.Action)
 	}
 }
 

@@ -30,6 +30,7 @@ type ToolAuthorizationScopeQuery struct {
 	ApprovalID      string
 	PrincipalID     string
 	Role            string
+	Action          string
 }
 
 type AuthzPolicyEvaluator interface {
@@ -52,7 +53,7 @@ func (e OPAPolicyEvaluator) Evaluate(ctx context.Context, descriptor ToolDescrip
 	if err != nil {
 		return PolicyDecision{}, ErrPolicyDenied
 	}
-	scope, err := e.Scopes.ResolveToolAuthorizationScope(ctx, ToolAuthorizationScopeQuery{TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, BudgetAccountID: request.BudgetAccountID, ApprovalID: approvalID(request.Approval), PrincipalID: request.Principal.ID, Role: request.Principal.Role})
+	scope, err := e.Scopes.ResolveToolAuthorizationScope(ctx, ToolAuthorizationScopeQuery{TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, BudgetAccountID: request.BudgetAccountID, ApprovalID: approvalID(request.Approval), PrincipalID: request.Principal.ID, Role: request.Principal.Role, Action: authz.ActionToolInvoke})
 	if err != nil {
 		return PolicyDecision{}, ErrPolicyDenied
 	}

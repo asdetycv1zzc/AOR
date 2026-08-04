@@ -67,7 +67,7 @@ func TestServiceIssuesExactlyBoundLeaseFromAuthoritativeScope(t *testing.T) {
 	if lease.State != authz.LeaseActive || lease.PrincipalID != principal.ID || lease.AgentInstanceID != principal.ID || lease.ProjectVersion != 7 || lease.TaskVersion != 9 || lease.SpecDigest != testScope().Task.SpecDigest || lease.Action != request.Action || lease.ParameterDigest != request.ParameterDigest || lease.BudgetAccountID != request.BudgetAccountID || lease.PolicyVersion != leasePolicyVersion || lease.FencingToken != 1 || !reflect.DeepEqual(lease.Capabilities, []string{request.Action}) {
 		t.Fatalf("lease = %#v", lease)
 	}
-	if scopes.query.PrincipalID != principal.ID || scopes.query.Role != principal.Role || scopes.query.ApprovalID != request.ApprovalID {
+	if scopes.query.PrincipalID != principal.ID || scopes.query.Role != principal.Role || scopes.query.ApprovalID != request.ApprovalID || scopes.query.Action != request.Action {
 		t.Fatalf("scope query = %#v", scopes.query)
 	}
 	if policy.input.Project.StateVersion != 7 || policy.input.Task.StateVersion != 9 || policy.input.Context.Platform != "LINUX" || policy.input.Context.SandboxLevel != "CONTAINER" {
