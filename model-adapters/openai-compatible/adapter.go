@@ -380,6 +380,9 @@ func (a *Adapter) decodeResponse(request modelgateway.NormalizedRequest, capabil
 	if !utf8.Valid(payload) || json.Unmarshal(payload, &response) != nil || len(response.Choices) != 1 || response.Usage == nil {
 		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
 	}
+	if a.containsCredential(string(payload)) {
+		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrCredentialDetected)
+	}
 	choice := response.Choices[0]
 	if strings.TrimSpace(response.ID) == "" || len(response.ID) > modelgateway.MaximumToolCallIDBytes || strings.ContainsAny(response.ID, "\r\n\x00") || strings.TrimSpace(choice.FinishReason) == "" || len(choice.FinishReason) > 128 || !utf8.ValidString(response.ID) || !utf8.ValidString(response.Model) || !utf8.ValidString(choice.FinishReason) {
 		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
@@ -390,6 +393,9 @@ func (a *Adapter) decodeResponse(request modelgateway.NormalizedRequest, capabil
 	hasContent := choice.Message.Content != nil && *choice.Message.Content != ""
 	hasToolCalls := len(choice.Message.ToolCalls) != 0
 	if hasContent == hasToolCalls || len(choice.Message.ToolCalls) > modelgateway.MaximumToolCalls {
+		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
+	}
+	if choice.Message.ToolCallID != "" || choice.Message.Role != "" && choice.Message.Role != "assistant" {
 		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
 	}
 	if hasContent && len(*choice.Message.Content) > modelgateway.MaximumResponseBytes {
@@ -556,7 +562,7 @@ type chatStreamOptions struct {
 
 type chatMessage struct {
 	Role       string         `json:"role"`
-	Content    *string        `json:"content,omitempty"`
+	Content    *string        `json:"content"`
 	ToolCalls  []chatToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 }
