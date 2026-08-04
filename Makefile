@@ -66,7 +66,7 @@ state-machine:
 postgres-reconciliation:
 	@test -n "$(AOR_TEST_POSTGRES_DSN)"
 	@test -n "$(AOR_TEST_POSTGRES_APP_DSN)"
-	go test -race -p=1 ./internal/eventing ./internal/projection -run '^TestPostgres(LegacyReplayLoadsOnlyBoundCommandResult|PlanPublicationSynchronizesExecutableRelations|DurableReconciliationDetectsOnlineDrift)$$' -count=1
+	go test -race -p=1 ./internal/eventing ./internal/projection -run '^TestPostgres(LegacyReplayLoadsOnlyBoundCommandResult|ProjectCreationPersistsPlanningAgents|PlanPublicationSynchronizesExecutableRelations|DurableReconciliationDetectsOnlineDrift)$$' -count=1
 
 verify: build lint test schema cross-language sdk backup-restore supply-chain repository-check secret-scan security-corpus license-scan state-machine
 

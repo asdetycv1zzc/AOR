@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 
@@ -15,17 +16,23 @@ import (
 )
 
 type scriptedPlanningInvoker struct {
-	plan        contracts.PlanSpec
-	invocations []AgentInvocation
+	plan         contracts.PlanSpec
+	invocations  []AgentInvocation
+	beforeModule func(context.Context, AgentInvocation) error
 }
 
-func (i *scriptedPlanningInvoker) Invoke(_ context.Context, invocation AgentInvocation) (AgentRecord, error) {
+func (i *scriptedPlanningInvoker) Invoke(ctx context.Context, invocation AgentInvocation) (AgentRecord, error) {
 	i.invocations = append(i.invocations, invocation)
 	switch invocation.Role {
 	case agentruntime.RolePlanSupervisor:
 		payload, _ := json.Marshal(i.plan)
 		return AgentRecord{RunID: invocation.InvocationID, AgentInstanceID: "agt_plan", Role: invocation.Role, Payload: payload}, nil
 	case agentruntime.RoleModulePlanner:
+		if i.beforeModule != nil {
+			if err := i.beforeModule(ctx, invocation); err != nil {
+				return AgentRecord{}, err
+			}
+		}
 		var planned contracts.PlanModule
 		if err := json.Unmarshal(invocation.Payload, &planned); err != nil {
 			return AgentRecord{}, err
@@ -37,8 +44,19 @@ func (i *scriptedPlanningInvoker) Invoke(_ context.Context, invocation AgentInvo
 	}
 }
 
-func TestPlannerPublishesValidatedPlanAndAllTasksAtomically(t *testing.T) {
+func TestPlannerPersistsEachTaskBeforeModulePlanning(t *testing.T) {
 	planner, invoker, request := approvedPlanningHarness(t)
+	service := planner.projects.(*orchestrator.Service)
+	invoker.beforeModule = func(ctx context.Context, invocation AgentInvocation) error {
+		task, found, err := service.Task(ctx, request.TenantID, request.ProjectID, invocation.TaskID)
+		if err != nil || !found {
+			return fmt.Errorf("planning task not persisted: found=%t: %w", found, err)
+		}
+		if task.State != contracts.TaskPlanning || task.ModuleSpecRef != (contracts.SpecRef{}) || task.PlanningSpecRef.Validate() != nil {
+			return fmt.Errorf("invalid planning task scope: %#v", task)
+		}
+		return nil
+	}
 	result, err := planner.BuildAndPublish(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)

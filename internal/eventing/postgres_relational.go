@@ -65,8 +65,10 @@ type relationalTaskProjection struct {
 	TenantID         string                    `json:"tenantId"`
 	ProjectID        string                    `json:"projectId"`
 	ID               string                    `json:"id"`
+	ModuleID         string                    `json:"moduleId,omitempty"`
 	State            contracts.ModuleTaskState `json:"state"`
 	Version          int64                     `json:"version"`
+	PlanningSpecRef  contracts.SpecRef         `json:"planningSpecRef,omitempty"`
 	ModuleSpecRef    contracts.SpecRef         `json:"moduleSpecRef"`
 	AttemptSeriesID  string                    `json:"attemptSeriesId"`
 	AttemptSeriesIDs []string                  `json:"attemptSeriesIds"`
@@ -77,9 +79,16 @@ type relationalTaskProjection struct {
 }
 
 type relationalModuleSpec struct {
-	ID       string
-	ModuleID string
-	Ref      contracts.SpecRef
+	ID        string
+	PlanID    string
+	ModuleID  string
+	Ref       contracts.SpecRef
+	CreatedBy string
+}
+
+type relationalPlanSpec struct {
+	ID   string
+	Plan contracts.PlanSpec
 }
 
 type relationalPlanPublication struct {
@@ -116,64 +125,32 @@ func syncPublishedPlan(ctx context.Context, tx *sql.Tx, request TransactionReque
 	if project.Plan == nil || project.State != "EXECUTING" {
 		return nil, relationalError("published project plan")
 	}
-	artifact, err := loadRelationalSpecArtifact(ctx, tx, request.TenantID, update.ProjectID, planArtifactKind, *project.Plan)
+	staged, err := ensureRelationalPlanSpec(ctx, tx, request.TenantID, update.ProjectID, *project.Plan)
 	if err != nil {
 		return nil, err
 	}
-	plan, err := validatePlanArtifact(artifact, *project.Plan, update.ProjectID)
-	if err != nil {
-		return nil, err
-	}
-	var goalSpecID string
-	err = tx.QueryRowContext(ctx, `
-SELECT id::text
-FROM goal_specs
-WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND version = $3
-  AND content_sha256 = $4 AND status = 'APPROVED'
-FOR SHARE`, request.TenantID, update.ProjectID, plan.GoalSpecRef.Version, plan.GoalSpecRef.SHA256).Scan(&goalSpecID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, aorerrors.New(aorerrors.CodeGoalNotApproved, "", map[string]any{"scope": "published plan GoalSpec"})
-	}
-	if err != nil {
-		return nil, err
-	}
-	planID := relationalUUID(request.TenantID, update.ProjectID, "plan", fmt.Sprint(plan.PlanSpecVersion), plan.SHA256)
 	result, err := tx.ExecContext(ctx, `
-INSERT INTO plan_specs
-  (id, tenant_id, project_id, goal_spec_id, version, status, schema_version,
-   content_jsonb, content_sha256, created_by_agent_id, created_at)
-VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, 'PUBLISHED', 1, $6::jsonb, $7, $8, $9)
-ON CONFLICT DO NOTHING`, planID, request.TenantID, update.ProjectID, goalSpecID, plan.PlanSpecVersion,
-		[]byte(artifact.Content), plan.SHA256, artifact.CreatedBy, artifact.CreatedAt)
+UPDATE plan_specs
+SET status = 'PUBLISHED'
+WHERE tenant_id = $1::uuid AND id = $2::uuid AND status IN ('DRAFT', 'PUBLISHED')`, request.TenantID, staged.ID)
 	if err != nil {
 		return nil, err
 	}
-	inserted, err := result.RowsAffected()
+	rows, err := result.RowsAffected()
 	if err != nil {
 		return nil, err
 	}
-	var storedGoalID string
-	var storedVersion int
-	var storedStatus string
-	var storedSHA string
-	err = tx.QueryRowContext(ctx, `
-SELECT goal_spec_id::text, version, status, content_sha256
-FROM plan_specs
-WHERE tenant_id = $1::uuid AND id = $2::uuid
-FOR SHARE`, request.TenantID, planID).Scan(&storedGoalID, &storedVersion, &storedStatus, &storedSHA)
-	if err != nil {
-		return nil, err
-	}
-	if inserted == 0 && storedStatus != "PUBLISHED" || storedGoalID != goalSpecID || storedVersion != plan.PlanSpecVersion || storedSHA != plan.SHA256 {
+	if rows != 1 {
 		return nil, aorerrors.New(aorerrors.CodeSpecSuperseded, "", map[string]any{"scope": "PlanSpec relational projection"})
 	}
 	if _, err := tx.ExecContext(ctx, `
 UPDATE plan_specs
 SET status = 'SUPERSEDED'
-WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND status = 'PUBLISHED' AND id <> $3::uuid`, request.TenantID, update.ProjectID, planID); err != nil {
+WHERE tenant_id = $1::uuid AND project_id = $2::uuid
+  AND status IN ('DRAFT', 'PUBLISHED') AND id <> $3::uuid`, request.TenantID, update.ProjectID, staged.ID); err != nil {
 		return nil, err
 	}
-	return &relationalPlanPublication{ID: planID, Update: *update, Plan: plan}, nil
+	return &relationalPlanPublication{ID: staged.ID, Update: *update, Plan: staged.Plan}, nil
 }
 
 func syncTaskRow(ctx context.Context, tx *sql.Tx, request TransactionRequest, update ProjectionUpdate) (relationalTaskProjection, error) {
@@ -181,9 +158,32 @@ func syncTaskRow(ctx context.Context, tx *sql.Tx, request TransactionRequest, up
 	if err != nil {
 		return relationalTaskProjection{}, err
 	}
-	module, err := ensureRelationalModuleSpec(ctx, tx, request.TenantID, update.ProjectID, task.ModuleSpecRef)
-	if err != nil {
-		return relationalTaskProjection{}, err
+	var moduleSpecID any
+	var planID, moduleID string
+	if planningTaskState(task.State) {
+		plan, planErr := ensureRelationalPlanSpec(ctx, tx, request.TenantID, update.ProjectID, task.PlanningSpecRef)
+		if planErr != nil {
+			return relationalTaskProjection{}, planErr
+		}
+		if _, found := findPlanModule(plan.Plan, task.ModuleID); !found {
+			return relationalTaskProjection{}, relationalError("planning task PlanSpec binding")
+		}
+		planID, moduleID = plan.ID, task.ModuleID
+	} else {
+		module, moduleErr := ensureRelationalModuleSpec(ctx, tx, request.TenantID, update.ProjectID, task.ModuleSpecRef)
+		if moduleErr != nil {
+			return relationalTaskProjection{}, moduleErr
+		}
+		moduleSpecID, planID, moduleID = module.ID, module.PlanID, module.ModuleID
+		if task.PlanningSpecRef != (contracts.SpecRef{}) {
+			plan, planErr := ensureRelationalPlanSpec(ctx, tx, request.TenantID, update.ProjectID, task.PlanningSpecRef)
+			if planErr != nil {
+				return relationalTaskProjection{}, planErr
+			}
+			if plan.ID != module.PlanID || task.ModuleID != module.ModuleID || module.CreatedBy != planningAgentID(update.ProjectID, task.ID) {
+				return relationalTaskProjection{}, relationalError("planned ModuleSpec binding")
+			}
+		}
 	}
 	blockedReason, err := taskBlockedReason(task.BlockingTaskIDs)
 	if err != nil {
@@ -192,23 +192,29 @@ func syncTaskRow(ctx context.Context, tx *sql.Tx, request TransactionRequest, up
 	if update.ExpectedVersion == 0 {
 		_, err = tx.ExecContext(ctx, `
 INSERT INTO module_tasks
-  (id, tenant_id, project_id, module_spec_id, state, state_version, attempt_count,
-   active_attempt_series_id, latest_fencing_token, blocked_reason, created_at, updated_at)
-VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7, NULL, $8, $9,
-        transaction_timestamp(), transaction_timestamp())`, task.ID, request.TenantID, update.ProjectID, module.ID,
-			string(task.State), task.Version, task.Attempt, task.FencingToken, blockedReason)
+  (id, tenant_id, project_id, planning_spec_id, module_id, module_spec_id, state, state_version,
+   attempt_count, active_attempt_series_id, latest_fencing_token, blocked_reason, created_at, updated_at)
+VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6::uuid, $7, $8, $9, NULL, $10, $11,
+        transaction_timestamp(), transaction_timestamp())`, task.ID, request.TenantID, update.ProjectID, planID,
+			moduleID, moduleSpecID, string(task.State), task.Version, task.Attempt, task.FencingToken, blockedReason)
 		if err != nil {
 			return relationalTaskProjection{}, err
+		}
+		if planningTaskState(task.State) {
+			if err := ensureRelationalPlanningAgent(ctx, tx, request.TenantID, update.ProjectID, task.ID); err != nil {
+				return relationalTaskProjection{}, err
+			}
 		}
 		return task, nil
 	}
 	result, err := tx.ExecContext(ctx, `
 UPDATE module_tasks
-SET module_spec_id = $4::uuid, state = $5, state_version = $6, attempt_count = $7,
-    latest_fencing_token = $8, blocked_reason = $9, updated_at = transaction_timestamp()
+SET planning_spec_id = $4::uuid, module_id = $5, module_spec_id = $6::uuid, state = $7,
+    state_version = $8, attempt_count = $9, latest_fencing_token = $10,
+    blocked_reason = $11, updated_at = transaction_timestamp()
 WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND id = $3::uuid
-  AND state_version = $10 AND latest_fencing_token <= $8`, request.TenantID, update.ProjectID, task.ID,
-		module.ID, string(task.State), task.Version, task.Attempt, task.FencingToken, blockedReason, update.ExpectedVersion)
+  AND state_version = $12 AND latest_fencing_token <= $10`, request.TenantID, update.ProjectID, task.ID,
+		planID, moduleID, moduleSpecID, string(task.State), task.Version, task.Attempt, task.FencingToken, blockedReason, update.ExpectedVersion)
 	if err != nil {
 		return relationalTaskProjection{}, err
 	}
@@ -391,6 +397,9 @@ FOR SHARE`, request.TenantID, publication.Update.ProjectID, task.ID).Scan(&store
 		if err != nil || module.ModuleID == "" {
 			return relationalError("plan task ModuleSpec binding")
 		}
+		if module.PlanID == publication.ID && (task.ModuleID != module.ModuleID || task.PlanningSpecRef != (contracts.SpecRef{Version: publication.Plan.PlanSpecVersion, SHA256: publication.Plan.SHA256})) {
+			return relationalError("new plan task planning binding")
+		}
 		if _, duplicate := tasksByModule[module.ModuleID]; duplicate {
 			return relationalError("duplicate plan module task")
 		}
@@ -472,8 +481,11 @@ UPDATE plan_specs AS plan
 SET status = 'SUPERSEDED'
 FROM projects AS project
 WHERE project.tenant_id = $1::uuid AND project.id = $2::uuid
-  AND plan.tenant_id = project.tenant_id AND plan.id = project.active_plan_spec_id
-  AND plan.status = 'PUBLISHED'`, request.TenantID, update.ProjectID); err != nil {
+	  AND plan.tenant_id = project.tenant_id AND plan.project_id = project.id
+	  AND (
+	    (plan.id = project.active_plan_spec_id AND plan.status = 'PUBLISHED')
+	    OR (plan.status = 'DRAFT' AND project.state NOT IN ('PLANNING', 'PAUSED'))
+	  )`, request.TenantID, update.ProjectID); err != nil {
 			return err
 		}
 	}
@@ -492,6 +504,68 @@ WHERE tenant_id = $1::uuid AND id = $2::uuid AND state_version = $5`, request.Te
 		return aorerrors.New(aorerrors.CodeStateVersionConflict, "", map[string]any{"scope": "project spec bindings"})
 	}
 	return nil
+}
+
+func ensureRelationalPlanSpec(ctx context.Context, tx *sql.Tx, tenantID, projectID string, ref contracts.SpecRef) (relationalPlanSpec, error) {
+	artifact, err := loadRelationalSpecArtifact(ctx, tx, tenantID, projectID, planArtifactKind, ref)
+	if err != nil {
+		return relationalPlanSpec{}, err
+	}
+	plan, err := validatePlanArtifact(artifact, ref, projectID)
+	if err != nil {
+		return relationalPlanSpec{}, err
+	}
+	if artifact.CreatedBy != projectID+":PLAN_SUPERVISOR" {
+		return relationalPlanSpec{}, relationalError("PlanSpec supervisor binding")
+	}
+	var supervisorRole string
+	if err := tx.QueryRowContext(ctx, `
+SELECT role
+FROM agent_instances
+WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND id = $3
+FOR SHARE`, tenantID, projectID, artifact.CreatedBy).Scan(&supervisorRole); err != nil || supervisorRole != "PLAN_SUPERVISOR" {
+		return relationalPlanSpec{}, relationalError("PlanSpec supervisor authority")
+	}
+	var goalSpecID string
+	err = tx.QueryRowContext(ctx, `
+SELECT id::text
+FROM goal_specs
+WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND version = $3
+  AND content_sha256 = $4 AND status = 'APPROVED'
+FOR SHARE`, tenantID, projectID, plan.GoalSpecRef.Version, plan.GoalSpecRef.SHA256).Scan(&goalSpecID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return relationalPlanSpec{}, aorerrors.New(aorerrors.CodeGoalNotApproved, "", map[string]any{"scope": "PlanSpec GoalSpec"})
+	}
+	if err != nil {
+		return relationalPlanSpec{}, err
+	}
+	planID := relationalUUID(tenantID, projectID, "plan", fmt.Sprint(plan.PlanSpecVersion), plan.SHA256)
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO plan_specs
+  (id, tenant_id, project_id, goal_spec_id, version, status, schema_version,
+   content_jsonb, content_sha256, created_by_agent_id, created_at)
+VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, 'DRAFT', 1, $6::jsonb, $7, $8, $9)
+ON CONFLICT DO NOTHING`, planID, tenantID, projectID, goalSpecID, plan.PlanSpecVersion,
+		[]byte(artifact.Content), plan.SHA256, artifact.CreatedBy, artifact.CreatedAt); err != nil {
+		return relationalPlanSpec{}, err
+	}
+	var storedGoalID string
+	var storedVersion int
+	var storedStatus string
+	var storedSHA string
+	var storedCreatedBy string
+	err = tx.QueryRowContext(ctx, `
+SELECT goal_spec_id::text, version, status, content_sha256, created_by_agent_id
+FROM plan_specs
+WHERE tenant_id = $1::uuid AND id = $2::uuid
+FOR SHARE`, tenantID, planID).Scan(&storedGoalID, &storedVersion, &storedStatus, &storedSHA, &storedCreatedBy)
+	if err != nil {
+		return relationalPlanSpec{}, err
+	}
+	if storedGoalID != goalSpecID || storedVersion != plan.PlanSpecVersion || storedSHA != plan.SHA256 || storedCreatedBy != artifact.CreatedBy || storedStatus != "DRAFT" && storedStatus != "PUBLISHED" {
+		return relationalPlanSpec{}, aorerrors.New(aorerrors.CodeSpecSuperseded, "", map[string]any{"scope": "PlanSpec relational projection"})
+	}
+	return relationalPlanSpec{ID: planID, Plan: plan}, nil
 }
 
 func ensureRelationalModuleSpec(ctx context.Context, tx *sql.Tx, tenantID, projectID string, ref contracts.SpecRef) (relationalModuleSpec, error) {
@@ -525,28 +599,68 @@ FOR SHARE`, tenantID, projectID, module.PlanVersion).Scan(&planID, &planState)
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO module_specs
   (id, tenant_id, project_id, plan_spec_id, module_id, version, risk_level,
-   execution_platform, isolation_level, schema_version, content_jsonb, content_sha256, created_at)
-VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7, $8, $9, 1, $10::jsonb, $11, $12)
+   execution_platform, isolation_level, schema_version, content_jsonb, content_sha256,
+   created_by_agent_id, created_at)
+VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7, $8, $9, 1, $10::jsonb, $11, $12, $13)
 ON CONFLICT DO NOTHING`, moduleSpecID, tenantID, projectID, planID, module.ModuleID, module.ModuleSpecVersion,
-		planned.Risk, string(module.ExecutionPlatform), string(module.SandboxLevel), []byte(artifact.Content), module.SHA256, artifact.CreatedAt); err != nil {
+		planned.Risk, string(module.ExecutionPlatform), string(module.SandboxLevel), []byte(artifact.Content), module.SHA256, artifact.CreatedBy, artifact.CreatedAt); err != nil {
 		return relationalModuleSpec{}, err
 	}
 	var storedPlanID string
 	var storedModuleID string
 	var storedVersion int
 	var storedSHA string
+	var storedCreatedBy sql.NullString
 	err = tx.QueryRowContext(ctx, `
-SELECT plan_spec_id::text, module_id, version, content_sha256
+SELECT plan_spec_id::text, module_id, version, content_sha256, created_by_agent_id
 FROM module_specs
 WHERE tenant_id = $1::uuid AND id = $2::uuid
-FOR SHARE`, tenantID, moduleSpecID).Scan(&storedPlanID, &storedModuleID, &storedVersion, &storedSHA)
+FOR SHARE`, tenantID, moduleSpecID).Scan(&storedPlanID, &storedModuleID, &storedVersion, &storedSHA, &storedCreatedBy)
 	if err != nil {
 		return relationalModuleSpec{}, err
 	}
-	if storedPlanID != planID || storedModuleID != module.ModuleID || storedVersion != module.ModuleSpecVersion || storedSHA != module.SHA256 {
+	if storedPlanID != planID || storedModuleID != module.ModuleID || storedVersion != module.ModuleSpecVersion || storedSHA != module.SHA256 || storedCreatedBy.Valid && storedCreatedBy.String != artifact.CreatedBy {
 		return relationalModuleSpec{}, aorerrors.New(aorerrors.CodeSpecSuperseded, "", map[string]any{"scope": "ModuleSpec relational projection"})
 	}
-	return relationalModuleSpec{ID: moduleSpecID, ModuleID: module.ModuleID, Ref: ref}, nil
+	return relationalModuleSpec{ID: moduleSpecID, PlanID: planID, ModuleID: module.ModuleID, Ref: ref, CreatedBy: storedCreatedBy.String}, nil
+}
+
+func ensureRelationalPlanningAgent(ctx context.Context, tx *sql.Tx, tenantID, projectID, taskID string) error {
+	supervisorID := projectID + ":PLAN_SUPERVISOR"
+	plannerID := planningAgentID(projectID, taskID)
+	var promptBundleVersion string
+	if err := tx.QueryRowContext(ctx, `
+SELECT prompt_bundle_version
+FROM agent_instances
+WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND id = $3 AND role = 'PLAN_SUPERVISOR'
+FOR SHARE`, tenantID, projectID, supervisorID).Scan(&promptBundleVersion); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO agent_instances
+  (id, tenant_id, project_id, role, provider, logical_model, actual_model_version,
+   prompt_bundle_version, state, created_at)
+VALUES ($1, $2::uuid, $3::uuid, 'MODULE_PLANNER', 'UNASSIGNED', 'UNASSIGNED', 'UNASSIGNED',
+        $4, 'DECLARED', transaction_timestamp())
+ON CONFLICT DO NOTHING`, plannerID, tenantID, projectID, promptBundleVersion); err != nil {
+		return err
+	}
+	var storedProjectID, role, storedPrompt string
+	if err := tx.QueryRowContext(ctx, `
+SELECT project_id::text, role, prompt_bundle_version
+FROM agent_instances
+WHERE tenant_id = $1::uuid AND id = $2
+FOR SHARE`, tenantID, plannerID).Scan(&storedProjectID, &role, &storedPrompt); err != nil {
+		return err
+	}
+	if storedProjectID != projectID || role != "MODULE_PLANNER" || storedPrompt != promptBundleVersion {
+		return relationalError("ModulePlanner agent authority")
+	}
+	return nil
+}
+
+func planningAgentID(projectID, taskID string) string {
+	return projectID + ":MODULE_PLANNER:" + taskID
 }
 
 func loadRelationalSpecArtifact(ctx context.Context, tx *sql.Tx, tenantID, projectID, kind string, ref contracts.SpecRef) (relationalSpecArtifact, error) {
@@ -641,10 +755,17 @@ func decodeRelationalTask(input []byte, tenantID, projectID, taskID string, vers
 	if err := json.Unmarshal(input, &task); err != nil {
 		return relationalTaskProjection{}, fmt.Errorf("decode module task relational projection: %w", err)
 	}
-	if task.TenantID != tenantID || task.ProjectID != projectID || task.ID != taskID || task.Version != version || task.Version < 1 || task.ModuleSpecRef.Validate() != nil || task.Attempt < 0 || task.Attempt > 3 || task.FencingToken < 0 || !validRelationalTaskState(task.State) {
+	if task.TenantID != tenantID || task.ProjectID != projectID || task.ID != taskID || task.Version != version || task.Version < 1 || task.Attempt < 0 || task.Attempt > 3 || task.FencingToken < 0 || !validRelationalTaskState(task.State) {
 		return relationalTaskProjection{}, relationalError("module task relational projection")
 	}
-	if !validUUID(task.ID) || len(task.AttemptSeriesIDs) == 0 || task.AttemptSeriesID != task.AttemptSeriesIDs[len(task.AttemptSeriesIDs)-1] {
+	if !validUUID(task.ID) {
+		return relationalTaskProjection{}, relationalError("module task relational identity")
+	}
+	if planningTaskState(task.State) {
+		if task.ModuleID == "" || task.PlanningSpecRef.Validate() != nil || task.ModuleSpecRef != (contracts.SpecRef{}) || task.AttemptSeriesID != "" || len(task.AttemptSeriesIDs) != 0 || task.Attempt != 0 || task.FencingToken != 0 {
+			return relationalTaskProjection{}, relationalError("planning task relational identity")
+		}
+	} else if task.ModuleSpecRef.Validate() != nil || len(task.AttemptSeriesIDs) == 0 || task.AttemptSeriesID != task.AttemptSeriesIDs[len(task.AttemptSeriesIDs)-1] || task.PlanningSpecRef != (contracts.SpecRef{}) && task.PlanningSpecRef.Validate() != nil {
 		return relationalTaskProjection{}, relationalError("module task relational identity")
 	}
 	seenSeries := make(map[string]bool, len(task.AttemptSeriesIDs))
@@ -672,19 +793,27 @@ func decodeRelationalTask(input []byte, tenantID, projectID, taskID string, vers
 func validateRelationalTaskRow(ctx context.Context, tx *sql.Tx, tenantID string, task relationalTaskProjection) error {
 	var state string
 	var version int64
-	var specVersion int
-	var specSHA string
-	var activeSeries string
+	var specVersion sql.NullInt64
+	var specSHA sql.NullString
+	var planVersion int
+	var planSHA string
+	var moduleID string
+	var activeSeries sql.NullString
 	var attempt int
 	var fencing int64
 	var blocked sql.NullString
 	err := tx.QueryRowContext(ctx, `
 SELECT task.state, task.state_version, spec.version, spec.content_sha256,
+       plan.version, plan.content_sha256, task.module_id,
        task.active_attempt_series_id::text, task.attempt_count, task.latest_fencing_token, task.blocked_reason
 FROM module_tasks AS task
-JOIN module_specs AS spec ON spec.tenant_id = task.tenant_id AND spec.id = task.module_spec_id
+JOIN plan_specs AS plan ON plan.tenant_id = task.tenant_id AND plan.id = task.planning_spec_id
+LEFT JOIN module_specs AS spec ON spec.tenant_id = task.tenant_id AND spec.id = task.module_spec_id
 WHERE task.tenant_id = $1::uuid AND task.project_id = $2::uuid AND task.id = $3::uuid
-FOR SHARE OF task, spec`, tenantID, task.ProjectID, task.ID).Scan(&state, &version, &specVersion, &specSHA, &activeSeries, &attempt, &fencing, &blocked)
+FOR SHARE OF task, plan`, tenantID, task.ProjectID, task.ID).Scan(
+		&state, &version, &specVersion, &specSHA, &planVersion, &planSHA, &moduleID,
+		&activeSeries, &attempt, &fencing, &blocked,
+	)
 	if err != nil {
 		return err
 	}
@@ -692,8 +821,18 @@ FOR SHARE OF task, spec`, tenantID, task.ProjectID, task.ID).Scan(&state, &versi
 	if err != nil {
 		return err
 	}
-	if state != string(task.State) || version != task.Version || specVersion != task.ModuleSpecRef.Version || specSHA != task.ModuleSpecRef.SHA256 || activeSeries != task.AttemptSeriesID || attempt != task.Attempt || fencing != task.FencingToken || blocked.String != stringValue(expectedBlocked) || blocked.Valid != (expectedBlocked != nil) {
+	if state != string(task.State) || version != task.Version || attempt != task.Attempt || fencing != task.FencingToken || blocked.String != stringValue(expectedBlocked) || blocked.Valid != (expectedBlocked != nil) {
 		return relationalError("module task authority row")
+	}
+	if task.PlanningSpecRef != (contracts.SpecRef{}) && (planVersion != task.PlanningSpecRef.Version || planSHA != task.PlanningSpecRef.SHA256 || moduleID != task.ModuleID) {
+		return relationalError("planning task authority row")
+	}
+	if planningTaskState(task.State) {
+		if specVersion.Valid || specSHA.Valid || activeSeries.Valid {
+			return relationalError("planning task ModuleSpec authority row")
+		}
+	} else if !specVersion.Valid || int(specVersion.Int64) != task.ModuleSpecRef.Version || !specSHA.Valid || specSHA.String != task.ModuleSpecRef.SHA256 || !activeSeries.Valid || activeSeries.String != task.AttemptSeriesID {
+		return relationalError("module task ModuleSpec authority row")
 	}
 	return nil
 }
@@ -756,6 +895,10 @@ func validRelationalTaskState(state contracts.ModuleTaskState) bool {
 	default:
 		return false
 	}
+}
+
+func planningTaskState(value contracts.ModuleTaskState) bool {
+	return value == contracts.TaskQueuedPlanning || value == contracts.TaskPlanning
 }
 
 func validUUID(value string) bool {
@@ -828,11 +971,14 @@ WHERE online.id IS NULL OR authoritative.id IS NULL
 LIMIT 1`},
 		{table: "module_tasks", query: `
 WITH online AS (
-  SELECT task.id::text AS id, task.project_id::text AS project_id, task.state, task.state_version,
-         task.attempt_count, task.active_attempt_series_id::text AS active_attempt_series_id,
-         task.latest_fencing_token, spec.version AS module_version, spec.content_sha256 AS module_sha256
-  FROM module_tasks AS task
-  JOIN module_specs AS spec ON spec.tenant_id = task.tenant_id AND spec.id = task.module_spec_id
+	  SELECT task.id::text AS id, task.project_id::text AS project_id, task.state, task.state_version,
+	         task.attempt_count, task.active_attempt_series_id::text AS active_attempt_series_id,
+	         task.latest_fencing_token, task.module_id, plan.version AS planning_version,
+	         plan.content_sha256 AS planning_sha256, spec.version AS module_version,
+	         spec.content_sha256 AS module_sha256, spec.created_by_agent_id AS module_created_by
+	  FROM module_tasks AS task
+	  JOIN plan_specs AS plan ON plan.tenant_id = task.tenant_id AND plan.id = task.planning_spec_id
+	  LEFT JOIN module_specs AS spec ON spec.tenant_id = task.tenant_id AND spec.id = task.module_spec_id
   WHERE task.tenant_id = $1::uuid
 ), authoritative AS (
   SELECT aggregate_id AS id, project_id::text AS project_id, aggregate_version, state_jsonb
@@ -851,10 +997,19 @@ WHERE online.id IS NULL OR authoritative.id IS NULL
    OR authoritative.state_jsonb->>'state' <> online.state
    OR (authoritative.state_jsonb->>'version')::bigint <> online.state_version
    OR COALESCE((authoritative.state_jsonb->>'attempt')::integer, 0) <> online.attempt_count
-   OR authoritative.state_jsonb->>'attemptSeriesId' <> online.active_attempt_series_id
-   OR COALESCE((authoritative.state_jsonb->>'fencingToken')::bigint, 0) <> online.latest_fencing_token
-   OR (authoritative.state_jsonb->'moduleSpecRef'->>'version')::integer <> online.module_version
-   OR authoritative.state_jsonb->'moduleSpecRef'->>'sha256' <> online.module_sha256
+	   OR NULLIF(authoritative.state_jsonb->>'attemptSeriesId', '') IS DISTINCT FROM online.active_attempt_series_id
+	   OR COALESCE((authoritative.state_jsonb->>'fencingToken')::bigint, 0) <> online.latest_fencing_token
+	   OR (authoritative.state_jsonb ? 'moduleId' AND authoritative.state_jsonb->>'moduleId' <> online.module_id)
+	   OR COALESCE((authoritative.state_jsonb->'planningSpecRef'->>'version')::integer, online.planning_version) <> online.planning_version
+	   OR COALESCE(authoritative.state_jsonb->'planningSpecRef'->>'sha256', online.planning_sha256) <> online.planning_sha256
+	   OR COALESCE((authoritative.state_jsonb->'moduleSpecRef'->>'version')::integer, 0) <> COALESCE(online.module_version, 0)
+	   OR COALESCE(authoritative.state_jsonb->'moduleSpecRef'->>'sha256', '') <> COALESCE(online.module_sha256, '')
+	   OR (
+	     COALESCE((authoritative.state_jsonb->'planningSpecRef'->>'version')::integer, 0) > 0
+	     AND
+	     COALESCE((authoritative.state_jsonb->'moduleSpecRef'->>'version')::integer, 0) > 0
+	     AND online.module_created_by IS DISTINCT FROM online.project_id || ':MODULE_PLANNER:' || online.id
+	   )
 LIMIT 1`},
 		{table: "plan_specs", query: `
 SELECT plan.id::text
@@ -866,7 +1021,21 @@ WHERE plan.tenant_id = $1::uuid
     OR plan.project_id::text <> plan.content_jsonb->>'projectId'
     OR plan.version <> (plan.content_jsonb->>'planSpecVersion')::integer
     OR plan.content_sha256 <> plan.content_jsonb->>'sha256'
-    OR plan.status <> CASE WHEN project.active_plan_spec_id = plan.id THEN 'PUBLISHED' ELSE 'SUPERSEDED' END
+	    OR plan.status <> CASE
+	         WHEN project.active_plan_spec_id = plan.id THEN 'PUBLISHED'
+	         WHEN plan.status = 'DRAFT' AND project.state IN ('PLANNING', 'PAUSED') THEN 'DRAFT'
+	         ELSE 'SUPERSEDED'
+	       END
+	    OR (plan.status = 'DRAFT' AND plan.created_by_agent_id <> (plan.project_id::text || ':PLAN_SUPERVISOR'))
+	    OR (
+	      plan.created_by_agent_id = (plan.project_id::text || ':PLAN_SUPERVISOR')
+	      AND NOT EXISTS (
+	        SELECT 1
+	        FROM agent_instances AS creator
+	        WHERE creator.tenant_id = plan.tenant_id AND creator.project_id = plan.project_id
+	          AND creator.id = plan.created_by_agent_id AND creator.role = 'PLAN_SUPERVISOR'
+	      )
+	    )
     OR NOT EXISTS (
       SELECT 1
       FROM goal_specs AS goal
@@ -903,7 +1072,16 @@ WHERE module.tenant_id = $1::uuid
     OR module.content_sha256 <> module.content_jsonb->>'sha256'
     OR module.execution_platform <> module.content_jsonb->>'executionPlatform'
     OR module.isolation_level <> module.content_jsonb->>'sandboxLevel'
-    OR plan.version <> (module.content_jsonb->>'planVersion')::integer
+	    OR plan.version <> (module.content_jsonb->>'planVersion')::integer
+	    OR (
+	      module.created_by_agent_id IS NOT NULL
+	      AND NOT EXISTS (
+	        SELECT 1
+	        FROM agent_instances AS creator
+	        WHERE creator.tenant_id = module.tenant_id AND creator.project_id = module.project_id
+	          AND creator.id = module.created_by_agent_id AND creator.role = 'MODULE_PLANNER'
+	      )
+	    )
     OR NOT EXISTS (
       SELECT 1
       FROM jsonb_array_elements(plan.content_jsonb->'modules') AS planned
@@ -917,9 +1095,10 @@ WHERE module.tenant_id = $1::uuid
       FROM aggregate_projections AS artifact
       WHERE artifact.tenant_id = module.tenant_id AND artifact.project_id = module.project_id
         AND artifact.aggregate_type = 'spec_artifact'
-        AND artifact.state_jsonb->>'kind' = 'MODULE_SPEC'
-        AND artifact.state_jsonb->>'version' = module.version::text
-        AND artifact.state_jsonb->>'contentSha256' = module.content_sha256
+	        AND artifact.state_jsonb->>'kind' = 'MODULE_SPEC'
+	        AND artifact.state_jsonb->>'version' = module.version::text
+	        AND artifact.state_jsonb->>'contentSha256' = module.content_sha256
+	        AND (module.created_by_agent_id IS NULL OR artifact.state_jsonb->>'createdBy' = module.created_by_agent_id)
         AND (artifact.state_jsonb->>'createdAt')::timestamptz = module.created_at
         AND convert_from(decode(artifact.state_jsonb->>'content', 'base64'), 'UTF8')::jsonb = module.content_jsonb
     )

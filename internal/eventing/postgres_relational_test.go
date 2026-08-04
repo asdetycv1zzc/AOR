@@ -10,12 +10,15 @@ import (
 )
 
 func TestDecodeRelationalTaskRejectsUnboundIdentity(t *testing.T) {
-	state := relationalTestTaskState(
+	state := relationalTestStagedTaskState(
 		"00000000-0000-4000-8000-000000000001",
 		"00000000-0000-4000-8000-000000000002",
 		"00000000-0000-4000-8000-000000000003",
 		"00000000-0000-4000-8000-000000000004",
+		"sha256:"+strings.Repeat("b", 64),
 		"sha256:"+strings.Repeat("a", 64),
+		"DEFINED",
+		1,
 	)
 	var value map[string]any
 	if err := json.Unmarshal(state, &value); err != nil {

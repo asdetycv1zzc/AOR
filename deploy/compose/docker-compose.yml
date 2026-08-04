@@ -176,6 +176,10 @@ services:
         if [ "$$project_agent_leases_installed" != "t" ]; then
           psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000022_project_agent_leases.up.sql
         fi
+        staged_module_planning_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'module_tasks' AND column_name = 'planning_spec_id')")"
+        if [ "$$staged_module_planning_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000023_staged_module_planning.up.sql
+        fi
         unset AOR_APP_PASSWORD
     secrets: [postgres_password, postgres_app_password]
     volumes:
@@ -201,6 +205,7 @@ services:
       - ../../migrations/postgres/000020_repository_registry.up.sql:/migrations/000020_repository_registry.up.sql:ro
       - ../../migrations/postgres/000021_event_replay_state.up.sql:/migrations/000021_event_replay_state.up.sql:ro
       - ../../migrations/postgres/000022_project_agent_leases.up.sql:/migrations/000022_project_agent_leases.up.sql:ro
+      - ../../migrations/postgres/000023_staged_module_planning.up.sql:/migrations/000023_staged_module_planning.up.sql:ro
       - ./postgres-app-password.sql:/migrations/postgres-app-password.sql:ro
     read_only: true
     tmpfs: [/tmp]

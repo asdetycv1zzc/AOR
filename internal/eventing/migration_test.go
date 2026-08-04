@@ -152,6 +152,24 @@ func TestEventReplayStateMigrationIsForwardOnlyAndPaired(t *testing.T) {
 	}
 }
 
+func TestStagedPlanningMigrationBindsPlanningAuthority(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", "migrations", "postgres", "000023_staged_module_planning.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(content)
+	for _, required := range []string{
+		"ADD COLUMN planning_spec_id uuid", "ALTER COLUMN module_spec_id DROP NOT NULL",
+		"module_tasks_planning_binding_check", "project.id::text || ':PLAN_SUPERVISOR'",
+		"plan_specs_created_by_agent_fk", "ADD COLUMN created_by_agent_id text",
+		"module_specs_created_by_agent_fk", "REFERENCES agent_instances(tenant_id, id)",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("staged planning migration missing %q", required)
+		}
+	}
+}
+
 func TestProjectErasureMigrationIsTenantScopedAndResumable(t *testing.T) {
 	content, err := os.ReadFile(filepath.Join("..", "..", "migrations", "postgres", "000016_project_erasure.up.sql"))
 	if err != nil {

@@ -386,6 +386,9 @@ VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, $8, $9, $10, '{}'::jsonb, 
 		}
 	}
 	for _, task := range taskUpdates {
+		if len(task.AttemptSeriesIDs) == 0 {
+			continue
+		}
 		if err := syncTaskAttemptSeries(ctx, tx, request, task); err != nil {
 			return TransactionResult{}, err
 		}
@@ -672,7 +675,7 @@ VALUES ($1::uuid, $2, 'PROJECT', $2, $3, $4, $5, 0, 0, transaction_timestamp(), 
 		if projection.PromptBundleVersion == "" {
 			return nil
 		}
-		roles := []string{"GOAL_PROPOSER"}
+		roles := []string{"GOAL_PROPOSER", "PLAN_SUPERVISOR"}
 		if projection.GoalAgentCount == 2 {
 			roles = append(roles, "GOAL_CHALLENGER")
 		}

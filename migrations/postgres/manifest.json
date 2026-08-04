@@ -155,6 +155,13 @@
       "file": "000022_project_agent_leases.up.sql",
       "sha256": "sha256:dcad58823613137b98e7a6e635e657f93ff54e05bca7a7d4ae9232ad3cbe8bfa",
       "destructive": false
+    },
+    {
+      "version": 23,
+      "mode": "EXPAND",
+      "file": "000023_staged_module_planning.up.sql",
+      "sha256": "sha256:38b90c2d83a3614e2848ef6a4d0a1189c360fdacf3e6aaf89e9146034e95716c",
+      "destructive": false
     }
   ]
 }

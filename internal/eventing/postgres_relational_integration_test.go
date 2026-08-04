@@ -16,6 +16,86 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
+func TestPostgresProjectCreationPersistsPlanningAgents(t *testing.T) {
+	dsn := os.Getenv("AOR_TEST_POSTGRES_DSN")
+	appDSN := os.Getenv("AOR_TEST_POSTGRES_APP_DSN")
+	if dsn == "" || appDSN == "" {
+		t.Log("Postgres integration environment is not configured; make postgres-reconciliation enforces it")
+		return
+	}
+	admin, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	app, err := sql.Open("pgx", appDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+	ctx := context.Background()
+	tenantID := uuid.Must(uuid.NewV7()).String()
+	projectID := uuid.Must(uuid.NewV7()).String()
+	if _, err := admin.ExecContext(ctx, `INSERT INTO tenants (id, name) VALUES ($1::uuid, $2)`, tenantID, "planning-agents"); err != nil {
+		t.Fatal(err)
+	}
+	projectState, err := json.Marshal(map[string]any{
+		"tenantId": tenantID, "id": projectID, "state": "CREATED", "version": 1,
+		"name": "planning agents", "goalAgentCount": 2, "dataClassification": "INTERNAL",
+		"deploymentTargets": []string{}, "budgetCurrency": "USD", "budgetHardLimitMinor": 100,
+		"budgetSoftLimitMinor": 50, "promptBundleVersion": "prompt-v1", "riskTolerance": "MEDIUM",
+		"createdBy": "user",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := canonicaljson.Digest(projectState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := TransactionRequest{
+		TenantID: tenantID, PrincipalID: "user", IdempotencyKey: "create-project", RequestSHA256: digest,
+		Updates: []ProjectionUpdate{{TenantID: tenantID, ProjectID: projectID, AggregateType: "project", AggregateID: projectID, ExpectedVersion: 0, NextVersion: 1, State: projectState}},
+		Events:  []DomainEvent{{EventID: uuid.Must(uuid.NewV7()).String(), TenantID: tenantID, ProjectID: projectID, AggregateType: "project", AggregateID: projectID, AggregateVersion: 1, Type: "io.aor.project.created.v1", Payload: projectState, PayloadSHA256: digest, OccurredAt: time.Now().UTC()}},
+		Result:  projectState, ResultSHA256: digest,
+	}
+	if _, err := NewPostgresStore(app).Execute(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := admin.QueryContext(ctx, `
+SELECT id, role
+FROM agent_instances
+WHERE tenant_id = $1::uuid AND project_id = $2::uuid`, tenantID, projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	agents := make(map[string]string)
+	for rows.Next() {
+		var id, role string
+		if err := rows.Scan(&id, &role); err != nil {
+			t.Fatal(err)
+		}
+		agents[id] = role
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	expected := map[string]string{
+		projectID + ":GOAL_PROPOSER":   "GOAL_PROPOSER",
+		projectID + ":GOAL_CHALLENGER": "GOAL_CHALLENGER",
+		projectID + ":PLAN_SUPERVISOR": "PLAN_SUPERVISOR",
+	}
+	if len(agents) != len(expected) {
+		t.Fatalf("agents=%v", agents)
+	}
+	for id, role := range expected {
+		if agents[id] != role {
+			t.Fatalf("agent %q role=%q", id, agents[id])
+		}
+	}
+}
+
 func TestPostgresPlanPublicationSynchronizesExecutableRelations(t *testing.T) {
 	dsn := os.Getenv("AOR_TEST_POSTGRES_DSN")
 	appDSN := os.Getenv("AOR_TEST_POSTGRES_APP_DSN")
@@ -75,13 +155,72 @@ VALUES ($1::uuid, $2::uuid, $3::uuid, 1, 'APPROVED', 1, '{}'::jsonb, $4,
         'agent_goal', 'user', $5, $5)`, goalID, tenantID, projectID, goalSHA, now); err != nil {
 		t.Fatal(err)
 	}
-	projectState := relationalTestProjectState(tenantID, projectID, plan.PlanSpecVersion, planSHA, goalSHA)
-	taskState := relationalTestTaskState(tenantID, projectID, taskID, seriesID, moduleSHA)
-	if err := insertRelationalTestArtifact(ctx, admin, tenantID, projectID, "plan-artifact", planContent, planSHA, now, "PLAN_SPEC", "plan-1"); err != nil {
+	supervisorID := projectID + ":PLAN_SUPERVISOR"
+	if _, err := admin.ExecContext(ctx, `
+INSERT INTO agent_instances
+  (id, tenant_id, project_id, role, provider, logical_model, actual_model_version,
+   prompt_bundle_version, state, created_at)
+VALUES ($1, $2::uuid, $3::uuid, 'PLAN_SUPERVISOR', 'UNASSIGNED', 'UNASSIGNED', 'UNASSIGNED',
+        'prompt-v1', 'DECLARED', $4)`, supervisorID, tenantID, projectID, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := insertRelationalTestArtifact(ctx, admin, tenantID, projectID, "module-artifact", moduleContent, moduleSHA, now, "MODULE_SPEC", "module-api"); err != nil {
+	projectState := relationalTestProjectState(tenantID, projectID, plan.PlanSpecVersion, planSHA, goalSHA)
+	queuedTaskState := relationalTestStagedTaskState(tenantID, projectID, taskID, seriesID, planSHA, moduleSHA, "QUEUED_PLANNING", 1)
+	planningTaskState := relationalTestStagedTaskState(tenantID, projectID, taskID, seriesID, planSHA, moduleSHA, "PLANNING", 2)
+	taskState := relationalTestStagedTaskState(tenantID, projectID, taskID, seriesID, planSHA, moduleSHA, "DEFINED", 3)
+	if err := insertRelationalTestArtifact(ctx, admin, tenantID, projectID, "plan-artifact", planContent, planSHA, now, "PLAN_SPEC", "plan-1", supervisorID); err != nil {
 		t.Fatal(err)
+	}
+	if err := insertRelationalTestArtifact(ctx, admin, tenantID, projectID, "module-artifact", moduleContent, moduleSHA, now, "MODULE_SPEC", "module-api", projectID+":MODULE_PLANNER:"+taskID); err != nil {
+		t.Fatal(err)
+	}
+	store := NewPostgresStore(app)
+	stages := []struct {
+		key             string
+		eventType       string
+		expectedVersion int64
+		state           []byte
+	}{
+		{key: "queue-plan-task", eventType: "io.aor.module.planning-queued.v1", expectedVersion: 0, state: queuedTaskState},
+		{key: "start-plan-task", eventType: "io.aor.module.planning-started.v1", expectedVersion: 1, state: planningTaskState},
+		{key: "attach-module-spec", eventType: "io.aor.module.spec-attached.v1", expectedVersion: 2, state: taskState},
+	}
+	for index, stage := range stages {
+		if _, err := store.Execute(ctx, relationalTestTaskTransaction(t, tenantID, projectID, taskID, stage.key, stage.eventType, stage.expectedVersion, stage.state)); err != nil {
+			t.Fatalf("%s: %v", stage.key, err)
+		}
+		if _, err := store.LoadReconciliationSnapshot(ctx, tenantID); err != nil {
+			t.Fatalf("%s reconciliation: %v", stage.key, err)
+		}
+		var status, taskStateValue, createdBy string
+		var moduleSpecID, moduleCreatedBy, activeSeries sql.NullString
+		if err := admin.QueryRowContext(ctx, `
+SELECT plan.status, plan.created_by_agent_id, task.state, task.module_spec_id::text,
+       spec.created_by_agent_id, task.active_attempt_series_id::text
+FROM module_tasks task
+JOIN plan_specs plan ON plan.tenant_id = task.tenant_id AND plan.id = task.planning_spec_id
+LEFT JOIN module_specs spec ON spec.tenant_id = task.tenant_id AND spec.id = task.module_spec_id
+WHERE task.tenant_id = $1::uuid AND task.id = $2::uuid`, tenantID, taskID).Scan(
+			&status, &createdBy, &taskStateValue, &moduleSpecID, &moduleCreatedBy, &activeSeries,
+		); err != nil {
+			t.Fatal(err)
+		}
+		plannerID := projectID + ":MODULE_PLANNER:" + taskID
+		if status != "DRAFT" || createdBy != supervisorID || taskStateValue != []string{"QUEUED_PLANNING", "PLANNING", "DEFINED"}[index] || moduleSpecID.Valid != (index == 2) || moduleCreatedBy.Valid != (index == 2) || index == 2 && moduleCreatedBy.String != plannerID || activeSeries.Valid != (index == 2) {
+			t.Fatalf("%s plan=%q creator=%q task=%q module=%v module creator=%v series=%v", stage.key, status, createdBy, taskStateValue, moduleSpecID, moduleCreatedBy, activeSeries)
+		}
+		if index == 0 {
+			var plannerProjectID, plannerRole string
+			if err := admin.QueryRowContext(ctx, `
+SELECT project_id::text, role
+FROM agent_instances
+WHERE tenant_id = $1::uuid AND id = $2`, tenantID, plannerID).Scan(&plannerProjectID, &plannerRole); err != nil {
+				t.Fatal(err)
+			}
+			if plannerProjectID != projectID || plannerRole != "MODULE_PLANNER" {
+				t.Fatalf("planner project=%q role=%q", plannerProjectID, plannerRole)
+			}
+		}
 	}
 	result, err := json.Marshal(struct {
 		Project json.RawMessage   `json:"project"`
@@ -90,20 +229,18 @@ VALUES ($1::uuid, $2::uuid, $3::uuid, 1, 'APPROVED', 1, '{}'::jsonb, $4,
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := relationalTestTransaction(t, tenantID, projectID, taskID, projectState, taskState, result)
-	store := NewPostgresStore(app)
-	if _, err := store.Execute(ctx, request); err != nil {
+	if _, err := store.Execute(ctx, relationalTestPublicationTransaction(t, tenantID, projectID, projectState, result)); err != nil {
 		t.Fatal(err)
 	}
 	events, err := store.ListEvents(ctx, tenantID)
-	if err != nil || len(events) != 2 {
+	if err != nil || len(events) != 4 {
 		t.Fatalf("stored event count=%d error=%v", len(events), err)
 	}
 	snapshot, err := store.LoadReconciliationSnapshot(ctx, tenantID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.Events) != 2 || len(snapshot.Projections) != 4 {
+	if len(snapshot.Events) != 4 || len(snapshot.Projections) != 4 {
 		t.Fatalf("durable reconciliation event count=%d projection count=%d", len(snapshot.Events), len(snapshot.Projections))
 	}
 	for _, event := range snapshot.Events {
@@ -160,7 +297,7 @@ VALUES ($1::uuid, $2::uuid, $3::uuid, 1, 'APPROVED', 1, '{}'::jsonb, $4,
 		},
 		{
 			name:        "module_tasks",
-			driftSQL:    `UPDATE module_tasks SET state = 'PLANNING' WHERE tenant_id = $1::uuid AND id = $2::uuid`,
+			driftSQL:    `UPDATE module_tasks SET state = 'READY_EXECUTION' WHERE tenant_id = $1::uuid AND id = $2::uuid`,
 			driftArgs:   []any{tenantID, taskID},
 			restoreSQL:  `UPDATE module_tasks SET state = 'DEFINED' WHERE tenant_id = $1::uuid AND id = $2::uuid`,
 			restoreArgs: []any{tenantID, taskID},
@@ -196,13 +333,39 @@ VALUES ($1::uuid, $2::uuid, $3::uuid, 1, 'APPROVED', 1, '{}'::jsonb, $4,
 	}
 }
 
-func relationalTestTransaction(t *testing.T, tenantID, projectID, taskID string, projectState, taskState, result []byte) TransactionRequest {
+func relationalTestTaskTransaction(t *testing.T, tenantID, projectID, taskID, key, eventType string, expectedVersion int64, taskState []byte) TransactionRequest {
 	t.Helper()
-	projectDigest, err := canonicaljson.Digest(projectState)
+	payloadDigest, err := canonicaljson.Digest(taskState)
 	if err != nil {
 		t.Fatal(err)
 	}
-	taskDigest, err := canonicaljson.Digest(taskState)
+	requestPayload, err := json.Marshal(map[string]string{"stage": key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestDigest, err := canonicaljson.Digest(requestPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	principalID := projectID + ":PLAN_SUPERVISOR"
+	if expectedVersion > 0 {
+		principalID = projectID + ":MODULE_PLANNER:" + taskID
+	}
+	nextVersion := expectedVersion + 1
+	now := time.Date(2030, 1, 2, 3, 4, 6, 0, time.UTC)
+	return TransactionRequest{
+		TenantID: tenantID, PrincipalID: principalID, IdempotencyKey: key, RequestSHA256: requestDigest,
+		Updates: []ProjectionUpdate{{TenantID: tenantID, ProjectID: projectID, AggregateType: "task", AggregateID: taskID, ExpectedVersion: expectedVersion, NextVersion: nextVersion, State: taskState}},
+		Events: []DomainEvent{
+			{EventID: uuid.Must(uuid.NewV7()).String(), TenantID: tenantID, ProjectID: projectID, AggregateType: "task", AggregateID: taskID, AggregateVersion: nextVersion, Type: eventType, Payload: taskState, PayloadSHA256: payloadDigest, OccurredAt: now},
+		},
+		Result: taskState, ResultSHA256: payloadDigest,
+	}
+}
+
+func relationalTestPublicationTransaction(t *testing.T, tenantID, projectID string, projectState, result []byte) TransactionRequest {
+	t.Helper()
+	projectDigest, err := canonicaljson.Digest(projectState)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,24 +373,24 @@ func relationalTestTransaction(t *testing.T, tenantID, projectID, taskID string,
 	if err != nil {
 		t.Fatal(err)
 	}
-	projectEventID := uuid.Must(uuid.NewV7()).String()
-	taskEventID := uuid.Must(uuid.NewV7()).String()
+	requestPayload, err := json.Marshal(map[string]string{"stage": "publish-plan"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestDigest, err := canonicaljson.Digest(requestPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
 	now := time.Date(2030, 1, 2, 3, 4, 6, 0, time.UTC)
 	return TransactionRequest{
-		TenantID: tenantID, PrincipalID: "agent_plan", IdempotencyKey: "publish-plan", RequestSHA256: "sha256:" + strings.Repeat("9", 64),
-		Updates: []ProjectionUpdate{
-			{TenantID: tenantID, ProjectID: projectID, AggregateType: "project", AggregateID: projectID, ExpectedVersion: 4, NextVersion: 5, State: projectState},
-			{TenantID: tenantID, ProjectID: projectID, AggregateType: "task", AggregateID: taskID, ExpectedVersion: 0, NextVersion: 1, State: taskState},
-		},
-		Events: []DomainEvent{
-			{EventID: projectEventID, TenantID: tenantID, ProjectID: projectID, AggregateType: "project", AggregateID: projectID, AggregateVersion: 5, Type: "io.aor.plan.published.v1", Payload: projectState, PayloadSHA256: projectDigest, OccurredAt: now},
-			{EventID: taskEventID, TenantID: tenantID, ProjectID: projectID, AggregateType: "task", AggregateID: taskID, AggregateVersion: 1, Type: "io.aor.module.defined.v1", Payload: taskState, PayloadSHA256: taskDigest, OccurredAt: now},
-		},
-		Result: result, ResultSHA256: resultDigest,
+		TenantID: tenantID, PrincipalID: projectID + ":PLAN_SUPERVISOR", IdempotencyKey: "publish-plan", RequestSHA256: requestDigest,
+		Updates: []ProjectionUpdate{{TenantID: tenantID, ProjectID: projectID, AggregateType: "project", AggregateID: projectID, ExpectedVersion: 4, NextVersion: 5, State: projectState}},
+		Events:  []DomainEvent{{EventID: uuid.Must(uuid.NewV7()).String(), TenantID: tenantID, ProjectID: projectID, AggregateType: "project", AggregateID: projectID, AggregateVersion: 5, Type: "io.aor.plan.published.v1", Payload: projectState, PayloadSHA256: projectDigest, OccurredAt: now}},
+		Result:  result, ResultSHA256: resultDigest,
 	}
 }
 
-func insertRelationalTestArtifact(ctx context.Context, db *sql.DB, tenantID, projectID, aggregateID string, content []byte, digest string, createdAt time.Time, kind, specID string) error {
+func insertRelationalTestArtifact(ctx context.Context, db *sql.DB, tenantID, projectID, aggregateID string, content []byte, digest string, createdAt time.Time, kind, specID, createdBy string) error {
 	state, err := json.Marshal(struct {
 		TenantID       string    `json:"tenantId"`
 		ProjectID      string    `json:"projectId"`
@@ -241,7 +404,7 @@ func insertRelationalTestArtifact(ctx context.Context, db *sql.DB, tenantID, pro
 		Content        []byte    `json:"content"`
 		CreatedAt      time.Time `json:"createdAt"`
 		CreatedBy      string    `json:"createdBy"`
-	}{tenantID, projectID, kind, specID, 1, digest, digest, "artifact://sha256/" + digest[len("sha256:"):], "application/json", content, createdAt, "agent_plan"})
+	}{tenantID, projectID, kind, specID, 1, digest, digest, "artifact://sha256/" + digest[len("sha256:"):], "application/json", content, createdAt, createdBy})
 	if err != nil {
 		return err
 	}
@@ -270,12 +433,18 @@ func relationalTestProjectState(tenantID, projectID string, planVersion int, pla
 	return encoded
 }
 
-func relationalTestTaskState(tenantID, projectID, taskID, seriesID, moduleSHA string) []byte {
+func relationalTestStagedTaskState(tenantID, projectID, taskID, seriesID, planSHA, moduleSHA, taskState string, version int64) []byte {
 	value := map[string]any{
-		"tenantId": tenantID, "projectId": projectID, "id": taskID, "state": "DEFINED", "version": 1,
-		"moduleSpecRef":   map[string]any{"version": 1, "sha256": moduleSHA},
-		"attemptSeriesId": seriesID, "attemptSeriesIds": []string{seriesID}, "attempt": 0, "fencingToken": 0,
+		"tenantId": tenantID, "projectId": projectID, "id": taskID, "moduleId": "module-api", "state": taskState, "version": version,
+		"planningSpecRef": map[string]any{"version": 1, "sha256": planSHA},
+		"moduleSpecRef":   map[string]any{"version": 0, "sha256": ""},
+		"attemptSeriesId": "", "attemptSeriesIds": []string{}, "attempt": 0, "fencingToken": 0,
 		"dependentTaskIds": []string{}, "blockingTaskIds": []string{},
+	}
+	if taskState == "DEFINED" {
+		value["moduleSpecRef"] = map[string]any{"version": 1, "sha256": moduleSHA}
+		value["attemptSeriesId"] = seriesID
+		value["attemptSeriesIds"] = []string{seriesID}
 	}
 	encoded, _ := json.Marshal(value)
 	return encoded
