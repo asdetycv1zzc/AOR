@@ -29,6 +29,13 @@
       "file": "000004_model_authorizer_reads.up.sql",
       "sha256": "sha256:482170c5f87dac86c6515bdb99f2772e6c84fb4cdcc4c367bb8499f65439f853",
       "destructive": false
+    },
+    {
+      "version": 5,
+      "mode": "EXPAND",
+      "file": "000005_runtime_records.up.sql",
+      "sha256": "sha256:76b1f5754f9d79d4f064e273678845e874493ade0551a7624cd4bfebcb6c2cdc",
+      "destructive": false
     }
   ]
 }

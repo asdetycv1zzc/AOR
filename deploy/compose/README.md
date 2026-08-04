@@ -49,7 +49,7 @@ The target performs these stages in order:
 1. Validate the Compose model and required secret files.
 2. Pull all dependency images.
 3. Start PostgreSQL, Temporal, NATS, MinIO, OPA, and Dex, then wait for their health checks and initialization jobs.
-4. Apply PostgreSQL migrations `000001_core.up.sql`, `000002_inbox_claims.up.sql`, `000003_runtime_app_role.up.sql`, and `000004_model_authorizer_reads.up.sql` in order; reruns detect the installed schema and keep the fixed `aor_app` role and grants idempotent. The app password is supplied through the ignored secret file and is not printed.
+4. Apply PostgreSQL migrations `000001_core.up.sql` through `000005_runtime_records.up.sql` in order; reruns detect the installed schema and keep the fixed `aor_app` role and grants idempotent. The app password is supplied through the ignored secret file and is not printed.
 5. Build the four AOR images serially from the current source.
 6. Start AOR only after every dependency and initializer has completed successfully, then wait for every process readiness endpoint.
 
