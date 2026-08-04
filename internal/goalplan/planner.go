@@ -71,6 +71,22 @@ func (p *Planner) BuildAndPublish(ctx context.Context, request PlanningRequest) 
 	if project.Version == request.ExpectedProjectVersion+1 && (project.Plan == nil || *project.Plan != (contracts.SpecRef{Version: plan.PlanSpecVersion, SHA256: plan.SHA256})) {
 		return PlanningResult{}, ErrInvalidRequest
 	}
+	planRef := contracts.SpecRef{Version: plan.PlanSpecVersion, SHA256: plan.SHA256}
+	dag := make(map[string][]string, len(plan.Modules))
+	planningTasks := make([]orchestrator.PlanningTaskDefinition, 0, len(plan.Modules))
+	for _, module := range plan.Modules {
+		dag[module.ModuleID] = append([]string(nil), module.Dependencies...)
+		planningTasks = append(planningTasks, orchestrator.PlanningTaskDefinition{
+			ModuleID: module.ModuleID, TaskID: request.ModuleTaskIDs[module.ModuleID], Retain: request.RetainedModules[module.ModuleID],
+		})
+	}
+	if _, err := p.projects.QueuePlanTasks(ctx, orchestrator.QueuePlanTasksRequest{
+		TenantID: request.TenantID, ProjectID: request.ProjectID, PrincipalID: request.PrincipalID,
+		IdempotencyKey: planningStageKey(request.IdempotencyKey, "queue"), ExpectedProjectVersion: request.ExpectedProjectVersion,
+		GoalSpecRef: request.GoalRef, PlanRef: planRef, DAG: dag, Tasks: planningTasks,
+	}); err != nil {
+		return PlanningResult{}, err
+	}
 	moduleSpecs := make(map[string]contracts.ModuleSpec, len(plan.Modules))
 	moduleArtifacts := make(map[string]SpecArtifact, len(plan.Modules))
 	modules := append([]contracts.PlanModule(nil), plan.Modules...)
@@ -79,9 +95,28 @@ func (p *Planner) BuildAndPublish(ctx context.Context, request PlanningRequest) 
 		if request.ModuleTaskIDs[module.ModuleID] == "" || request.AttemptSeriesIDs[module.ModuleID] == "" || request.ModuleSpecVersions[module.ModuleID] < 1 {
 			return PlanningResult{}, ErrInvalidRequest
 		}
-		moduleSpec, artifact, moduleErr := p.loadOrGenerateModule(ctx, request, goalArtifact, planArtifact, plan, module, request.RetainedModules[module.ModuleID])
+		retain := request.RetainedModules[module.ModuleID]
+		if !retain {
+			if _, startErr := p.projects.HandleTask(ctx, orchestrator.TaskRequest{
+				TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.ModuleTaskIDs[module.ModuleID], PrincipalID: request.PrincipalID,
+				IdempotencyKey: planningStageKey(request.IdempotencyKey, "start", module.ModuleID), ExpectedVersion: 1,
+				Command: state.TaskCommand{Type: state.TaskCommandStartPlanning},
+			}); startErr != nil {
+				return PlanningResult{}, startErr
+			}
+		}
+		moduleSpec, artifact, moduleErr := p.loadOrGenerateModule(ctx, request, goalArtifact, planArtifact, plan, module, retain)
 		if moduleErr != nil {
 			return PlanningResult{}, moduleErr
+		}
+		if !retain {
+			if _, attachErr := p.projects.HandleTask(ctx, orchestrator.TaskRequest{
+				TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.ModuleTaskIDs[module.ModuleID], PrincipalID: request.PrincipalID,
+				IdempotencyKey: planningStageKey(request.IdempotencyKey, "attach", module.ModuleID), ExpectedVersion: 2,
+				Command: state.TaskCommand{Type: state.TaskCommandAttachModuleSpec, ModuleSpecRef: contracts.SpecRef{Version: moduleSpec.ModuleSpecVersion, SHA256: moduleSpec.SHA256}, AttemptSeriesID: request.AttemptSeriesIDs[module.ModuleID]},
+			}); attachErr != nil {
+				return PlanningResult{}, attachErr
+			}
 		}
 		moduleSpecs[module.ModuleID] = moduleSpec
 		moduleArtifacts[module.ModuleID] = artifact
@@ -97,10 +132,8 @@ func (p *Planner) BuildAndPublish(ctx context.Context, request PlanningRequest) 
 	if err != nil {
 		return PlanningResult{}, err
 	}
-	dag := make(map[string][]string, len(plan.Modules))
 	tasks := make([]orchestrator.PlanTaskDefinition, 0, len(modules))
 	for _, module := range modules {
-		dag[module.ModuleID] = append([]string(nil), module.Dependencies...)
 		tasks = append(tasks, orchestrator.PlanTaskDefinition{
 			ModuleID: module.ModuleID, TaskID: request.ModuleTaskIDs[module.ModuleID],
 			ModuleSpecRef:   contracts.SpecRef{Version: moduleSpecs[module.ModuleID].ModuleSpecVersion, SHA256: moduleSpecs[module.ModuleID].SHA256},
@@ -110,7 +143,7 @@ func (p *Planner) BuildAndPublish(ctx context.Context, request PlanningRequest) 
 	publication, err := p.projects.PublishPlan(ctx, orchestrator.PublishPlanRequest{
 		TenantID: request.TenantID, ProjectID: request.ProjectID, PrincipalID: request.PrincipalID,
 		IdempotencyKey: request.IdempotencyKey, ExpectedProjectVersion: request.ExpectedProjectVersion,
-		GoalSpecRef: request.GoalRef, PlanRef: contracts.SpecRef{Version: plan.PlanSpecVersion, SHA256: plan.SHA256}, DAG: dag, Tasks: tasks,
+		GoalSpecRef: request.GoalRef, PlanRef: planRef, DAG: dag, Tasks: tasks,
 	})
 	if err != nil {
 		return PlanningResult{}, err
@@ -452,6 +485,10 @@ func planningUUID(parts ...string) string {
 	digest[8] = digest[8]&0x3f | 0x80
 	id, _ := uuid.FromBytes(digest[:16])
 	return id.String()
+}
+
+func planningStageKey(parts ...string) string {
+	return "plan-stage-" + planningUUID(parts...)
 }
 
 func validatePlanningAssignments(plan contracts.PlanSpec, request PlanningRequest) error {

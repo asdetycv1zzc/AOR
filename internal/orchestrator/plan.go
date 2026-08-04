@@ -20,6 +20,31 @@ type PlanTaskDefinition struct {
 	Retain          bool
 }
 
+type PlanningTaskDefinition struct {
+	ModuleID string
+	TaskID   string
+	Retain   bool
+}
+
+type QueuePlanTasksRequest struct {
+	TenantID               string
+	ProjectID              string
+	PrincipalID            string
+	IdempotencyKey         string
+	ExpectedProjectVersion int64
+	GoalSpecRef            contracts.SpecRef
+	PlanRef                contracts.SpecRef
+	DAG                    map[string][]string
+	Tasks                  []PlanningTaskDefinition
+	Authorization          CommitAuthorization
+}
+
+type QueuePlanTasksOutcome struct {
+	Tasks     []state.ModuleTask `json:"tasks"`
+	Events    []eventing.DomainEvent
+	Duplicate bool
+}
+
 type PublishPlanRequest struct {
 	TenantID               string
 	ProjectID              string
@@ -38,6 +63,109 @@ type PublishPlanOutcome struct {
 	Tasks     []state.ModuleTask `json:"tasks"`
 	Events    []eventing.DomainEvent
 	Duplicate bool
+}
+
+func (s *Service) QueuePlanTasks(ctx context.Context, request QueuePlanTasksRequest) (QueuePlanTasksOutcome, error) {
+	if err := validateQueuePlanTasksRequest(request); err != nil {
+		return QueuePlanTasksOutcome{}, err
+	}
+	request.Tasks = append([]PlanningTaskDefinition(nil), request.Tasks...)
+	sort.Slice(request.Tasks, func(left, right int) bool { return request.Tasks[left].ModuleID < request.Tasks[right].ModuleID })
+	digest, err := commandDigest(request.ExpectedProjectVersion, request)
+	if err != nil {
+		return QueuePlanTasksOutcome{}, err
+	}
+	if prior, found, lookupErr := s.store.Lookup(ctx, request.TenantID, request.PrincipalID, request.IdempotencyKey, digest); lookupErr != nil {
+		return QueuePlanTasksOutcome{}, lookupErr
+	} else if found {
+		outcome, decodeErr := decodeQueuePlanTasksResult(prior.Result)
+		outcome.Events = prior.Events
+		outcome.Duplicate = true
+		return outcome, decodeErr
+	}
+
+	projection, found, err := s.store.Load(ctx, request.TenantID, "project", request.ProjectID)
+	if err != nil {
+		return QueuePlanTasksOutcome{}, err
+	}
+	if !found {
+		return QueuePlanTasksOutcome{}, aorerrors.New(aorerrors.CodeNotFound, "", nil)
+	}
+	project, err := decodeProject(projection.State)
+	if err != nil {
+		return QueuePlanTasksOutcome{}, err
+	}
+	if project.Version != request.ExpectedProjectVersion {
+		return QueuePlanTasksOutcome{}, versionConflict(request.ExpectedProjectVersion, project.Version)
+	}
+	if project.State != contracts.ProjectPlanning || project.Plan != nil || project.Goal == nil || project.Goal.ApprovedBy == "" || project.Goal.Version != request.GoalSpecRef.Version || project.Goal.SHA256 != request.GoalSpecRef.SHA256 {
+		return QueuePlanTasksOutcome{}, aorerrors.New(aorerrors.CodeInvalidStateTransition, "", map[string]any{"scope": "queue plan tasks"})
+	}
+
+	at := s.clock().UTC()
+	updates := make([]eventing.ProjectionUpdate, 0, len(request.Tasks))
+	events := make([]eventing.DomainEvent, 0, len(request.Tasks))
+	tasks := make([]state.ModuleTask, 0, len(request.Tasks))
+	dependentIDs := planningDependentTaskIDs(request.Tasks, request.DAG)
+	for _, definition := range request.Tasks {
+		existing, exists, loadErr := s.store.Load(ctx, request.TenantID, "task", definition.TaskID)
+		if loadErr != nil {
+			return QueuePlanTasksOutcome{}, loadErr
+		}
+		if definition.Retain {
+			if !exists {
+				return QueuePlanTasksOutcome{}, aorerrors.New(aorerrors.CodeNotFound, "", map[string]any{"scope": "retained plan task"})
+			}
+			retained, decodeErr := decodeTask(existing.State)
+			if decodeErr != nil {
+				return QueuePlanTasksOutcome{}, decodeErr
+			}
+			if retained.TenantID != request.TenantID || retained.ProjectID != request.ProjectID || retained.State == contracts.TaskSuperseded || retained.State == contracts.TaskCanceled || !slices.Equal(retained.DependentTaskIDs, dependentIDs[definition.ModuleID]) {
+				return QueuePlanTasksOutcome{}, aorerrors.New(aorerrors.CodeConflict, "", map[string]any{"scope": "retained plan task"})
+			}
+			tasks = append(tasks, retained)
+			continue
+		}
+		if exists || existing.Version != 0 {
+			return QueuePlanTasksOutcome{}, aorerrors.New(aorerrors.CodeConflict, "", map[string]any{"scope": "plan task"})
+		}
+		transition, taskErr := state.DecideTask(state.ModuleTask{}, state.TaskCommand{
+			Type: state.TaskCommandQueuePlanning, TenantID: request.TenantID, ProjectID: request.ProjectID,
+			TaskID: definition.TaskID, ModuleID: definition.ModuleID, PlanningSpecRef: request.PlanRef,
+			DependentTaskIDs: dependentIDs[definition.ModuleID], At: at,
+		})
+		if taskErr != nil {
+			return QueuePlanTasksOutcome{}, taskErr
+		}
+		update, event, _, encodeErr := encodeTaskTransition(request.TenantID, request.ProjectID, definition.TaskID, 0, transition, digest)
+		if encodeErr != nil {
+			return QueuePlanTasksOutcome{}, encodeErr
+		}
+		updates = append(updates, update)
+		events = append(events, event)
+		tasks = append(tasks, transition.Projection)
+	}
+	result, err := json.Marshal(struct {
+		Tasks []state.ModuleTask `json:"tasks"`
+	}{Tasks: tasks})
+	if err != nil {
+		return QueuePlanTasksOutcome{}, err
+	}
+	if err := s.validatePlanningTasksCommit(ctx, request, project, digest, at); err != nil {
+		return QueuePlanTasksOutcome{}, err
+	}
+	applyEventTrace(ctx, digest, events)
+	transaction, err := s.store.Execute(ctx, eventing.TransactionRequest{
+		TenantID: request.TenantID, PrincipalID: request.PrincipalID, IdempotencyKey: request.IdempotencyKey, RequestSHA256: digest,
+		Updates: updates, Events: events, Result: result, ResultSHA256: mustDigest(result),
+	})
+	if err != nil {
+		return QueuePlanTasksOutcome{}, err
+	}
+	outcome, err := decodeQueuePlanTasksResult(transaction.Result)
+	outcome.Events = transaction.Events
+	outcome.Duplicate = transaction.Duplicate
+	return outcome, err
 }
 
 func (s *Service) PublishPlan(ctx context.Context, request PublishPlanRequest) (PublishPlanOutcome, error) {
@@ -93,38 +221,19 @@ func (s *Service) PublishPlan(ctx context.Context, request PublishPlanRequest) (
 		if loadErr != nil {
 			return PublishPlanOutcome{}, loadErr
 		}
-		if definition.Retain {
-			if !exists {
-				return PublishPlanOutcome{}, aorerrors.New(aorerrors.CodeNotFound, "", map[string]any{"scope": "retained plan task"})
-			}
-			retained, decodeErr := decodeTask(existing.State)
-			if decodeErr != nil {
-				return PublishPlanOutcome{}, decodeErr
-			}
-			if retained.TenantID != request.TenantID || retained.ProjectID != request.ProjectID || retained.ModuleSpecRef != definition.ModuleSpecRef || retained.AttemptSeriesID != definition.AttemptSeriesID || retained.State == contracts.TaskSuperseded || retained.State == contracts.TaskCanceled || !slices.Equal(retained.DependentTaskIDs, dependentIDs[definition.ModuleID]) {
-				return PublishPlanOutcome{}, aorerrors.New(aorerrors.CodeConflict, "", map[string]any{"scope": "retained plan task"})
-			}
-			tasks = append(tasks, retained)
-			continue
+		if !exists {
+			return PublishPlanOutcome{}, aorerrors.New(aorerrors.CodeNotFound, "", map[string]any{"scope": "plan task"})
 		}
-		if exists || existing.Version != 0 {
+		task, decodeErr := decodeTask(existing.State)
+		if decodeErr != nil {
+			return PublishPlanOutcome{}, decodeErr
+		}
+		validState := definition.Retain || task.State == contracts.TaskDefined
+		validPlanningBinding := definition.Retain || task.ModuleID == definition.ModuleID && task.PlanningSpecRef == request.PlanRef
+		if task.TenantID != request.TenantID || task.ProjectID != request.ProjectID || task.ModuleSpecRef != definition.ModuleSpecRef || task.AttemptSeriesID != definition.AttemptSeriesID || task.State == contracts.TaskSuperseded || task.State == contracts.TaskCanceled || !validState || !validPlanningBinding || !slices.Equal(task.DependentTaskIDs, dependentIDs[definition.ModuleID]) {
 			return PublishPlanOutcome{}, aorerrors.New(aorerrors.CodeConflict, "", map[string]any{"scope": "plan task"})
 		}
-		transition, taskErr := state.DecideTask(state.ModuleTask{}, state.TaskCommand{
-			Type: state.TaskCommandDefine, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: definition.TaskID,
-			ModuleSpecRef: definition.ModuleSpecRef, AttemptSeriesID: definition.AttemptSeriesID,
-			DependentTaskIDs: dependentIDs[definition.ModuleID], At: at,
-		})
-		if taskErr != nil {
-			return PublishPlanOutcome{}, taskErr
-		}
-		update, event, _, encodeErr := encodeTaskTransition(request.TenantID, request.ProjectID, definition.TaskID, 0, transition, digest)
-		if encodeErr != nil {
-			return PublishPlanOutcome{}, encodeErr
-		}
-		updates = append(updates, update)
-		events = append(events, event)
-		tasks = append(tasks, transition.Projection)
+		tasks = append(tasks, task)
 	}
 	result, err := json.Marshal(struct {
 		Project state.Project      `json:"project"`
@@ -172,6 +281,26 @@ func validatePublishPlanRequest(request PublishPlanRequest) error {
 	return nil
 }
 
+func validateQueuePlanTasksRequest(request QueuePlanTasksRequest) error {
+	if err := validateRequest(request.TenantID, request.ProjectID, request.PrincipalID, request.IdempotencyKey, request.ExpectedProjectVersion); err != nil {
+		return err
+	}
+	if request.GoalSpecRef.Validate() != nil || request.PlanRef.Validate() != nil || !state.ValidateDAG(request.DAG) || len(request.Tasks) != len(request.DAG) {
+		return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "plan task queue"})
+	}
+	seenModules := make(map[string]bool, len(request.Tasks))
+	seenTasks := make(map[string]bool, len(request.Tasks))
+	for _, task := range request.Tasks {
+		_, moduleExists := request.DAG[task.ModuleID]
+		if task.ModuleID == "" || task.TaskID == "" || !moduleExists || seenModules[task.ModuleID] || seenTasks[task.TaskID] {
+			return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "planning task definition"})
+		}
+		seenModules[task.ModuleID] = true
+		seenTasks[task.TaskID] = true
+	}
+	return nil
+}
+
 func planDependentTaskIDs(tasks []PlanTaskDefinition, graph map[string][]string) map[string][]string {
 	taskByModule := make(map[string]string, len(tasks))
 	for _, task := range tasks {
@@ -187,6 +316,24 @@ func planDependentTaskIDs(tasks []PlanTaskDefinition, graph map[string][]string)
 		sort.Strings(result[moduleID])
 	}
 	return result
+}
+
+func planningDependentTaskIDs(tasks []PlanningTaskDefinition, graph map[string][]string) map[string][]string {
+	definitions := make([]PlanTaskDefinition, 0, len(tasks))
+	for _, task := range tasks {
+		definitions = append(definitions, PlanTaskDefinition{ModuleID: task.ModuleID, TaskID: task.TaskID})
+	}
+	return planDependentTaskIDs(definitions, graph)
+}
+
+func decodeQueuePlanTasksResult(value []byte) (QueuePlanTasksOutcome, error) {
+	var result struct {
+		Tasks []state.ModuleTask `json:"tasks"`
+	}
+	if err := json.Unmarshal(value, &result); err != nil {
+		return QueuePlanTasksOutcome{}, err
+	}
+	return QueuePlanTasksOutcome{Tasks: result.Tasks}, nil
 }
 
 func decodePublishPlanResult(value []byte) (PublishPlanOutcome, error) {

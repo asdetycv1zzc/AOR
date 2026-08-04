@@ -32,6 +32,14 @@ func (commander *principalRecordingCommander) HandleProject(ctx context.Context,
 	return commander.delegate.HandleProject(ctx, request)
 }
 
+func (commander *principalRecordingCommander) HandleTask(ctx context.Context, request orchestrator.TaskRequest) (orchestrator.TaskOutcome, error) {
+	return commander.delegate.HandleTask(ctx, request)
+}
+
+func (commander *principalRecordingCommander) QueuePlanTasks(ctx context.Context, request orchestrator.QueuePlanTasksRequest) (orchestrator.QueuePlanTasksOutcome, error) {
+	return commander.delegate.QueuePlanTasks(ctx, request)
+}
+
 func (commander *principalRecordingCommander) PublishPlan(ctx context.Context, request orchestrator.PublishPlanRequest) (orchestrator.PublishPlanOutcome, error) {
 	commander.published = append(commander.published, request.PrincipalID)
 	return commander.delegate.PublishPlan(ctx, request)

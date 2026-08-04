@@ -12,6 +12,7 @@ import (
 	"github.com/akimisaka/aor/internal/idempotency"
 	"github.com/akimisaka/aor/internal/state"
 	"github.com/akimisaka/aor/pkg/canonicaljson"
+	"github.com/akimisaka/aor/pkg/contracts"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
 )
 
@@ -212,7 +213,8 @@ func (s *Service) HandleTask(ctx context.Context, request TaskRequest) (TaskOutc
 	if decodeProjectErr != nil {
 		return TaskOutcome{}, decodeProjectErr
 	}
-	if project.Goal == nil || project.Goal.ApprovedBy == "" || project.Plan == nil {
+	planningCommand := command.Type == state.TaskCommandStartPlanning || command.Type == state.TaskCommandAttachModuleSpec
+	if project.Goal == nil || project.Goal.ApprovedBy == "" || planningCommand && (project.State != contracts.ProjectPlanning || project.Plan != nil) || !planningCommand && project.Plan == nil {
 		return TaskOutcome{}, aorerrors.New(aorerrors.CodeGoalNotApproved, "", nil)
 	}
 	if project.State == "PAUSED" || project.State == "ABORTED" || project.State == "ARCHIVED" || project.State == "COMPLETED" {

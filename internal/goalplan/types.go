@@ -51,6 +51,8 @@ type AgentInvoker interface {
 
 type ProjectCommander interface {
 	HandleProject(ctx context.Context, request orchestrator.ProjectRequest) (orchestrator.ProjectOutcome, error)
+	HandleTask(ctx context.Context, request orchestrator.TaskRequest) (orchestrator.TaskOutcome, error)
+	QueuePlanTasks(ctx context.Context, request orchestrator.QueuePlanTasksRequest) (orchestrator.QueuePlanTasksOutcome, error)
 	PublishPlan(ctx context.Context, request orchestrator.PublishPlanRequest) (orchestrator.PublishPlanOutcome, error)
 	Project(ctx context.Context, tenantID, projectID string) (state.Project, bool, error)
 }

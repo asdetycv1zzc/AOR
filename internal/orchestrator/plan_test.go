@@ -11,11 +11,12 @@ import (
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
 )
 
-func TestPublishPlanCommitsProjectAndTasksAtomically(t *testing.T) {
+func TestPublishPlanRequiresPersistedPlannedTasks(t *testing.T) {
 	store := eventing.NewMemoryStore()
 	service := newTestService(store)
 	setupPlanningProject(t, service)
 	request := validPublishPlanRequest()
+	stagePlanTasks(t, service, request)
 	for attempt := 0; attempt < 100; attempt++ {
 		outcome, err := service.PublishPlan(context.Background(), request)
 		if err != nil {
@@ -30,17 +31,19 @@ func TestPublishPlanCommitsProjectAndTasksAtomically(t *testing.T) {
 	if len(apiTask.DependentTaskIDs) != 1 || apiTask.DependentTaskIDs[0] != workerTask.ID {
 		t.Fatalf("dependent IDs = %v", apiTask.DependentTaskIDs)
 	}
-	if stats := store.Stats(); stats.Projections != 3 || stats.Events != 7 || stats.Outbox != 7 {
+	if stats := store.Stats(); stats.Projections != 3 || stats.Events != 11 || stats.Outbox != 11 {
 		t.Fatalf("store stats = %#v", stats)
 	}
 }
 
-func TestPublishPlanFailureLeavesNoPartialTasks(t *testing.T) {
+func TestPublishPlanFailureKeepsCompletedPlanningStages(t *testing.T) {
 	store := eventing.NewMemoryStore()
 	service := newTestService(store)
 	setupPlanningProject(t, service)
+	request := validPublishPlanRequest()
+	stagePlanTasks(t, service, request)
 	store.FailNext(eventing.FailureBeforeCommit)
-	if _, err := service.PublishPlan(context.Background(), validPublishPlanRequest()); !errors.Is(err, eventing.ErrInjectedFailure) {
+	if _, err := service.PublishPlan(context.Background(), request); !errors.Is(err, eventing.ErrInjectedFailure) {
 		t.Fatalf("publish error = %v", err)
 	}
 	projectProjection, found, err := store.Load(context.Background(), "tenant_1", "project", "prj_1")
@@ -52,8 +55,13 @@ func TestPublishPlanFailureLeavesNoPartialTasks(t *testing.T) {
 		t.Fatalf("project = %#v err %v", project, err)
 	}
 	for _, taskID := range []string{"task_api", "task_worker"} {
-		if _, found, err := store.Load(context.Background(), "tenant_1", "task", taskID); err != nil || found {
+		projection, found, err := store.Load(context.Background(), "tenant_1", "task", taskID)
+		if err != nil || !found {
 			t.Fatalf("task %s = found %v err %v", taskID, found, err)
+		}
+		task, decodeErr := decodeTask(projection.State)
+		if decodeErr != nil || task.State != contracts.TaskDefined {
+			t.Fatalf("task %s = %#v err %v", taskID, task, decodeErr)
 		}
 	}
 }
@@ -63,6 +71,7 @@ func TestPublishPlanRejectsChangedIdempotentBundle(t *testing.T) {
 	service := newTestService(store)
 	setupPlanningProject(t, service)
 	request := validPublishPlanRequest()
+	stagePlanTasks(t, service, request)
 	if _, err := service.PublishPlan(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
@@ -71,6 +80,40 @@ func TestPublishPlanRejectsChangedIdempotentBundle(t *testing.T) {
 	var typed *aorerrors.Error
 	if !errors.As(err, &typed) || typed.Code != aorerrors.CodeIdempotencyConflict {
 		t.Fatalf("changed duplicate = %#v", err)
+	}
+}
+
+func stagePlanTasks(t *testing.T, service *Service, request PublishPlanRequest) {
+	t.Helper()
+	planning := make([]PlanningTaskDefinition, 0, len(request.Tasks))
+	for _, task := range request.Tasks {
+		planning = append(planning, PlanningTaskDefinition{ModuleID: task.ModuleID, TaskID: task.TaskID, Retain: task.Retain})
+	}
+	queued, err := service.QueuePlanTasks(context.Background(), QueuePlanTasksRequest{
+		TenantID: request.TenantID, ProjectID: request.ProjectID, PrincipalID: request.PrincipalID, IdempotencyKey: request.IdempotencyKey + "_queue",
+		ExpectedProjectVersion: request.ExpectedProjectVersion, GoalSpecRef: request.GoalSpecRef, PlanRef: request.PlanRef, DAG: request.DAG, Tasks: planning,
+	})
+	if err != nil || len(queued.Tasks) != len(request.Tasks) {
+		t.Fatalf("queue planning tasks = %#v, %v", queued, err)
+	}
+	for _, task := range request.Tasks {
+		if task.Retain {
+			continue
+		}
+		if _, err := service.HandleTask(context.Background(), TaskRequest{
+			TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: task.TaskID, PrincipalID: request.PrincipalID,
+			IdempotencyKey: request.IdempotencyKey + "_start_" + task.ModuleID, ExpectedVersion: 1,
+			Command: state.TaskCommand{Type: state.TaskCommandStartPlanning},
+		}); err != nil {
+			t.Fatalf("start task planning: %v", err)
+		}
+		if _, err := service.HandleTask(context.Background(), TaskRequest{
+			TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: task.TaskID, PrincipalID: request.PrincipalID,
+			IdempotencyKey: request.IdempotencyKey + "_attach_" + task.ModuleID, ExpectedVersion: 2,
+			Command: state.TaskCommand{Type: state.TaskCommandAttachModuleSpec, ModuleSpecRef: task.ModuleSpecRef, AttemptSeriesID: task.AttemptSeriesID},
+		}); err != nil {
+			t.Fatalf("attach ModuleSpec: %v", err)
+		}
 	}
 }
 

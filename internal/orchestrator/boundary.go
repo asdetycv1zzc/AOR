@@ -104,6 +104,11 @@ func (s *Service) validatePlanCommit(ctx context.Context, request PublishPlanReq
 	return s.validateCommitBoundary(ctx, validation)
 }
 
+func (s *Service) validatePlanningTasksCommit(ctx context.Context, request QueuePlanTasksRequest, project state.Project, parameterDigest string, at time.Time) error {
+	validation := CommitValidation{TenantID: request.TenantID, ProjectID: request.ProjectID, PrincipalID: request.PrincipalID, Action: string(state.TaskCommandQueuePlanning), ExpectedVersion: request.ExpectedProjectVersion, Project: project, ParameterDigest: parameterDigest, EvidenceSHA256: []string{request.GoalSpecRef.SHA256, request.PlanRef.SHA256}, Claims: map[string]bool{"dag_validated": true, "ownership_validated": true}, GoalSpecRef: request.GoalSpecRef, Authorization: request.Authorization, CommitAt: at}
+	return s.validateCommitBoundary(ctx, validation)
+}
+
 func (s *Service) validateCommitBoundary(ctx context.Context, validation CommitValidation) error {
 	if s == nil || s.boundary == nil || validation.TenantID == "" || validation.ProjectID == "" || validation.PrincipalID == "" || validation.Action == "" || validation.ParameterDigest == "" || validation.CommitAt.IsZero() {
 		return ErrCommitBoundary
