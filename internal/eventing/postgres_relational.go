@@ -2,7 +2,6 @@ package eventing
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -544,16 +543,20 @@ FOR SHARE`, tenantID, projectID, plan.GoalSpecRef.Version, plan.GoalSpecRef.SHA2
 	if err != nil {
 		return relationalPlanSpec{}, err
 	}
-	planID := relationalUUID(tenantID, projectID, "plan", fmt.Sprint(plan.PlanSpecVersion), plan.SHA256)
+	planUUID, err := uuid.NewV7()
+	if err != nil {
+		return relationalPlanSpec{}, err
+	}
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO plan_specs
   (id, tenant_id, project_id, goal_spec_id, version, status, schema_version,
    content_jsonb, content_sha256, created_by_agent_id, planning_agent_id, created_at)
 VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, 'DRAFT', 1, $6::jsonb, $7, $8, $8, $9)
-ON CONFLICT DO NOTHING`, planID, tenantID, projectID, goalSpecID, plan.PlanSpecVersion,
+ON CONFLICT DO NOTHING`, planUUID.String(), tenantID, projectID, goalSpecID, plan.PlanSpecVersion,
 		[]byte(artifact.Content), plan.SHA256, artifact.CreatedBy, artifact.CreatedAt); err != nil {
 		return relationalPlanSpec{}, err
 	}
+	var planID string
 	var storedGoalID string
 	var storedVersion int
 	var storedStatus string
@@ -561,10 +564,10 @@ ON CONFLICT DO NOTHING`, planID, tenantID, projectID, goalSpecID, plan.PlanSpecV
 	var storedCreatedBy string
 	var storedPlanningAgent sql.NullString
 	err = tx.QueryRowContext(ctx, `
-SELECT goal_spec_id::text, version, status, content_sha256, created_by_agent_id, planning_agent_id
+SELECT id::text, goal_spec_id::text, version, status, content_sha256, created_by_agent_id, planning_agent_id
 FROM plan_specs
-WHERE tenant_id = $1::uuid AND id = $2::uuid
-FOR SHARE`, tenantID, planID).Scan(&storedGoalID, &storedVersion, &storedStatus, &storedSHA, &storedCreatedBy, &storedPlanningAgent)
+WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND version = $3
+FOR SHARE`, tenantID, projectID, plan.PlanSpecVersion).Scan(&planID, &storedGoalID, &storedVersion, &storedStatus, &storedSHA, &storedCreatedBy, &storedPlanningAgent)
 	if err != nil {
 		return relationalPlanSpec{}, err
 	}
@@ -601,27 +604,31 @@ FOR SHARE`, tenantID, projectID, module.PlanVersion).Scan(&planID, &planState)
 	if !found || planned.ExecutionPlatform != module.ExecutionPlatform || planned.SandboxLevel != module.SandboxLevel {
 		return relationalModuleSpec{}, relationalError("ModuleSpec PlanSpec binding")
 	}
-	moduleSpecID := relationalUUID(tenantID, projectID, "module", module.ModuleID, fmt.Sprint(module.ModuleSpecVersion), module.SHA256)
+	moduleSpecUUID, err := uuid.NewV7()
+	if err != nil {
+		return relationalModuleSpec{}, err
+	}
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO module_specs
   (id, tenant_id, project_id, plan_spec_id, module_id, version, risk_level,
    execution_platform, isolation_level, schema_version, content_jsonb, content_sha256,
    created_by_agent_id, created_at)
 VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7, $8, $9, 1, $10::jsonb, $11, $12, $13)
-ON CONFLICT DO NOTHING`, moduleSpecID, tenantID, projectID, planID, module.ModuleID, module.ModuleSpecVersion,
+ON CONFLICT DO NOTHING`, moduleSpecUUID.String(), tenantID, projectID, planID, module.ModuleID, module.ModuleSpecVersion,
 		planned.Risk, string(module.ExecutionPlatform), string(module.SandboxLevel), []byte(artifact.Content), module.SHA256, artifact.CreatedBy, artifact.CreatedAt); err != nil {
 		return relationalModuleSpec{}, err
 	}
+	var moduleSpecID string
 	var storedPlanID string
 	var storedModuleID string
 	var storedVersion int
 	var storedSHA string
 	var storedCreatedBy sql.NullString
 	err = tx.QueryRowContext(ctx, `
-SELECT plan_spec_id::text, module_id, version, content_sha256, created_by_agent_id
+SELECT id::text, plan_spec_id::text, module_id, version, content_sha256, created_by_agent_id
 FROM module_specs
-WHERE tenant_id = $1::uuid AND id = $2::uuid
-FOR SHARE`, tenantID, moduleSpecID).Scan(&storedPlanID, &storedModuleID, &storedVersion, &storedSHA, &storedCreatedBy)
+WHERE tenant_id = $1::uuid AND module_id = $2 AND version = $3
+FOR SHARE`, tenantID, module.ModuleID, module.ModuleSpecVersion).Scan(&moduleSpecID, &storedPlanID, &storedModuleID, &storedVersion, &storedSHA, &storedCreatedBy)
 	if err != nil {
 		return relationalModuleSpec{}, err
 	}
@@ -913,25 +920,6 @@ func planningTaskState(value contracts.ModuleTaskState) bool {
 func validUUID(value string) bool {
 	_, err := uuid.Parse(value)
 	return err == nil
-}
-
-func relationalUUID(parts ...string) string {
-	value := relationalDigest(parts...)
-	value[6] = value[6]&0x0f | 0x50
-	value[8] = value[8]&0x3f | 0x80
-	id, _ := uuid.FromBytes(value[:16])
-	return id.String()
-}
-
-func relationalDigest(parts ...string) [32]byte {
-	input := make([]byte, 0)
-	for index, part := range parts {
-		if index != 0 {
-			input = append(input, 0)
-		}
-		input = append(input, part...)
-	}
-	return sha256.Sum256(input)
 }
 
 func validateRelationalProjectionSnapshot(ctx context.Context, tx *sql.Tx, tenantID string) error {
