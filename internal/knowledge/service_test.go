@@ -62,7 +62,6 @@ func (authorizer *testAuthorizer) Evaluate(_ context.Context, input authz.Policy
 
 type testScopes struct {
 	projects map[string]authz.ProjectScope
-	tasks    map[string]authz.TaskScope
 }
 
 func (scopes *testScopes) ResolveProject(_ context.Context, tenantID, projectID string) (authz.ProjectScope, error) {
@@ -71,14 +70,6 @@ func (scopes *testScopes) ResolveProject(_ context.Context, tenantID, projectID 
 		return authz.ProjectScope{}, errors.New("project scope unavailable")
 	}
 	return project, nil
-}
-
-func (scopes *testScopes) ResolveTask(_ context.Context, tenantID, projectID, taskID string) (authz.TaskScope, error) {
-	task, exists := scopes.tasks[tenantID+"/"+projectID+"/"+taskID]
-	if !exists {
-		return authz.TaskScope{}, errors.New("task scope unavailable")
-	}
-	return task, nil
 }
 
 type knowledgeFixture struct {
@@ -94,14 +85,10 @@ func newKnowledgeFixture(t *testing.T, projects ...string) knowledgeFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	scopes := &testScopes{projects: make(map[string]authz.ProjectScope), tasks: make(map[string]authz.TaskScope)}
+	scopes := &testScopes{projects: make(map[string]authz.ProjectScope)}
 	for _, projectID := range projects {
 		scopes.projects["tenant-1/"+projectID] = authz.ProjectScope{
 			TenantID: "tenant-1", ID: projectID, State: "EXECUTING", StateVersion: 7, Classification: "INTERNAL",
-		}
-		scopes.tasks["tenant-1/"+projectID+"/task-curate"] = authz.TaskScope{
-			TenantID: "tenant-1", ProjectID: projectID, ID: "task-curate", State: "EXECUTING",
-			StateVersion: 3, SpecDigest: "sha256:" + strings.Repeat("1", 64),
 		}
 	}
 	authorizer := &testAuthorizer{}
@@ -140,11 +127,11 @@ func curatorAccess(projectID string, proposal UpdateProposal) Access {
 	}
 	return Access{
 		Principal: authn.Principal{ID: "curator-1", Type: authn.PrincipalKnowledgeCurator, Role: authn.RoleKnowledgeCurator, TenantID: "tenant-1", ProjectID: projectID},
-		TenantID:  "tenant-1", ProjectID: projectID, TaskID: "task-curate",
+		TenantID:  "tenant-1", ProjectID: projectID,
 		Lease: &authz.LeaseReference{ID: "lease-1", ExpiresAt: knowledgeTestNow.Add(time.Hour), PolicyVersion: "policy-v1", FencingToken: 1},
 		Approval: &authz.Approval{
 			ID: "approval-1", TenantID: "tenant-1", ProjectID: projectID, PrincipalID: "user-1",
-			SubjectType: authz.ActionKnowledgeWrite, SubjectID: projectID, SubjectVersion: 3,
+			SubjectType: authz.ActionKnowledgeWrite, SubjectID: projectID, SubjectVersion: 7,
 			SubjectDigest: digest, IssuedAt: knowledgeTestNow.Add(-time.Minute), ExpiresAt: knowledgeTestNow.Add(time.Hour), Signature: "test-signature",
 		},
 		ParameterDigest: digest, BudgetAccountID: "knowledge-budget", PolicyVersion: "policy-v1",
@@ -511,11 +498,6 @@ func TestServiceUsesWP03LeaseAndApprovalBindings(t *testing.T) {
 	}
 	scopes := &testScopes{
 		projects: map[string]authz.ProjectScope{"tenant-1/project-a": {TenantID: "tenant-1", ID: "project-a", State: "EXECUTING", StateVersion: 7, Classification: "INTERNAL"}},
-		tasks: map[string]authz.TaskScope{"tenant-1/project-a/task-curate": {
-			TenantID: "tenant-1", ProjectID: "project-a", ID: "task-curate", State: "EXECUTING", StateVersion: 3,
-			SpecDigest: "sha256:" + strings.Repeat("1", 64), ExecutionPlatform: "LINUX", SandboxLevel: "CONTAINER",
-			WorkloadTrust: "TRUSTED", DeploymentProfile: "TEST",
-		}},
 	}
 	signer, err := authz.NewHMACSigner([]byte(strings.Repeat("k", 32)))
 	if err != nil {
@@ -543,15 +525,14 @@ func TestServiceUsesWP03LeaseAndApprovalBindings(t *testing.T) {
 	}
 	principal := authn.Principal{ID: "curator-1", Type: authn.PrincipalKnowledgeCurator, Role: authn.RoleKnowledgeCurator, TenantID: "tenant-1", ProjectID: "project-a"}
 	project := scopes.projects["tenant-1/project-a"]
-	task := scopes.tasks["tenant-1/project-a/task-curate"]
 	approval := &authz.Approval{
 		ID: "approval-1", TenantID: "tenant-1", ProjectID: "project-a", PrincipalID: "user-1",
-		SubjectType: authz.ActionKnowledgeWrite, SubjectID: "project-a", SubjectVersion: task.StateVersion,
+		SubjectType: authz.ActionKnowledgeWrite, SubjectID: "project-a", SubjectVersion: project.StateVersion,
 		SubjectDigest: digest, IssuedAt: knowledgeTestNow.Add(-time.Minute), ExpiresAt: knowledgeTestNow.Add(time.Hour), Signature: "verified-test-signature",
 	}
 	resource := authz.Resource{Type: "knowledge.snapshot", ID: "project-a"}
 	policyInput := authz.PolicyInput{
-		Principal: principal, Project: project, Task: task, Action: authz.ActionKnowledgeWrite,
+		Principal: principal, Project: project, Action: authz.ActionKnowledgeWrite,
 		Resource: resource, ParameterDigest: digest, Budget: authz.BudgetScope{AccountID: "knowledge-budget", Available: true}, Approval: approval,
 	}
 	grant, err := engine.EvaluateLeaseGrant(context.Background(), policyInput)
@@ -561,7 +542,6 @@ func TestServiceUsesWP03LeaseAndApprovalBindings(t *testing.T) {
 	lease, err := manager.Issue(context.Background(), authz.LeaseRequest{
 		ID: "lease-knowledge", AgentInstanceID: principal.ID, Principal: principal,
 		TenantID: "tenant-1", ProjectID: "project-a", ProjectVersion: project.StateVersion,
-		TaskID: task.ID, TaskVersion: task.StateVersion, SpecDigest: task.SpecDigest,
 		Role: principal.Role, Action: authz.ActionKnowledgeWrite, Resource: resource,
 		ParameterDigest: digest, Capabilities: []string{authz.ActionKnowledgeWrite}, PolicyVersion: "policy-v1",
 		BudgetAccountID: "knowledge-budget", TTL: 5 * time.Minute, HeartbeatInterval: 10 * time.Second,
@@ -571,7 +551,7 @@ func TestServiceUsesWP03LeaseAndApprovalBindings(t *testing.T) {
 		t.Fatal(err)
 	}
 	access := Access{
-		Principal: principal, TenantID: "tenant-1", ProjectID: "project-a", TaskID: task.ID,
+		Principal: principal, TenantID: "tenant-1", ProjectID: "project-a",
 		Lease:    &authz.LeaseReference{ID: lease.ID, ExpiresAt: lease.ExpiresAt, PolicyVersion: lease.PolicyVersion, FencingToken: lease.FencingToken},
 		Approval: approval, ParameterDigest: digest, BudgetAccountID: "knowledge-budget", PolicyVersion: "policy-v1",
 	}

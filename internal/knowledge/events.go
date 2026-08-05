@@ -36,7 +36,7 @@ type KnowledgeUpdatedEvent struct {
 	IndexedDocuments       int                  `json:"indexedDocuments"`
 	IndexBuiltAt           time.Time            `json:"indexBuiltAt"`
 	CuratorPrincipalID     string               `json:"curatorPrincipalId"`
-	TaskID                 string               `json:"taskId"`
+	TaskID                 string               `json:"taskId,omitempty"`
 	ApprovalID             string               `json:"approvalId"`
 	LeaseID                string               `json:"leaseId"`
 	OccurredAt             time.Time            `json:"occurredAt"`
@@ -112,7 +112,7 @@ func (publisher *EventKnowledgeUpdatedPublisher) Publish(ctx context.Context, ac
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if access.Approval == nil || access.Lease == nil || access.Principal.ID == "" || access.TaskID == "" ||
+	if access.Approval == nil || access.Lease == nil || access.Principal.ID == "" ||
 		result.Manifest.TenantID != access.TenantID || result.Manifest.ProjectID != access.ProjectID ||
 		result.Manifest.Revision == "" || result.Digest == "" || index.TenantID != access.TenantID ||
 		index.ProjectID != access.ProjectID || index.Revision != result.Manifest.Revision || index.BuiltAt.IsZero() || index.Documents < 0 {
@@ -189,12 +189,16 @@ func (publisher *EventKnowledgeUpdatedPublisher) Publish(ctx context.Context, ac
 	if err != nil {
 		return err
 	}
+	taskIDReason := ""
+	if access.TaskID == "" {
+		taskIDReason = "NOT_APPLICABLE"
+	}
 	domainEvent := eventing.DomainEvent{
 		EventID: eventID.String(), TenantID: access.TenantID, ProjectID: access.ProjectID,
 		AggregateType: knowledgeAggregateType, AggregateID: access.ProjectID, AggregateVersion: event.AggregateVersion,
 		Type: knowledgeUpdatedEventType, Payload: payload, PayloadSHA256: payloadDigest, OccurredAt: event.OccurredAt,
 		CorrelationID: "corr_" + result.Digest[len("sha256:"):len("sha256:")+32], CausationID: access.Approval.ID,
-		Traceparent: traceparent, Tracestate: tracestate, TaskID: access.TaskID, AgentRunReason: "UNAVAILABLE",
+		Traceparent: traceparent, Tracestate: tracestate, TaskID: access.TaskID, TaskIDReason: taskIDReason, AgentRunReason: "UNAVAILABLE",
 	}
 	transaction, err := publisher.store.Execute(ctx, eventing.TransactionRequest{
 		TenantID: access.TenantID, PrincipalID: access.Principal.ID,
@@ -282,7 +286,7 @@ func validateKnowledgeUpdatedEvent(event KnowledgeUpdatedEvent) error {
 		(event.PreviousRevision != "" && !revisionPattern.MatchString(event.PreviousRevision)) ||
 		!revisionPattern.MatchString(event.Revision) || !revisionPattern.MatchString(event.ProposalDigest) ||
 		event.IndexedRevision != event.Revision || event.IndexedDocuments < 0 || event.IndexBuiltAt.IsZero() || event.CuratorPrincipalID == "" ||
-		event.TaskID == "" || event.ApprovalID == "" || event.LeaseID == "" || event.OccurredAt.IsZero() ||
+		event.ApprovalID == "" || event.LeaseID == "" || event.OccurredAt.IsZero() ||
 		event.Signature == nil || event.Signature.Type != "detached-jws" || event.Signature.KID != knowledgeUpdatedKeyID || len(event.Signature.JWS) < 16 {
 		return invalid("knowledge updated event")
 	}

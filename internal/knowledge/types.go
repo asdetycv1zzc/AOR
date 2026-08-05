@@ -53,8 +53,9 @@ func trustRank(level TrustLevel) int {
 }
 
 // Access contains authenticated caller facts and side-effect proofs. Project
-// and task state are resolved through ScopeResolver instead of trusting them
-// from the request.
+// state is resolved through ScopeResolver instead of trusting it from the
+// request. TaskID is optional correlation metadata and is not an authorization
+// scope for project knowledge.
 type Access struct {
 	Principal       authn.Principal
 	TenantID        string
@@ -69,7 +70,6 @@ type Access struct {
 
 type ScopeResolver interface {
 	ResolveProject(context.Context, string, string) (authz.ProjectScope, error)
-	ResolveTask(context.Context, string, string, string) (authz.TaskScope, error)
 }
 
 type ParentSnapshot struct {

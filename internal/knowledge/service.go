@@ -492,18 +492,7 @@ func (service *Service) authorize(ctx context.Context, access Access, write bool
 		Resource: authz.Resource{Type: "knowledge.snapshot", ID: access.ProjectID},
 	}
 	if write {
-		if access.TaskID == "" {
-			return aorerrors.New(aorerrors.CodeKnowledgeWriteForbidden, "", nil)
-		}
-		task, err := service.scopes.ResolveTask(ctx, access.TenantID, access.ProjectID, access.TaskID)
-		if err != nil {
-			return aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", err, map[string]any{"scope": "task scope"})
-		}
-		if task.TenantID != access.TenantID || task.ProjectID != access.ProjectID || task.ID != access.TaskID {
-			return aorerrors.New(aorerrors.CodeKnowledgeWriteForbidden, "", nil)
-		}
 		input.Action = authz.ActionKnowledgeWrite
-		input.Task = task
 		input.ParameterDigest = access.ParameterDigest
 		input.Lease = access.Lease
 		input.Approval = access.Approval

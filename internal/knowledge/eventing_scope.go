@@ -39,22 +39,4 @@ func (resolver *EventingScopeResolver) ResolveProject(ctx context.Context, tenan
 	return authz.ProjectScope{TenantID: tenantID, ID: projectID, State: string(project.State), StateVersion: project.Version, Classification: project.DataClassification}, nil
 }
 
-func (resolver *EventingScopeResolver) ResolveTask(ctx context.Context, tenantID, projectID, taskID string) (authz.TaskScope, error) {
-	if resolver == nil || resolver.store == nil || ctx == nil || tenantID == "" || projectID == "" || taskID == "" {
-		return authz.TaskScope{}, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "knowledge task"})
-	}
-	projection, found, err := resolver.store.Load(ctx, tenantID, "task", taskID)
-	if err != nil {
-		return authz.TaskScope{}, err
-	}
-	if !found {
-		return authz.TaskScope{}, aorerrors.New(aorerrors.CodeNotFound, "", nil)
-	}
-	var task state.ModuleTask
-	if projection.TenantID != tenantID || projection.ProjectID != projectID || projection.AggregateType != "task" || projection.AggregateID != taskID || json.Unmarshal(projection.State, &task) != nil || task.TenantID != tenantID || task.ProjectID != projectID || task.ID != taskID || task.Version != projection.Version {
-		return authz.TaskScope{}, aorerrors.New(aorerrors.CodeArtifactHashMismatch, "", nil)
-	}
-	return authz.TaskScope{TenantID: tenantID, ProjectID: projectID, ID: taskID, State: string(task.State), StateVersion: task.Version, SpecDigest: task.ModuleSpecRef.SHA256}, nil
-}
-
 var _ ScopeResolver = (*EventingScopeResolver)(nil)

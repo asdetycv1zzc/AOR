@@ -10,7 +10,7 @@
 |---|---|
 | Cross-project discovery or read | Tenant/project keys on every operation, principal-scope check, trusted scope resolver, WP-03 policy evaluation, and effective-view membership checks |
 | Stale reference silently reads current bytes | Scope and source revisions plus normalized SHA-256 are mandatory; missing revisions return an explicit error |
-| Non-Curator or unapproved update | Independent Curator type/role check plus WP-03 approval, lease, task, proposal-digest, and policy validation |
+| Non-Curator or unapproved update | Independent Curator type/role check plus WP-03 approval and lease bound to the current project version, proposal-digest binding, and policy validation |
 | Approval replay for changed content | Canonical proposal digest binds documents, deletes, overrides, ordered parents, and base revision |
 | Traversal or alternate path syntax | Strict relative slash-path normalization and Windows reserved-name checks |
 | Symlink, junction, reparse, device, pipe, or socket escape | Component-by-component creation, `Lstat` checks, irregular-mode rejection, containment checks, and immutable-tree verification |

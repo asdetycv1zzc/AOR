@@ -4,7 +4,7 @@
 
 1. Provision a dedicated knowledge root on one filesystem with Curator-only write ownership.
 2. Deploy Knowledge Service with read-only revision access and no direct Agent mount.
-3. Configure the trusted project/task scope resolver and WP-03 policy evaluator.
+3. Configure the trusted project scope resolver and WP-03 policy evaluator.
 4. Import each project as one normalized, approved initial proposal.
 5. Record the returned revision and rebuild its index.
 6. Compare document counts and sampled hashes before enabling search traffic.

@@ -6,7 +6,7 @@ Each tenant/project has a `HEAD` pointer and immutable revision directories. A r
 
 ## Service boundary
 
-Every public operation resolves trusted project/task state through `ScopeResolver` and evaluates an `authz.PolicyInput`. Reads use `knowledge.read`. Writes use `knowledge.write` and additionally require the exact proposal digest, Curator principal type and role, approval, lease, task scope, and budget account. Authorization is repeated immediately before commit.
+Every public operation resolves trusted project state through `ScopeResolver` and evaluates an `authz.PolicyInput`. Reads use `knowledge.read`. Writes use `knowledge.write` and additionally require the exact proposal digest, Curator principal type and role, approval, lease, and budget account. The approval and lease bind the project ID and current project state version; a ModuleTask is neither created nor resolved for Curator writes. Authorization is repeated immediately before commit.
 
 After a successful immutable snapshot commit, the service rebuilds the effective index and persists an HMAC-signed `io.aor.knowledge.updated.v1` event through the transactional outbox. If event persistence fails after the filesystem commit, an exact retry identifies the committed revision from the proposal, rebuilds the index, and resumes event publication without creating another snapshot.
 

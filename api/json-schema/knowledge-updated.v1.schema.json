@@ -15,7 +15,6 @@
     "indexedDocuments",
     "indexBuiltAt",
     "curatorPrincipalId",
-    "taskId",
     "approvalId",
     "leaseId",
     "occurredAt",

@@ -7,7 +7,7 @@ Runtime data is not stored in this source directory. `internal/knowledge.FileRep
 Operational requirements:
 
 - Run the Knowledge Service with read-only access to revision directories.
-- Give the Curator update process the only routine write identity and require WP-03 approval plus a capability lease.
+- Give the Curator update process the only routine write identity and require WP-03 approval plus a capability lease bound to the current project version.
 - Keep the configured root on one filesystem so revision and `HEAD` renames remain atomic.
 - Do not garbage-collect revisions while references or evidence may still point to them.
 - Rebuild derived search indexes from immutable revisions after recovery.

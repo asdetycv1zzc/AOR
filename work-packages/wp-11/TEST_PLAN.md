@@ -11,7 +11,7 @@
 7. Fail closed for missing authorizer, non-Curator writes, missing approval, policy denial, and unsafe paths.
 8. Reject symlink roots, project-path escapes, and tampered revision content.
 9. Rebuild indexes from immutable source with trust labels intact.
-10. Integrate a real WP-03 engine, approval verifier, signed capability lease, and exact proposal binding.
+10. Integrate a real WP-03 engine, approval verifier, project-scoped signed capability lease, current project-version binding, and exact proposal binding.
 
 ## Required commands
 
