@@ -76,6 +76,11 @@ type globalAuditActivityInput struct {
 	RunID  string `json:"runId"`
 }
 
+type integrationActivityInput struct {
+	Action        string `json:"action"`
+	IntegrationID string `json:"integrationId"`
+}
+
 type moduleAuditActivityInput struct {
 	Action string `json:"action"`
 	RunID  string `json:"runId"`
@@ -93,6 +98,7 @@ type workerActivityEffect struct {
 	execution     *execution.Service
 	moduleAuditor *moduleAuditActivity
 	globalAuditor *globalaudit.Service
+	integration   *integrationActivity
 }
 
 func (effect workerActivityEffect) Execute(ctx context.Context, key string, payload json.RawMessage) (json.RawMessage, error) {
@@ -164,6 +170,37 @@ func (effect workerActivityEffect) Execute(ctx context.Context, key string, payl
 		result, err := effect.globalAuditor.Run(principalContext, globalaudit.Request{
 			RunID: input.RunID, TenantID: executionInput.TenantID, ProjectID: executionInput.ProjectID,
 		})
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(result)
+	}
+	if route.Action == aorworkflow.IntegrationActivityAction {
+		if effect.integration == nil {
+			return nil, aorworkflow.ErrInvalidExecution
+		}
+		var input integrationActivityInput
+		decoder := json.NewDecoder(strings.NewReader(string(payload)))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&input) != nil {
+			return nil, aorworkflow.ErrInvalidExecution
+		}
+		var trailing struct{}
+		if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) || input.Action != aorworkflow.IntegrationActivityAction || strings.TrimSpace(input.IntegrationID) != input.IntegrationID || input.IntegrationID == "" || len(input.IntegrationID) > 256 {
+			return nil, aorworkflow.ErrInvalidExecution
+		}
+		executionInput, found := aorworkflow.ExecutionInputFromContext(ctx)
+		if !found || input.IntegrationID != executionInput.TaskID {
+			return nil, aorworkflow.ErrInvalidExecution
+		}
+		principalContext, err := authn.ContextWithPrincipal(ctx, authn.Principal{
+			ID: integrationServicePrincipalID, Type: authn.PrincipalService, Role: authn.RoleService,
+			TenantID: executionInput.TenantID, ProjectID: executionInput.ProjectID,
+		})
+		if err != nil {
+			return nil, err
+		}
+		result, err := effect.integration.Run(principalContext, executionInput.TenantID, executionInput.ProjectID, input.IntegrationID)
 		if err != nil {
 			return nil, err
 		}
@@ -436,7 +473,7 @@ func Worker(config runtimeconfig.Config, clients *runtimeclient.Clients) (http.H
 	if err != nil {
 		return nil, ErrWorkerConfiguration
 	}
-	leaseManager, err := authz.NewLeaseManager(authz.LeaseManagerConfig{Store: leaseStore, Signer: leaseSigner, Clock: time.Now, HeartbeatInterval: 30 * time.Second})
+	leaseManager, err := authz.NewLeaseManager(authz.LeaseManagerConfig{Store: leaseStore, Signer: leaseSigner, Clock: time.Now, DefaultTTL: 5 * time.Minute, MaxTTL: 35 * time.Minute, HeartbeatInterval: 30 * time.Second})
 	if err != nil {
 		return nil, ErrWorkerConfiguration
 	}
@@ -466,9 +503,14 @@ func Worker(config runtimeconfig.Config, clients *runtimeclient.Clients) (http.H
 		_ = services.host.Close()
 		return nil, err
 	}
+	integrationRuntime, err := configuredIntegration(config, clients, provider, services, leaseManager, repositorySigner, moduleAuditSigner)
+	if err != nil {
+		_ = services.host.Close()
+		return nil, err
+	}
 	activities, err := aorworkflow.NewActivitiesWithStore(workerActivityEffect{
 		sandbox: sandboxActivityEffect{provider: provider, authorizer: authorizer}, execution: services.execution,
-		moduleAuditor: moduleAuditor, globalAuditor: globalAuditor,
+		moduleAuditor: moduleAuditor, globalAuditor: globalAuditor, integration: integrationRuntime,
 	}, activityResults)
 	if err != nil {
 		_ = services.host.Close()
