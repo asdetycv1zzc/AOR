@@ -187,13 +187,8 @@ func (s *Service) HandleTask(ctx context.Context, request TaskRequest) (TaskOutc
 		}
 		return TaskOutcome{}, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "taskId"})
 	}
-	command := request.Command
-	command.TenantID = request.TenantID
-	command.ProjectID = request.ProjectID
-	command.TaskID = request.TaskID
-	command.ActorID = request.PrincipalID
-	command.At = time.Time{}
-	digest, err := commandDigest(request.ExpectedVersion, command)
+	command := normalizedTaskCommand(request)
+	digest, err := TaskParameterDigest(request)
 	if err != nil {
 		return TaskOutcome{}, err
 	}
@@ -336,6 +331,22 @@ func (s *Service) HandleTask(ctx context.Context, request TaskRequest) (TaskOutc
 	}
 	task, err := decodeTask(transactionResult.Result)
 	return TaskOutcome{Task: task, Events: transactionResult.Events, Duplicate: transactionResult.Duplicate}, err
+}
+
+// TaskParameterDigest returns the exact digest enforced by HandleTask. Trusted
+// commit-authority adapters use it when binding a signed capability.
+func TaskParameterDigest(request TaskRequest) (string, error) {
+	return commandDigest(request.ExpectedVersion, normalizedTaskCommand(request))
+}
+
+func normalizedTaskCommand(request TaskRequest) state.TaskCommand {
+	command := request.Command
+	command.TenantID = request.TenantID
+	command.ProjectID = request.ProjectID
+	command.TaskID = request.TaskID
+	command.ActorID = request.PrincipalID
+	command.At = time.Time{}
+	return command
 }
 
 func (s *Service) readyIntegratedDependents(ctx context.Context, request TaskRequest, integrated state.ModuleTask, at time.Time, digest string) ([]eventing.ProjectionUpdate, []eventing.DomainEvent, error) {

@@ -57,6 +57,7 @@ type LeaseTaskRequest struct {
 	TenantID        string
 	ProjectID       string
 	TaskID          string
+	AgentInstanceID string
 	ExpectedVersion int64
 	FencingToken    int64
 }
@@ -248,7 +249,8 @@ func (service *Service) Execute(ctx context.Context, request Request) (Result, e
 	if task.State == contracts.TaskReadyExecution {
 		task, _, err = service.tasks.LeaseExecution(ctx, LeaseTaskRequest{
 			ExecutionID: request.ExecutionID, TenantID: request.TenantID, ProjectID: request.ProjectID,
-			TaskID: request.TaskID, ExpectedVersion: task.Version, FencingToken: assignment.FencingToken,
+			TaskID: request.TaskID, AgentInstanceID: assignment.AgentInstanceID,
+			ExpectedVersion: task.Version, FencingToken: assignment.FencingToken,
 		})
 		if err != nil {
 			return Result{}, err
