@@ -24,28 +24,29 @@ const (
 type LookupEnv func(string) (string, bool)
 
 type Config struct {
-	Component          string
-	Environment        string
-	DeploymentProfile  string
-	LeaseSigningKeyRef string
-	ListenAddress      string
-	KnowledgeRoot      string
-	RepositoryRoot     string
-	Database           DatabaseConfig
-	Temporal           TemporalConfig
-	NATS               NATSConfig
-	S3                 S3Config
-	OPA                OPAConfig
-	Identity           IdentityConfig
-	ModelGateway       ModelGatewayConfig
-	ModelGatewayClient ModelGatewayClientConfig
-	GoalPlan           GoalPlanConfig
-	ModuleAuditRoute   GoalPlanRouteConfig
-	GlobalAuditRoute   GoalPlanRouteConfig
-	Execution          ExecutionConfig
-	Integration        IntegrationConfig
-	Services           ServiceEndpoints
-	Sandbox            SandboxConfig
+	Component           string
+	Environment         string
+	DeploymentProfile   string
+	LeaseSigningKeyRef  string
+	ListenAddress       string
+	KnowledgeRoot       string
+	KnowledgeCuratorURL string
+	RepositoryRoot      string
+	Database            DatabaseConfig
+	Temporal            TemporalConfig
+	NATS                NATSConfig
+	S3                  S3Config
+	OPA                 OPAConfig
+	Identity            IdentityConfig
+	ModelGateway        ModelGatewayConfig
+	ModelGatewayClient  ModelGatewayClientConfig
+	GoalPlan            GoalPlanConfig
+	ModuleAuditRoute    GoalPlanRouteConfig
+	GlobalAuditRoute    GoalPlanRouteConfig
+	Execution           ExecutionConfig
+	Integration         IntegrationConfig
+	Services            ServiceEndpoints
+	Sandbox             SandboxConfig
 }
 
 type DatabaseConfig struct {
@@ -195,13 +196,14 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 		return Config{}, ErrInvalidConfiguration
 	}
 	config := Config{
-		Component:          component,
-		Environment:        value(lookup, "AOR_ENVIRONMENT", EnvironmentDevelopment),
-		DeploymentProfile:  value(lookup, "AOR_DEPLOYMENT_PROFILE", ""),
-		LeaseSigningKeyRef: value(lookup, "AOR_LEASE_SIGNING_KEY_REF", ""),
-		ListenAddress:      value(lookup, "AOR_LISTEN_ADDR", ":8080"),
-		KnowledgeRoot:      strictValue(lookup, "AOR_KNOWLEDGE_ROOT", "/var/lib/aor/knowledge"),
-		RepositoryRoot:     strictValue(lookup, "AOR_REPOSITORY_ROOT", "/var/lib/aor/repositories"),
+		Component:           component,
+		Environment:         value(lookup, "AOR_ENVIRONMENT", EnvironmentDevelopment),
+		DeploymentProfile:   value(lookup, "AOR_DEPLOYMENT_PROFILE", ""),
+		LeaseSigningKeyRef:  value(lookup, "AOR_LEASE_SIGNING_KEY_REF", ""),
+		ListenAddress:       value(lookup, "AOR_LISTEN_ADDR", ":8080"),
+		KnowledgeRoot:       strictValue(lookup, "AOR_KNOWLEDGE_ROOT", "/var/lib/aor/knowledge"),
+		KnowledgeCuratorURL: value(lookup, "AOR_KNOWLEDGE_CURATOR_URL", ""),
+		RepositoryRoot:      strictValue(lookup, "AOR_REPOSITORY_ROOT", "/var/lib/aor/repositories"),
 		Integration: IntegrationConfig{
 			WorkRoot:        strictValue(lookup, "AOR_INTEGRATION_WORK_ROOT", ""),
 			DependencyCache: strictValue(lookup, "AOR_INTEGRATION_DEPENDENCY_CACHE", ""),
@@ -395,7 +397,7 @@ func (config Config) Validate() error {
 	if config.Component == "aor-tool-broker" && (!validSecretReference(config.LeaseSigningKeyRef) || !validDeploymentProfile(config.DeploymentProfile) || !validKnowledgeRoot(config.RepositoryRoot)) {
 		return ErrInvalidConfiguration
 	}
-	if config.Component == "aor-server" && (!validKnowledgeRoot(config.KnowledgeRoot) || !validSecretReference(config.LeaseSigningKeyRef) || !validDeploymentProfile(config.DeploymentProfile)) {
+	if config.Component == "aor-server" && (!validKnowledgeRoot(config.KnowledgeRoot) || !validKnowledgeCuratorURL(config.KnowledgeCuratorURL, config.Environment) || !validSecretReference(config.LeaseSigningKeyRef) || !validDeploymentProfile(config.DeploymentProfile)) {
 		return ErrInvalidConfiguration
 	}
 	if config.Component == "aor-server" {
@@ -799,6 +801,23 @@ func validDeploymentProfile(value string) bool {
 
 func validKnowledgeRoot(value string) bool {
 	return value != "" && len(value) <= 4096 && filepath.IsAbs(value) && filepath.Clean(value) == value && value != string(filepath.Separator) && !strings.ContainsAny(value, "\r\n\x00")
+}
+
+func validKnowledgeCuratorURL(value, environment string) bool {
+	if value == "" {
+		return true
+	}
+	if len(value) > 2048 || strings.ContainsAny(value, "\r\n\x00\\") {
+		return false
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.User != nil || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" || !oneOf(strings.ToLower(parsed.Scheme), "http", "https") {
+		return false
+	}
+	if strings.Contains(parsed.Path, "..") {
+		return false
+	}
+	return environment != EnvironmentProduction || parsed.Scheme == "https"
 }
 
 func validSandboxMountRoots(values []string) bool {

@@ -76,7 +76,7 @@ func (handler *Handler) adminDoctor(response http.ResponseWriter, request *http.
 		adminDependencyCheck("event_log", handler != nil && handler.events != nil),
 		adminDependencyCheck("policy_engine", handler != nil && handler.authorizer != nil),
 		adminDependencyCheck("knowledge_service", handler != nil && handler.knowledge != nil),
-		adminDependencyCheck("knowledge_curator", handler != nil && handler.knowledgeCurator != nil),
+		adminDependencyCheck("knowledge_curator", handler != nil && (handler.knowledgeCurator != nil || handler.knowledgeCuratorURL != "")),
 		adminDependencyCheck("artifact_catalog", handler != nil && handler.artifacts != nil),
 		adminDependencyCheck("lease_authority", handler != nil && handler.leases != nil),
 		adminDependencyCheck("goal_plan", handler != nil && handler.goalPlan.Negotiator != nil && handler.goalPlan.Planner != nil),

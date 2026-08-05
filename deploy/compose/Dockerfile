@@ -25,9 +25,16 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go build -trimpath \
       -ldflags "-s -w -X github.com/akimisaka/aor/internal/version.Version=${AOR_VERSION} -X github.com/akimisaka/aor/internal/version.Commit=${AOR_COMMIT}" \
       -o /out/aor "./cmd/${AOR_COMPONENT}"
+RUN mkdir -p /out/runtime/knowledge/global/policies \
+    /out/runtime/knowledge/global/prompts \
+    /out/runtime/knowledge/global/protocols \
+    /out/runtime/knowledge/global/standards \
+    /out/runtime/knowledge/global/workflows
+COPY knowledge/global /out/runtime/knowledge/global
 
 FROM ${RUNTIME_IMAGE} AS runtime
 COPY --from=build /out/aor /usr/local/bin/aor
+COPY --from=build --chown=65532:65532 /out/runtime/knowledge /var/lib/aor/knowledge
 USER nonroot:nonroot
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/aor"]
@@ -40,7 +47,9 @@ COPY --from=build /out/aor /usr/local/bin/aor
 COPY --from=build /out/go-mod /go/pkg/mod
 COPY --from=build /src/go.mod /src/go.sum /usr/local/share/aor/
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
-RUN apk add --no-cache git=2.52.0-r0
+RUN apk add --no-cache git=2.52.0-r0 && \
+    mkdir -p /var/lib/aor/knowledge && \
+    chown -R 65532:65532 /var/lib/aor/knowledge
 ENV HOME=/tmp
 USER 65532:65532
 EXPOSE 8080

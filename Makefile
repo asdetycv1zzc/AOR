@@ -10,7 +10,7 @@ COMPOSE_DEPENDENCIES = postgres temporal temporal-ui nats minio opa identity
 COMPOSE_INITIALIZERS = postgres-migrate temporal-init minio-init
 COMPOSE_SANDBOX = aor-sandbox-runtime aor-sandbox-preflight
 COMPOSE_SANDBOX_CACHE = aor-sandbox-cache
-COMPOSE_AOR = aor-api aor-model-gateway aor-tool-broker aor-worker
+COMPOSE_AOR = aor-api aor-curator aor-model-gateway aor-tool-broker aor-worker
 
 build:
 	go build ./...
@@ -103,7 +103,7 @@ compose-deps-up: compose-pull
 	$(COMPOSE) wait minio-init
 
 compose-aor-up: compose-deps-up
-	$(COMPOSE) --profile aor build aor-api
+	$(COMPOSE) --profile aor build aor-api aor-curator
 	$(COMPOSE) --profile aor build aor-model-gateway
 	$(COMPOSE) --profile aor build aor-tool-broker
 	$(COMPOSE) --profile aor build aor-worker

@@ -20,10 +20,11 @@ import (
 var knowledgeTestNow = time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
 
 type testAuthorizer struct {
-	mu          sync.Mutex
-	denyReads   bool
-	denyWrites  bool
-	evaluations []authz.PolicyInput
+	mu            sync.Mutex
+	denyReads     bool
+	denyWrites    bool
+	deniedParents map[string]bool
+	evaluations   []authz.PolicyInput
 }
 
 type acceptingApprovalVerifier struct{}
@@ -45,11 +46,13 @@ func (publisher *failOnceKnowledgePublisher) Publish(ctx context.Context, access
 
 func (authorizer *testAuthorizer) Evaluate(_ context.Context, input authz.PolicyInput) (authz.PolicyDecision, error) {
 	authorizer.mu.Lock()
+	defer authorizer.mu.Unlock()
 	authorizer.evaluations = append(authorizer.evaluations, input)
-	authorizer.mu.Unlock()
 	denied := authorizer.denyReads
 	if input.Action == authz.ActionKnowledgeWrite {
 		denied = authorizer.denyWrites
+	} else if input.Resource.Type == "knowledge.inheritance" && authorizer.deniedParents[input.Resource.ID] {
+		denied = true
 	}
 	decision := authz.DecisionAllow
 	reason := "TEST_ALLOW"
@@ -58,6 +61,27 @@ func (authorizer *testAuthorizer) Evaluate(_ context.Context, input authz.Policy
 		reason = "TEST_DENY"
 	}
 	return authz.PolicyDecision{Decision: decision, PolicyVersion: "policy-v1", ReasonCodes: []string{reason}, RuleID: "test.knowledge"}, nil
+}
+
+func (authorizer *testAuthorizer) setParentReadDenied(projectID string, denied bool) {
+	authorizer.mu.Lock()
+	defer authorizer.mu.Unlock()
+	if authorizer.deniedParents == nil {
+		authorizer.deniedParents = make(map[string]bool)
+	}
+	authorizer.deniedParents[projectID] = denied
+}
+
+func (authorizer *testAuthorizer) inheritanceEvaluation(projectID string) (authz.PolicyInput, bool) {
+	authorizer.mu.Lock()
+	defer authorizer.mu.Unlock()
+	for index := len(authorizer.evaluations) - 1; index >= 0; index-- {
+		input := authorizer.evaluations[index]
+		if input.Resource.Type == "knowledge.inheritance" && input.Resource.ID == projectID {
+			return input, true
+		}
+	}
+	return authz.PolicyInput{}, false
 }
 
 type testScopes struct {
@@ -70,6 +94,36 @@ func (scopes *testScopes) ResolveProject(_ context.Context, tenantID, projectID 
 		return authz.ProjectScope{}, errors.New("project scope unavailable")
 	}
 	return project, nil
+}
+
+type recordingKnowledgeRepository struct {
+	Repository
+	mu    sync.Mutex
+	loads []string
+}
+
+func (repository *recordingKnowledgeRepository) Load(ctx context.Context, tenantID, projectID, revision string) (Snapshot, error) {
+	repository.mu.Lock()
+	repository.loads = append(repository.loads, projectID)
+	repository.mu.Unlock()
+	return repository.Repository.Load(ctx, tenantID, projectID, revision)
+}
+
+func (repository *recordingKnowledgeRepository) resetLoads() {
+	repository.mu.Lock()
+	repository.loads = nil
+	repository.mu.Unlock()
+}
+
+func (repository *recordingKnowledgeRepository) loadedProject(projectID string) bool {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	for _, loaded := range repository.loads {
+		if loaded == projectID {
+			return true
+		}
+	}
+	return false
 }
 
 type knowledgeFixture struct {
@@ -305,6 +359,81 @@ func TestProjectIsolationAndPinnedInheritance(t *testing.T) {
 	crossProject.ProjectID = "parent"
 	_, err = fixture.service.Search(context.Background(), SearchRequest{Access: crossProject, Text: "parent"})
 	assertErrorCode(t, err, aorerrors.CodeForbidden)
+}
+
+func TestInheritedSnapshotAuthorizationPrecedesParentRead(t *testing.T) {
+	fixture := newKnowledgeFixture(t, "parent", "child")
+	parent := commitProposal(t, fixture.service, "parent", UpdateProposal{Documents: []DocumentInput{{
+		Path: "architecture/base.md", Title: "Parent", TrustLevel: TrustCurated, Content: []byte("parent knowledge\n"),
+	}}})
+	commitProposal(t, fixture.service, "child", UpdateProposal{Parents: []ParentSnapshot{{
+		ProjectID: "parent", Revision: parent.Manifest.Revision, Order: 0,
+	}}})
+	repository := &recordingKnowledgeRepository{Repository: fixture.repository}
+	service, err := NewService(ServiceConfig{
+		Repository: repository, Authorizer: fixture.authorizer, Scopes: fixture.scopes,
+		Clock: func() time.Time { return knowledgeTestNow },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	search := func() (SearchResponse, error) {
+		return service.Search(context.Background(), SearchRequest{Access: readAccess("child"), Text: "parent knowledge"})
+	}
+
+	fixture.authorizer.setParentReadDenied("parent", true)
+	repository.resetLoads()
+	_, err = search()
+	assertErrorCode(t, err, aorerrors.CodeForbidden)
+	if repository.loadedProject("parent") {
+		t.Fatal("denied parent snapshot was loaded")
+	}
+
+	fixture.authorizer.setParentReadDenied("parent", false)
+	parentScope := fixture.scopes.projects["tenant-1/parent"]
+	parentScope.TenantID = "tenant-2"
+	fixture.scopes.projects["tenant-1/parent"] = parentScope
+	repository.resetLoads()
+	_, err = search()
+	assertErrorCode(t, err, aorerrors.CodeForbidden)
+	if repository.loadedProject("parent") {
+		t.Fatal("cross-tenant parent snapshot was loaded")
+	}
+
+	parentScope.TenantID = "tenant-1"
+	parentScope.Classification = "CONFIDENTIAL"
+	fixture.scopes.projects["tenant-1/parent"] = parentScope
+	repository.resetLoads()
+	_, err = search()
+	assertErrorCode(t, err, aorerrors.CodeForbidden)
+	if repository.loadedProject("parent") {
+		t.Fatal("higher-classification parent snapshot was loaded")
+	}
+
+	parentScope.Classification = "PUBLIC"
+	fixture.scopes.projects["tenant-1/parent"] = parentScope
+	repository.resetLoads()
+	result, err := search()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.References) != 1 || !repository.loadedProject("parent") {
+		t.Fatalf("authorized inherited result = %#v", result.References)
+	}
+	evaluation, found := fixture.authorizer.inheritanceEvaluation("parent")
+	if !found || evaluation.Project.ID != "child" || evaluation.Project.TenantID != "tenant-1" ||
+		evaluation.Resource.Attributes["childProjectId"] != "child" || evaluation.Resource.Attributes["childClassification"] != "INTERNAL" ||
+		evaluation.Resource.Attributes["parentClassification"] != "PUBLIC" || evaluation.Resource.Attributes["parentRevision"] != parent.Manifest.Revision {
+		t.Fatalf("inheritance authorization input = %#v", evaluation)
+	}
+
+	fixture.authorizer.setParentReadDenied("parent", true)
+	repository.resetLoads()
+	_, err = search()
+	assertErrorCode(t, err, aorerrors.CodeForbidden)
+	if repository.loadedProject("parent") {
+		t.Fatal("cached inherited view bypassed parent authorization")
+	}
 }
 
 func TestOrderedParentConflictAndTrustResolution(t *testing.T) {

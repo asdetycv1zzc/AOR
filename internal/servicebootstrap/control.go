@@ -166,12 +166,19 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	if err != nil {
 		return nil, err
 	}
+	knowledgeCurator := controlapi.KnowledgeCuratorService(projectAgents.curator)
+	if config.KnowledgeCuratorURL != "" {
+		// The API process keeps the project-scoped read service, but all Curator
+		// mutations are routed to the writer process with the configured URL.
+		knowledgeCurator = nil
+	}
 	domain, err := controlapi.New(controlapi.Config{
 		Store: lifecycleStore, Authenticator: authenticator, Authorizer: authorizer,
 		Database: clients.Database(), Artifacts: artifactCatalog, Knowledge: knowledgeService,
+		KnowledgeCurator: knowledgeCurator, KnowledgeCuratorURL: config.KnowledgeCuratorURL,
 		DecisionReportSigner: decisionReportSigner,
 		Eraser:               artifactProjectEraser{catalog: artifactCatalog}, Leases: leaseService,
-		GoalPlan: projectAgents.goalPlan, KnowledgeCurator: projectAgents.curator, Clock: time.Now,
+		GoalPlan: projectAgents.goalPlan, Clock: time.Now,
 	})
 	if err != nil {
 		return nil, err

@@ -141,10 +141,11 @@ func ValidateCompose(input []byte) error {
 	preflight, preflightFound := document.Services["aor-sandbox-preflight"]
 	runtimeImage, runtimeFound := document.Services["aor-sandbox-runtime"]
 	api, apiFound := document.Services["aor-api"]
+	curator, curatorFound := document.Services["aor-curator"]
 	modelGateway, modelGatewayFound := document.Services["aor-model-gateway"]
 	toolBroker, toolBrokerFound := document.Services["aor-tool-broker"]
 	identity, identityFound := document.Services["identity"]
-	if !apiFound || !modelGatewayFound || !identityFound || !toolBrokerFound || api.Environment["AOR_KNOWLEDGE_ROOT"] != "/var/lib/aor/knowledge" || !hasReadOnlyVolume(api.Volumes, "AOR_KNOWLEDGE_HOST_PATH", "/var/lib/aor/knowledge") || !hasS3Environment(api.Environment) || api.Environment["AOR_DEPLOYMENT_PROFILE"] != "TEST" || api.Environment["AOR_LEASE_SIGNING_KEY_REF"] != "secret://lease_signing_key" || !containsString(api.Secrets, "lease_signing_key") || !hasS3Environment(toolBroker.Environment) || toolBroker.Build.Target != "tool-broker-runtime" || toolBroker.Environment["AOR_REPOSITORY_ROOT"] != "/var/lib/aor/repositories" || !hasVolume(toolBroker.Volumes, "repository-data", "/var/lib/aor/repositories") || !containsString(toolBroker.CapDrop, "ALL") {
+	if !apiFound || !curatorFound || !modelGatewayFound || !identityFound || !toolBrokerFound || api.Environment["AOR_KNOWLEDGE_ROOT"] != "/var/lib/aor/knowledge" || api.Environment["AOR_KNOWLEDGE_CURATOR_URL"] != "http://aor-curator:8080" || !hasReadOnlyVolume(api.Volumes, "AOR_KNOWLEDGE_HOST_PATH", "/var/lib/aor/knowledge") || curator.Environment["AOR_KNOWLEDGE_CURATOR_URL"] != "" || !hasReadWriteVolume(curator.Volumes, "AOR_KNOWLEDGE_HOST_PATH", "/var/lib/aor/knowledge") || !hasS3Environment(api.Environment) || api.Environment["AOR_DEPLOYMENT_PROFILE"] != "TEST" || api.Environment["AOR_LEASE_SIGNING_KEY_REF"] != "secret://lease_signing_key" || !containsString(api.Secrets, "lease_signing_key") || !hasS3Environment(toolBroker.Environment) || toolBroker.Build.Target != "tool-broker-runtime" || toolBroker.Environment["AOR_REPOSITORY_ROOT"] != "/var/lib/aor/repositories" || !hasVolume(toolBroker.Volumes, "repository-data", "/var/lib/aor/repositories") || !containsString(toolBroker.CapDrop, "ALL") {
 		return ErrInvalidDeployment
 	}
 	if api.Environment["AOR_MODEL_GATEWAY_URL"] != "http://aor-model-gateway:8080" || api.Environment["AOR_MODEL_GATEWAY_OAUTH_TOKEN_ENDPOINT"] != "http://identity:5556/dex/token" || api.Environment["AOR_MODEL_GATEWAY_OAUTH_CLIENT_ID"] != "aor-server" || api.Environment["AOR_MODEL_GATEWAY_OAUTH_CLIENT_SECRET_REF"] != "secret://aor_server_oauth_client_secret" || api.Environment["AOR_MODEL_GATEWAY_OAUTH_SCOPES"] != "audience:server:client_id:aor-control-plane" || api.Environment["AOR_MODEL_GATEWAY_OAUTH_AUDIENCE"] != "aor-control-plane" || !containsString(api.Secrets, "aor_server_oauth_client_secret") || !containsString(identity.Secrets, "aor_server_oauth_client_secret") || !isImmutableSHA256Reference(identity.Image) {
@@ -235,6 +236,15 @@ func hasVolume(volumes []string, sourceFragment, target string) bool {
 func hasReadOnlyVolume(volumes []string, sourceFragment, target string) bool {
 	for _, volume := range volumes {
 		if strings.Contains(volume, sourceFragment) && strings.Contains(volume, ":"+target+":ro") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasReadWriteVolume(volumes []string, sourceFragment, target string) bool {
+	for _, volume := range volumes {
+		if strings.Contains(volume, sourceFragment) && strings.Contains(volume, ":"+target+":rw") {
 			return true
 		}
 	}

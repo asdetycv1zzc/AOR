@@ -47,6 +47,7 @@ type Config struct {
 	Artifacts            artifact.Catalog
 	Knowledge            KnowledgeReader
 	KnowledgeCurator     KnowledgeCuratorService
+	KnowledgeCuratorURL  string
 	TaskHistory          TaskHistoryReader
 	DecisionReports      TaskDecisionReportReader
 	DecisionReportSigner TaskDecisionReportSigner
@@ -78,25 +79,27 @@ type KnowledgeInitializer interface {
 }
 
 type Handler struct {
-	orchestrator     *orchestrator.Service
-	store            eventing.Store
-	events           eventing.EventLog
-	authenticator    authn.Authenticator
-	authorizer       authz.PolicyEvaluator
-	database         *sql.DB
-	budgets          modelgateway.BudgetAdministration
-	artifacts        artifact.Catalog
-	publisher        artifact.Publisher
-	knowledge        KnowledgeReader
-	knowledgeCurator KnowledgeCuratorService
-	taskHistory      TaskHistoryReader
-	decisionReports  TaskDecisionReportReader
-	decisionVerifier TaskDecisionReportVerifier
-	eraser           ProjectEraser
-	leases           LeaseAuthority
-	goalPlan         GoalPlanServices
-	autoBudget       bool
-	clock            func() time.Time
+	orchestrator         *orchestrator.Service
+	store                eventing.Store
+	events               eventing.EventLog
+	authenticator        authn.Authenticator
+	authorizer           authz.PolicyEvaluator
+	database             *sql.DB
+	budgets              modelgateway.BudgetAdministration
+	artifacts            artifact.Catalog
+	publisher            artifact.Publisher
+	knowledge            KnowledgeReader
+	knowledgeCurator     KnowledgeCuratorService
+	knowledgeCuratorURL  string
+	knowledgeCuratorHTTP *http.Client
+	taskHistory          TaskHistoryReader
+	decisionReports      TaskDecisionReportReader
+	decisionVerifier     TaskDecisionReportVerifier
+	eraser               ProjectEraser
+	leases               LeaseAuthority
+	goalPlan             GoalPlanServices
+	autoBudget           bool
+	clock                func() time.Time
 }
 
 type projectCreate struct {
@@ -248,6 +251,11 @@ func New(config Config) (*Handler, error) {
 	if config.Clock == nil {
 		config.Clock = time.Now
 	}
+	if config.KnowledgeCuratorURL != "" {
+		if err := validateKnowledgeCuratorURL(config.KnowledgeCuratorURL); err != nil {
+			return nil, err
+		}
+	}
 	autoBudget := false
 	if config.Budgets == nil && config.Database != nil {
 		ledger, err := modelgateway.NewPostgresBudgetLedger(config.Database, config.Clock, 0)
@@ -279,23 +287,25 @@ func New(config Config) (*Handler, error) {
 		return nil, err
 	}
 	handler := &Handler{
-		orchestrator:     orchestrator.NewWithBoundary(config.Store, config.Clock, boundary),
-		store:            config.Store,
-		authenticator:    config.Authenticator,
-		authorizer:       config.Authorizer,
-		database:         config.Database,
-		budgets:          config.Budgets,
-		artifacts:        config.Artifacts,
-		knowledge:        config.Knowledge,
-		knowledgeCurator: config.KnowledgeCurator,
-		taskHistory:      config.TaskHistory,
-		decisionReports:  config.DecisionReports,
-		decisionVerifier: decisionVerifier,
-		eraser:           config.Eraser,
-		leases:           config.Leases,
-		goalPlan:         config.GoalPlan,
-		autoBudget:       autoBudget,
-		clock:            config.Clock,
+		orchestrator:         orchestrator.NewWithBoundary(config.Store, config.Clock, boundary),
+		store:                config.Store,
+		authenticator:        config.Authenticator,
+		authorizer:           config.Authorizer,
+		database:             config.Database,
+		budgets:              config.Budgets,
+		artifacts:            config.Artifacts,
+		knowledge:            config.Knowledge,
+		knowledgeCurator:     config.KnowledgeCurator,
+		knowledgeCuratorURL:  strings.TrimRight(config.KnowledgeCuratorURL, "/"),
+		knowledgeCuratorHTTP: newKnowledgeCuratorHTTPClient(),
+		taskHistory:          config.TaskHistory,
+		decisionReports:      config.DecisionReports,
+		decisionVerifier:     decisionVerifier,
+		eraser:               config.Eraser,
+		leases:               config.Leases,
+		goalPlan:             config.GoalPlan,
+		autoBudget:           autoBudget,
+		clock:                config.Clock,
 	}
 	handler.publisher, _ = config.Artifacts.(artifact.Publisher)
 	handler.events, _ = config.Store.(eventing.EventLog)
@@ -309,6 +319,10 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 		return
 	}
 	request = request.WithContext(contextWithPrincipal(request.Context(), principal))
+	if handler.knowledgeCuratorURL != "" && isKnowledgeCuratorRequest(request) {
+		handler.proxyKnowledgeCurator(response, request)
+		return
+	}
 	if strings.HasPrefix(request.URL.Path, "/v1/admin/") {
 		switch request.URL.Path {
 		case "/v1/admin/doctor":

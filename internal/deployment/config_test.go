@@ -30,6 +30,7 @@ func TestDeploymentProfilesFailClosed(t *testing.T) {
 		"sandbox-preflight.sh", "AOR_SANDBOX_ENGINE_SOCKET", "network_mode: none",
 		"AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON", "AOR_SANDBOX_SHARED_ROOT",
 		"AOR_LEASE_SIGNING_KEY_REF: secret://lease_signing_key",
+		"aor-curator:", "AOR_KNOWLEDGE_CURATOR_URL: http://aor-curator:8080",
 		"000010_outbox_tenant_discovery.up.sql", "000012_artifact_project_uri_scope.up.sql",
 		"000017_relational_projection_sync.up.sql", "000018_repository_submissions.up.sql", "000019_model_usage_reconciliation.up.sql", "000020_repository_registry.up.sql", "000021_event_replay_state.up.sql", "000022_project_agent_leases.up.sql", "000023_staged_module_planning.up.sql",
 		"target: tool-broker-runtime", "AOR_REPOSITORY_ROOT: /var/lib/aor/repositories", "repository-data:/var/lib/aor/repositories",
@@ -193,6 +194,8 @@ func TestComposeArtifactAndKnowledgeDependenciesCannotBeDropped(t *testing.T) {
 	}{
 		{old: "AOR_KNOWLEDGE_ROOT: /var/lib/aor/knowledge", new: "AOR_KNOWLEDGE_ROOT: /tmp/knowledge"},
 		{old: ":/var/lib/aor/knowledge:ro", new: ":/var/lib/aor/knowledge:rw"},
+		{old: "AOR_KNOWLEDGE_CURATOR_URL: http://aor-curator:8080", new: "AOR_KNOWLEDGE_CURATOR_URL: \"\""},
+		{old: ":/var/lib/aor/knowledge:rw", new: ":/var/lib/aor/knowledge:ro"},
 	} {
 		candidate := strings.Replace(composeText, replacement.old, replacement.new, 1)
 		if candidate == composeText || ValidateCompose([]byte(candidate)) == nil {

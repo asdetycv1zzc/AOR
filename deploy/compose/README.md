@@ -68,7 +68,7 @@ The Model Gateway defaults to OpenAI and DeepSeek OpenAI-compatible endpoints an
 
 ## Knowledge Root
 
-The API and worker bind-mount `knowledge/` at `/var/lib/aor/knowledge` as read-only. Set `AOR_KNOWLEDGE_HOST_PATH` to an absolute host directory to serve a curated snapshot tree from another location. Its directories and files must be readable by the configured container UID; only the separate curator process may write them. An empty root is valid, but knowledge searches and manifest reads return not found until a revision is published.
+The API and worker mount `/var/lib/aor/knowledge` as read-only. By default Compose uses the named `aor-knowledge-data` volume, initialized with the global namespace from the image; set `AOR_KNOWLEDGE_HOST_PATH` to an absolute host directory to serve a curated snapshot tree from another location. The API sets `AOR_KNOWLEDGE_CURATOR_URL=http://aor-curator:8080`, so authenticated knowledge-update requests are forwarded to the separate process that owns the only read-write knowledge mount. The curator listens on `127.0.0.1:8094` for approved operations and clears that URL to handle requests locally. An empty root is valid, but knowledge searches and manifest reads return not found until a revision is published.
 
 ## Start
 
@@ -85,7 +85,7 @@ The target performs these stages in order:
 3. Validate the dedicated rootless OCI engine, pull the pinned runtime into it, and execute the hardened sandbox probe.
 4. Start PostgreSQL, Temporal, NATS, MinIO, OPA, and Dex, then wait for their health checks and initialization jobs.
 5. Apply every PostgreSQL migration listed in `migrations/postgres/manifest.json` in order; reruns detect the installed schema, rotate the fixed `aor_app` password without revoking later grants, and keep permissions idempotent. The app password is supplied through the ignored secret file and is not printed.
-6. Build the four AOR images serially from the current source. The worker image includes the Docker CLI needed to reach the preflighted rootless engine; it does not contain or start a daemon.
+6. Build the AOR server image (shared by the API and curator), Model Gateway, Tool Broker, and worker serially from the current source. The worker image includes the Docker CLI needed to reach the preflighted rootless engine; it does not contain or start a daemon.
 7. Copy the worker build's downloaded Go modules into a content-keyed directory under the shared root and atomically publish the read-only cache path used by integration sandboxes.
 8. Start AOR only after every dependency, initializer, sandbox preflight, and cache initializer has completed successfully, then wait for every process readiness endpoint.
 
@@ -96,6 +96,7 @@ Individual stages are available as `make compose-pull`, `make compose-deps-up`, 
 | Component | Endpoint |
 |---|---|
 | AOR API lifecycle | `http://127.0.0.1:8090/health/ready` |
+| AOR Curator lifecycle and approved writer API | `http://127.0.0.1:8094/health/ready` |
 | Model Gateway lifecycle | `http://127.0.0.1:8091/health/ready` |
 | Tool Broker lifecycle | `http://127.0.0.1:8092/health/ready` |
 | Worker lifecycle | `http://127.0.0.1:8093/health/ready` |

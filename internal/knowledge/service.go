@@ -13,6 +13,7 @@ import (
 
 	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/authz"
+	"github.com/akimisaka/aor/pkg/contracts"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
 )
 
@@ -79,7 +80,8 @@ func (service *Service) Initialize(ctx context.Context, tenantID, projectID stri
 }
 
 func (service *Service) Search(ctx context.Context, request SearchRequest) (SearchResponse, error) {
-	if err := service.authorize(ctx, request.Access, false); err != nil {
+	project, err := service.authorize(ctx, request.Access, false)
+	if err != nil {
 		return SearchResponse{}, err
 	}
 	query, err := normalizeSearch(request)
@@ -93,7 +95,7 @@ func (service *Service) Search(ctx context.Context, request SearchRequest) (Sear
 	if revision == "" {
 		return SearchResponse{}, aorerrors.New(aorerrors.CodeNotFound, "", nil)
 	}
-	view, err := service.view(ctx, request.Access.TenantID, request.Access.ProjectID, revision)
+	view, err := service.view(ctx, request.Access, project, revision)
 	if err != nil {
 		return SearchResponse{}, err
 	}
@@ -145,7 +147,8 @@ func (service *Service) Search(ctx context.Context, request SearchRequest) (Sear
 }
 
 func (service *Service) ReadRange(ctx context.Context, request ReadRangeRequest) (ReadRangeResponse, error) {
-	if err := service.authorize(ctx, request.Access, false); err != nil {
+	project, err := service.authorize(ctx, request.Access, false)
+	if err != nil {
 		return ReadRangeResponse{}, err
 	}
 	reference := request.Reference
@@ -156,7 +159,7 @@ func (service *Service) ReadRange(ctx context.Context, request ReadRangeRequest)
 	if err != nil {
 		return ReadRangeResponse{}, err
 	}
-	view, err := service.view(ctx, request.Access.TenantID, request.Access.ProjectID, reference.ScopeRevision)
+	view, err := service.view(ctx, request.Access, project, reference.ScopeRevision)
 	if err != nil {
 		return ReadRangeResponse{}, err
 	}
@@ -219,7 +222,7 @@ func (service *Service) ReadRange(ctx context.Context, request ReadRangeRequest)
 }
 
 func (service *Service) Manifest(ctx context.Context, access Access, revision string) (Manifest, error) {
-	if err := service.authorize(ctx, access, false); err != nil {
+	if _, err := service.authorize(ctx, access, false); err != nil {
 		return Manifest{}, err
 	}
 	if revision == "" {
@@ -254,26 +257,27 @@ func (service *Service) Update(ctx context.Context, access Access, proposal Upda
 	if service == nil || service.events == nil {
 		return UpdateResult{}, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "knowledge event publisher"})
 	}
-	if err := service.authorize(ctx, access, true); err != nil {
+	project, err := service.authorize(ctx, access, true)
+	if err != nil {
 		return UpdateResult{}, err
 	}
 	snapshot, err := service.prepareUpdate(ctx, access, proposal)
 	if err != nil {
 		var typed *aorerrors.Error
 		if errors.As(err, &typed) && typed.Code == aorerrors.CodeStateVersionConflict {
-			return service.resumeCommittedUpdate(ctx, access, proposal, digest)
+			return service.resumeCommittedUpdate(ctx, access, project, proposal, digest)
 		}
 		return UpdateResult{}, err
 	}
-	updatedDocuments, err := service.resolveEffective(ctx, access.TenantID, access.ProjectID, "", &snapshot, make(map[string]bool))
+	updatedDocuments, err := service.resolveEffective(ctx, access, project, project, "", &snapshot, make(map[string]bool))
 	if err != nil {
 		return UpdateResult{}, err
 	}
-	if err := service.validateTrustChange(ctx, access, proposal.BaseRevision, updatedDocuments); err != nil {
+	if err := service.validateTrustChange(ctx, access, project, proposal.BaseRevision, updatedDocuments); err != nil {
 		return UpdateResult{}, err
 	}
 	// Revalidate immediately before the immutable snapshot and HEAD update.
-	if err := service.authorize(ctx, access, true); err != nil {
+	if _, err := service.authorize(ctx, access, true); err != nil {
 		return UpdateResult{}, err
 	}
 	manifest, err := service.repository.Commit(ctx, CommitRequest{
@@ -298,7 +302,8 @@ func (service *Service) Update(ctx context.Context, access Access, proposal Upda
 // immutable head without committing a snapshot or requiring write proofs.
 func (service *Service) ValidateProposal(ctx context.Context, access Access, proposal UpdateProposal) (ProposalValidation, error) {
 	proposal = cloneProposal(proposal)
-	if err := service.authorize(ctx, access, false); err != nil {
+	project, err := service.authorize(ctx, access, false)
+	if err != nil {
 		return ProposalValidation{}, err
 	}
 	digest, err := proposalDigest(proposal)
@@ -309,11 +314,11 @@ func (service *Service) ValidateProposal(ctx context.Context, access Access, pro
 	if err != nil {
 		return ProposalValidation{}, err
 	}
-	documents, err := service.resolveEffective(ctx, access.TenantID, access.ProjectID, "", &snapshot, make(map[string]bool))
+	documents, err := service.resolveEffective(ctx, access, project, project, "", &snapshot, make(map[string]bool))
 	if err != nil {
 		return ProposalValidation{}, err
 	}
-	if err := service.validateTrustChange(ctx, access, proposal.BaseRevision, documents); err != nil {
+	if err := service.validateTrustChange(ctx, access, project, proposal.BaseRevision, documents); err != nil {
 		return ProposalValidation{}, err
 	}
 	report := buildValidationReport(proposal, digest, documents)
@@ -324,7 +329,7 @@ func (service *Service) ValidateProposal(ctx context.Context, access Access, pro
 	return validation, nil
 }
 
-func (service *Service) resumeCommittedUpdate(ctx context.Context, access Access, proposal UpdateProposal, digest string) (UpdateResult, error) {
+func (service *Service) resumeCommittedUpdate(ctx context.Context, access Access, project authz.ProjectScope, proposal UpdateProposal, digest string) (UpdateResult, error) {
 	current, err := service.repository.Head(ctx, access.TenantID, access.ProjectID)
 	if err != nil {
 		return UpdateResult{}, err
@@ -347,14 +352,14 @@ func (service *Service) resumeCommittedUpdate(ctx context.Context, access Access
 	if candidateRevision != current {
 		return UpdateResult{}, aorerrors.New(aorerrors.CodeStateVersionConflict, "", nil)
 	}
-	updatedDocuments, err := service.resolveEffective(ctx, access.TenantID, access.ProjectID, current, nil, make(map[string]bool))
+	updatedDocuments, err := service.resolveEffective(ctx, access, project, project, current, nil, make(map[string]bool))
 	if err != nil {
 		return UpdateResult{}, err
 	}
-	if err := service.validateTrustChange(ctx, access, proposal.BaseRevision, updatedDocuments); err != nil {
+	if err := service.validateTrustChange(ctx, access, project, proposal.BaseRevision, updatedDocuments); err != nil {
 		return UpdateResult{}, err
 	}
-	if err := service.authorize(ctx, access, true); err != nil {
+	if _, err := service.authorize(ctx, access, true); err != nil {
 		return UpdateResult{}, err
 	}
 	service.invalidate(access.TenantID, access.ProjectID)
@@ -368,11 +373,11 @@ func (service *Service) resumeCommittedUpdate(ctx context.Context, access Access
 	return result, nil
 }
 
-func (service *Service) validateTrustChange(ctx context.Context, access Access, baseRevision string, updatedDocuments map[string]visibleDocument) error {
+func (service *Service) validateTrustChange(ctx context.Context, access Access, project authz.ProjectScope, baseRevision string, updatedDocuments map[string]visibleDocument) error {
 	if baseRevision == "" {
 		return nil
 	}
-	priorDocuments, err := service.resolveEffective(ctx, access.TenantID, access.ProjectID, baseRevision, nil, make(map[string]bool))
+	priorDocuments, err := service.resolveEffective(ctx, access, project, project, baseRevision, nil, make(map[string]bool))
 	if err != nil {
 		return err
 	}
@@ -401,11 +406,11 @@ func cloneProposal(input UpdateProposal) UpdateProposal {
 }
 
 func (service *Service) RebuildIndex(ctx context.Context, access Access, revision string) (IndexSnapshot, error) {
-	if err := service.authorize(ctx, access, false); err != nil {
+	project, err := service.authorize(ctx, access, false)
+	if err != nil {
 		return IndexSnapshot{}, err
 	}
 	if revision == "" {
-		var err error
 		revision, err = service.repository.Head(ctx, access.TenantID, access.ProjectID)
 		if err != nil {
 			return IndexSnapshot{}, err
@@ -414,17 +419,17 @@ func (service *Service) RebuildIndex(ctx context.Context, access Access, revisio
 	if revision == "" {
 		return IndexSnapshot{}, aorerrors.New(aorerrors.CodeNotFound, "", nil)
 	}
-	return service.rebuildIndex(ctx, access.TenantID, access.ProjectID, revision)
+	return service.rebuildIndex(ctx, access, project, revision)
 }
 
-func (service *Service) rebuildIndex(ctx context.Context, tenantID, projectID, revision string) (IndexSnapshot, error) {
-	documents, err := service.resolveEffective(ctx, tenantID, projectID, revision, nil, make(map[string]bool))
+func (service *Service) rebuildIndex(ctx context.Context, access Access, project authz.ProjectScope, revision string) (IndexSnapshot, error) {
+	documents, err := service.resolveEffective(ctx, access, project, project, revision, nil, make(map[string]bool))
 	if err != nil {
 		return IndexSnapshot{}, err
 	}
-	view := buildIndexedView(tenantID, projectID, revision, documents, service.now())
+	view := buildIndexedView(access.TenantID, access.ProjectID, revision, documents, service.now())
 	service.storeView(view)
-	return IndexSnapshot{TenantID: tenantID, ProjectID: projectID, Revision: revision, BuiltAt: view.BuiltAt, Documents: len(documents)}, nil
+	return IndexSnapshot{TenantID: access.TenantID, ProjectID: access.ProjectID, Revision: revision, BuiltAt: view.BuiltAt, Documents: len(documents)}, nil
 }
 
 func (service *Service) prepareUpdate(ctx context.Context, access Access, proposal UpdateProposal) (Snapshot, error) {
@@ -498,25 +503,25 @@ func (service *Service) prepareSnapshot(ctx context.Context, access Access, prop
 	return snapshot, nil
 }
 
-func (service *Service) authorize(ctx context.Context, access Access, write bool) error {
+func (service *Service) authorize(ctx context.Context, access Access, write bool) (authz.ProjectScope, error) {
 	if service == nil || service.repository == nil || service.authorizer == nil || service.scopes == nil {
-		return aorerrors.New(aorerrors.CodeDependencyUnavailable, "", nil)
+		return authz.ProjectScope{}, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", nil)
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return authz.ProjectScope{}, err
 	}
 	if err := access.Principal.Validate(); err != nil {
-		return err
+		return authz.ProjectScope{}, err
 	}
 	if access.TenantID == "" || access.ProjectID == "" || access.Principal.TenantID != "" && access.Principal.TenantID != access.TenantID || access.Principal.ProjectID != "" && access.Principal.ProjectID != access.ProjectID {
-		return aorerrors.New(aorerrors.CodeForbidden, "", map[string]any{"scope": "knowledge project"})
+		return authz.ProjectScope{}, aorerrors.New(aorerrors.CodeForbidden, "", map[string]any{"scope": "knowledge project"})
 	}
 	project, err := service.scopes.ResolveProject(ctx, access.TenantID, access.ProjectID)
 	if err != nil {
-		return aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", err, map[string]any{"scope": "project scope"})
+		return authz.ProjectScope{}, aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", err, map[string]any{"scope": "project scope"})
 	}
 	if project.TenantID != access.TenantID || project.ID != access.ProjectID {
-		return aorerrors.New(aorerrors.CodeForbidden, "", map[string]any{"scope": "knowledge project"})
+		return authz.ProjectScope{}, aorerrors.New(aorerrors.CodeForbidden, "", map[string]any{"scope": "knowledge project"})
 	}
 	input := authz.PolicyInput{
 		Principal: access.Principal, Project: project, Action: authz.ActionKnowledgeRead,
@@ -530,6 +535,13 @@ func (service *Service) authorize(ctx context.Context, access Access, write bool
 		input.Approval = access.Approval
 		input.Budget = authz.BudgetScope{AccountID: access.BudgetAccountID, Available: access.BudgetAccountID != ""}
 	}
+	if err := service.evaluateAuthorization(ctx, access, input, write); err != nil {
+		return authz.ProjectScope{}, err
+	}
+	return project, nil
+}
+
+func (service *Service) evaluateAuthorization(ctx context.Context, access Access, input authz.PolicyInput, write bool) error {
 	decision, err := service.authorizer.Evaluate(ctx, input)
 	if err != nil {
 		return err
@@ -704,19 +716,27 @@ func indexKey(tenantID, projectID, revision string) string {
 	return tenantID + "\x00" + projectID + "\x00" + revision
 }
 
-func (service *Service) view(ctx context.Context, tenantID, projectID, revision string) (indexedView, error) {
-	key := indexKey(tenantID, projectID, revision)
+func (service *Service) view(ctx context.Context, access Access, project authz.ProjectScope, revision string) (indexedView, error) {
+	key := indexKey(access.TenantID, access.ProjectID, revision)
 	service.indexMu.RLock()
 	cached, exists := service.indexes[key]
 	service.indexMu.RUnlock()
+	var supplied *Snapshot
 	if exists {
-		return cloneView(cached), nil
+		snapshot, err := service.repository.Load(ctx, access.TenantID, access.ProjectID, revision)
+		if err != nil {
+			return indexedView{}, err
+		}
+		if len(snapshot.Manifest.Parents) == 0 {
+			return cloneView(cached), nil
+		}
+		supplied = &snapshot
 	}
-	documents, err := service.resolveEffective(ctx, tenantID, projectID, revision, nil, make(map[string]bool))
+	documents, err := service.resolveEffective(ctx, access, project, project, revision, supplied, make(map[string]bool))
 	if err != nil {
 		return indexedView{}, err
 	}
-	view := buildIndexedView(tenantID, projectID, revision, documents, service.now())
+	view := buildIndexedView(access.TenantID, access.ProjectID, revision, documents, service.now())
 	service.indexMu.Lock()
 	service.indexes[key] = cloneView(view)
 	service.indexMu.Unlock()
@@ -880,8 +900,11 @@ func cloneLookup(input map[string]map[string]struct{}) map[string]map[string]str
 	return output
 }
 
-func (service *Service) resolveEffective(ctx context.Context, tenantID, projectID, revision string, supplied *Snapshot, stack map[string]bool) (map[string]visibleDocument, error) {
-	key := projectID + "\x00" + revision
+func (service *Service) resolveEffective(ctx context.Context, access Access, rootProject, project authz.ProjectScope, revision string, supplied *Snapshot, stack map[string]bool) (map[string]visibleDocument, error) {
+	if project.TenantID != access.TenantID || project.ID == "" {
+		return nil, aorerrors.New(aorerrors.CodeForbidden, "", map[string]any{"scope": "knowledge inheritance project"})
+	}
+	key := project.TenantID + "\x00" + project.ID + "\x00" + revision
 	if stack[key] {
 		return nil, aorerrors.New(aorerrors.CodeConflict, "", map[string]any{"scope": "knowledge inheritance cycle"})
 	}
@@ -892,18 +915,28 @@ func (service *Service) resolveEffective(ctx context.Context, tenantID, projectI
 	if supplied != nil {
 		snapshot = cloneSnapshot(*supplied)
 	} else {
-		snapshot, err = service.repository.Load(ctx, tenantID, projectID, revision)
+		snapshot, err = service.repository.Load(ctx, project.TenantID, project.ID, revision)
 		if err != nil {
 			return nil, err
 		}
 	}
-	parents, err := validateParents(projectID, snapshot.Manifest.Parents, snapshot.Manifest.ParentOrderExplicit)
+	parents, err := validateParents(project.ID, snapshot.Manifest.Parents, snapshot.Manifest.ParentOrderExplicit)
 	if err != nil {
 		return nil, aorerrors.New(aorerrors.CodeConflict, "", map[string]any{"scope": "parent manifest"})
 	}
 	inherited := make(map[string][]visibleDocument)
 	for _, parent := range parents {
-		parentDocuments, err := service.resolveEffective(ctx, tenantID, parent.ProjectID, parent.Revision, nil, stack)
+		parentProject, resolveErr := service.scopes.ResolveProject(ctx, access.TenantID, parent.ProjectID)
+		if resolveErr != nil {
+			return nil, aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", resolveErr, map[string]any{"scope": "parent project scope"})
+		}
+		if parentProject.TenantID != access.TenantID || parentProject.ID != parent.ProjectID {
+			return nil, aorerrors.New(aorerrors.CodeForbidden, "", map[string]any{"scope": "knowledge inheritance tenant"})
+		}
+		if err := service.authorizeInheritance(ctx, access, rootProject, project, parentProject, parent.Revision); err != nil {
+			return nil, err
+		}
+		parentDocuments, err := service.resolveEffective(ctx, access, rootProject, parentProject, parent.Revision, nil, stack)
 		if err != nil {
 			return nil, err
 		}
@@ -963,7 +996,7 @@ func (service *Service) resolveEffective(ctx context.Context, tenantID, projectI
 			}
 			sourceRevision = digest
 		}
-		result[documentPath] = visibleDocument{SourceProjectID: projectID, Revision: sourceRevision, Document: StoredDocument{Metadata: cloneMetadata(document.Metadata), Content: append([]byte(nil), document.Content...)}}
+		result[documentPath] = visibleDocument{SourceProjectID: project.ID, Revision: sourceRevision, Document: StoredDocument{Metadata: cloneMetadata(document.Metadata), Content: append([]byte(nil), document.Content...)}}
 	}
 	for documentPath := range overrides {
 		if _, own := snapshot.Documents[documentPath]; !own {
@@ -971,6 +1004,48 @@ func (service *Service) resolveEffective(ctx context.Context, tenantID, projectI
 		}
 	}
 	return result, nil
+}
+
+func (service *Service) authorizeInheritance(ctx context.Context, access Access, root, child, parent authz.ProjectScope, revision string) error {
+	if root.TenantID != access.TenantID || child.TenantID != access.TenantID || parent.TenantID != access.TenantID {
+		return aorerrors.New(aorerrors.CodeForbidden, "", map[string]any{"scope": "knowledge inheritance tenant"})
+	}
+	childRank, childKnown := knowledgeClassificationRank(child.Classification)
+	parentRank, parentKnown := knowledgeClassificationRank(parent.Classification)
+	if !childKnown || !parentKnown || parentRank > childRank {
+		return aorerrors.New(aorerrors.CodeForbidden, "", map[string]any{"scope": "knowledge inheritance classification"})
+	}
+	input := authz.PolicyInput{
+		Principal: access.Principal,
+		Project:   root,
+		Action:    authz.ActionKnowledgeRead,
+		Resource: authz.Resource{
+			Type: "knowledge.inheritance",
+			ID:   parent.ID,
+			Attributes: map[string]string{
+				"childProjectId":       child.ID,
+				"childClassification":  child.Classification,
+				"parentClassification": parent.Classification,
+				"parentRevision":       revision,
+			},
+		},
+	}
+	return service.evaluateAuthorization(ctx, access, input, false)
+}
+
+func knowledgeClassificationRank(value string) (int, bool) {
+	switch contracts.DataClassification(value) {
+	case contracts.DataPublic:
+		return 1, true
+	case contracts.DataInternal:
+		return 2, true
+	case contracts.DataConfidential:
+		return 3, true
+	case contracts.DataRestricted:
+		return 4, true
+	default:
+		return 0, false
+	}
 }
 
 func sameVisibleDocument(left, right visibleDocument) bool {

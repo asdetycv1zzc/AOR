@@ -15,6 +15,36 @@ func TestLoadServerConfiguration(t *testing.T) {
 	}
 }
 
+func TestServerKnowledgeCuratorURLIsOptionalAndValidated(t *testing.T) {
+	values := validServerEnvironment()
+	config, err := Load("aor-server", environment(values))
+	if err != nil || config.KnowledgeCuratorURL != "" {
+		t.Fatalf("default curator URL = %q err=%v", config.KnowledgeCuratorURL, err)
+	}
+	values["AOR_KNOWLEDGE_CURATOR_URL"] = "http://aor-curator:8080"
+	config, err = Load("aor-server", environment(values))
+	if err != nil || config.KnowledgeCuratorURL != values["AOR_KNOWLEDGE_CURATOR_URL"] {
+		t.Fatalf("configured curator URL = %q err=%v", config.KnowledgeCuratorURL, err)
+	}
+	for _, value := range []string{
+		"aor-curator:8080",
+		"ftp://aor-curator:8080",
+		"http://aor-curator:8080?token=secret",
+		"http://aor-curator:8080/../admin",
+		"http://aor-curator:8080\\share",
+	} {
+		values["AOR_KNOWLEDGE_CURATOR_URL"] = value
+		if _, err := Load("aor-server", environment(values)); !errors.Is(err, ErrInvalidConfiguration) {
+			t.Fatalf("curator URL %q error = %v", value, err)
+		}
+	}
+	values["AOR_KNOWLEDGE_CURATOR_URL"] = "http://aor-curator:8080"
+	values["AOR_ENVIRONMENT"] = EnvironmentProduction
+	if _, err := Load("aor-server", environment(values)); !errors.Is(err, ErrInvalidConfiguration) {
+		t.Fatalf("production HTTP curator URL error = %v", err)
+	}
+}
+
 func TestServerRequiresExactGoalPlanRoutes(t *testing.T) {
 	valid := validServerEnvironment()
 	config, err := Load("aor-server", environment(valid))

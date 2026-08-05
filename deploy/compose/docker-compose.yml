@@ -559,6 +559,7 @@ services:
       AOR_S3_ACCESS_KEY_REF: secret://minio_root_user
       AOR_S3_SECRET_KEY_REF: secret://minio_root_password
       AOR_KNOWLEDGE_ROOT: /var/lib/aor/knowledge
+      AOR_KNOWLEDGE_CURATOR_URL: http://aor-curator:8080
       AOR_OPA_URL: http://opa:8181
       AOR_OIDC_ISSUER: http://127.0.0.1:5556/dex
       AOR_OIDC_JWKS_URL: http://identity:5556/dex/keys
@@ -575,9 +576,19 @@ services:
         {"GOAL_PROPOSER":{"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-4o-mini}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3},"GOAL_CHALLENGER":{"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-4o-mini}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3},"PLAN_SUPERVISOR":{"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-4o-mini}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3},"MODULE_PLANNER":{"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-4o-mini}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3},"KNOWLEDGE_CURATOR":{"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-4o-mini}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3}}
     secrets: [postgres_app_password, lease_signing_key, minio_root_user, minio_root_password, aor_server_oauth_client_secret]
     volumes:
-      - "${AOR_KNOWLEDGE_HOST_PATH:-../../knowledge}:/var/lib/aor/knowledge:ro"
+      - "${AOR_KNOWLEDGE_HOST_PATH:-aor-knowledge-data}:/var/lib/aor/knowledge:ro"
     ports:
       - 127.0.0.1:8090:8080
+
+  aor-curator:
+    extends:
+      service: aor-api
+    environment:
+      AOR_KNOWLEDGE_CURATOR_URL: ""
+    volumes: !override
+      - "${AOR_KNOWLEDGE_HOST_PATH:-aor-knowledge-data}:/var/lib/aor/knowledge:rw"
+    ports: !override
+      - 127.0.0.1:8094:8080
 
   aor-model-gateway:
     <<: *aor-common
@@ -756,7 +767,7 @@ services:
     volumes:
       - "${AOR_SANDBOX_ENGINE_SOCKET:?Set AOR_SANDBOX_ENGINE_SOCKET to the rootless engine socket}:/run/aor-sandbox/engine.sock"
       - "${AOR_SANDBOX_SHARED_ROOT:?Set AOR_SANDBOX_SHARED_ROOT to an absolute host path shared with the rootless engine}:${AOR_SANDBOX_SHARED_ROOT:?Set AOR_SANDBOX_SHARED_ROOT to an absolute host path shared with the rootless engine}"
-      - "${AOR_KNOWLEDGE_HOST_PATH:-../../knowledge}:/var/lib/aor/knowledge:ro"
+      - "${AOR_KNOWLEDGE_HOST_PATH:-aor-knowledge-data}:/var/lib/aor/knowledge:ro"
       - repository-data:/var/lib/aor/repositories
     cap_drop: [ALL]
     ports:
@@ -771,6 +782,7 @@ volumes:
   nats-data:
   minio-data:
   repository-data:
+  aor-knowledge-data:
 
 secrets:
   postgres_password:
