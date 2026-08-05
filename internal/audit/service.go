@@ -357,8 +357,7 @@ func auditOutcomeReached(task state.ModuleTask, outcome string) bool {
 
 func checkpointMatchesTask(checkpoint Coordination, task state.ModuleTask) bool {
 	return checkpoint.TenantID == task.TenantID && checkpoint.ProjectID == task.ProjectID && checkpoint.TaskID == task.ID &&
-		checkpoint.AttemptSeriesID == task.AttemptSeriesID && checkpoint.Attempt == task.Attempt &&
-		checkpoint.SubmissionID == authoritativeSubmissionID(task)
+		checkpoint.AttemptSeriesID == task.AttemptSeriesID && checkpoint.Attempt == task.Attempt
 }
 
 func taskTerminalAfterAudit(value contracts.ModuleTaskState) bool {

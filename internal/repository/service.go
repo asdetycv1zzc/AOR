@@ -399,7 +399,14 @@ func (s *Service) Submit(ctx context.Context, request SubmissionRequest) (Submis
 	if err := s.store.Put(ctx, submission); err != nil {
 		return Submission{}, err
 	}
-	return cloneSubmission(submission), nil
+	persisted, found, err := s.store.Get(ctx, workspace.TenantID, workspace.TaskID, workspace.AttemptSeriesID, request.Attempt)
+	if err != nil {
+		return Submission{}, err
+	}
+	if !found || persisted.IdempotencyKey != submission.IdempotencyKey || persisted.RequestSHA256 != submission.RequestSHA256 || persisted.Manifest.SHA256 != submission.Manifest.SHA256 {
+		return Submission{}, ErrSubmissionConflict
+	}
+	return cloneSubmission(persisted), nil
 }
 
 func (s *Service) Workspace(id string) (Workspace, bool) {

@@ -53,6 +53,13 @@ func (store *PostgresSubmissionStore) Put(ctx context.Context, submission Submis
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if submission.ID == "" {
+		id, err := newSubmissionID()
+		if err != nil {
+			return err
+		}
+		submission.ID = id.String()
+	}
 	if err := validateStoredSubmission(submission); err != nil {
 		return err
 	}
@@ -68,10 +75,6 @@ func (store *PostgresSubmissionStore) Put(ctx context.Context, submission Submis
 		}
 	}
 	workspace := submission.Workspace
-	id, err := newSubmissionID()
-	if err != nil {
-		return err
-	}
 	tx, err := store.begin(ctx, workspace.TenantID, false)
 	if err != nil {
 		return err
@@ -85,7 +88,7 @@ INSERT INTO submissions
 VALUES
   ($1, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6, $7, $8, $9,
    $10::jsonb, $11, $12, $13, $14, $15)
-ON CONFLICT DO NOTHING`, id, workspace.TenantID, workspace.ProjectID, workspace.TaskID,
+ON CONFLICT DO NOTHING`, submission.ID, workspace.TenantID, workspace.ProjectID, workspace.TaskID,
 		submission.Manifest.AttemptSeriesID, submission.Manifest.Attempt,
 		submission.Manifest.BaseCommit, submission.Manifest.HeadCommit,
 		submission.Manifest.SubmissionVersion, manifestJSON, submission.Manifest.SHA256,
@@ -138,14 +141,15 @@ func (store *PostgresSubmissionStore) begin(ctx context.Context, tenantID string
 }
 
 func loadPostgresSubmission(ctx context.Context, tx *sql.Tx, tenantID, taskID, attemptSeriesID string, attempt int) (Submission, bool, error) {
+	var id string
 	var manifestJSON []byte
 	var commitAt time.Time
 	var idempotencyKey, requestSHA256 string
 	err := tx.QueryRowContext(ctx, `
-SELECT manifest_jsonb, created_at, idempotency_key, request_sha256
+SELECT id::text, manifest_jsonb, created_at, idempotency_key, request_sha256
 FROM submissions
 WHERE tenant_id = $1::uuid AND module_task_id = $2::uuid
-  AND attempt_series_id = $3::uuid AND attempt = $4`, tenantID, taskID, attemptSeriesID, attempt).Scan(&manifestJSON, &commitAt, &idempotencyKey, &requestSHA256)
+  AND attempt_series_id = $3::uuid AND attempt = $4`, tenantID, taskID, attemptSeriesID, attempt).Scan(&id, &manifestJSON, &commitAt, &idempotencyKey, &requestSHA256)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Submission{}, false, nil
 	}
@@ -156,6 +160,7 @@ WHERE tenant_id = $1::uuid AND module_task_id = $2::uuid
 	if json.Unmarshal(manifestJSON, &submission.Manifest) != nil {
 		return Submission{}, false, ErrInvalidRequest
 	}
+	submission.ID = id
 	submission.Workspace = Workspace{
 		TenantID:        tenantID,
 		ProjectID:       submission.Manifest.ProjectID,
@@ -178,7 +183,8 @@ WHERE tenant_id = $1::uuid AND module_task_id = $2::uuid
 func validateStoredSubmission(submission Submission) error {
 	workspace := submission.Workspace
 	manifest := submission.Manifest
-	if !safeIDPattern.MatchString(workspace.TenantID) || !safeIDPattern.MatchString(workspace.ProjectID) || !safeIDPattern.MatchString(workspace.TaskID) || !safeIDPattern.MatchString(manifest.AttemptSeriesID) || !safeCommitMetadata(submission.IdempotencyKey) || !submissionDigestPattern.MatchString(submission.RequestSHA256) || manifest.ProjectID != workspace.ProjectID || manifest.ModuleTaskID != workspace.TaskID || manifest.AttemptSeriesID != workspace.AttemptSeriesID || manifest.Attempt != workspace.Attempt || manifest.BaseCommit != workspace.BaseCommit || manifest.ModuleSpecRef != workspace.ModuleSpecRef || manifest.AgentIdentity != workspace.AgentIdentity || !validServiceSignature(manifest.Signature) {
+	parsedID, idErr := uuid.Parse(submission.ID)
+	if idErr != nil || parsedID == uuid.Nil || parsedID.Version() != uuid.Version(7) || parsedID.String() != submission.ID || !safeIDPattern.MatchString(workspace.TenantID) || !safeIDPattern.MatchString(workspace.ProjectID) || !safeIDPattern.MatchString(workspace.TaskID) || !safeIDPattern.MatchString(manifest.AttemptSeriesID) || !safeCommitMetadata(submission.IdempotencyKey) || !submissionDigestPattern.MatchString(submission.RequestSHA256) || manifest.ProjectID != workspace.ProjectID || manifest.ModuleTaskID != workspace.TaskID || manifest.AttemptSeriesID != workspace.AttemptSeriesID || manifest.Attempt != workspace.Attempt || manifest.BaseCommit != workspace.BaseCommit || manifest.ModuleSpecRef != workspace.ModuleSpecRef || manifest.AgentIdentity != workspace.AgentIdentity || !validServiceSignature(manifest.Signature) {
 		return ErrInvalidRequest
 	}
 	if err := manifest.Validate(); err != nil {

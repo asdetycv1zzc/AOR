@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"strconv"
 	"strings"
 
 	"github.com/akimisaka/aor/internal/authn"
@@ -187,7 +186,7 @@ func (source *AuthoritativeInputSource) Load(ctx context.Context, request InputR
 	}
 	input := DeterministicInput{
 		TenantID: request.Task.TenantID, AuditRunID: request.AuditRunID,
-		SubmissionID: authoritativeSubmissionID(request.Task), Manifest: submission.Manifest,
+		SubmissionID: submission.ID, Manifest: submission.Manifest,
 		ModuleSpecRef:    request.Task.ModuleSpecRef,
 		AllowedPaths:     append([]string(nil), module.AllowedPaths...),
 		ForbiddenPaths:   append([]string(nil), module.ForbiddenPaths...),
@@ -268,17 +267,14 @@ func (source *AuthoritativeInputSource) policyDigest(ctx context.Context, projec
 func submissionMatchesTask(submission repository.Submission, task state.ModuleTask) bool {
 	manifest := submission.Manifest
 	workspace := submission.Workspace
-	return manifest.ProjectID == task.ProjectID && manifest.ModuleTaskID == task.ID &&
+	parsedID, err := uuid.Parse(submission.ID)
+	return err == nil && parsedID != uuid.Nil && parsedID.Version() == uuid.Version(7) && parsedID.String() == submission.ID &&
+		manifest.ProjectID == task.ProjectID && manifest.ModuleTaskID == task.ID &&
 		manifest.AttemptSeriesID == task.AttemptSeriesID && manifest.Attempt == task.Attempt &&
 		manifest.ModuleSpecRef == task.ModuleSpecRef && workspace.TenantID == task.TenantID &&
 		workspace.ProjectID == task.ProjectID && workspace.TaskID == task.ID &&
 		workspace.AttemptSeriesID == task.AttemptSeriesID && workspace.Attempt == task.Attempt &&
 		workspace.ModuleSpecRef == task.ModuleSpecRef
-}
-
-func authoritativeSubmissionID(task state.ModuleTask) string {
-	key := task.TenantID + "\x00" + task.ID + "\x00" + task.AttemptSeriesID + "\x00" + strconv.Itoa(task.Attempt)
-	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(key)).String()
 }
 
 func validRuntimeFacts(facts RuntimeFacts, module contracts.ModuleSpec) bool {

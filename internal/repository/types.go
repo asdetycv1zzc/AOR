@@ -121,6 +121,7 @@ type SubmissionRequest struct {
 }
 
 type Submission struct {
+	ID             string                       `json:"id"`
 	Manifest       contracts.SubmissionManifest `json:"manifest"`
 	Workspace      Workspace                    `json:"workspace"`
 	CommitAt       time.Time                    `json:"commitAt"`
@@ -255,6 +256,13 @@ func (s *MemorySubmissionStore) Get(_ context.Context, tenantID, taskID, attempt
 }
 
 func (s *MemorySubmissionStore) Put(_ context.Context, submission Submission) error {
+	if submission.ID == "" {
+		id, err := newSubmissionID()
+		if err != nil {
+			return err
+		}
+		submission.ID = id.String()
+	}
 	key := submissionKey(submission.Workspace.TenantID, submission.Workspace.TaskID, submission.Manifest.AttemptSeriesID, submission.Manifest.Attempt)
 	s.mu.Lock()
 	defer s.mu.Unlock()
