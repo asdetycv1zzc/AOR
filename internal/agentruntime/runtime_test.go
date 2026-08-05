@@ -421,7 +421,7 @@ func testDeclaration(role Role) Declaration {
 		items = append(items, testContextItem("assignment", ContextTaskState, "aor://task/task_test", TrustGeneratedUnreviewed, "planned module assignment"))
 	}
 	manifest := testManifest(role, items)
-	tool := modelgateway.ToolDefinition{Name: "repo.read", Description: "read one repository file", Schema: json.RawMessage(`{"type":"object"}`)}
+	tool := modelgateway.ToolDefinition{Name: "repo.read", Version: "1", Description: "read one repository file", Schema: json.RawMessage(`{"type":"object"}`)}
 	declaration := Declaration{
 		RunID: "run_test", TenantID: "tenant_test", ProjectID: "project_test", AgentInstanceID: "agent_test", Role: role,
 		PromptBundle: bundle, ContextManifest: manifest, ResponseSchemaRef: "schema://agent-output",

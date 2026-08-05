@@ -22,6 +22,7 @@ const (
 	MaximumPromptBundleBytes   = 256 << 10
 	MaximumResponseSchemaBytes = 256 << 10
 	MaximumAgentOutputBytes    = 1 << 20
+	MaximumNativeToolRounds    = 8
 )
 
 type Role string

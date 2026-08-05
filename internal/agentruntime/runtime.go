@@ -240,13 +240,14 @@ func (r *Runtime) RenewLease(ctx context.Context, runID string) error {
 }
 
 func (r *Runtime) Generate(ctx context.Context, runID string, call ModelCall) (modelgateway.NormalizedResponse, error) {
+	return r.generate(ctx, runID, call, nil)
+}
+
+func (r *Runtime) generate(ctx context.Context, runID string, call ModelCall, messages []modelgateway.Message) (modelgateway.NormalizedResponse, error) {
 	if r.gateway == nil {
 		return modelgateway.NormalizedResponse{}, ErrProviderUnavailable
 	}
-	if !safeProtocolString(call.RequestID, 256) || !safeProtocolString(call.Provider, 128) || !safeProtocolString(call.Model, 256) ||
-		!safeProtocolString(call.ReservationID, 256) || !safeProtocolString(call.ProviderPolicy, 256) || !safeProtocolString(call.CachePolicy, 128) ||
-		call.MaxOutputTokens <= 0 || call.WorstCaseCostMicros < 0 || call.MaxAttempts < 0 || call.MaxAttempts > 3 ||
-		math.IsNaN(call.Temperature) || math.IsInf(call.Temperature, 0) || call.Temperature < 0 || call.Temperature > 2 {
+	if validateModelCall(call) != nil {
 		return modelgateway.NormalizedResponse{}, modelgateway.ErrInvalidRequest
 	}
 	opCtx, lease, declaration, prompt, finish, err := r.beginOperation(ctx, runID, "model.generate", LeaseOperationModel, false)
@@ -262,10 +263,13 @@ func (r *Runtime) Generate(ctx context.Context, runID string, call ModelCall) (m
 	if err := r.operationReady(opCtx, runID, lease, "model.generate", LeaseOperationModel, false); err != nil {
 		return modelgateway.NormalizedResponse{}, err
 	}
+	if messages == nil {
+		messages = prompt.Messages
+	}
 	request := modelgateway.NormalizedRequest{
 		RequestID: call.RequestID, TenantID: declaration.TenantID, ProjectID: declaration.ProjectID,
 		TaskID: declaration.TaskID, AgentInstanceID: declaration.AgentInstanceID, Role: string(declaration.Role),
-		Model: call.Model, PromptBundleVersion: declaration.PromptBundle.Version, Messages: append([]modelgateway.Message(nil), prompt.Messages...),
+		Model: call.Model, PromptBundleVersion: declaration.PromptBundle.Version, Messages: cloneMessages(messages),
 		Tools: cloneToolDefinitions(declaration.Tools), ResponseSchemaRef: declaration.ResponseSchemaRef,
 		ResponseSchema: append(json.RawMessage(nil), declaration.ResponseSchema...), MaxOutputTokens: call.MaxOutputTokens,
 		Temperature: call.Temperature, ProviderPolicy: call.ProviderPolicy,
@@ -284,6 +288,16 @@ func (r *Runtime) Generate(ctx context.Context, runID string, call ModelCall) (m
 		return modelgateway.NormalizedResponse{}, err
 	}
 	return response, nil
+}
+
+func validateModelCall(call ModelCall) error {
+	if !safeProtocolString(call.RequestID, 256) || !safeProtocolString(call.Provider, 128) || !safeProtocolString(call.Model, 256) ||
+		!safeProtocolString(call.ReservationID, 256) || !safeProtocolString(call.ProviderPolicy, 256) || !safeProtocolString(call.CachePolicy, 128) ||
+		call.MaxOutputTokens <= 0 || call.WorstCaseCostMicros < 0 || call.MaxAttempts < 0 || call.MaxAttempts > 3 ||
+		math.IsNaN(call.Temperature) || math.IsInf(call.Temperature, 0) || call.Temperature < 0 || call.Temperature > 2 {
+		return modelgateway.ErrInvalidRequest
+	}
+	return nil
 }
 
 func (r *Runtime) InvokeTool(ctx context.Context, runID string, call ToolCall) (toolbroker.ToolResult, error) {
@@ -638,7 +652,7 @@ func validateDeclaration(declaration Declaration, now time.Time) (AssembledPromp
 	seenTools := make(map[string]struct{}, len(declaration.Tools))
 	totalToolSchemaBytes := 0
 	for _, tool := range declaration.Tools {
-		if !safeIdentifier(tool.Name) || (tool.Description != "" && !safeProtocolString(tool.Description, 4096)) || containsCredential(tool.Description) ||
+		if !safeIdentifier(tool.Name) || !safeProtocolString(tool.Version, 128) || (tool.Description != "" && !safeProtocolString(tool.Description, 4096)) || containsCredential(tool.Description) ||
 			len(tool.Schema) == 0 || !json.Valid(tool.Schema) {
 			return AssembledPrompt{}, ErrInvalidDeclaration
 		}
@@ -855,8 +869,19 @@ func cloneApproval(value *toolbroker.Approval) *toolbroker.Approval {
 }
 
 func clonePrompt(value AssembledPrompt) AssembledPrompt {
-	value.Messages = append([]modelgateway.Message(nil), value.Messages...)
+	value.Messages = cloneMessages(value.Messages)
 	return value
+}
+
+func cloneMessages(values []modelgateway.Message) []modelgateway.Message {
+	result := append([]modelgateway.Message(nil), values...)
+	for index := range result {
+		result[index].ToolCalls = append([]modelgateway.ToolCall(nil), result[index].ToolCalls...)
+		for callIndex := range result[index].ToolCalls {
+			result[index].ToolCalls[callIndex].Arguments = append(json.RawMessage(nil), result[index].ToolCalls[callIndex].Arguments...)
+		}
+	}
+	return result
 }
 
 func cloneResult(value AcceptedResult) AcceptedResult {

@@ -17,6 +17,8 @@ var (
 	ErrBlindAuditContext     = errors.New("blind auditor context contains forbidden input")
 	ErrProviderUnavailable   = errors.New("model gateway unavailable")
 	ErrToolBrokerUnavailable = errors.New("tool broker unavailable")
+	ErrToolResultInvalid     = errors.New("tool result invalid")
+	ErrToolRoundsExhausted   = errors.New("native tool call rounds exhausted")
 	ErrOutputInvalid         = errors.New("agent output invalid")
 	ErrIntentDenied          = errors.New("agent output intent denied for role")
 	ErrActiveLimit           = errors.New("invalid active agent limit")

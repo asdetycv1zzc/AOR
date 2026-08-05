@@ -71,12 +71,13 @@ func (message Message) Validate() error {
 
 type ToolDefinition struct {
 	Name        string          `json:"name"`
+	Version     string          `json:"version,omitempty"`
 	Description string          `json:"description,omitempty"`
 	Schema      json.RawMessage `json:"schema,omitempty"`
 }
 
 func (definition ToolDefinition) Validate() error {
-	if !validToolProtocolString(definition.Name, MaximumToolNameBytes) || len(definition.Description) > MaximumToolDescriptionBytes || !utf8.ValidString(definition.Description) || len(definition.Schema) > MaximumToolSchemaBytes || len(definition.Schema) != 0 && (!utf8.Valid(definition.Schema) || !json.Valid(definition.Schema)) {
+	if !validToolProtocolString(definition.Name, MaximumToolNameBytes) || definition.Version != "" && !validToolProtocolString(definition.Version, 128) || len(definition.Description) > MaximumToolDescriptionBytes || !utf8.ValidString(definition.Description) || len(definition.Schema) > MaximumToolSchemaBytes || len(definition.Schema) != 0 && (!utf8.Valid(definition.Schema) || !json.Valid(definition.Schema)) {
 		return ErrInvalidRequest
 	}
 	return nil
