@@ -48,6 +48,7 @@ project_lease_roles := {
 	"GOAL_CHALLENGER",
 	"PLAN_SUPERVISOR",
 	"GLOBAL_AUDITOR",
+	"KNOWLEDGE_CURATOR",
 }
 
 task_model_lease_roles := {
@@ -219,6 +220,71 @@ active_lease if {
     time.parse_rfc3339_ns(input.lease.expiresAt) > time.now_ns()
 }
 
+knowledge_curator_scope_valid if {
+	valid_project_scope
+	input.action == "knowledge.write"
+	input.principal.type == "KNOWLEDGE_CURATOR"
+	input.principal.role == "KNOWLEDGE_CURATOR"
+	object.get(input.principal, "projectId", "") in {"", input.project.id}
+	input.project.stateVersion >= 0
+	object.get(object.get(input, "task", {}), "id", "") == ""
+	object.get(object.get(input, "task", {}), "stateVersion", 0) == 0
+	object.get(object.get(input, "task", {}), "specDigest", "") == ""
+}
+
+knowledge_subject_id := input.resource.id if {
+	object.get(input.resource, "id", "") != ""
+}
+
+knowledge_subject_id := input.resource.path if {
+	object.get(input.resource, "id", "") == ""
+	object.get(input.resource, "path", "") != ""
+}
+
+knowledge_approval_active if {
+	input.approval.issuedAt != ""
+	input.approval.expiresAt != ""
+	time.parse_rfc3339_ns(input.approval.issuedAt) <= time.now_ns()
+	time.parse_rfc3339_ns(input.approval.expiresAt) > time.now_ns()
+	object.get(input.approval, "revokedAt", "") == ""
+}
+
+knowledge_approval_active if {
+	input.approval.issuedAt != ""
+	input.approval.expiresAt != ""
+	time.parse_rfc3339_ns(input.approval.issuedAt) <= time.now_ns()
+	time.parse_rfc3339_ns(input.approval.expiresAt) > time.now_ns()
+	time.parse_rfc3339_ns(input.approval.revokedAt) > time.now_ns()
+}
+
+knowledge_write_request_valid if {
+	knowledge_curator_scope_valid
+	knowledge_subject_id != ""
+	regex.match("^sha256:[0-9a-f]{64}$", input.parameterDigest)
+	input.budget.accountId != ""
+	input.budget.available
+}
+
+knowledge_approval_valid if {
+	knowledge_write_request_valid
+	input.approval.id != ""
+	input.approval.principalId != ""
+	input.approval.tenantId == input.project.tenantId
+	input.approval.projectId == input.project.id
+	input.approval.subjectId == knowledge_subject_id
+	input.approval.subjectVersion == input.project.stateVersion
+	input.approval.subjectDigest == input.parameterDigest
+	input.approval.subjectType in {input.action, input.resource.type}
+	input.approval.signature != ""
+	knowledge_approval_active
+}
+
+knowledge_write_allowed if {
+	knowledge_write_request_valid
+	knowledge_approval_valid
+	active_lease
+}
+
 repo_write_allowed if {
 	valid_task_scope
     input.action in {"repo.write", "repo.apply_patch"}
@@ -315,6 +381,11 @@ lease_grant_input_valid if {
 	input.parameterDigest != ""
 	input.budget.accountId != ""
 	input.budget.available
+}
+
+lease_grant_input_valid if {
+	knowledge_write_request_valid
+	not input.lease
 }
 
 lease_grant_input_valid if {
@@ -439,6 +510,11 @@ integration_merge_grant_allowed if {
 	input.resource.id != ""
 }
 
+knowledge_write_grant_allowed if {
+	lease_grant_input_valid
+	knowledge_approval_valid
+}
+
 model_generate_grant_allowed if {
 	lease_grant_input_valid
 	input.action == "model.generate"
@@ -477,6 +553,10 @@ lease_grant_allowed if {
 	integration_merge_grant_allowed
 }
 
+lease_grant_allowed if {
+	knowledge_write_grant_allowed
+}
+
 lease_grant_binding := {
 	"principalId": input.principal.id,
 	"tenantId": input.project.tenantId,
@@ -504,8 +584,26 @@ lease_grant := {
 	lease_grant_allowed
 }
 
+lease_grant := {
+	"decision": "APPROVAL_REQUIRED",
+	"policyVersion": data.aor.policy.version,
+	"reasonCodes": ["CURATOR_APPROVAL_REQUIRED"],
+	"ruleId": "aor.approval.required",
+} if {
+	knowledge_write_request_valid
+	not input.lease
+	not input.approval.id
+}
+
+knowledge_write_approval_missing if {
+	knowledge_write_request_valid
+	not input.lease
+	not input.approval.id
+}
+
 lease_grant := default_deny if {
 	not lease_grant_allowed
+	not knowledge_write_approval_missing
 }
 
 sandbox_exec_allowed if {
@@ -632,14 +730,12 @@ decision := {
     "reasonCodes": ["CURATOR_APPROVAL_REQUIRED"],
     "ruleId": "aor.approval.required",
 } if {
-    valid_project_scope
-    input.action == "knowledge.write"
-    input.principal.role == "KNOWLEDGE_CURATOR"
+	knowledge_write_request_valid
     not input.approval.id
 }
 
 curator_missing_approval if {
-    input.action == "knowledge.write"
+	knowledge_write_request_valid
     not input.approval.id
 }
 
@@ -680,18 +776,12 @@ matched if {
 }
 
 matched if {
-    valid_project_scope
-    input.action == "knowledge.write"
-    input.principal.role == "KNOWLEDGE_CURATOR"
+	knowledge_write_request_valid
     not input.approval.id
 }
 
 matched if {
-    valid_project_scope
-    input.action == "knowledge.write"
-    input.principal.role == "KNOWLEDGE_CURATOR"
-    input.approval.id != ""
-    active_lease
+	knowledge_write_allowed
 }
 
 matched if {
@@ -708,11 +798,7 @@ decision := {
     "ruleId": "aor.knowledge.write",
     "constraints": {"expiresAt": input.lease.expiresAt},
 } if {
-    valid_project_scope
-    input.action == "knowledge.write"
-    input.principal.role == "KNOWLEDGE_CURATOR"
-    input.approval.id != ""
-    active_lease
+	knowledge_write_allowed
 }
 
 decision := {

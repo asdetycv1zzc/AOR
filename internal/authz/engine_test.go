@@ -48,11 +48,8 @@ func TestEngineFailsClosedForUnavailableOrMalformedPolicyFacts(t *testing.T) {
 }
 
 func TestApprovalProofIsRequired(t *testing.T) {
-	input := testInput()
-	input.Principal = authn.Principal{ID: "curator_1", Type: authn.PrincipalKnowledgeCurator, Role: authn.RoleKnowledgeCurator, TenantID: "tenant_1", ProjectID: "project_1"}
-	input.Action = ActionKnowledgeWrite
-	input.Resource = Resource{Type: "knowledge.write", Path: "knowledge/global/rules.md"}
-	input.Approval = &Approval{ID: "approval_1", TenantID: input.Project.TenantID, ProjectID: input.Project.ID, PrincipalID: "user_1", SubjectType: input.Action, SubjectID: input.Resource.Path, SubjectVersion: input.Task.StateVersion, SubjectDigest: input.ParameterDigest, IssuedAt: authzTestNow.Add(-time.Minute), ExpiresAt: authzTestNow.Add(time.Minute), Signature: "unverified-signature"}
+	input := knowledgeCuratorInput()
+	input.Approval.Signature = "unverified-signature"
 	engine := NewEngine(EngineConfig{Bundle: PolicyBundle{Version: testPolicyVersion, Digest: testPolicyVersion, Available: true}, Clock: func() time.Time { return authzTestNow }})
 	decision, err := engine.EvaluateLeaseGrant(context.Background(), input)
 	if decision.Decision != DecisionDeny || err == nil {
@@ -137,19 +134,45 @@ func TestDefaultPolicyRoleOwnershipAndApproval(t *testing.T) {
 		t.Fatalf("auditor write result: decision=%#v err=%v", decision, err)
 	}
 
-	curator := testInput()
-	curator.Principal = authn.Principal{ID: "curator_1", Type: authn.PrincipalKnowledgeCurator, Role: authn.RoleKnowledgeCurator, TenantID: "tenant_1", ProjectID: "project_1"}
-	curator.Action = ActionKnowledgeWrite
-	curator.Resource = Resource{Type: "knowledge.write", Path: "knowledge/global/rules.md"}
-	curator.Task.OwnedPaths = nil
+	curator := knowledgeCuratorInput()
+	curator.Approval = nil
 	decision, err = engine.EvaluateLeaseGrant(context.Background(), curator)
 	if err != nil || decision.Decision != DecisionApprovalRequired {
 		t.Fatalf("missing curator approval result: decision=%#v err=%v", decision, err)
 	}
-	curator.Approval = &Approval{ID: "approval_1", TenantID: curator.Project.TenantID, ProjectID: curator.Project.ID, PrincipalID: "user_1", SubjectType: ActionKnowledgeWrite, SubjectID: curator.Resource.Path, SubjectVersion: curator.Task.StateVersion, SubjectDigest: curator.ParameterDigest, IssuedAt: authzTestNow.Add(-time.Minute), ExpiresAt: authzTestNow.Add(time.Minute), Signature: "signed-approval"}
+	curator.Approval = knowledgeCuratorInput().Approval
 	decision, err = engine.EvaluateLeaseGrant(context.Background(), curator)
 	if err != nil || decision.Decision != DecisionAllow {
 		t.Fatalf("valid curator approval rejected: decision=%#v err=%v", decision, err)
+	}
+}
+
+func TestKnowledgeCuratorGrantRequiresProjectApprovalAndExactIdentity(t *testing.T) {
+	engine := testEngine(nil, func() time.Time { return authzTestNow })
+	input := knowledgeCuratorInput()
+
+	for name, mutate := range map[string]func(*PolicyInput){
+		"task scope":             func(candidate *PolicyInput) { candidate.Task = testInput().Task },
+		"stale project approval": func(candidate *PolicyInput) { candidate.Approval.SubjectVersion-- },
+		"wrong proposal digest":  func(candidate *PolicyInput) { candidate.Approval.SubjectDigest = testSpecDigest },
+		"wrong project":          func(candidate *PolicyInput) { candidate.Approval.ProjectID = "project_2" },
+		"wrong principal type":   func(candidate *PolicyInput) { candidate.Principal.Type = authn.PrincipalAgentInstance },
+		"wrong curator role":     func(candidate *PolicyInput) { candidate.Principal.Role = authn.RoleExecutor },
+		"unavailable budget":     func(candidate *PolicyInput) { candidate.Budget.Available = false },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := knowledgeCuratorInput()
+			mutate(&candidate)
+			decision, err := engine.EvaluateLeaseGrant(context.Background(), candidate)
+			if decision.Decision == DecisionAllow {
+				t.Fatalf("invalid curator grant allowed: decision=%#v err=%v", decision, err)
+			}
+		})
+	}
+
+	decision, err := engine.EvaluateLeaseGrant(context.Background(), input)
+	if err != nil || decision.Decision != DecisionAllow || decision.Binding == nil || decision.Binding.ProjectVersion != input.Project.StateVersion || decision.Binding.TaskID != "" {
+		t.Fatalf("valid project curator grant: decision=%#v err=%v", decision, err)
 	}
 }
 

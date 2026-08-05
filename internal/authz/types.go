@@ -365,7 +365,7 @@ func (d PolicyDecision) Validate(now time.Time) *aorerrors.Error {
 	}
 	if d.Binding != nil {
 		binding := d.Binding
-		if !safeID(binding.PrincipalID) || !safeID(binding.TenantID) || !safeID(binding.ProjectID) || binding.ProjectVersion < 0 || binding.TaskID != "" && !safeID(binding.TaskID) || !validLeaseTaskBinding(binding.Role, binding.TaskID, binding.TaskVersion, binding.SpecDigest) || !safeOpaque(binding.Role, 128) || !leaseActionAllowed(binding.Action, binding.Role, binding.TaskID) || !digestPattern.MatchString(binding.ParameterDigest) || !safeID(binding.BudgetAccountID) {
+		if !safeID(binding.PrincipalID) || !safeID(binding.TenantID) || !safeID(binding.ProjectID) || binding.ProjectVersion < 0 || binding.TaskID != "" && !safeID(binding.TaskID) || !validLeaseScopeBinding(binding.Action, binding.Role, binding.TaskID, binding.TaskVersion, binding.SpecDigest) || !safeOpaque(binding.Role, 128) || !leaseActionAllowed(binding.Action, binding.Role, binding.TaskID) || !digestPattern.MatchString(binding.ParameterDigest) || !safeID(binding.BudgetAccountID) {
 			return aorerrors.New(aorerrors.CodePolicyDenied, "", map[string]any{"policyVersion": d.PolicyVersion})
 		}
 		if binding.Resource.Path != "" {
@@ -428,7 +428,7 @@ func IsSideEffect(action string) bool {
 func RequiresTask(action string) bool {
 	switch action {
 	case ActionProjectCreate, ActionProjectRead, ActionProjectCommand, ActionGoalRead, ActionPlanRead,
-		ActionKnowledgeRead, ActionPolicyTest, ActionModelCapabilities, ActionModelGenerate,
+		ActionKnowledgeRead, ActionKnowledgeWrite, ActionPolicyTest, ActionModelCapabilities, ActionModelGenerate,
 		ActionModelStream, ActionModelCancel, ActionModelReconcile, ActionIntegrationMerge:
 		return false
 	default:
@@ -440,7 +440,7 @@ func RequiresTask(action string) bool {
 // a ModuleTask exists. Unknown and task-level roles remain fail-closed.
 func LeaseRoleRequiresTask(role string) bool {
 	switch role {
-	case authn.RoleGoalProposer, authn.RoleGoalChallenger, authn.RolePlanSupervisor, authn.RoleGlobalAuditor, authn.RoleService:
+	case authn.RoleGoalProposer, authn.RoleGoalChallenger, authn.RolePlanSupervisor, authn.RoleGlobalAuditor, authn.RoleKnowledgeCurator, authn.RoleService:
 		return false
 	default:
 		return true
@@ -479,6 +479,13 @@ func validLeaseTaskBinding(role, taskID string, taskVersion int64, specDigest st
 		return !LeaseRoleRequiresTask(role) && taskVersion == 0 && specDigest == ""
 	}
 	return taskVersion >= 0 && digestPattern.MatchString(specDigest)
+}
+
+func validLeaseScopeBinding(action, role, taskID string, taskVersion int64, specDigest string) bool {
+	if action == ActionKnowledgeWrite {
+		return role == authn.RoleKnowledgeCurator && taskID == "" && taskVersion == 0 && specDigest == ""
+	}
+	return validLeaseTaskBinding(role, taskID, taskVersion, specDigest)
 }
 
 func IsHighRisk(action string) bool {

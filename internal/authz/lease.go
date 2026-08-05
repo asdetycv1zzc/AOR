@@ -71,7 +71,7 @@ func (lease CapabilityLease) IsExpired(now time.Time) bool {
 }
 
 func (lease CapabilityLease) ValidateShape() *aorerrors.Error {
-	if lease.ID == "" || lease.AgentInstanceID == "" || lease.PrincipalID == "" || lease.TenantID == "" || lease.ProjectID == "" || lease.ProjectVersion < 0 || !validLeaseTaskBinding(lease.Role, lease.TaskID, lease.TaskVersion, lease.SpecDigest) || lease.Role == "" || !leaseActionAllowed(lease.Action, lease.Role, lease.TaskID) || resourceEmpty(lease.Resource) || lease.ParameterDigest == "" || lease.PolicyVersion == "" || lease.BudgetAccountID == "" || lease.Nonce == "" || lease.FencingToken < 1 || lease.State == "" || lease.IssuedAt.IsZero() || lease.ExpiresAt.IsZero() || lease.LastHeartbeatAt.IsZero() || lease.HeartbeatIntervalSeconds <= 0 || lease.HeartbeatIntervalSeconds > 300 || len(lease.Capabilities) == 0 || len(lease.Capabilities) > 64 || !containsString(lease.Capabilities, lease.Action) {
+	if lease.ID == "" || lease.AgentInstanceID == "" || lease.PrincipalID == "" || lease.TenantID == "" || lease.ProjectID == "" || lease.ProjectVersion < 0 || !validLeaseScopeBinding(lease.Action, lease.Role, lease.TaskID, lease.TaskVersion, lease.SpecDigest) || lease.Role == "" || !leaseActionAllowed(lease.Action, lease.Role, lease.TaskID) || !validLeasePrincipalBinding(lease.Action, lease.PrincipalType, lease.Role) || resourceEmpty(lease.Resource) || lease.ParameterDigest == "" || lease.PolicyVersion == "" || lease.BudgetAccountID == "" || lease.Nonce == "" || lease.FencingToken < 1 || lease.State == "" || lease.IssuedAt.IsZero() || lease.ExpiresAt.IsZero() || lease.LastHeartbeatAt.IsZero() || lease.HeartbeatIntervalSeconds <= 0 || lease.HeartbeatIntervalSeconds > 300 || len(lease.Capabilities) == 0 || len(lease.Capabilities) > 64 || !containsString(lease.Capabilities, lease.Action) {
 		return aorerrors.New(aorerrors.CodePolicyDenied, "", map[string]any{"scope": "lease"})
 	}
 	if lease.PrincipalType == "" || !lease.ExpiresAt.After(lease.IssuedAt) || lease.LastHeartbeatAt.Before(lease.IssuedAt) || lease.LastHeartbeatAt.After(lease.ExpiresAt) {
@@ -398,7 +398,7 @@ func (m *LeaseManager) Issue(ctx context.Context, request LeaseRequest) (Capabil
 	if request.Principal.ID != request.AgentInstanceID {
 		return CapabilityLease{}, aorerrors.New(aorerrors.CodeForbidden, "", map[string]any{"scope": "agent"})
 	}
-	if request.TenantID == "" || request.ProjectID == "" || request.ProjectVersion < 0 || !validLeaseTaskBinding(request.Role, request.TaskID, request.TaskVersion, request.SpecDigest) || request.Role == "" || request.Action == "" || resourceEmpty(request.Resource) || !digestPattern.MatchString(request.ParameterDigest) || request.PolicyVersion == "" || request.BudgetAccountID == "" || len(request.Capabilities) == 0 || len(request.Capabilities) > 64 || !containsString(request.Capabilities, request.Action) || request.RequestDigest != "" && !digestPattern.MatchString(request.RequestDigest) || request.FencingToken < 0 {
+	if request.TenantID == "" || request.ProjectID == "" || request.ProjectVersion < 0 || !validLeaseScopeBinding(request.Action, request.Role, request.TaskID, request.TaskVersion, request.SpecDigest) || request.Role == "" || request.Action == "" || !validLeasePrincipalBinding(request.Action, request.Principal.Type, request.Role) || resourceEmpty(request.Resource) || !digestPattern.MatchString(request.ParameterDigest) || request.PolicyVersion == "" || request.BudgetAccountID == "" || len(request.Capabilities) == 0 || len(request.Capabilities) > 64 || !containsString(request.Capabilities, request.Action) || request.RequestDigest != "" && !digestPattern.MatchString(request.RequestDigest) || request.FencingToken < 0 {
 		return CapabilityLease{}, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "lease"})
 	}
 	if request.Principal.TenantID != "" && request.Principal.TenantID != request.TenantID {
@@ -485,12 +485,22 @@ func (m *LeaseManager) Issue(ctx context.Context, request LeaseRequest) (Capabil
 }
 
 func leaseActionAllowed(action, role, taskID string) bool {
+	if action == ActionKnowledgeWrite {
+		return role == authn.RoleKnowledgeCurator && taskID == ""
+	}
 	if taskID == "" {
 		return (action == ActionModelGenerate && !LeaseRoleRequiresTask(role)) ||
 			(action == ActionToolInvoke && role == authn.RoleGlobalAuditor) ||
 			(action == ActionIntegrationMerge && role == authn.RoleService)
 	}
 	return IsSideEffect(action) || action == ActionModelGenerate && taskModelLeaseRole(role)
+}
+
+func validLeasePrincipalBinding(action string, principalType authn.PrincipalType, role string) bool {
+	if action != ActionKnowledgeWrite {
+		return true
+	}
+	return principalType == authn.PrincipalKnowledgeCurator && role == authn.RoleKnowledgeCurator
 }
 
 func (m *LeaseManager) Renew(ctx context.Context, request LeaseRenewalRequest) (CapabilityLease, error) {

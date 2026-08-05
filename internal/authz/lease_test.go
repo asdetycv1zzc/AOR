@@ -42,6 +42,17 @@ func testInput() PolicyInput {
 	}
 }
 
+func knowledgeCuratorInput() PolicyInput {
+	input := testInput()
+	input.Principal = authn.Principal{ID: "curator_1", Type: authn.PrincipalKnowledgeCurator, Role: authn.RoleKnowledgeCurator, TenantID: "tenant_1", ProjectID: "project_1"}
+	input.Task = TaskScope{}
+	input.Action = ActionKnowledgeWrite
+	input.Resource = Resource{Type: "knowledge.write", Path: "knowledge/global/rules.md"}
+	input.Context = ExecutionContext{}
+	input.Approval = &Approval{ID: "approval_1", TenantID: input.Project.TenantID, ProjectID: input.Project.ID, PrincipalID: "user_1", SubjectType: ActionKnowledgeWrite, SubjectID: input.Resource.Path, SubjectVersion: input.Project.StateVersion, SubjectDigest: input.ParameterDigest, IssuedAt: authzTestNow.Add(-time.Minute), ExpiresAt: authzTestNow.Add(time.Minute), Signature: "signed-approval"}
+	return input
+}
+
 func testManager(t *testing.T, clock func() time.Time) (*LeaseManager, *MemoryLeaseStore) {
 	t.Helper()
 	signer, err := NewHMACSigner([]byte("0123456789abcdef0123456789abcdef"))
@@ -167,7 +178,7 @@ func TestCapabilityLeaseLifecycleAndFencing(t *testing.T) {
 }
 
 func TestProjectAgentLeaseLifecycleDoesNotRequireTask(t *testing.T) {
-	for _, role := range []string{authn.RoleGoalProposer, authn.RoleGoalChallenger, authn.RolePlanSupervisor} {
+	for _, role := range []string{authn.RoleGoalProposer, authn.RoleGoalChallenger, authn.RolePlanSupervisor, authn.RoleKnowledgeCurator} {
 		t.Run(role, func(t *testing.T) {
 			now := authzTestNow
 			manager, _ := testManager(t, func() time.Time { return now })
@@ -203,6 +214,49 @@ func TestProjectAgentLeaseLifecycleDoesNotRequireTask(t *testing.T) {
 				t.Fatalf("revoke project lease: %v", err)
 			}
 		})
+	}
+}
+
+func TestKnowledgeCuratorLeaseIsProjectScopedAndExactlyBound(t *testing.T) {
+	now := authzTestNow
+	manager, _ := testManager(t, func() time.Time { return now })
+	engine := testEngine(manager, func() time.Time { return now })
+	input := knowledgeCuratorInput()
+
+	grant, err := engine.EvaluateLeaseGrant(context.Background(), input)
+	if err != nil || grant.Decision != DecisionAllow || grant.Binding == nil {
+		t.Fatalf("knowledge lease grant: decision=%#v err=%v", grant, err)
+	}
+	if grant.Binding.ProjectVersion != input.Project.StateVersion || grant.Binding.TaskID != "" || grant.Binding.TaskVersion != 0 || grant.Binding.SpecDigest != "" || grant.Binding.ParameterDigest != input.ParameterDigest {
+		t.Fatalf("knowledge grant binding = %#v", grant.Binding)
+	}
+	wrongTypeRequest := leaseRequestForInput(input, grant)
+	wrongTypeRequest.Principal.Type = authn.PrincipalAgentInstance
+	if _, issueErr := manager.Issue(context.Background(), wrongTypeRequest); issueErr == nil {
+		t.Fatal("knowledge lease issued to non-curator principal type")
+	}
+
+	lease, authorized := issueForInput(t, manager, engine, input, now)
+	if lease.ProjectVersion != input.Project.StateVersion || lease.TaskID != "" || lease.TaskVersion != 0 || lease.SpecDigest != "" || lease.ParameterDigest != input.ParameterDigest {
+		t.Fatalf("knowledge lease binding = %#v", lease)
+	}
+	if decision, authorizeErr := engine.Authorize(context.Background(), authorized); authorizeErr != nil || decision.Decision != DecisionAllow {
+		t.Fatalf("knowledge write authorization: decision=%#v err=%v", decision, authorizeErr)
+	}
+
+	staleProject := authorized
+	staleProject.Project.StateVersion++
+	if decision, authorizeErr := engine.Authorize(context.Background(), staleProject); authorizeErr == nil || decision.Decision != DecisionDeny {
+		t.Fatalf("stale project version accepted: decision=%#v err=%v", decision, authorizeErr)
+	}
+
+	changedProposal := authorized
+	changedProposal.ParameterDigest = "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+	changedProposal.Approval = &Approval{}
+	*changedProposal.Approval = *authorized.Approval
+	changedProposal.Approval.SubjectDigest = changedProposal.ParameterDigest
+	if decision, authorizeErr := engine.Authorize(context.Background(), changedProposal); authorizeErr == nil || decision.Decision != DecisionDeny {
+		t.Fatalf("changed proposal accepted: decision=%#v err=%v", decision, authorizeErr)
 	}
 }
 

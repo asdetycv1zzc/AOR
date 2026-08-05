@@ -47,6 +47,25 @@ task_model_grant_input := {
 	"budget": {"accountId": "budget_1", "available": true},
 }
 
+curator_grant_input := {
+	"principal": {
+		"id": "curator_1", "type": "KNOWLEDGE_CURATOR", "role": "KNOWLEDGE_CURATOR",
+		"tenantId": "tenant_1", "projectId": "project_1",
+	},
+	"project": {"id": "project_1", "tenantId": "tenant_1", "state": "EXECUTING", "stateVersion": 7},
+	"task": {"id": "", "stateVersion": 0, "specDigest": ""},
+	"action": "knowledge.write",
+	"resource": {"type": "knowledge.write", "path": "knowledge/global/rules.md"},
+	"parameterDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+	"budget": {"accountId": "budget_1", "available": true},
+	"approval": {
+		"id": "approval_1", "tenantId": "tenant_1", "projectId": "project_1", "principalId": "user_1",
+		"subjectType": "knowledge.write", "subjectId": "knowledge/global/rules.md", "subjectVersion": 7,
+		"subjectDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+		"issuedAt": "2020-01-01T00:00:00Z", "expiresAt": "2099-01-01T00:00:00Z", "signature": "signed-approval",
+	},
+}
+
 test_unknown_action_is_denied if {
     result := authz.decision with input as object.union(base_input, {"action": "unknown.action"})
     result.decision == "DENY"
@@ -133,6 +152,95 @@ test_project_agent_lease_grant_has_no_task_binding if {
 	})
 	authorized := authz.decision with input as request
 	authorized.decision == "ALLOW"
+}
+
+test_knowledge_curator_model_grant_has_no_task_binding if {
+	principal := object.union(project_grant_input.principal, {"role": "KNOWLEDGE_CURATOR"})
+	request := object.union(project_grant_input, {"principal": principal})
+	result := authz.lease_grant with input as request
+	result.decision == "ALLOW"
+	result.binding.taskId == ""
+	result.binding.taskVersion == 0
+	result.binding.specDigest == ""
+}
+
+test_knowledge_curator_lease_grant_is_project_bound if {
+	result := authz.lease_grant with input as curator_grant_input
+	result.decision == "ALLOW"
+	result.binding.projectId == curator_grant_input.project.id
+	result.binding.projectVersion == curator_grant_input.project.stateVersion
+	result.binding.taskId == ""
+	result.binding.taskVersion == 0
+	result.binding.specDigest == ""
+	result.binding.parameterDigest == curator_grant_input.parameterDigest
+}
+
+test_knowledge_curator_missing_approval_requires_approval if {
+	request := object.union(curator_grant_input, {"approval": {}})
+	result := authz.lease_grant with input as request
+	result.decision == "APPROVAL_REQUIRED"
+}
+
+test_knowledge_curator_requires_exact_project_approval if {
+	stale_approval := object.union(curator_grant_input.approval, {"subjectVersion": 6})
+	stale_request := object.union(curator_grant_input, {"approval": stale_approval})
+	stale_result := authz.lease_grant with input as stale_request
+	stale_result.decision == "DENY"
+
+	wrong_digest_approval := object.union(curator_grant_input.approval, {
+		"subjectDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+	})
+	wrong_digest_request := object.union(curator_grant_input, {"approval": wrong_digest_approval})
+	wrong_digest_result := authz.lease_grant with input as wrong_digest_request
+	wrong_digest_result.decision == "DENY"
+
+	wrong_project_approval := object.union(curator_grant_input.approval, {"projectId": "project_2"})
+	wrong_project_request := object.union(curator_grant_input, {"approval": wrong_project_approval})
+	wrong_project_result := authz.lease_grant with input as wrong_project_request
+	wrong_project_result.decision == "DENY"
+}
+
+test_knowledge_curator_rejects_task_scope_or_wrong_identity if {
+	task_request := object.union(curator_grant_input, {"task": grant_input.task})
+	task_result := authz.lease_grant with input as task_request
+	task_result.decision == "DENY"
+
+	wrong_type_principal := object.union(curator_grant_input.principal, {"type": "AGENT_INSTANCE"})
+	wrong_type_request := object.union(curator_grant_input, {"principal": wrong_type_principal})
+	wrong_type_result := authz.lease_grant with input as wrong_type_request
+	wrong_type_result.decision == "DENY"
+
+	wrong_role_principal := object.union(curator_grant_input.principal, {"role": "EXECUTOR"})
+	wrong_role_request := object.union(curator_grant_input, {"principal": wrong_role_principal})
+	wrong_role_result := authz.lease_grant with input as wrong_role_request
+	wrong_role_result.decision == "DENY"
+
+	wrong_project_principal := object.union(curator_grant_input.principal, {"projectId": "project_2"})
+	wrong_project_request := object.union(curator_grant_input, {"principal": wrong_project_principal})
+	wrong_project_result := authz.lease_grant with input as wrong_project_request
+	wrong_project_result.decision == "DENY"
+}
+
+test_knowledge_curator_commit_requires_exact_proposal_and_current_project if {
+	lease := {
+		"id": "lease_curator", "policyVersion": data.aor.policy.version, "fencingToken": 1,
+		"expiresAt": "2099-01-01T00:00:00Z",
+	}
+	request := object.union(curator_grant_input, {"lease": lease})
+	result := authz.decision with input as request
+	result.decision == "ALLOW"
+
+	changed_proposal := object.union(request, {
+		"parameterDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+	})
+	changed_result := authz.decision with input as changed_proposal
+	changed_result.decision == "DENY"
+
+	changed_project := object.union(request, {
+		"project": object.union(request.project, {"stateVersion": 8}),
+	})
+	changed_project_result := authz.decision with input as changed_project
+	changed_project_result.decision == "DENY"
 }
 
 test_task_model_lease_grant_is_task_bound if {

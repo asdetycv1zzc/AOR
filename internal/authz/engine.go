@@ -150,7 +150,7 @@ func (e *Engine) EvaluateLeaseGrant(ctx context.Context, input PolicyInput) (Pol
 	if err := e.validateApprovalProof(ctx, input); err != nil {
 		return denyDecision(e.bundle.Version, reasonForError(err)), err
 	}
-	if !leaseGrantActionAllowed(input) || input.Lease != nil || input.ParameterDigest == "" || input.Budget.AccountID == "" || !input.Budget.Available || !validLeaseTaskBinding(input.Principal.Role, input.Task.ID, input.Task.StateVersion, input.Task.SpecDigest) {
+	if !leaseGrantActionAllowed(input) || input.Lease != nil || input.ParameterDigest == "" || input.Budget.AccountID == "" || !input.Budget.Available || !validLeaseScopeBinding(input.Action, input.Principal.Role, input.Task.ID, input.Task.StateVersion, input.Task.SpecDigest) {
 		return denyDecision(e.bundle.Version, "INVALID_LEASE_GRANT_INPUT"), aorerrors.New(aorerrors.CodePolicyDenied, "", map[string]any{"scope": "lease grant"})
 	}
 	if err := e.validateExecutionBoundary(input); err != nil {
@@ -229,6 +229,9 @@ func bindGrant(result PolicyDecision, input PolicyInput, now time.Time) PolicyDe
 }
 
 func leaseGrantActionAllowed(input PolicyInput) bool {
+	if input.Action == ActionKnowledgeWrite {
+		return input.Task.ID == "" && input.Principal.Role == authn.RoleKnowledgeCurator
+	}
 	if input.Task.ID == "" {
 		return (input.Action == ActionModelGenerate && !LeaseRoleRequiresTask(input.Principal.Role)) ||
 			globalAuditorProjectReadTool(input) ||
@@ -306,7 +309,7 @@ func (e *Engine) validateLease(ctx context.Context, input PolicyInput, now time.
 	if input.Lease.PolicyVersion != e.bundle.Version {
 		return CapabilityLease{}, aorerrors.New(aorerrors.CodePolicyDenied, "", map[string]any{"policyVersion": e.bundle.Version})
 	}
-	if input.ParameterDigest == "" || input.Budget.AccountID == "" || !input.Budget.Available || !validLeaseTaskBinding(input.Principal.Role, input.Task.ID, input.Task.StateVersion, input.Task.SpecDigest) {
+	if input.ParameterDigest == "" || input.Budget.AccountID == "" || !input.Budget.Available || !validLeaseScopeBinding(input.Action, input.Principal.Role, input.Task.ID, input.Task.StateVersion, input.Task.SpecDigest) {
 		return CapabilityLease{}, aorerrors.New(aorerrors.CodePolicyDenied, "", map[string]any{"scope": "commit facts"})
 	}
 	if e.leases == nil {
@@ -362,7 +365,7 @@ func (e *Engine) defaultDecision(input PolicyInput, lease CapabilityLease, now t
 		}
 		return e.constrainAllow(allowDecision(e.bundle.Version, "aor.integration.merge", "TRUSTED_SERVICE_ALLOWED", "PROJECT_STATE_VALID", "LEASE_VALID"), input, lease)
 	case ActionKnowledgeWrite:
-		if input.Principal.Type != authn.PrincipalKnowledgeCurator && input.Principal.Role != authn.RoleKnowledgeCurator {
+		if input.Principal.Type != authn.PrincipalKnowledgeCurator || input.Principal.Role != authn.RoleKnowledgeCurator {
 			return denyDecision(e.bundle.Version, "CURATOR_REQUIRED")
 		}
 		if !approvalMatches(input, now) {
@@ -470,7 +473,11 @@ func approvalMatches(input PolicyInput, now time.Time) bool {
 	if expected == "" || input.Approval.SubjectID != expected {
 		return false
 	}
-	if input.Approval.TenantID != input.Project.TenantID || input.Approval.ProjectID != input.Project.ID || input.Approval.SubjectVersion != input.Task.StateVersion || input.Approval.SubjectDigest != input.ParameterDigest {
+	subjectVersion := input.Task.StateVersion
+	if input.Action == ActionKnowledgeWrite {
+		subjectVersion = input.Project.StateVersion
+	}
+	if input.Approval.TenantID != input.Project.TenantID || input.Approval.ProjectID != input.Project.ID || input.Approval.SubjectVersion != subjectVersion || input.Approval.SubjectDigest != input.ParameterDigest {
 		return false
 	}
 	return input.Approval.SubjectType == input.Action || input.Approval.SubjectType == input.Resource.Type
