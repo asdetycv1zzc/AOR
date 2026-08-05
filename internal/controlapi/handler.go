@@ -404,7 +404,7 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 	}
 	if len(parts) == 3 && parts[1] == "legal-holds" {
 		holdID, action, found := strings.Cut(parts[2], ":")
-		if !validProjectID(projectID) || !found || action != "release" || !validAPIIdentifier(holdID) {
+		if !validProjectID(projectID) || !found || action != "release" || (!validProjectID(holdID) && !validAPIIdentifier(holdID)) {
 			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
 			return
 		}

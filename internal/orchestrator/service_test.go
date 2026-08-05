@@ -10,6 +10,7 @@ import (
 	"github.com/akimisaka/aor/internal/state"
 	"github.com/akimisaka/aor/pkg/contracts"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
+	"github.com/google/uuid"
 )
 
 type testCommitBoundary struct{}
@@ -127,6 +128,10 @@ func TestProjectLifecycleRecordsUseTrustedTimeAndIdempotentIdentity(t *testing.T
 	}
 	if first.Project.Deletion == nil || !first.Project.Deletion.RequestedAt.Equal(fixedClock()) || first.Project.Deletion.RequestedBy != "usr_1" || first.Project.Deletion.ID == "" {
 		t.Fatalf("trusted deletion record = %#v", first.Project.Deletion)
+	}
+	deletionID, parseErr := uuid.Parse(first.Project.Deletion.ID)
+	if parseErr != nil || deletionID.Version() != uuid.Version(7) {
+		t.Fatalf("deletion ID = %q, parse error = %v", first.Project.Deletion.ID, parseErr)
 	}
 	if !second.Duplicate || second.Project.Deletion.ID != first.Project.Deletion.ID || store.Stats().Events != 2 {
 		t.Fatalf("duplicate lifecycle outcome = %#v stats=%#v", second, store.Stats())

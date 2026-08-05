@@ -100,6 +100,7 @@ func goalDigestCommand(command state.ProjectCommand) state.ProjectCommand {
 	digestCommand := command
 	if command.Deletion != nil {
 		deletion := *command.Deletion
+		deletion.ID = ""
 		deletion.RequestedAt = time.Time{}
 		deletion.StartedAt = cloneTimePointer(nil)
 		deletion.CompletedAt = cloneTimePointer(nil)
@@ -107,6 +108,7 @@ func goalDigestCommand(command state.ProjectCommand) state.ProjectCommand {
 	}
 	if command.LegalHold != nil {
 		hold := *command.LegalHold
+		hold.ID = ""
 		hold.PlacedAt = time.Time{}
 		digestCommand.LegalHold = &hold
 	}
@@ -131,6 +133,11 @@ func goalDigestCommand(command state.ProjectCommand) state.ProjectCommand {
 func finalizeGoalCommand(command state.ProjectCommand) (state.ProjectCommand, error) {
 	if command.Type == state.ProjectCommandRequestDeletion && command.Deletion != nil {
 		deletion := *command.Deletion
+		id, err := newRecordUUIDv7()
+		if err != nil {
+			return state.ProjectCommand{}, err
+		}
+		deletion.ID = id
 		deletion.RequestedAt = command.At
 		if deletion.EarliestExecutionAt.IsZero() {
 			deletion.EarliestExecutionAt = command.At
@@ -139,6 +146,11 @@ func finalizeGoalCommand(command state.ProjectCommand) (state.ProjectCommand, er
 	}
 	if command.Type == state.ProjectCommandPlaceLegalHold && command.LegalHold != nil {
 		hold := *command.LegalHold
+		id, err := newRecordUUIDv7()
+		if err != nil {
+			return state.ProjectCommand{}, err
+		}
+		hold.ID = id
 		hold.PlacedAt = command.At
 		command.LegalHold = &hold
 	}
@@ -171,7 +183,7 @@ func prepareProjectLifecycleCommand(request ProjectRequest, command state.Projec
 			return state.ProjectCommand{}, invalidGoalCommand("deletion request required")
 		}
 		deletion := *command.Deletion
-		deletion.ID = stableID("deletion", request.TenantID+"\x00"+request.ProjectID+"\x00"+request.PrincipalID+"\x00"+request.IdempotencyKey)
+		deletion.ID = ""
 		deletion.RequestedBy = request.PrincipalID
 		deletion.RequestedAt = time.Time{}
 		deletion.Status = ""
@@ -186,7 +198,7 @@ func prepareProjectLifecycleCommand(request ProjectRequest, command state.Projec
 			return state.ProjectCommand{}, invalidGoalCommand("legal hold required")
 		}
 		hold := *command.LegalHold
-		hold.ID = stableID("hold", request.TenantID+"\x00"+request.ProjectID+"\x00"+request.PrincipalID+"\x00"+request.IdempotencyKey)
+		hold.ID = ""
 		hold.PlacedBy = request.PrincipalID
 		hold.PlacedAt = time.Time{}
 		hold.ReleasedBy = ""
