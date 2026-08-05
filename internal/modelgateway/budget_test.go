@@ -5,7 +5,41 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
+
+func TestBudgetLedgerAllocatesRandomUUIDv7ReservationIDs(t *testing.T) {
+	ledger := NewBudgetLedger(time.Now)
+	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "account", TenantID: "tenant", LimitMicros: 100}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := ledger.Reserve(context.Background(), "tenant", "account", "stable-key-1", "request-1", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := ledger.Reserve(context.Background(), "tenant", "account", "stable-key-2", "request-2", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, reservation := range []Reservation{first, second} {
+		parsed, parseErr := uuid.Parse(reservation.ID)
+		if parseErr != nil || parsed.Version() != 7 {
+			t.Fatalf("reservation id %q is not UUIDv7", reservation.ID)
+		}
+	}
+	if first.ID == second.ID || first.ID == "stable-key-1" || second.ID == "stable-key-2" {
+		t.Fatalf("reservation ids were not independently allocated: %q %q", first.ID, second.ID)
+	}
+	replayed, err := ledger.Reserve(context.Background(), "tenant", "account", "stable-key-1", "request-1", 10)
+	if err != nil || replayed.ID != first.ID {
+		t.Fatalf("idempotent reservation = %#v, error = %v", replayed, err)
+	}
+	settled, err := ledger.Settle(context.Background(), "tenant", "stable-key-1", 5)
+	if err != nil || settled.ID != first.ID || settled.State != ReservationSettled {
+		t.Fatalf("settled reservation = %#v, error = %v", settled, err)
+	}
+}
 
 func TestBudgetLedgerExpiresReservationsIntoReconciliation(t *testing.T) {
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)

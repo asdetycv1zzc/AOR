@@ -65,7 +65,7 @@ WHERE tenant_id = $1::uuid AND id = $2 AND reserved_micros >= $3`, reconciliatio
 	result, err = tx.ExecContext(ctx, `
 UPDATE budget_reservations
 SET actual_micros = $3, state = 'SETTLED', updated_at = $4
-WHERE tenant_id = $1::uuid AND id = $2 AND state = 'RECONCILE'`, reconciliation.TenantID, reconciliation.ReservationID, reconciliation.ActualMicros, ledger.clock().UTC())
+	WHERE tenant_id = $1::uuid AND id = $2 AND state = 'RECONCILE'`, reconciliation.TenantID, reservation.ID, reconciliation.ActualMicros, ledger.clock().UTC())
 	if err != nil {
 		return Reservation{}, err
 	}

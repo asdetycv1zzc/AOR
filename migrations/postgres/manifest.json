@@ -260,6 +260,13 @@
       "file": "000037_lease_idempotency_keys.up.sql",
       "sha256": "sha256:b954548873303975ae2924dc33730c02d86f7a7f0c26bfcebd42f2c6f00b625b",
       "destructive": false
+    },
+    {
+      "version": 38,
+      "mode": "EXPAND",
+      "file": "000038_budget_reservation_ids.up.sql",
+      "sha256": "sha256:e556eb9e0f205f4177b0c5af70ec5c9f49d31d6a682e3f7af2907b39e1d4ef37",
+      "destructive": false
     }
   ]
 }

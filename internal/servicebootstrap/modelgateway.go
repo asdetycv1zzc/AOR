@@ -464,7 +464,7 @@ WHERE t.tenant_id = $1::uuid AND t.project_id = $2::uuid AND t.id = $3::uuid
 	}
 	var reservation modelReservationProjection
 	if reservationID != "" {
-		if err := tx.QueryRowContext(ctx, `SELECT account_id, request_id, state FROM budget_reservations WHERE tenant_id = $1::uuid AND id = $2`, tenantID, reservationID).Scan(&reservation.AccountID, &reservation.RequestID, &reservation.State); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		if err := tx.QueryRowContext(ctx, `SELECT account_id, request_id, state FROM budget_reservations WHERE tenant_id = $1::uuid AND (id = $2 OR idempotency_key = $2) ORDER BY CASE WHEN id = $2 THEN 0 ELSE 1 END LIMIT 1`, tenantID, reservationID).Scan(&reservation.AccountID, &reservation.RequestID, &reservation.State); err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return modelProjectProjection{}, authz.TaskScope{}, modelAccountProjection{}, modelReservationProjection{}, err
 		}
 	}

@@ -186,7 +186,7 @@ func (ledger *BudgetLedger) finalizeModelCall(ctx context.Context, finalization 
 		if !sameModelCall(existing, finalization.Call) {
 			return Reservation{}, ErrReservationConflict
 		}
-		reservation, found := ledger.reservations[budgetKey(finalization.Call.TenantID, finalization.ReservationID)]
+		_, reservation, found := ledger.lookupReservationLocked(finalization.Call.TenantID, finalization.ReservationID)
 		if !found {
 			return Reservation{}, ErrReservationNotFound
 		}
@@ -197,8 +197,7 @@ func (ledger *BudgetLedger) finalizeModelCall(ctx context.Context, finalization 
 		}
 		return reservation, nil
 	}
-	reservationKey := budgetKey(finalization.Call.TenantID, finalization.ReservationID)
-	reservation, found := ledger.reservations[reservationKey]
+	reservationKey, reservation, found := ledger.lookupReservationLocked(finalization.Call.TenantID, finalization.ReservationID)
 	if !found {
 		return Reservation{}, ErrReservationNotFound
 	}

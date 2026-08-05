@@ -104,7 +104,7 @@ func (ledger *PostgresBudgetLedger) reserve(ctx context.Context, tenantID, accou
 		if existing.State == ReservationOpen && !ledger.clock().UTC().Before(existing.ExpiresAt) {
 			result, updateErr := tx.ExecContext(ctx, `
 UPDATE budget_reservations SET state = 'RECONCILE', updated_at = $3
-	WHERE tenant_id = $1::uuid AND id = $2 AND state = 'RESERVED'`, tenantID, reservationID, ledger.clock().UTC())
+	WHERE tenant_id = $1::uuid AND id = $2 AND state = 'RESERVED'`, tenantID, existing.ID, ledger.clock().UTC())
 			if updateErr != nil {
 				return Reservation{}, false, updateErr
 			}
@@ -157,12 +157,16 @@ WHERE tenant_id = $1::uuid AND id = $2 AND version >= 1`, tenantID, accountID, a
 		return Reservation{}, false, err
 	}
 	createdAt := ledger.clock().UTC()
-	reservation := Reservation{ID: reservationID, TenantID: tenantID, AccountID: accountID, RequestID: requestID, ReservedMicros: amountMicros, State: ReservationOpen, CreatedAt: createdAt, ExpiresAt: createdAt.Add(ledger.reservationTTL)}
+	generatedID, err := newReservationID()
+	if err != nil {
+		return Reservation{}, false, err
+	}
+	reservation := Reservation{ID: generatedID, TenantID: tenantID, AccountID: accountID, RequestID: requestID, ReservedMicros: amountMicros, State: ReservationOpen, CreatedAt: createdAt, ExpiresAt: createdAt.Add(ledger.reservationTTL)}
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO budget_reservations
-  (tenant_id, id, account_id, request_id, estimated_micros, state, expires_at, created_at, updated_at)
-VALUES ($1::uuid, $2, $3, $4, $5, 'RESERVED', $6, $7, $7)`,
-		tenantID, reservationID, accountID, requestID, amountMicros, createdAt.Add(ledger.reservationTTL), createdAt)
+  (tenant_id, id, idempotency_key, account_id, request_id, estimated_micros, state, expires_at, created_at, updated_at)
+VALUES ($1::uuid, $2, $3, $4, $5, $6, 'RESERVED', $7, $8, $8)`,
+		tenantID, generatedID, reservationID, accountID, requestID, amountMicros, createdAt.Add(ledger.reservationTTL), createdAt)
 	if err != nil {
 		return Reservation{}, false, mapBudgetSQLError(err)
 	}
@@ -232,7 +236,7 @@ WHERE tenant_id = $1::uuid AND id = $2 AND reserved_micros >= $3`, tenantID, res
 	result, err = tx.ExecContext(ctx, `
 UPDATE budget_reservations
 SET actual_micros = $3, state = 'SETTLED', updated_at = $4
-WHERE tenant_id = $1::uuid AND id = $2 AND state = $5`, tenantID, reservationID, actualMicros, ledger.clock().UTC(), string(reservation.State))
+WHERE tenant_id = $1::uuid AND id = $2 AND state = $5`, tenantID, reservation.ID, actualMicros, ledger.clock().UTC(), string(reservation.State))
 	if err != nil {
 		return Reservation{}, err
 	}
@@ -285,7 +289,7 @@ WHERE tenant_id = $1::uuid AND id = $2 AND reserved_micros >= $3`, tenantID, res
 	result, err = tx.ExecContext(ctx, `
 UPDATE budget_reservations
 SET state = 'RELEASED', updated_at = $3
-	WHERE tenant_id = $1::uuid AND id = $2 AND state = 'RESERVED'`, tenantID, reservationID, ledger.clock().UTC())
+	WHERE tenant_id = $1::uuid AND id = $2 AND state = 'RESERVED'`, tenantID, reservation.ID, ledger.clock().UTC())
 	if err != nil {
 		return err
 	}
@@ -326,7 +330,7 @@ func (ledger *PostgresBudgetLedger) RequireReconciliation(ctx context.Context, t
 	result, err := tx.ExecContext(ctx, `
 UPDATE budget_reservations
 SET state = 'RECONCILE', updated_at = $3
-	WHERE tenant_id = $1::uuid AND id = $2 AND state = 'RESERVED'`, tenantID, reservationID, ledger.clock().UTC())
+	WHERE tenant_id = $1::uuid AND id = $2 AND state = 'RESERVED'`, tenantID, reservation.ID, ledger.clock().UTC())
 	if err != nil {
 		return Reservation{}, err
 	}
@@ -515,7 +519,9 @@ func loadBudgetReservation(ctx context.Context, tx *sql.Tx, tenantID, reservatio
 	query := `
 SELECT id, tenant_id::text, account_id, request_id, estimated_micros, coalesce(actual_micros, 0), state, created_at, expires_at
 FROM budget_reservations
-WHERE tenant_id = $1::uuid AND id = $2`
+WHERE tenant_id = $1::uuid AND (id = $2 OR idempotency_key = $2)
+ORDER BY CASE WHEN id = $2 THEN 0 ELSE 1 END
+LIMIT 1`
 	if lock {
 		query += ` FOR UPDATE`
 	}

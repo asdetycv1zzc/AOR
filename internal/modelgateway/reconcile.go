@@ -130,8 +130,7 @@ func (ledger *BudgetLedger) ReconcileModelCall(ctx context.Context, reconciliati
 	if !found || call.Provider != reconciliation.Provider || call.LogicalModel != reconciliation.Model {
 		return Reservation{}, ErrRequestConflict
 	}
-	reservationKey := budgetKey(reconciliation.TenantID, reconciliation.ReservationID)
-	reservation, found := ledger.reservations[reservationKey]
+	reservationKey, reservation, found := ledger.lookupReservationLocked(reconciliation.TenantID, reconciliation.ReservationID)
 	if !found {
 		return Reservation{}, ErrReservationNotFound
 	}
