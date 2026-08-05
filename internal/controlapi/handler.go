@@ -108,7 +108,8 @@ type projectBudgetSelection struct {
 }
 
 type commandBody struct {
-	ExpectedVersion int64 `json:"expectedVersion"`
+	ExpectedVersion int64  `json:"expectedVersion"`
+	SHA256          string `json:"sha256,omitempty"`
 }
 
 type legalHoldBody struct {
@@ -858,6 +859,32 @@ func (handler *Handler) commandProject(response http.ResponseWriter, request *ht
 	command := state.ProjectCommand{Type: commandType}
 	if commandType == state.ProjectCommandRequestDeletion {
 		command.Deletion = &state.ProjectDeletion{}
+	}
+	if commandType == state.ProjectCommandApproveRelease {
+		project, found, projectErr := handler.orchestrator.Project(request.Context(), principal.TenantID, projectID)
+		if projectErr != nil {
+			writeError(response, request, normalizeError(projectErr))
+			return
+		}
+		if !found {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		if project.Version != body.ExpectedVersion {
+			writeError(response, request, aorerrors.New(aorerrors.CodeStateVersionConflict, "", map[string]any{"expectedVersion": body.ExpectedVersion, "actualVersion": project.Version}))
+			return
+		}
+		if project.State != contracts.ProjectGlobalAudit || project.Plan == nil || body.SHA256 != project.Plan.SHA256 {
+			writeError(response, request, aorerrors.New(aorerrors.CodeInvalidStateTransition, "", map[string]any{"scope": "release approval"}))
+			return
+		}
+		issuedAt := handler.clock().UTC()
+		command.Approval = &state.ApprovalBinding{
+			RecordID: approvalRecordID(principal.TenantID, principal.ID, idempotencyKey), ApprovalType: "RELEASE_APPROVAL", SubjectType: "PROJECT",
+			SubjectID: project.ID, SubjectVersion: int(project.Version), SubjectSHA256: project.Plan.SHA256, PrincipalID: principal.ID,
+			Reason: "explicit release approval", IssuedAt: issuedAt,
+			Signature: releaseApprovalSignature(principal.TenantID, project.ID, project.Version, project.Plan.SHA256, principal.ID, idempotencyKey),
+		}
 	}
 	outcome, err := handler.orchestrator.HandleProject(request.Context(), orchestrator.ProjectRequest{
 		TenantID: principal.TenantID, ProjectID: projectID, PrincipalID: principal.ID,
@@ -1667,7 +1694,7 @@ func (handler *Handler) decideGoalSpec(response http.ResponseWriter, request *ht
 		issuedAt := handler.clock().UTC()
 		command.Type = state.ProjectCommandApproveGoal
 		command.Approval = &state.ApprovalBinding{
-			RecordID: goalApprovalRecordID(principal.TenantID, principal.ID, idempotencyKey), ApprovalType: "GOAL_APPROVAL", SubjectType: "GOAL_SPEC",
+			RecordID: approvalRecordID(principal.TenantID, principal.ID, idempotencyKey), ApprovalType: "GOAL_APPROVAL", SubjectType: "GOAL_SPEC",
 			SubjectID: projection.GoalSpecID, SubjectVersion: version, SubjectSHA256: body.SHA256, PrincipalID: principal.ID,
 			Reason: reason, IssuedAt: issuedAt, Signature: goalApprovalSignature(principal.TenantID, projectID, projection.GoalSpecID, version, body.SHA256, principal.ID, reason, idempotencyKey),
 		}
@@ -1798,12 +1825,17 @@ func goalSpecETag(version int, revision int64) string {
 	return `"goal-v` + strconv.Itoa(version) + `-r` + strconv.FormatInt(revision, 10) + `"`
 }
 
-func goalApprovalRecordID(tenantID, principalID, idempotencyKey string) string {
+func approvalRecordID(tenantID, principalID, idempotencyKey string) string {
 	value := sha256.Sum256([]byte(tenantID + "\x00" + principalID + "\x00" + idempotencyKey))
 	value[6] = value[6]&0x0f | 0x50
 	value[8] = value[8]&0x3f | 0x80
 	hexValue := hex.EncodeToString(value[:16])
 	return hexValue[0:8] + "-" + hexValue[8:12] + "-" + hexValue[12:16] + "-" + hexValue[16:20] + "-" + hexValue[20:32]
+}
+
+func releaseApprovalSignature(tenantID, projectID string, version int64, digest, principalID, idempotencyKey string) string {
+	value := sha256.Sum256([]byte(tenantID + "\x00" + projectID + "\x00" + strconv.FormatInt(version, 10) + "\x00" + digest + "\x00" + principalID + "\x00explicit release approval\x00" + idempotencyKey))
+	return "oidc-sha256:" + hex.EncodeToString(value[:])
 }
 
 func goalApprovalSignature(tenantID, projectID, goalSpecID string, version int, digest, principalID, reason, idempotencyKey string) string {
@@ -2674,7 +2706,7 @@ func mapProjectCommand(name string) (state.ProjectCommandType, bool) {
 	case "request-deletion":
 		return state.ProjectCommandRequestDeletion, true
 	case "approve-release":
-		return "", false
+		return state.ProjectCommandApproveRelease, true
 	default:
 		return "", false
 	}

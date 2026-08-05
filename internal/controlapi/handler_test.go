@@ -491,6 +491,55 @@ func TestProjectArchiveRequiresAbortedOrCompletedState(t *testing.T) {
 	}
 }
 
+func TestApproveReleaseBindsCurrentProjectVersionAndPlan(t *testing.T) {
+	handler, store, _ := newTestHandler(t)
+	projectID := "22222222-2222-4222-8222-222222222222"
+	planDigest := "sha256:" + strings.Repeat("a", 64)
+	project := state.Project{
+		TenantID: testTenantID, ID: projectID, Name: "release", CreatedBy: "user-1", DataClassification: "INTERNAL",
+		RiskTolerance: "MEDIUM", State: contracts.ProjectGlobalAudit, Version: 1, GoalAgentCount: 1,
+		Plan: &contracts.SpecRef{Version: 1, SHA256: planDigest},
+	}
+	content, err := json.Marshal(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := canonicaljson.Digest(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.Execute(context.Background(), eventing.TransactionRequest{
+		TenantID: testTenantID, PrincipalID: "test-seed", IdempotencyKey: "release-ready", RequestSHA256: digest,
+		Result: content, ResultSHA256: digest,
+		Updates: []eventing.ProjectionUpdate{{TenantID: testTenantID, ProjectID: projectID, AggregateType: "project", AggregateID: projectID, ExpectedVersion: 0, NextVersion: 1, State: content}},
+		Events: []eventing.DomainEvent{{EventID: "event-release-ready", TenantID: testTenantID, ProjectID: projectID, AggregateType: "project", AggregateID: projectID,
+			AggregateVersion: 1, Type: "io.aor.project.global-audit-started.v1", Payload: content, PayloadSHA256: digest, OccurredAt: controlAPITestTime}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wrong := performRequest(handler, http.MethodPost, "/v1/projects/"+projectID+":approve-release", []byte(`{"expectedVersion":1,"sha256":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}`), map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "approve-wrong", "If-Match": `"v1"`,
+	})
+	if wrong.Code != http.StatusConflict {
+		t.Fatalf("wrong digest status=%d body=%s", wrong.Code, wrong.Body.String())
+	}
+	approved := performRequest(handler, http.MethodPost, "/v1/projects/"+projectID+":approve-release", []byte(`{"expectedVersion":1,"sha256":"`+planDigest+`"}`), map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "approve-release", "If-Match": `"v1"`,
+	})
+	if approved.Code != http.StatusAccepted || approved.Header().Get("ETag") != `"v2"` {
+		t.Fatalf("approve status=%d etag=%q body=%s", approved.Code, approved.Header().Get("ETag"), approved.Body.String())
+	}
+	var result state.Project
+	if err := json.Unmarshal(approved.Body.Bytes(), &result); err != nil || result.ReleaseApprovalRecordID == "" || result.State != contracts.ProjectGlobalAudit {
+		t.Fatalf("approved project=%#v err=%v", result, err)
+	}
+	if stats := store.Stats(); stats.Approvals != 1 {
+		t.Fatalf("approval stats=%#v", stats)
+	}
+}
+
 func TestAuthenticationAndPolicyFailuresAreFailClosed(t *testing.T) {
 	handler, _, authorizer := newTestHandler(t)
 	unauthenticated := performRequest(handler, http.MethodPost, "/v1/projects", []byte(`{}`), map[string]string{"Content-Type": "application/json", "Idempotency-Key": "key"})
