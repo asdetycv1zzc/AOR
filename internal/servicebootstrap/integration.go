@@ -219,13 +219,10 @@ func (activity *integrationActivity) Run(ctx context.Context, tenantID, projectI
 		Resource: integration.IntegrationResource(integrationID), ParameterDigest: parameterDigest,
 		BudgetAccountID: projectID, IdempotencyKey: "integration-merge-" + leaseKey.String(), TTL: 30 * time.Minute,
 	})
-	if err != nil || lease.PolicyVersion != snapshot.policy {
-		if err != nil {
-			return integration.WorkflowResult{}, err
-		}
-		return integration.WorkflowResult{}, integration.ErrNotAudited
+	leaseIssued, err = integrationLeaseIssueState(lease, err, snapshot.policy)
+	if err != nil {
+		return integration.WorkflowResult{}, err
 	}
-	leaseIssued = true
 	authorizationRequest.LeaseID = lease.ID
 	authorizationRequest.FencingToken = lease.FencingToken
 	authorizer, err := integration.NewLeaseAuthorizer(activity.leaseManager, activity.policy, activity.authority, time.Now)
@@ -290,6 +287,17 @@ func (activity *integrationActivity) Run(ctx context.Context, tenantID, projectI
 	}
 	_, _, err = activity.authority.BeginGlobalAudit(ctx, integrationID, tenantID, projectID, project.Version, snapshot.policy, result.Summary.SummarySHA256)
 	return result, err
+}
+
+func integrationLeaseIssueState(lease authz.CapabilityLease, issueErr error, expectedPolicy string) (leaseIssued bool, err error) {
+	if issueErr != nil {
+		return false, issueErr
+	}
+	leaseIssued = true
+	if lease.PolicyVersion != expectedPolicy {
+		return leaseIssued, integration.ErrNotAudited
+	}
+	return leaseIssued, nil
 }
 
 func (activity *integrationActivity) snapshot(ctx context.Context, tenantID, projectID string) (integrationSnapshot, error) {
