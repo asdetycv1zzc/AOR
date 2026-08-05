@@ -124,8 +124,9 @@ type ExecutionConfig struct {
 }
 
 type IntegrationConfig struct {
-	WorkRoot string
-	Checks   []IntegrationCheckConfig
+	WorkRoot        string
+	DependencyCache string
+	Checks          []IntegrationCheckConfig
 }
 
 type IntegrationCheckConfig struct {
@@ -202,7 +203,8 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 		KnowledgeRoot:      strictValue(lookup, "AOR_KNOWLEDGE_ROOT", "/var/lib/aor/knowledge"),
 		RepositoryRoot:     strictValue(lookup, "AOR_REPOSITORY_ROOT", "/var/lib/aor/repositories"),
 		Integration: IntegrationConfig{
-			WorkRoot: strictValue(lookup, "AOR_INTEGRATION_WORK_ROOT", ""),
+			WorkRoot:        strictValue(lookup, "AOR_INTEGRATION_WORK_ROOT", ""),
+			DependencyCache: strictValue(lookup, "AOR_INTEGRATION_DEPENDENCY_CACHE", ""),
 		},
 		Database: DatabaseConfig{
 			Host:        value(lookup, "AOR_DATABASE_HOST", "postgres"),
@@ -462,13 +464,13 @@ func (config Config) Validate() error {
 		if globalAuditRouteConfigured(config.ModuleAuditRoute) && !validGoalPlanRoute(config.ModuleAuditRoute) {
 			return ErrInvalidConfiguration
 		}
-		if !validIntegrationConfig(config.Integration, config.Sandbox.AllowedMountRoots) {
+		engineConfigured := config.Sandbox.EngineEndpoint != "" || config.Sandbox.ImageReference != ""
+		if !validIntegrationConfig(config.Integration, config.Sandbox.AllowedMountRoots, engineConfigured) {
 			return ErrInvalidConfiguration
 		}
 		if config.Sandbox.LinuxLevel != "CONTAINER" || config.Sandbox.WindowsLevel != "NONE" || config.Sandbox.AllowWindowsUntrusted || config.Sandbox.LinuxDefaultNetworkMode != "DENY_ALL" || config.Sandbox.WindowsNetworkIsolationLevel != "NONE" {
 			return ErrInvalidConfiguration
 		}
-		engineConfigured := config.Sandbox.EngineEndpoint != "" || config.Sandbox.ImageReference != ""
 		if engineConfigured && (!validSandboxEngineEndpoint(config.Sandbox.EngineEndpoint) || !validSandboxRuntimeName(config.Sandbox.RuntimeName) || !validImmutableImageReference(config.Sandbox.ImageReference) || !validSandboxSeccompProfile(config.Sandbox.SeccompProfile) || !validSandboxMandatoryPolicy(config.Sandbox.MandatoryPolicy) || !validSandboxHoldCommand(config.Sandbox.HoldCommand) || !validSandboxMountRoots(config.Sandbox.AllowedMountRoots)) {
 			return ErrInvalidConfiguration
 		}
@@ -816,11 +818,17 @@ func validSandboxMountRoots(values []string) bool {
 	return true
 }
 
-func validIntegrationConfig(config IntegrationConfig, allowedMountRoots []string) bool {
+func validIntegrationConfig(config IntegrationConfig, allowedMountRoots []string, requireDependencyCache bool) bool {
 	requiredKinds := map[string]bool{
 		"COMPILE": false, "CONTRACT": false, "INTEGRATION": false, "E2E": false, "MIGRATION": false,
 	}
 	if !validKnowledgeRoot(config.WorkRoot) || len(config.Checks) != len(requiredKinds) || !pathWithinAllowedRoot(config.WorkRoot, allowedMountRoots) {
+		return false
+	}
+	if requireDependencyCache && config.DependencyCache == "" {
+		return false
+	}
+	if config.DependencyCache != "" && (!validKnowledgeRoot(config.DependencyCache) || config.DependencyCache == config.WorkRoot || !pathWithinAllowedRoot(config.DependencyCache, allowedMountRoots)) {
 		return false
 	}
 	totalTimeout := 0

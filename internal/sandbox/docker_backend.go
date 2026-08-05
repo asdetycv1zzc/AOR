@@ -16,7 +16,10 @@ import (
 	"time"
 )
 
-const maxCapturedOutput = 1 << 20
+const (
+	maxCapturedOutput            = 1 << 20
+	integrationModuleCacheTarget = "/workspace/inputs/go-mod"
+)
 
 var (
 	ErrBackendUnavailable = errors.New("sandbox backend unavailable")
@@ -252,8 +255,9 @@ type dockerInfo struct {
 type dockerInspection struct {
 	Image  string `json:"Image"`
 	Config struct {
-		User       string `json:"User"`
-		WorkingDir string `json:"WorkingDir"`
+		User       string   `json:"User"`
+		WorkingDir string   `json:"WorkingDir"`
+		Env        []string `json:"Env"`
 	} `json:"Config"`
 	HostConfig struct {
 		ReadonlyRootfs bool              `json:"ReadonlyRootfs"`
@@ -362,7 +366,11 @@ func (b *DockerBackend) createArgs(spec SandboxSpec) ([]string, error) {
 	if err != nil || cpus <= 0 {
 		return nil, ErrInvalidSpec
 	}
-	args := []string{"create", "--name", spec.SandboxID, "--pull", "never", "--read-only", "--user", "65532:65532", "--env", "HOME=/tmp", "--init", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--security-opt", "seccomp=" + b.seccomp, "--security-opt", b.mandatoryPolicy, "--pids-limit", strconv.Itoa(spec.PIDsLimit), "--memory", strconv.FormatInt(spec.MemoryBytes, 10), "--cpus", spec.CPULimit, "--network", "none", "--tmpfs", "/tmp:rw,noexec,nosuid,nodev", "--tmpfs", "/workspace:rw,nosuid,nodev,size=" + strconv.FormatInt(spec.DiskBytes, 10), "--workdir", "/workspace"}
+	args := []string{"create", "--name", spec.SandboxID, "--pull", "never", "--read-only", "--user", "65532:65532"}
+	for _, environment := range dockerEnvironment(spec) {
+		args = append(args, "--env", environment)
+	}
+	args = append(args, "--init", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--security-opt", "seccomp="+b.seccomp, "--security-opt", b.mandatoryPolicy, "--pids-limit", strconv.Itoa(spec.PIDsLimit), "--memory", strconv.FormatInt(spec.MemoryBytes, 10), "--cpus", spec.CPULimit, "--network", "none", "--tmpfs", "/tmp:rw,noexec,nosuid,nodev", "--tmpfs", "/workspace:rw,nosuid,nodev,size="+strconv.FormatInt(spec.DiskBytes, 10), "--workdir", "/workspace")
 	for _, mount := range spec.Mounts {
 		if strings.ContainsAny(mount.Source+mount.Target, ",\r\n") || mount.Mode != "RO" {
 			return nil, ErrUnsafeWorkload
@@ -386,7 +394,7 @@ func (b *DockerBackend) attest(spec SandboxSpec, imageID string, info dockerInfo
 	expectedNanoCPUs := int64(expectedCPUs * 1_000_000_000)
 	nonRoot := inspection.Config.User != "" && inspection.Config.User != "0" && inspection.Config.User != "root" && !strings.HasPrefix(inspection.Config.User, "0:")
 	security := inspection.HostConfig.SecurityOpt
-	valid := inspection.Image == imageID && inspection.Config.WorkingDir == "/workspace" && nonRoot && inspection.HostConfig.ReadonlyRootfs && !inspection.HostConfig.Privileged && inspection.HostConfig.NetworkMode == "none" && inspection.HostConfig.PidMode == "" && includesExactFold(inspection.HostConfig.CapDrop, "ALL") && includesFold(security, "no-new-privileges") && includesFold(security, "seccomp="+b.seccomp) && includesFold(security, b.mandatoryPolicy) && inspection.HostConfig.PidsLimit == int64(spec.PIDsLimit) && inspection.HostConfig.Memory == spec.MemoryBytes && inspection.HostConfig.NanoCPUs == expectedNanoCPUs && len(inspection.HostConfig.Devices) == 0 && validateTmpfsOptions(spec, inspection.HostConfig.Tmpfs) && validateDockerMounts(spec, inspection)
+	valid := inspection.Image == imageID && inspection.Config.WorkingDir == "/workspace" && nonRoot && inspection.HostConfig.ReadonlyRootfs && !inspection.HostConfig.Privileged && inspection.HostConfig.NetworkMode == "none" && inspection.HostConfig.PidMode == "" && includesExactFold(inspection.HostConfig.CapDrop, "ALL") && includesFold(security, "no-new-privileges") && includesFold(security, "seccomp="+b.seccomp) && includesFold(security, b.mandatoryPolicy) && inspection.HostConfig.PidsLimit == int64(spec.PIDsLimit) && inspection.HostConfig.Memory == spec.MemoryBytes && inspection.HostConfig.NanoCPUs == expectedNanoCPUs && len(inspection.HostConfig.Devices) == 0 && validateTmpfsOptions(spec, inspection.HostConfig.Tmpfs) && validateDockerMounts(spec, inspection) && validateDockerEnvironment(spec, inspection.Config.Env)
 	if !valid {
 		return Attestation{}, ErrBackendDrift
 	}
@@ -395,6 +403,50 @@ func (b *DockerBackend) attest(spec SandboxSpec, imageID string, info dockerInfo
 		return Attestation{}, err
 	}
 	return Attestation{SecurityProfileSHA256: digest, ImageDigest: spec.ImageDigest, Runtime: info.DefaultRuntime, NonRoot: true, Rootless: true, ReadOnlyRootFS: true, CapabilitiesDropped: true, SeccompEnabled: true, MandatoryPolicy: true, CgroupsV2: true, Tmpfs: true, WorkdirReadWrite: true}, nil
+}
+
+func dockerEnvironment(spec SandboxSpec) []string {
+	environment := []string{"HOME=/tmp"}
+	for _, mount := range spec.Mounts {
+		if path.Clean(strings.ReplaceAll(mount.Target, "\\", "/")) != integrationModuleCacheTarget {
+			continue
+		}
+		return append(environment,
+			"GOMODCACHE="+integrationModuleCacheTarget,
+			"GOCACHE=/workspace/.cache/go-build",
+			"GOTMPDIR=/workspace",
+			"GOPATH=/workspace/go",
+			"GOTOOLCHAIN=local",
+			"GOPROXY=off",
+			"GOSUMDB=off",
+			"GOFLAGS=-mod=readonly",
+			"GOMAXPROCS=1",
+			"GOMEMLIMIT=512MiB",
+			"CGO_ENABLED=0",
+		)
+	}
+	return environment
+}
+
+func validateDockerEnvironment(spec SandboxSpec, actual []string) bool {
+	values := make(map[string]string, len(actual))
+	for _, entry := range actual {
+		name, value, found := strings.Cut(entry, "=")
+		if !found || !environmentNamePattern.MatchString(name) || credentialEnvironmentPattern.MatchString(name) {
+			return false
+		}
+		if _, duplicate := values[name]; duplicate {
+			return false
+		}
+		values[name] = value
+	}
+	for _, expected := range dockerEnvironment(spec) {
+		name, value, _ := strings.Cut(expected, "=")
+		if values[name] != value {
+			return false
+		}
+	}
+	return true
 }
 
 // validateTmpfsOptions checks the effective daemon options, rather than only

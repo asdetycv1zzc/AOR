@@ -34,28 +34,30 @@ const (
 const copyRepositoryCommand = "mkdir -p /workspace/repository && cp -R /workspace/inputs/repository/. /workspace/repository/ && rm -f /workspace/repository/.git"
 
 type SandboxVerifierConfig struct {
-	RepositoryPath    string
-	WorkRoot          string
-	Provider          sandbox.SandboxProvider
-	ImageDigest       string
-	DeploymentProfile sandbox.DeploymentProfile
-	Commands          []CheckCommand
-	Clock             func() time.Time
+	RepositoryPath      string
+	WorkRoot            string
+	DependencyCachePath string
+	Provider            sandbox.SandboxProvider
+	ImageDigest         string
+	DeploymentProfile   sandbox.DeploymentProfile
+	Commands            []CheckCommand
+	Clock               func() time.Time
 }
 
 // SandboxVerifier runs integration checks in a fresh, network-isolated Linux
 // container. Git only creates and removes the trusted detached worktree on the
 // worker; candidate-controlled build and test processes never run there.
 type SandboxVerifier struct {
-	repositoryPath    string
-	workRoot          string
-	provider          sandbox.SandboxProvider
-	imageDigest       string
-	deploymentProfile sandbox.DeploymentProfile
-	commands          []CheckCommand
-	wallTime          time.Duration
-	clock             func() time.Time
-	mu                sync.Mutex
+	repositoryPath      string
+	workRoot            string
+	dependencyCachePath string
+	provider            sandbox.SandboxProvider
+	imageDigest         string
+	deploymentProfile   sandbox.DeploymentProfile
+	commands            []CheckCommand
+	wallTime            time.Duration
+	clock               func() time.Time
+	mu                  sync.Mutex
 }
 
 func NewSandboxVerifier(config SandboxVerifierConfig) (*SandboxVerifier, error) {
@@ -71,6 +73,10 @@ func NewSandboxVerifier(config SandboxVerifierConfig) (*SandboxVerifier, error) 
 	if err != nil || repositoryPath == workRoot {
 		return nil, ErrInvalidRequest
 	}
+	dependencyCachePath, err := verifiedDependencyCache(config.DependencyCachePath)
+	if err != nil || dependencyCachePath == repositoryPath || dependencyCachePath == workRoot {
+		return nil, ErrInvalidRequest
+	}
 	commands, wallTime, err := validatedSandboxCommands(config.Commands)
 	if err != nil {
 		return nil, err
@@ -82,14 +88,15 @@ func NewSandboxVerifier(config SandboxVerifierConfig) (*SandboxVerifier, error) 
 		config.Clock = time.Now
 	}
 	return &SandboxVerifier{
-		repositoryPath:    repositoryPath,
-		workRoot:          workRoot,
-		provider:          config.Provider,
-		imageDigest:       config.ImageDigest,
-		deploymentProfile: config.DeploymentProfile,
-		commands:          commands,
-		wallTime:          wallTime,
-		clock:             config.Clock,
+		repositoryPath:      repositoryPath,
+		workRoot:            workRoot,
+		dependencyCachePath: dependencyCachePath,
+		provider:            config.Provider,
+		imageDigest:         config.ImageDigest,
+		deploymentProfile:   config.DeploymentProfile,
+		commands:            commands,
+		wallTime:            wallTime,
+		clock:               config.Clock,
 	}, nil
 }
 
@@ -161,27 +168,53 @@ func (verifier *SandboxVerifier) sandboxSpec(input MergeVerificationInput, workt
 	}
 	wallTimeSeconds := int((verifier.wallTime + time.Second - 1) / time.Second)
 	return sandbox.SandboxSpec{
-		SandboxID:                stableIntegrationSandboxID(input, nonce),
-		TenantID:                 input.TenantID,
-		ProjectID:                input.ProjectID,
-		TaskID:                   input.IntegrationID,
-		Role:                     sandbox.RoleAuditor,
-		Platform:                 sandbox.PlatformLinux,
-		IsolationLevel:           sandbox.IsolationContainer,
-		ImageDigest:              verifier.imageDigest,
-		CPULimit:                 "2",
-		MemoryBytes:              2 * 1024 * 1024 * 1024,
-		PIDsLimit:                256,
-		DiskBytes:                2 * 1024 * 1024 * 1024,
-		WallTimeSeconds:          wallTimeSeconds,
-		NetworkPolicy:            sandbox.NetworkPolicy{Mode: "DENY_ALL"},
-		Mounts:                   []sandbox.Mount{{Source: worktree, Target: "/workspace/inputs/repository", Mode: "RO"}},
+		SandboxID:       stableIntegrationSandboxID(input, nonce),
+		TenantID:        input.TenantID,
+		ProjectID:       input.ProjectID,
+		TaskID:          input.IntegrationID,
+		Role:            sandbox.RoleAuditor,
+		Platform:        sandbox.PlatformLinux,
+		IsolationLevel:  sandbox.IsolationContainer,
+		ImageDigest:     verifier.imageDigest,
+		CPULimit:        "2",
+		MemoryBytes:     2 * 1024 * 1024 * 1024,
+		PIDsLimit:       256,
+		DiskBytes:       2 * 1024 * 1024 * 1024,
+		WallTimeSeconds: wallTimeSeconds,
+		NetworkPolicy:   sandbox.NetworkPolicy{Mode: "DENY_ALL"},
+		Mounts: []sandbox.Mount{
+			{Source: worktree, Target: "/workspace/inputs/repository", Mode: "RO"},
+			{Source: verifier.dependencyCachePath, Target: "/workspace/inputs/go-mod", Mode: "RO"},
+		},
 		AllowedExecutables:       allowed,
 		EnvironmentAllowlist:     []string{},
 		WorkloadTrust:            sandbox.TrustUntrusted,
 		DeploymentProfile:        verifier.deploymentProfile,
 		RequiresNetworkIsolation: true,
 	}
+}
+
+func verifiedDependencyCache(raw string) (string, error) {
+	if raw == "" || !filepath.IsAbs(raw) || filepath.Clean(raw) != raw {
+		return "", ErrInvalidRequest
+	}
+	parent, err := verifiedDirectory(filepath.Dir(raw))
+	if err != nil {
+		return "", ErrInvalidRequest
+	}
+	resolved, err := filepath.EvalSymlinks(raw)
+	if err != nil {
+		return "", ErrInvalidRequest
+	}
+	relative, err := filepath.Rel(parent, resolved)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", ErrInvalidRequest
+	}
+	info, err := os.Lstat(resolved)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return "", ErrInvalidRequest
+	}
+	return resolved, nil
 }
 
 func (verifier *SandboxVerifier) copyRepository(ctx context.Context, handle sandbox.SandboxHandle, input MergeVerificationInput) (string, error) {

@@ -29,25 +29,26 @@ import (
 const integrationServicePrincipalID = "aor-integration-service"
 
 type integrationActivity struct {
-	store          *integration.PostgresStore
-	authority      *integration.OrchestratorAuthority
-	events         eventing.Store
-	repositories   repository.ProjectRepositoryStore
-	repositoryRoot string
-	submissions    integration.RepositorySubmissionSource
-	evidenceStore  audit.EvidenceStore
-	evidence       integration.SignedEvidenceSource
-	modules        integration.ArtifactModuleSource
-	summaries      *integration.EventSummaryStore
-	leases         *leaseauthority.Service
-	leaseManager   *authz.LeaseManager
-	policy         authz.PolicyEvaluator
-	provider       sandbox.SandboxProvider
-	imageDigest    string
-	profile        sandbox.DeploymentProfile
-	workRoot       string
-	commands       []integration.CheckCommand
-	principal      authn.Principal
+	store               *integration.PostgresStore
+	authority           *integration.OrchestratorAuthority
+	events              eventing.Store
+	repositories        repository.ProjectRepositoryStore
+	repositoryRoot      string
+	submissions         integration.RepositorySubmissionSource
+	evidenceStore       audit.EvidenceStore
+	evidence            integration.SignedEvidenceSource
+	modules             integration.ArtifactModuleSource
+	summaries           *integration.EventSummaryStore
+	leases              *leaseauthority.Service
+	leaseManager        *authz.LeaseManager
+	policy              authz.PolicyEvaluator
+	provider            sandbox.SandboxProvider
+	imageDigest         string
+	profile             sandbox.DeploymentProfile
+	workRoot            string
+	dependencyCachePath string
+	commands            []integration.CheckCommand
+	principal           authn.Principal
 }
 
 type integrationSnapshot struct {
@@ -62,6 +63,12 @@ func configuredIntegration(config runtimeconfig.Config, clients *runtimeclient.C
 	}
 	if err := os.MkdirAll(config.Integration.WorkRoot, 0o700); err != nil {
 		return nil, ErrWorkerConfiguration
+	}
+	if config.Integration.DependencyCache != "" {
+		cacheInfo, err := os.Stat(config.Integration.DependencyCache)
+		if err != nil || !cacheInfo.IsDir() {
+			return nil, ErrWorkerConfiguration
+		}
 	}
 	policyClient, err := policy.NewOPAClient(config.OPA.URL)
 	if err != nil {
@@ -114,7 +121,8 @@ func configuredIntegration(config runtimeconfig.Config, clients *runtimeclient.C
 		modules:        integration.ArtifactModuleSource{Store: artifacts}, summaries: summaries,
 		leases: services.leaseService, leaseManager: leaseManager, policy: policyClient,
 		provider: provider, imageDigest: configuredImageDigest(config.Sandbox.ImageReference),
-		profile: profile, workRoot: config.Integration.WorkRoot, commands: commands, principal: principal,
+		profile: profile, workRoot: config.Integration.WorkRoot, dependencyCachePath: config.Integration.DependencyCache,
+		commands: commands, principal: principal,
 	}, nil
 }
 
@@ -246,7 +254,7 @@ func (activity *integrationActivity) Run(ctx context.Context, tenantID, projectI
 	}
 	commands := activity.boundCommands(snapshot.candidates, ownerTaskID)
 	verifier, err := integration.NewSandboxVerifier(integration.SandboxVerifierConfig{
-		RepositoryPath: snapshot.repository.Path, WorkRoot: activity.workRoot, Provider: activity.provider,
+		RepositoryPath: snapshot.repository.Path, WorkRoot: activity.workRoot, DependencyCachePath: activity.dependencyCachePath, Provider: activity.provider,
 		ImageDigest: activity.imageDigest, DeploymentProfile: activity.profile, Commands: commands, Clock: time.Now,
 	})
 	if err != nil {

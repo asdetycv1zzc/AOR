@@ -38,6 +38,7 @@ FROM ${DOCKER_CLI_IMAGE} AS docker-cli
 FROM ${GO_IMAGE} AS worker-runtime
 COPY --from=build /out/aor /usr/local/bin/aor
 COPY --from=build /out/go-mod /go/pkg/mod
+COPY --from=build /src/go.mod /src/go.sum /usr/local/share/aor/
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 RUN apk add --no-cache git=2.52.0-r0
 ENV HOME=/tmp

@@ -307,6 +307,9 @@ func TestWorkerRequiresImmutableSandboxRuntimeAndDedicatedRootlessEndpoint(t *te
 		{key: "AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON", value: `["relative"]`},
 		{key: "AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON", value: `["/var/lib/aor/data","/var/lib/aor/data"]`},
 		{key: "AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON", value: `["/var/lib/aor/data"] {}`},
+		{key: "AOR_INTEGRATION_DEPENDENCY_CACHE", value: ""},
+		{key: "AOR_INTEGRATION_DEPENDENCY_CACHE", value: "/var/lib/aor/other/go-mod"},
+		{key: "AOR_INTEGRATION_DEPENDENCY_CACHE", value: "/var/lib/aor/sandbox-data/integration"},
 	} {
 		candidate := validWorkerEnvironment()
 		candidate[invalid.key] = invalid.value
@@ -449,6 +452,7 @@ func validWorkerEnvironment() map[string]string {
 		"AOR_MODEL_GATEWAY_OAUTH_AUDIENCE":          "aor-control-plane",
 		"AOR_EXECUTOR_ROUTE_JSON":                   validExecutorRouteJSON(),
 		"AOR_INTEGRATION_WORK_ROOT":                 "/var/lib/aor/sandbox-data/integration",
+		"AOR_INTEGRATION_DEPENDENCY_CACHE":          "/var/lib/aor/sandbox-data/go-mod-cache/current",
 		"AOR_INTEGRATION_CHECKS_JSON":               validIntegrationChecksJSON(),
 	}
 }

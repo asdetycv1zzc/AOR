@@ -204,6 +204,32 @@ func TestDockerBackendAttestsExactlyConfiguredMounts(t *testing.T) {
 	}
 }
 
+func TestDockerBackendPinsOfflineGoEnvironmentForModuleCache(t *testing.T) {
+	spec := linuxSpec()
+	spec.Mounts = []Mount{{Source: "/var/lib/aor/cache/go-mod", Target: integrationModuleCacheTarget, Mode: "RO"}}
+	backend, err := NewDockerBackend(DockerBackendOptions{RuntimeName: "runc", SeccompProfile: "/etc/aor/seccomp.json", MandatoryPolicy: "apparmor=aor-sandbox", Runner: &scriptedRunner{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, err := backend.createArgs(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range dockerEnvironment(spec) {
+		if !containsSequence(args, []string{"--env", expected}) {
+			t.Fatalf("create args missing environment %q: %v", expected, args)
+		}
+	}
+	inspection := hardenedInspection(spec, spec.ImageDigest, false)
+	if _, err := backend.attest(spec, spec.ImageDigest, hardenedDockerInfo(), inspection); err != nil {
+		t.Fatalf("offline environment rejected: %v", err)
+	}
+	inspection.Config.Env[6] = "GOPROXY=https://proxy.example"
+	if _, err := backend.attest(spec, spec.ImageDigest, hardenedDockerInfo(), inspection); !errors.Is(err, ErrBackendDrift) {
+		t.Fatalf("networked Go environment accepted: %v", err)
+	}
+}
+
 func TestDockerBackendRejectsWeakTmpfsOptions(t *testing.T) {
 	spec := linuxSpec()
 	inspection := hardenedInspection(spec, spec.ImageDigest, false)
@@ -235,6 +261,7 @@ func hardenedInspection(spec SandboxSpec, imageID string, privileged bool) docke
 	inspection := dockerInspection{Image: imageID}
 	inspection.Config.User = "65532:65532"
 	inspection.Config.WorkingDir = "/workspace"
+	inspection.Config.Env = dockerEnvironment(spec)
 	inspection.HostConfig.ReadonlyRootfs = true
 	inspection.HostConfig.Privileged = privileged
 	inspection.HostConfig.NetworkMode = "none"

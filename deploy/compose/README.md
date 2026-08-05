@@ -10,6 +10,7 @@ This profile starts the complete local dependency set before any AOR process:
 - Dex with a local OAuth 2.0/OIDC test issuer and rotating JWKS
 - Two independently configured model-provider families for the Model Gateway
 - A pinned Linux sandbox runtime image and a rootless OCI-engine preflight
+- A versioned Go module cache for network-denied integration sandboxes
 
 All upstream images are pinned by version and multi-platform manifest digest. Host ports bind to `127.0.0.1`; this profile is for development and test only.
 
@@ -36,7 +37,7 @@ export AOR_SANDBOX_SHARED_ROOT="$(pwd)/.cache/sandbox-data"
 mkdir -p "${AOR_SANDBOX_SHARED_ROOT}"
 ```
 
-`compose-check` fails immediately when these values are absent. `compose-deps-up` then runs `sandbox-preflight.sh`, which validates the engine before pulling the immutable runtime image into it, then creates and executes a disposable probe container using a non-root identity, read-only root filesystem, cgroups v2 limits, capability drop, `network=none`, built-in seccomp, and the `aor-sandbox` mandatory policy. Missing or downgraded host capabilities produce a specific error and prevent any AOR process from starting. The worker's access to the engine socket is a controller channel; that socket is never mounted into an Executor or Auditor container.
+`compose-check` fails immediately when these values are absent. `compose-deps-up` then runs `sandbox-preflight.sh`, which validates the engine before pulling the immutable runtime image into it, then creates and executes a disposable probe container using a non-root identity, read-only root filesystem, cgroups v2 limits, capability drop, `network=none`, built-in seccomp, and the `aor-sandbox` mandatory policy. Missing or downgraded host capabilities produce a specific error and prevent any AOR process from starting. After the worker image is built, a one-shot initializer publishes its downloaded Go modules under the shared root. Integration sandboxes mount the selected cache read-only and force `GOPROXY=off`, `GOSUMDB=off`, and `-mod=readonly`. The worker's access to the engine socket is a controller channel; that socket is never mounted into an Executor or Auditor container.
 
 ## Secrets
 
@@ -84,8 +85,9 @@ The target performs these stages in order:
 3. Validate the dedicated rootless OCI engine, pull the pinned runtime into it, and execute the hardened sandbox probe.
 4. Start PostgreSQL, Temporal, NATS, MinIO, OPA, and Dex, then wait for their health checks and initialization jobs.
 5. Apply every PostgreSQL migration listed in `migrations/postgres/manifest.json` in order; reruns detect the installed schema, rotate the fixed `aor_app` password without revoking later grants, and keep permissions idempotent. The app password is supplied through the ignored secret file and is not printed.
-6. Build the four AOR images serially from the current source. The worker image includes only the Docker CLI needed to reach the preflighted rootless engine; it does not contain or start a daemon.
-7. Start AOR only after every dependency, initializer, and sandbox preflight has completed successfully, then wait for every process readiness endpoint.
+6. Build the four AOR images serially from the current source. The worker image includes the Docker CLI needed to reach the preflighted rootless engine; it does not contain or start a daemon.
+7. Copy the worker build's downloaded Go modules into a content-keyed directory under the shared root and atomically publish the read-only cache path used by integration sandboxes.
+8. Start AOR only after every dependency, initializer, sandbox preflight, and cache initializer has completed successfully, then wait for every process readiness endpoint.
 
 Individual stages are available as `make compose-pull`, `make compose-deps-up`, `make compose-aor-up`, and `make compose-ps`.
 

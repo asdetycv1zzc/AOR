@@ -53,6 +53,49 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
 
+  aor-sandbox-cache:
+    profiles: [aor]
+    image: aor/aor-worker:0.1.0-test
+    restart: "no"
+    depends_on:
+      aor-sandbox-preflight:
+        condition: service_completed_successfully
+    user: "${AOR_SANDBOX_ENGINE_UID:?Set AOR_SANDBOX_ENGINE_UID to the non-root rootless-engine owner UID}:${AOR_SANDBOX_ENGINE_GID:?Set AOR_SANDBOX_ENGINE_GID to the rootless-engine socket GID}"
+    entrypoint: [/bin/sh, -ec]
+    environment:
+      AOR_SANDBOX_SHARED_ROOT: "${AOR_SANDBOX_SHARED_ROOT:?Set AOR_SANDBOX_SHARED_ROOT to an absolute host path shared with the rootless engine}"
+    command:
+      - |
+        cache_key="$$(sha256sum /usr/local/share/aor/go.mod /usr/local/share/aor/go.sum | sha256sum | cut -d ' ' -f 1)"
+        cache_root="$${AOR_SANDBOX_SHARED_ROOT}/go-mod-cache"
+        cache_path="$$cache_root/$$cache_key"
+        mkdir -p "$$cache_root"
+        if [ ! -f "$$cache_path/.ready" ]; then
+          if [ -e "$$cache_path" ]; then
+            echo "AOR sandbox cache initialization found an incomplete cache" >&2
+            exit 1
+          fi
+          staging="$$(mktemp -d "$$cache_root/.$$cache_key.XXXXXX")"
+          cp -R /go/pkg/mod/. "$$staging/"
+          touch "$$staging/.ready"
+          chmod 0555 "$$staging"
+          mv "$$staging" "$$cache_path"
+        fi
+        if [ -d "$$cache_root/current" ] && [ ! -L "$$cache_root/current" ]; then
+          echo "AOR sandbox cache current path is not a symbolic link" >&2
+          exit 1
+        fi
+        ln -sfn "$$cache_key" "$$cache_root/.current-next"
+        mv -f "$$cache_root/.current-next" "$$cache_root/current"
+        test -f "$$cache_root/current/.ready"
+    volumes:
+      - "${AOR_SANDBOX_SHARED_ROOT:?Set AOR_SANDBOX_SHARED_ROOT to an absolute host path shared with the rootless engine}:${AOR_SANDBOX_SHARED_ROOT:?Set AOR_SANDBOX_SHARED_ROOT to an absolute host path shared with the rootless engine}"
+    network_mode: none
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
   postgres:
     image: postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
     restart: unless-stopped
@@ -634,6 +677,8 @@ services:
         condition: service_healthy
       aor-sandbox-preflight:
         condition: service_completed_successfully
+      aor-sandbox-cache:
+        condition: service_completed_successfully
     user: "${AOR_SANDBOX_ENGINE_UID:?Set AOR_SANDBOX_ENGINE_UID to the non-root rootless-engine owner UID}:${AOR_SANDBOX_ENGINE_GID:?Set AOR_SANDBOX_ENGINE_GID to the rootless-engine socket GID}"
     environment:
       AOR_ENVIRONMENT: test
@@ -684,6 +729,7 @@ services:
       AOR_SANDBOX_HOLD_COMMAND_JSON: '["/bin/sh","-c","while :; do sleep 3600; done"]'
       AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON: '["${AOR_SANDBOX_SHARED_ROOT:?Set AOR_SANDBOX_SHARED_ROOT to an absolute host path shared with the rootless engine}"]'
       AOR_INTEGRATION_WORK_ROOT: "${AOR_SANDBOX_SHARED_ROOT:?Set AOR_SANDBOX_SHARED_ROOT to an absolute host path shared with the rootless engine}"
+      AOR_INTEGRATION_DEPENDENCY_CACHE: "${AOR_SANDBOX_SHARED_ROOT:?Set AOR_SANDBOX_SHARED_ROOT to an absolute host path shared with the rootless engine}/go-mod-cache/current"
       AOR_INTEGRATION_CHECKS_JSON: >-
         [{"kind":"COMPILE","argv":["/usr/local/go/bin/go","build","-p=1","./..."],"timeoutSeconds":300},{"kind":"CONTRACT","argv":["/usr/local/go/bin/go","run","-p=1","./cmd/aor-conformance","contracts"],"timeoutSeconds":300},{"kind":"INTEGRATION","argv":["/usr/local/go/bin/go","test","-p=1","./internal/integration"],"timeoutSeconds":300},{"kind":"E2E","argv":["/usr/local/go/bin/go","test","-p=1","./tests/integration"],"timeoutSeconds":300},{"kind":"MIGRATION","argv":["/usr/local/go/bin/go","run","-p=1","./cmd/aor-conformance","schemas"],"timeoutSeconds":300}]
     secrets: [postgres_app_password, lease_signing_key, minio_root_user, minio_root_password, aor_server_oauth_client_secret]
