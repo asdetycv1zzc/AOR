@@ -53,6 +53,7 @@ const (
 	ActionModelReconcile    = "model.reconcile"
 	ActionModelCapabilities = "model.capabilities"
 	ActionSandboxExec       = "sandbox.exec"
+	ActionIntegrationMerge  = "integration.merge"
 )
 
 var (
@@ -417,7 +418,7 @@ func (f RuleFunc) Evaluate(input PolicyInput) (PolicyDecision, bool) { return f(
 func IsSideEffect(action string) bool {
 	switch action {
 	case ActionRepoWrite, ActionRepoApplyPatch, ActionToolInvoke, ActionKnowledgeWrite,
-		ActionArtifactPublish, ActionPolicyWrite, ActionDeploy, ActionSandboxExec:
+		ActionArtifactPublish, ActionPolicyWrite, ActionDeploy, ActionSandboxExec, ActionIntegrationMerge:
 		return true
 	default:
 		return false
@@ -426,8 +427,9 @@ func IsSideEffect(action string) bool {
 
 func RequiresTask(action string) bool {
 	switch action {
-	case ActionGoalRead, ActionPlanRead, ActionKnowledgeRead, ActionPolicyTest, ActionModelCapabilities,
-		ActionModelGenerate, ActionModelStream, ActionModelCancel, ActionModelReconcile:
+	case ActionProjectCreate, ActionProjectRead, ActionProjectCommand, ActionGoalRead, ActionPlanRead,
+		ActionKnowledgeRead, ActionPolicyTest, ActionModelCapabilities, ActionModelGenerate,
+		ActionModelStream, ActionModelCancel, ActionModelReconcile, ActionIntegrationMerge:
 		return false
 	default:
 		return true
@@ -438,7 +440,7 @@ func RequiresTask(action string) bool {
 // a ModuleTask exists. Unknown and task-level roles remain fail-closed.
 func LeaseRoleRequiresTask(role string) bool {
 	switch role {
-	case authn.RoleGoalProposer, authn.RoleGoalChallenger, authn.RolePlanSupervisor, authn.RoleGlobalAuditor:
+	case authn.RoleGoalProposer, authn.RoleGoalChallenger, authn.RolePlanSupervisor, authn.RoleGlobalAuditor, authn.RoleService:
 		return false
 	default:
 		return true

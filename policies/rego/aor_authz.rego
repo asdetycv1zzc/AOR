@@ -18,6 +18,7 @@ side_effect_actions := {
     "policy.write",
 	"deploy",
 	"sandbox.exec",
+	"integration.merge",
 }
 
 read_actions := {
@@ -177,6 +178,40 @@ audit_service_control_allowed if {
 	audit_service_state_valid
 }
 
+integration_service_project_state_valid if {
+	input.resource.attributes.command == "BEGIN_INTEGRATION"
+	input.project.state == "EXECUTING"
+}
+
+integration_service_project_state_valid if {
+	input.resource.attributes.command == "BEGIN_GLOBAL_AUDIT"
+	input.project.state == "INTEGRATING"
+}
+
+integration_service_control_allowed if {
+	valid_project_scope
+	input.action == "project.command"
+	input.principal.type == "SERVICE"
+	input.principal.role == "SERVICE"
+	input.resource.type == "project"
+	input.resource.id == input.project.id
+	input.resource.attributes.policy_digest == data.aor.policy.version
+	integration_service_project_state_valid
+}
+
+integration_service_control_allowed if {
+	valid_task_scope
+	input.action == "task.command"
+	input.principal.type == "SERVICE"
+	input.principal.role == "SERVICE"
+	input.project.state == "INTEGRATING"
+	input.task.state == "PASSED"
+	input.resource.type == "task"
+	input.resource.id == input.task.id
+	input.resource.attributes.command == "INTEGRATE"
+	input.resource.attributes.policy_digest == data.aor.policy.version
+}
+
 active_lease if {
     input.lease.id != ""
     input.lease.policyVersion == data.aor.policy.version
@@ -295,6 +330,22 @@ lease_grant_input_valid if {
 	input.budget.available
 }
 
+lease_grant_input_valid if {
+	valid_project_scope
+	input.principal.type == "SERVICE"
+	input.principal.role == "SERVICE"
+	object.get(object.get(input, "task", {}), "id", "") == ""
+	object.get(object.get(input, "task", {}), "specDigest", "") == ""
+	input.action == "integration.merge"
+	input.resource.type == "integration"
+	input.resource.id != ""
+	input.project.state == "INTEGRATING"
+	not input.lease
+	input.parameterDigest != ""
+	input.budget.accountId != ""
+	input.budget.available
+}
+
 repo_write_grant_allowed if {
 	lease_grant_input_valid
 	input.action in {"repo.write", "repo.apply_patch"}
@@ -378,6 +429,16 @@ model_generate_grant_allowed if {
 	input.project.state != "PAUSED"
 }
 
+integration_merge_grant_allowed if {
+	lease_grant_input_valid
+	input.action == "integration.merge"
+	input.principal.type == "SERVICE"
+	input.principal.role == "SERVICE"
+	input.project.state == "INTEGRATING"
+	input.resource.type == "integration"
+	input.resource.id != ""
+}
+
 model_generate_grant_allowed if {
 	lease_grant_input_valid
 	input.action == "model.generate"
@@ -410,6 +471,10 @@ lease_grant_allowed if {
 
 lease_grant_allowed if {
 	model_generate_grant_allowed
+}
+
+lease_grant_allowed if {
+	integration_merge_grant_allowed
 }
 
 lease_grant_binding := {
@@ -455,6 +520,18 @@ sandbox_exec_allowed if {
 	active_lease
 }
 
+integration_merge_allowed if {
+	valid_project_scope
+	input.action == "integration.merge"
+	input.principal.type == "SERVICE"
+	input.principal.role == "SERVICE"
+	input.project.state == "INTEGRATING"
+	input.resource.type == "integration"
+	input.resource.id != ""
+	object.get(object.get(input, "task", {}), "id", "") == ""
+	active_lease
+}
+
 decision := {
     "decision": "ALLOW",
     "policyVersion": data.aor.policy.version,
@@ -480,6 +557,15 @@ decision := {
 	"ruleId": "aor.audit.service.control",
 } if {
 	audit_service_control_allowed
+}
+
+decision := {
+	"decision": "ALLOW",
+	"policyVersion": data.aor.policy.version,
+	"reasonCodes": ["INTEGRATION_SERVICE_ALLOWED", "PROJECT_STATE_VALID"],
+	"ruleId": "aor.integration.service.control",
+} if {
+	integration_service_control_allowed
 }
 
 decision := {
@@ -515,6 +601,16 @@ decision := {
 	"constraints": {"expiresAt": input.lease.expiresAt},
 } if {
 	sandbox_exec_allowed
+}
+
+decision := {
+	"decision": "ALLOW",
+	"policyVersion": data.aor.policy.version,
+	"reasonCodes": ["TRUSTED_SERVICE_ALLOWED", "PROJECT_STATE_VALID", "LEASE_VALID"],
+	"ruleId": "aor.integration.merge",
+	"constraints": {"expiresAt": input.lease.expiresAt},
+} if {
+	integration_merge_allowed
 }
 
 decision := {
@@ -560,6 +656,10 @@ matched if {
 }
 
 matched if {
+	integration_service_control_allowed
+}
+
+matched if {
     model_allowed
 }
 
@@ -569,6 +669,10 @@ matched if {
 
 matched if {
 	sandbox_exec_allowed
+}
+
+matched if {
+	integration_merge_allowed
 }
 
 matched if {

@@ -230,7 +230,9 @@ func bindGrant(result PolicyDecision, input PolicyInput, now time.Time) PolicyDe
 
 func leaseGrantActionAllowed(input PolicyInput) bool {
 	if input.Task.ID == "" {
-		return (input.Action == ActionModelGenerate && !LeaseRoleRequiresTask(input.Principal.Role)) || globalAuditorProjectReadTool(input)
+		return (input.Action == ActionModelGenerate && !LeaseRoleRequiresTask(input.Principal.Role)) ||
+			globalAuditorProjectReadTool(input) ||
+			(input.Action == ActionIntegrationMerge && input.Principal.Role == authn.RoleService)
 	}
 	return IsSideEffect(input.Action) || input.Action == ActionModelGenerate && taskModelLeaseRole(input.Principal.Role)
 }
@@ -351,6 +353,14 @@ func (e *Engine) defaultDecision(input PolicyInput, lease CapabilityLease, now t
 		return denyDecision(e.bundle.Version, "ROLE_DENIED")
 	case ActionSandboxExec:
 		return e.sandboxExecDecision(input, lease)
+	case ActionIntegrationMerge:
+		if input.Principal.Type != authn.PrincipalService || input.Principal.Role != authn.RoleService {
+			return denyDecision(e.bundle.Version, "TRUSTED_SERVICE_REQUIRED")
+		}
+		if input.Project.State != "INTEGRATING" || input.Resource.Type != "integration" || input.Resource.ID == "" || input.Task.ID != "" {
+			return denyDecision(e.bundle.Version, "INTEGRATION_SCOPE_DENIED")
+		}
+		return e.constrainAllow(allowDecision(e.bundle.Version, "aor.integration.merge", "TRUSTED_SERVICE_ALLOWED", "PROJECT_STATE_VALID", "LEASE_VALID"), input, lease)
 	case ActionKnowledgeWrite:
 		if input.Principal.Type != authn.PrincipalKnowledgeCurator && input.Principal.Role != authn.RoleKnowledgeCurator {
 			return denyDecision(e.bundle.Version, "CURATOR_REQUIRED")
