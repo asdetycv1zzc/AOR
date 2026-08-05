@@ -7,6 +7,7 @@ import (
 	"io"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/akimisaka/aor/internal/agentruntime"
 	"github.com/akimisaka/aor/internal/modelgateway"
@@ -136,6 +137,7 @@ type AgentRuntime interface {
 	Queue(string) error
 	AssignLease(context.Context, string, agentruntime.AgentLease) error
 	Start(context.Context, string) error
+	Heartbeat(context.Context, string) error
 	RunToolLoop(context.Context, string, agentruntime.ModelCall, int) (modelgateway.NormalizedResponse, error)
 	Complete(context.Context, string, agentruntime.AgentOutput) (agentruntime.AcceptedResult, error)
 	AcceptedResult(string) (agentruntime.AcceptedResult, bool)
@@ -329,9 +331,40 @@ func (service *Service) run(ctx context.Context, prepared PreparedRun) (contract
 	if err := service.runtime.Start(ctx, runID); err != nil {
 		return contracts.SubmissionManifest{}, agentruntime.AcceptedResult{}, err
 	}
-	response, err := service.runtime.RunToolLoop(ctx, runID, prepared.ModelCall, prepared.MaxToolRounds)
+	runContext, cancelRun := context.WithCancel(ctx)
+	heartbeatDone := make(chan error, 1)
+	go func() {
+		ticker := time.NewTicker(time.Duration(agentruntime.DefaultHeartbeatSeconds) * time.Second / 2)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-runContext.Done():
+				heartbeatDone <- nil
+				return
+			case <-ticker.C:
+				heartbeatContext, cancel := context.WithTimeout(runContext, 10*time.Second)
+				heartbeatErr := service.runtime.Heartbeat(heartbeatContext, runID)
+				cancel()
+				if heartbeatErr != nil {
+					if runContext.Err() != nil {
+						heartbeatDone <- nil
+						return
+					}
+					heartbeatDone <- heartbeatErr
+					cancelRun()
+					return
+				}
+			}
+		}
+	}()
+	response, err := service.runtime.RunToolLoop(runContext, runID, prepared.ModelCall, prepared.MaxToolRounds)
+	cancelRun()
+	heartbeatErr := <-heartbeatDone
 	if err != nil {
 		return contracts.SubmissionManifest{}, agentruntime.AcceptedResult{}, err
+	}
+	if heartbeatErr != nil {
+		return contracts.SubmissionManifest{}, agentruntime.AcceptedResult{}, heartbeatErr
 	}
 	manifest, err := decodeManifest(response.Content)
 	if err != nil {

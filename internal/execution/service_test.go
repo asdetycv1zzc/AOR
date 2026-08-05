@@ -131,6 +131,8 @@ func (runtime *testRuntime) AssignLease(_ context.Context, _ string, lease agent
 
 func (runtime *testRuntime) Start(context.Context, string) error { return nil }
 
+func (runtime *testRuntime) Heartbeat(context.Context, string) error { return nil }
+
 func (runtime *testRuntime) RunToolLoop(context.Context, string, agentruntime.ModelCall, int) (modelgateway.NormalizedResponse, error) {
 	runtime.toolLoops++
 	return modelgateway.NormalizedResponse{Content: append(json.RawMessage(nil), runtime.content...), FinishReason: "stop"}, nil
