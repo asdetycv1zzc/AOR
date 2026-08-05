@@ -48,10 +48,21 @@ func (s *Service) validateProjectCommit(ctx context.Context, request ProjectRequ
 	if command.Completion != nil {
 		evidence = append(evidence, command.Completion.EvidenceSHA256)
 		claims["all_tasks_integrated"] = command.Completion.AllTasksIntegrated
+		claims["all_integration_tasks_done"] = command.Completion.AllIntegrationTasksDone
+		claims["integration_audit_passed"] = command.Completion.IntegrationAuditPassed
 		claims["goal_criteria_satisfied"] = command.Completion.GoalCriteriaSatisfied
 		claims["global_audit_passed"] = command.Completion.GlobalAuditPassed
+		claims["release_gates_passed"] = command.Completion.ReleaseGatesPassed
 		claims["release_artifacts_signed"] = command.Completion.ReleaseArtifactsSigned
+		claims["sbom_generated"] = command.Completion.SBOMGenerated
+		claims["provenance_generated"] = command.Completion.ProvenanceGenerated
+		claims["no_blocked_or_rework"] = command.Completion.NoBlockedOrRework
 		claims["no_blocking_findings"] = command.Completion.NoBlockingFindings
+		claims["risk_acceptances_valid"] = command.Completion.RiskAcceptancesValid
+		claims["operational_summaries_generated"] = command.Completion.OperationalSummariesGenerated
+		claims["plan_supervisor_summary_generated"] = command.Completion.PlanSupervisorSummaryGenerated
+		claims["goal_summary_verified"] = command.Completion.GoalSummaryVerified
+		claims["final_result_delivered"] = command.Completion.FinalResultDelivered
 	}
 	goalRef := contracts.SpecRef{}
 	if command.GoalSpecRef != nil {

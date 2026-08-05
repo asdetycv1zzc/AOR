@@ -89,6 +89,41 @@ func TestProjectCannotCompleteWithoutReleaseApprovalAndEvidence(t *testing.T) {
 	}
 }
 
+func TestProjectCompletionRequiresEveryAuthoritativeGate(t *testing.T) {
+	goal := &GoalRecord{ID: "goal_1", Version: 1, SHA256: digestZero(), Status: contracts.GoalApproved, ApprovedBy: "usr_1", ApprovalRecordID: "goal_approval_1"}
+	plan := &contracts.SpecRef{Version: 1, SHA256: digestOne()}
+	project := Project{TenantID: "tenant_1", ID: "prj_1", State: contracts.ProjectGlobalAudit, Version: 8, Goal: goal, Plan: plan, ReleaseApprovalRecordID: "release_approval_1"}
+	complete := CompletionFacts{
+		AllTasksIntegrated: true, AllIntegrationTasksDone: true, IntegrationAuditPassed: true,
+		GoalCriteriaSatisfied: true, GlobalAuditPassed: true, ReleaseGatesPassed: true,
+		ReleaseArtifactsSigned: true, SBOMGenerated: true, ProvenanceGenerated: true,
+		NoBlockedOrRework: true, NoBlockingFindings: true, OperationalSummariesGenerated: true,
+		PlanSupervisorSummaryGenerated: true, GoalSummaryVerified: true, FinalResultDelivered: true,
+		EvidenceSHA256: digestZero(),
+	}
+	event, err := DecideProject(project, ProjectCommand{Type: ProjectCommandComplete, ActorID: "svc_orchestrator", Completion: &complete, At: testTime()})
+	if err != nil || event.Projection.State != contracts.ProjectCompleted {
+		t.Fatalf("complete project=%#v err=%v", event.Projection, err)
+	}
+
+	withoutIntegrationTasks := complete
+	withoutIntegrationTasks.AllIntegrationTasksDone = false
+	if _, err := DecideProject(project, ProjectCommand{Type: ProjectCommandComplete, ActorID: "svc_orchestrator", Completion: &withoutIntegrationTasks, At: testTime()}); err == nil {
+		t.Fatal("completion accepted unfinished IntegrationTask")
+	}
+	acceptedRisk := complete
+	acceptedRisk.NoBlockingFindings = false
+	acceptedRisk.RiskAcceptancesValid = true
+	if _, err := DecideProject(project, ProjectCommand{Type: ProjectCommandComplete, ActorID: "svc_orchestrator", Completion: &acceptedRisk, At: testTime()}); err != nil {
+		t.Fatalf("compliant risk acceptance rejected: %v", err)
+	}
+	invalidRisk := acceptedRisk
+	invalidRisk.RiskAcceptancesValid = false
+	if _, err := DecideProject(project, ProjectCommand{Type: ProjectCommandComplete, ActorID: "svc_orchestrator", Completion: &invalidRisk, At: testTime()}); err == nil {
+		t.Fatal("completion accepted unresolved high risk")
+	}
+}
+
 func TestProjectArchiveRequiresTerminalOutcome(t *testing.T) {
 	project := createProject(t)
 	if _, err := DecideProject(project, ProjectCommand{Type: ProjectCommandArchive, ActorID: "usr_1", At: testTime()}); err == nil || err.Code != aorerrors.CodeInvalidStateTransition {

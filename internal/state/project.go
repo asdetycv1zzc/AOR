@@ -98,12 +98,23 @@ type GoalMessage struct {
 }
 
 type CompletionFacts struct {
-	AllTasksIntegrated     bool   `json:"allTasksIntegrated"`
-	GoalCriteriaSatisfied  bool   `json:"goalCriteriaSatisfied"`
-	GlobalAuditPassed      bool   `json:"globalAuditPassed"`
-	ReleaseArtifactsSigned bool   `json:"releaseArtifactsSigned"`
-	NoBlockingFindings     bool   `json:"noBlockingFindings"`
-	EvidenceSHA256         string `json:"evidenceSha256"`
+	AllTasksIntegrated             bool   `json:"allTasksIntegrated"`
+	AllIntegrationTasksDone        bool   `json:"allIntegrationTasksDone"`
+	IntegrationAuditPassed         bool   `json:"integrationAuditPassed"`
+	GoalCriteriaSatisfied          bool   `json:"goalCriteriaSatisfied"`
+	GlobalAuditPassed              bool   `json:"globalAuditPassed"`
+	ReleaseGatesPassed             bool   `json:"releaseGatesPassed"`
+	ReleaseArtifactsSigned         bool   `json:"releaseArtifactsSigned"`
+	SBOMGenerated                  bool   `json:"sbomGenerated"`
+	ProvenanceGenerated            bool   `json:"provenanceGenerated"`
+	NoBlockedOrRework              bool   `json:"noBlockedOrRework"`
+	NoBlockingFindings             bool   `json:"noBlockingFindings"`
+	RiskAcceptancesValid           bool   `json:"riskAcceptancesValid"`
+	OperationalSummariesGenerated  bool   `json:"operationalSummariesGenerated"`
+	PlanSupervisorSummaryGenerated bool   `json:"planSupervisorSummaryGenerated"`
+	GoalSummaryVerified            bool   `json:"goalSummaryVerified"`
+	FinalResultDelivered           bool   `json:"finalResultDelivered"`
+	EvidenceSHA256                 string `json:"evidenceSha256"`
 }
 
 type ProjectGuardFacts struct {
@@ -357,7 +368,7 @@ func DecideProject(current Project, command ProjectCommand) (ProjectEvent, *aore
 		next.ReleaseApprovalRecordID = command.Approval.RecordID
 		eventType = "io.aor.approval.committed.v1"
 	case ProjectCommandComplete:
-		if current.State != contracts.ProjectGlobalAudit || current.ReleaseApprovalRecordID == "" || command.Completion == nil || !command.Completion.allSatisfied() {
+		if current.State != contracts.ProjectGlobalAudit || current.Goal == nil || current.Goal.Status != contracts.GoalApproved || current.Goal.ApprovedBy == "" || current.Goal.ApprovalRecordID == "" || current.Plan == nil || current.ReleaseApprovalRecordID == "" || command.Completion == nil || !command.Completion.allSatisfied() {
 			return ProjectEvent{}, transitionProject(command, current.State)
 		}
 		next.State = contracts.ProjectCompleted
@@ -645,7 +656,10 @@ func validProjectCurrency(value string) bool {
 }
 
 func (f CompletionFacts) allSatisfied() bool {
-	return f.AllTasksIntegrated && f.GoalCriteriaSatisfied && f.GlobalAuditPassed && f.ReleaseArtifactsSigned && f.NoBlockingFindings && validDigest(f.EvidenceSHA256)
+	return f.AllTasksIntegrated && f.AllIntegrationTasksDone && f.IntegrationAuditPassed && f.GoalCriteriaSatisfied && f.GlobalAuditPassed &&
+		f.ReleaseGatesPassed && f.ReleaseArtifactsSigned && f.SBOMGenerated && f.ProvenanceGenerated && f.NoBlockedOrRework &&
+		(f.NoBlockingFindings || f.RiskAcceptancesValid) && f.OperationalSummariesGenerated && f.PlanSupervisorSummaryGenerated &&
+		f.GoalSummaryVerified && f.FinalResultDelivered && validDigest(f.EvidenceSHA256)
 }
 
 func validDigest(value string) bool {
