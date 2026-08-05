@@ -215,6 +215,58 @@ func (store *PostgresStore) RecordConflict(ctx context.Context, result MergeResu
 		return MergeResult{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	stored, changed, err := recordConflictInTransaction(ctx, tx, result, encoded)
+	if err != nil {
+		return MergeResult{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return MergeResult{}, false, err
+	}
+	return stored, changed, nil
+}
+
+func (store *PostgresStore) RecordGlobalAuditConflict(ctx context.Context, result MergeResult, expectedProjectVersion int64) (MergeResult, bool, error) {
+	if store == nil || store.database == nil || ctx == nil || expectedProjectVersion < 1 || result.Attempt != 0 ||
+		!canonicalUUID(result.TenantID) || !canonicalUUID(result.ProjectID) || !canonicalUUID(result.IntegrationID) ||
+		!canonicalUUID(result.OwnerTaskID) || !validConflictResult(result) || !globalAuditConflictEvidence(result) {
+		return MergeResult{}, false, ErrInvalidRequest
+	}
+	encoded, err := json.Marshal(result.Audit)
+	if err != nil {
+		return MergeResult{}, false, ErrInvalidRequest
+	}
+	tx, err := store.begin(ctx, result.TenantID, false)
+	if err != nil {
+		return MergeResult{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var projectState string
+	var projectVersion int64
+	err = tx.QueryRowContext(ctx, `
+SELECT state, state_version
+FROM projects
+WHERE tenant_id = $1::uuid AND id = $2::uuid
+FOR UPDATE`, result.TenantID, result.ProjectID).Scan(&projectState, &projectVersion)
+	if errors.Is(err, sql.ErrNoRows) {
+		return MergeResult{}, false, ErrNotAudited
+	}
+	if err != nil {
+		return MergeResult{}, false, err
+	}
+	if projectState != "GLOBAL_AUDIT" || projectVersion != expectedProjectVersion {
+		return MergeResult{}, false, ErrNotAudited
+	}
+	stored, changed, err := recordConflictInTransaction(ctx, tx, result, encoded)
+	if err != nil {
+		return MergeResult{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return MergeResult{}, false, err
+	}
+	return stored, changed, nil
+}
+
+func recordConflictInTransaction(ctx context.Context, tx *sql.Tx, result MergeResult, encoded []byte) (MergeResult, bool, error) {
 	task, found, err := loadIntegrationTask(ctx, tx, result.TenantID, result.IntegrationID, true)
 	if err != nil {
 		return MergeResult{}, false, err
@@ -254,9 +306,6 @@ ON CONFLICT (id) DO NOTHING`, result.IntegrationID, result.TenantID, result.Proj
 	}
 	if task.State == TaskReworkRequired || task.State == TaskBlockedUserDecision {
 		if storedConflict && sameConflictResult(stored, result) {
-			if err := tx.Commit(); err != nil {
-				return MergeResult{}, false, err
-			}
 			return stored, changed, nil
 		}
 		return MergeResult{}, false, ErrImmutable
@@ -301,9 +350,6 @@ WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND id = $3::uuid
 	}
 	if !storedConflict || !sameConflictResult(stored, result) {
 		return MergeResult{}, false, ErrImmutable
-	}
-	if err := tx.Commit(); err != nil {
-		return MergeResult{}, false, err
 	}
 	return stored, true, nil
 }

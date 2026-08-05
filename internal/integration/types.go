@@ -210,6 +210,10 @@ type Store interface {
 	Complete(context.Context, MergeResult) error
 }
 
+type globalAuditConflictStore interface {
+	RecordGlobalAuditConflict(context.Context, MergeResult, int64) (MergeResult, bool, error)
+}
+
 type memoryRecord struct {
 	result MergeResult
 	task   IntegrationTask
@@ -334,6 +338,13 @@ func (s *MemoryStore) RecordConflict(_ context.Context, result MergeResult) (Mer
 		},
 	}
 	return cloneResult(result), true, nil
+}
+
+func (s *MemoryStore) RecordGlobalAuditConflict(ctx context.Context, result MergeResult, expectedProjectVersion int64) (MergeResult, bool, error) {
+	if expectedProjectVersion < 1 || result.Attempt != 0 || !globalAuditConflictEvidence(result) {
+		return MergeResult{}, false, ErrInvalidRequest
+	}
+	return s.RecordConflict(ctx, result)
 }
 
 func (s *MemoryStore) Reserve(_ context.Context, result MergeResult) (MergeResult, bool, error) {

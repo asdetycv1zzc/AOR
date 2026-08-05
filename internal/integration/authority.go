@@ -29,16 +29,17 @@ type ProjectSource interface {
 // durable Store behind the Orchestrator-owned service principal and verifies
 // that the project is still in GLOBAL_AUDIT before creating the task.
 type GlobalAuditConflictAuthority struct {
-	store     Store
+	store     globalAuditConflictStore
 	projects  ProjectSource
 	principal authn.Principal
 }
 
 func NewGlobalAuditConflictAuthority(store Store, projects ProjectSource, principal authn.Principal) (*GlobalAuditConflictAuthority, error) {
-	if store == nil || projects == nil || !validIntegrationServicePrincipal(principal) {
+	conflicts, ok := store.(globalAuditConflictStore)
+	if store == nil || !ok || projects == nil || !validIntegrationServicePrincipal(principal) {
 		return nil, ErrWorkflowUnavailable
 	}
-	return &GlobalAuditConflictAuthority{store: store, projects: projects, principal: cloneIntegrationPrincipal(principal)}, nil
+	return &GlobalAuditConflictAuthority{store: conflicts, projects: projects, principal: cloneIntegrationPrincipal(principal)}, nil
 }
 
 func (authority *GlobalAuditConflictAuthority) CreateGlobalAuditConflict(ctx context.Context, result MergeResult) (MergeResult, bool, error) {
@@ -68,7 +69,7 @@ func (authority *GlobalAuditConflictAuthority) CreateGlobalAuditConflict(ctx con
 	if !found || project.TenantID != result.TenantID || project.ID != result.ProjectID || project.State != contracts.ProjectGlobalAudit {
 		return MergeResult{}, false, ErrNotAudited
 	}
-	return authority.store.RecordConflict(bound, result)
+	return authority.store.RecordGlobalAuditConflict(bound, result, project.Version)
 }
 
 func globalAuditConflictEvidence(result MergeResult) bool {
