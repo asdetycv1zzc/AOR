@@ -68,7 +68,7 @@ The Model Gateway defaults to OpenAI and DeepSeek OpenAI-compatible endpoints an
 
 ## Knowledge Root
 
-The API and worker mount `/var/lib/aor/knowledge` as read-only. By default Compose uses the named `aor-knowledge-data` volume, initialized with the global namespace from the image; set `AOR_KNOWLEDGE_HOST_PATH` to an absolute host directory to serve a curated snapshot tree from another location. The API sets `AOR_KNOWLEDGE_CURATOR_URL=http://aor-curator:8080`, so authenticated knowledge-update requests are forwarded to the separate process that owns the only read-write knowledge mount. The curator listens on `127.0.0.1:8094` for approved operations and clears that URL to handle requests locally. An empty root is valid, but knowledge searches and manifest reads return not found until a revision is published.
+The API and worker mount `/var/lib/aor/knowledge` as read-only. By default Compose uses the named `aor-knowledge-data` volume, initialized with the global namespace from the image; set `AOR_KNOWLEDGE_HOST_PATH` to an absolute host directory to serve a curated snapshot tree from another location. The API sets `AOR_KNOWLEDGE_CURATOR_URL=http://aor-curator:8080`, so authenticated knowledge-update requests are forwarded to the separate process that owns the only read-write knowledge mount. The curator runs the `KNOWLEDGE_CURATOR` server mode, exposes only the draft, lookup, and approval routes on `127.0.0.1:8094`, and does not start control-plane schedulers or maintenance workers. An empty root is valid, but knowledge searches and manifest reads return not found until a revision is published.
 
 ## Start
 

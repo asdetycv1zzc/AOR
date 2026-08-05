@@ -547,6 +547,7 @@ services:
         condition: service_healthy
     environment:
       AOR_ENVIRONMENT: test
+      AOR_SERVER_MODE: CONTROL
       AOR_LISTEN_ADDR: :8080
       AOR_DATABASE_HOST: postgres
       AOR_DATABASE_PORT: "5432"
@@ -589,6 +590,7 @@ services:
     extends:
       service: aor-api
     environment:
+      AOR_SERVER_MODE: KNOWLEDGE_CURATOR
       AOR_KNOWLEDGE_CURATOR_URL: ""
     volumes: !override
       - "${AOR_KNOWLEDGE_HOST_PATH:-aor-knowledge-data}:/var/lib/aor/knowledge:rw"
