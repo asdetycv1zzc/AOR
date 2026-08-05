@@ -385,6 +385,34 @@ func (catalog *PostgresS3Catalog) Publish(ctx context.Context, publication Publi
 	if err := catalog.verifyObject(ctx, stageName, digest, int64(len(publication.Data))); err != nil {
 		return Record{}, err
 	}
+	tx, err := beginCatalogTx(ctx, catalog.database, publication.TenantID, false)
+	if err != nil {
+		return Record{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var classification string
+	var deletionStatus sql.NullString
+	var deletionID sql.NullString
+	if err := tx.QueryRowContext(ctx, `
+SELECT data_classification, deletion_status, deletion_id
+FROM projects
+WHERE tenant_id = $1::uuid AND id = $2::uuid
+FOR UPDATE`, publication.TenantID, publication.ProjectID).Scan(&classification, &deletionStatus, &deletionID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Record{}, ErrNotFound
+		}
+		return Record{}, err
+	}
+	if deletionStatus.Valid && (deletionStatus.String == "ERASING" || deletionStatus.String == "COMPLETED") {
+		proofAllowed := deletionStatus.String == "ERASING" && deletionID.Valid && metadataString(metadata, "kind") == "deletion-proof" && metadataString(metadata, "deletionId") == deletionID.String
+		if !proofAllowed {
+			return Record{}, ErrConflict
+		}
+	}
+	record := Record{ID: artifactID, TenantID: publication.TenantID, ProjectID: publication.ProjectID, URI: uri, SHA256: digest, SizeBytes: int64(len(publication.Data)), ContentType: publication.ContentType, Classification: classification, CreatedByPrincipal: publication.CreatedByPrincipal, Metadata: metadata, CreatedAt: now, RetentionUntil: retentionUntil}
+	if err := validateRecord(record); err != nil {
+		return Record{}, err
+	}
 	finalInfo, statErr := catalog.objects.StatObject(ctx, catalog.bucket, objectName, minio.StatObjectOptions{})
 	createdFinal := false
 	if statErr == nil {
@@ -417,30 +445,6 @@ func (catalog *PostgresS3Catalog) Publish(ctx context.Context, publication Publi
 	if err := catalog.verifyObject(ctx, objectName, digest, int64(len(publication.Data))); err != nil {
 		return Record{}, err
 	}
-	tx, err := beginCatalogTx(ctx, catalog.database, publication.TenantID, false)
-	if err != nil {
-		return Record{}, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	var classification string
-	var deletionStatus sql.NullString
-	var deletionID sql.NullString
-	if err := tx.QueryRowContext(ctx, `SELECT data_classification, deletion_status, deletion_id FROM projects WHERE tenant_id = $1::uuid AND id = $2::uuid`, publication.TenantID, publication.ProjectID).Scan(&classification, &deletionStatus, &deletionID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return Record{}, ErrNotFound
-		}
-		return Record{}, err
-	}
-	if deletionStatus.Valid && (deletionStatus.String == "ERASING" || deletionStatus.String == "COMPLETED") {
-		proofAllowed := deletionStatus.String == "ERASING" && deletionID.Valid && metadataString(metadata, "kind") == "deletion-proof" && metadataString(metadata, "deletionId") == deletionID.String
-		if !proofAllowed {
-			return Record{}, ErrConflict
-		}
-	}
-	record := Record{ID: artifactID, TenantID: publication.TenantID, ProjectID: publication.ProjectID, URI: uri, SHA256: digest, SizeBytes: int64(len(publication.Data)), ContentType: publication.ContentType, Classification: classification, CreatedByPrincipal: publication.CreatedByPrincipal, Metadata: metadata, CreatedAt: now, RetentionUntil: retentionUntil}
-	if err := validateRecord(record); err != nil {
-		return Record{}, err
-	}
 	var inserted string
 	err = tx.QueryRowContext(ctx, `
 INSERT INTO artifacts
@@ -460,6 +464,9 @@ SELECT id::text, tenant_id::text, project_id::text, uri, sha256, size_bytes,
 FROM artifacts
 WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND uri = $3`, publication.TenantID, publication.ProjectID, uri))
 		if lookupErr != nil || !samePublication(existing, record) {
+			return Record{}, ErrConflict
+		}
+		if existing.RetentionUntil != nil && !existing.RetentionUntil.After(now) {
 			return Record{}, ErrConflict
 		}
 		record = existing
@@ -640,12 +647,11 @@ func (catalog *PostgresS3Catalog) purgeExpiredArtifact(ctx context.Context, tena
 		return 0, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	record, projectState, projectVersion, deletionStatus, projectionState, err := scanRetentionRecord(tx.QueryRowContext(ctx, `
-SELECT artifacts.id::text, artifacts.tenant_id::text, artifacts.project_id::text,
-       artifacts.uri, artifacts.sha256, artifacts.size_bytes, artifacts.content_type,
-       artifacts.classification, artifacts.created_by_principal, artifacts.metadata_jsonb,
-       artifacts.created_at, artifacts.retention_until,
-       projects.state, projects.state_version, COALESCE(projects.deletion_status, ''),
+	var projectState, deletionStatus string
+	var projectVersion int64
+	var projectionState []byte
+	err = tx.QueryRowContext(ctx, `
+SELECT projects.state, projects.state_version, COALESCE(projects.deletion_status, ''),
        projection.state_jsonb
 FROM artifacts
 JOIN projects
@@ -657,7 +663,20 @@ JOIN aggregate_projections AS projection
  AND projection.aggregate_type = 'project'
  AND projection.aggregate_id = projects.id::text
 WHERE artifacts.tenant_id = $1::uuid AND artifacts.id = $2::uuid
-FOR UPDATE OF artifacts, projects, projection`, tenantID, artifactID))
+FOR UPDATE OF projects, projection`, tenantID, artifactID).Scan(&projectState, &projectVersion, &deletionStatus, &projectionState)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	record, err := scanRecord(tx.QueryRowContext(ctx, `
+SELECT id::text, tenant_id::text, project_id::text, uri, sha256, size_bytes,
+       content_type, classification, created_by_principal, metadata_jsonb,
+       created_at, retention_until
+FROM artifacts
+WHERE tenant_id = $1::uuid AND id = $2::uuid
+FOR UPDATE`, tenantID, artifactID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, false, nil
 	}
@@ -671,24 +690,9 @@ FOR UPDATE OF artifacts, projects, projection`, tenantID, artifactID))
 		return 0, false, nil
 	}
 
-	_, legacyName, err := ParseURI(record.URI)
-	if err != nil {
-		return 0, false, ErrIntegrity
-	}
 	objects, err := catalog.removeObject(ctx, projectObjectName(tenantID, record.ProjectID, record.SHA256))
 	if err != nil {
 		return 0, false, err
-	}
-	var references int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM artifacts WHERE tenant_id = $1::uuid AND sha256 = $2`, tenantID, record.SHA256).Scan(&references); err != nil {
-		return 0, false, err
-	}
-	if references == 1 {
-		legacyObjects, removeErr := catalog.removeObject(ctx, legacyName)
-		if removeErr != nil {
-			return 0, false, removeErr
-		}
-		objects += legacyObjects
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM artifact_publication_keys WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND artifact_id = $3::uuid`, tenantID, record.ProjectID, record.ID); err != nil {
 		return 0, false, err
@@ -884,18 +888,8 @@ ORDER BY artifact_id`, tenantID, projectID, deletionID)
 			return removed, err
 		}
 		removed += count
-		var legacyCount int64
-		if item.LegacyObjectName.Valid {
-			// Legacy objects used a tenant-global key. Keep them until this is
-			// the last catalog row for the URI, otherwise another project loses
-			// its content.
-			var legacyErr error
-			legacyCount, legacyErr = catalog.removeLegacyObject(ctx, tenantID, item.LegacyObjectName.String)
-			if legacyErr != nil {
-				return removed, legacyErr
-			}
-			removed += legacyCount
-		}
+		// Legacy keys are global across tenants. Tenant-scoped erasure leaves
+		// them intact because removing one can delete another tenant's content.
 		markTx, markErr := beginCatalogTx(ctx, catalog.database, tenantID, false)
 		if markErr != nil {
 			return removed, markErr
@@ -908,11 +902,11 @@ WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND deletion_id = $3 AND ar
 		if markErr == nil {
 			marked, markErr = markResult.RowsAffected()
 		}
-		if markErr == nil && marked == 1 && count+legacyCount > 0 {
+		if markErr == nil && marked == 1 && count > 0 {
 			_, markErr = markTx.ExecContext(ctx, `
 UPDATE project_erasure_jobs
 SET objects_deleted = objects_deleted + $4
-WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND deletion_id = $3 AND status = 'PREPARED'`, tenantID, projectID, deletionID, count+legacyCount)
+WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND deletion_id = $3 AND status = 'PREPARED'`, tenantID, projectID, deletionID, count)
 		}
 		if markErr == nil {
 			markErr = markTx.Commit()
@@ -940,30 +934,6 @@ func (catalog *PostgresS3Catalog) removeObject(ctx context.Context, objectName s
 		return 0, ErrIntegrity
 	}
 	return 1, nil
-}
-
-func (catalog *PostgresS3Catalog) removeLegacyObject(ctx context.Context, tenantID, objectName string) (int64, error) {
-	var digest string
-	if strings.HasPrefix(objectName, "sha256/") && len(objectName) == len("sha256/")+64 {
-		digest = "sha256:" + strings.TrimPrefix(objectName, "sha256/")
-	}
-	if digest == "" {
-		return 0, ErrIntegrity
-	}
-	tx, err := beginCatalogTx(ctx, catalog.database, tenantID, true)
-	if err != nil {
-		return 0, err
-	}
-	var references int
-	err = tx.QueryRowContext(ctx, `SELECT count(*) FROM artifacts WHERE tenant_id = $1::uuid AND sha256 = $2`, tenantID, digest).Scan(&references)
-	_ = tx.Rollback()
-	if err != nil {
-		return 0, err
-	}
-	if references > 1 {
-		return 0, nil
-	}
-	return catalog.removeObject(ctx, objectName)
 }
 
 func (catalog *PostgresS3Catalog) finalizeErasure(ctx context.Context, tenantID, projectID, deletionID string) (ErasureReport, error) {
@@ -1038,34 +1008,6 @@ func erasureScopes() []string {
 
 type rowScanner interface {
 	Scan(...any) error
-}
-
-func scanRetentionRecord(scanner rowScanner) (Record, string, int64, string, []byte, error) {
-	var record Record
-	var metadataBytes, projectionState []byte
-	var retention sql.NullTime
-	var projectState, deletionStatus string
-	var projectVersion int64
-	if err := scanner.Scan(
-		&record.ID, &record.TenantID, &record.ProjectID, &record.URI, &record.SHA256,
-		&record.SizeBytes, &record.ContentType, &record.Classification,
-		&record.CreatedByPrincipal, &metadataBytes, &record.CreatedAt, &retention,
-		&projectState, &projectVersion, &deletionStatus, &projectionState,
-	); err != nil {
-		return Record{}, "", 0, "", nil, err
-	}
-	if len(metadataBytes) > maxMetadataBytes || json.Unmarshal(metadataBytes, &record.Metadata) != nil || record.Metadata == nil {
-		return Record{}, "", 0, "", nil, ErrIntegrity
-	}
-	record.CreatedAt = record.CreatedAt.UTC()
-	if retention.Valid {
-		value := retention.Time.UTC()
-		record.RetentionUntil = &value
-	}
-	if err := validateRecord(record); err != nil {
-		return Record{}, "", 0, "", nil, err
-	}
-	return record, projectState, projectVersion, deletionStatus, projectionState, nil
 }
 
 func scanRecord(scanner rowScanner) (Record, error) {
