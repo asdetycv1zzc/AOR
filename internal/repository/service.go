@@ -22,6 +22,7 @@ import (
 
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 	"github.com/akimisaka/aor/pkg/contracts"
+	"github.com/google/uuid"
 )
 
 var (
@@ -114,14 +115,13 @@ func (s *Service) CreateWorkspace(ctx context.Context, request WorkspaceRequest)
 	if err := validateCommit(request.BaseCommit); err != nil {
 		return Workspace{}, ErrInvalidRequest
 	}
-	id := workspaceID(request)
 	workspaceRoot := filepath.Join(s.root, ".aor-workspaces")
 	source, err := s.workspaceRepositoryPath(ctx, request)
 	if err != nil {
 		return Workspace{}, err
 	}
 	directory := filepath.Join(workspaceRoot, cleanID(request.TenantID), cleanID(request.ProjectID), cleanID(request.TaskID), fmt.Sprintf("attempt-%d", request.Attempt))
-	gitDirectory := filepath.Join(s.root, ".aor-git", workspaceIDDigest(id))
+	gitDirectory := filepath.Join(s.root, ".aor-git", workspaceRequestDigest(request))
 	if filepath.Clean(source) == filepath.Clean(directory) {
 		return Workspace{}, ErrInvalidRequest
 	}
@@ -140,18 +140,28 @@ func (s *Service) CreateWorkspace(ctx context.Context, request WorkspaceRequest)
 	if err := s.validateLease(ctx, validation); err != nil {
 		return Workspace{}, err
 	}
-	workspace := Workspace{ID: id, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, Attempt: request.Attempt, AttemptSeriesID: request.AttemptSeriesID, Path: directory, Branch: workspaceBranch(request), BaseCommit: request.BaseCommit, AllowedPaths: append([]string(nil), request.ModuleSpec.AllowedPaths...), ForbiddenPaths: effectiveForbiddenPaths(request.ModuleSpec.ForbiddenPaths), AcceptanceCriteria: append([]string(nil), request.ModuleSpec.AcceptanceCriteria...), ModuleSpecRef: moduleSpecRef, AgentIdentity: request.AgentIdentity, OperationLeases: request.ExecutionLeaseID != "" && request.ExecutionLeaseID != request.Lease.ID, gitDir: gitDirectory, repositoryPath: source}
-	if prior, priorErr := s.workspace(ctx, id); priorErr == nil {
-		if !sameWorkspace(prior, workspace) {
+	template := Workspace{TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, Attempt: request.Attempt, AttemptSeriesID: request.AttemptSeriesID, Path: directory, Branch: workspaceBranch(request), BaseCommit: request.BaseCommit, AllowedPaths: append([]string(nil), request.ModuleSpec.AllowedPaths...), ForbiddenPaths: effectiveForbiddenPaths(request.ModuleSpec.ForbiddenPaths), AcceptanceCriteria: append([]string(nil), request.ModuleSpec.AcceptanceCriteria...), ModuleSpecRef: moduleSpecRef, AgentIdentity: request.AgentIdentity, OperationLeases: request.ExecutionLeaseID != "" && request.ExecutionLeaseID != request.Lease.ID, gitDir: gitDirectory, repositoryPath: source}
+	if prior, found, priorErr := s.workspaceStore.LoadWorkspaceByAttempt(ctx, request.TenantID, request.TaskID, request.AttemptSeriesID, request.Attempt); priorErr != nil {
+		return Workspace{}, priorErr
+	} else if found {
+		expected := template
+		expected.ID = prior.ID
+		if !sameWorkspace(prior, expected) {
 			return Workspace{}, ErrWorkspaceConflict
 		}
-		return prior, nil
-	} else if !errors.Is(priorErr, ErrWorkspaceNotFound) {
-		return Workspace{}, priorErr
+		if err := s.validateRecoveredWorkspace(ctx, prior); err != nil {
+			return Workspace{}, err
+		}
+		s.mu.Lock()
+		s.workspaces[prior.ID] = prior
+		s.mu.Unlock()
+		return cloneWorkspace(prior), nil
 	}
 	if pathExists(directory) || pathExists(gitDirectory) {
 		recovered, err := readWorkspaceRegistration(gitDirectory)
-		if err != nil || !sameWorkspace(recovered, workspace) {
+		expected := template
+		expected.ID = recovered.ID
+		if err != nil || !sameWorkspace(recovered, expected) {
 			return Workspace{}, ErrWorkspaceConflict
 		}
 		if err := s.validateRecoveredWorkspace(ctx, recovered); err != nil {
@@ -160,14 +170,21 @@ func (s *Service) CreateWorkspace(ctx context.Context, request WorkspaceRequest)
 		if err := s.validateLease(ctx, validation); err != nil {
 			return Workspace{}, err
 		}
-		if err := s.workspaceStore.StoreWorkspace(ctx, recovered); err != nil {
+		persisted, err := s.persistWorkspace(ctx, recovered, template)
+		if err != nil {
 			return Workspace{}, err
 		}
 		s.mu.Lock()
-		s.workspaces[id] = recovered
+		s.workspaces[persisted.ID] = persisted
 		s.mu.Unlock()
-		return cloneWorkspace(recovered), nil
+		return cloneWorkspace(persisted), nil
 	}
+	id, err := newWorkspaceID(request.TenantID)
+	if err != nil {
+		return Workspace{}, err
+	}
+	workspace := template
+	workspace.ID = id
 	if err := os.MkdirAll(filepath.Dir(directory), 0o700); err != nil {
 		return Workspace{}, err
 	}
@@ -198,13 +215,14 @@ func (s *Service) CreateWorkspace(ctx context.Context, request WorkspaceRequest)
 		cleanupWorkspace(directory, gitDirectory)
 		return Workspace{}, err
 	}
-	if err := s.workspaceStore.StoreWorkspace(ctx, workspace); err != nil {
+	persisted, err := s.persistWorkspace(ctx, workspace, template)
+	if err != nil {
 		return Workspace{}, err
 	}
 	s.mu.Lock()
-	s.workspaces[id] = workspace
+	s.workspaces[persisted.ID] = persisted
 	s.mu.Unlock()
-	return cloneWorkspace(workspace), nil
+	return cloneWorkspace(persisted), nil
 }
 
 func (s *Service) WriteFile(ctx context.Context, request WriteRequest) error {
@@ -452,6 +470,26 @@ func (s *Service) workspace(ctx context.Context, id string) (Workspace, error) {
 	return cloneWorkspace(workspace), nil
 }
 
+func (s *Service) persistWorkspace(ctx context.Context, workspace, template Workspace) (Workspace, error) {
+	storeErr := s.workspaceStore.StoreWorkspace(ctx, workspace)
+	prior, found, loadErr := s.workspaceStore.LoadWorkspaceByAttempt(ctx, workspace.TenantID, workspace.TaskID, workspace.AttemptSeriesID, workspace.Attempt)
+	if loadErr == nil && found {
+		expected := template
+		expected.ID = prior.ID
+		if !sameWorkspace(prior, expected) {
+			return Workspace{}, ErrWorkspaceConflict
+		}
+		return prior, nil
+	}
+	if storeErr != nil {
+		return Workspace{}, storeErr
+	}
+	if loadErr != nil {
+		return Workspace{}, loadErr
+	}
+	return workspace, nil
+}
+
 func (s *Service) workspaceRepositoryPath(ctx context.Context, request WorkspaceRequest) (string, error) {
 	if request.RepositoryPath != "" {
 		absolute, err := filepath.Abs(request.RepositoryPath)
@@ -474,15 +512,15 @@ func (s *Service) workspaceRepositoryPath(ctx context.Context, request Workspace
 }
 
 func (s *Service) validateRecoveredWorkspace(ctx context.Context, workspace Workspace) error {
-	if !safeIDPattern.MatchString(workspace.TenantID) || !safeIDPattern.MatchString(workspace.ProjectID) || !safeIDPattern.MatchString(workspace.TaskID) || !safeIDPattern.MatchString(workspace.AttemptSeriesID) || workspace.Attempt < 1 || workspace.Attempt > 3 || workspace.ModuleSpecRef.Validate() != nil || workspace.AgentIdentity.AgentInstanceID == "" || workspace.AgentIdentity.Role != "EXECUTOR" || workspace.AgentIdentity.LeaseID == "" || len(workspace.AllowedPaths) == 0 || validateCommit(workspace.BaseCommit) != nil {
+	if !validWorkspaceID(workspace.ID) || !safeIDPattern.MatchString(workspace.TenantID) || !safeIDPattern.MatchString(workspace.ProjectID) || !safeIDPattern.MatchString(workspace.TaskID) || !safeIDPattern.MatchString(workspace.AttemptSeriesID) || workspace.Attempt < 1 || workspace.Attempt > 3 || workspace.ModuleSpecRef.Validate() != nil || workspace.AgentIdentity.AgentInstanceID == "" || workspace.AgentIdentity.Role != "EXECUTOR" || workspace.AgentIdentity.LeaseID == "" || len(workspace.AllowedPaths) == 0 || validateCommit(workspace.BaseCommit) != nil {
 		return ErrWorkspaceConflict
 	}
-	request := WorkspaceRequest{TenantID: workspace.TenantID, ProjectID: workspace.ProjectID, TaskID: workspace.TaskID, Attempt: workspace.Attempt}
-	if workspace.ID != workspaceID(request) || workspace.Branch != workspaceBranch(request) {
+	request := WorkspaceRequest{TenantID: workspace.TenantID, ProjectID: workspace.ProjectID, TaskID: workspace.TaskID, AttemptSeriesID: workspace.AttemptSeriesID, Attempt: workspace.Attempt}
+	if workspace.Branch != workspaceBranch(request) {
 		return ErrWorkspaceConflict
 	}
 	expectedPath := filepath.Join(s.root, ".aor-workspaces", cleanID(workspace.TenantID), cleanID(workspace.ProjectID), cleanID(workspace.TaskID), fmt.Sprintf("attempt-%d", workspace.Attempt))
-	expectedGitDirectory := filepath.Join(s.root, ".aor-git", workspaceIDDigest(workspace.ID))
+	expectedGitDirectory := filepath.Join(s.root, ".aor-git", workspaceRequestDigest(request))
 	if filepath.Clean(workspace.Path) != filepath.Clean(expectedPath) || filepath.Clean(workspace.gitDir) != filepath.Clean(expectedGitDirectory) || workspace.repositoryPath == "" {
 		return ErrWorkspaceConflict
 	}
@@ -993,8 +1031,16 @@ func mustJSON(value any) []byte {
 	return encoded
 }
 
-func workspaceID(request WorkspaceRequest) string {
-	return request.TenantID + ":" + request.ProjectID + ":" + request.TaskID + ":" + strconv.Itoa(request.Attempt)
+func newWorkspaceID(tenantID string) (string, error) {
+	value, err := uuid.NewV7()
+	if err != nil {
+		return "", err
+	}
+	return tenantID + ":" + value.String(), nil
+}
+
+func workspaceRequestDigest(request WorkspaceRequest) string {
+	return workspaceIDDigest(workspaceNaturalKey(request.TenantID, request.TaskID, request.AttemptSeriesID, request.Attempt))
 }
 
 func workspaceIDDigest(id string) string {

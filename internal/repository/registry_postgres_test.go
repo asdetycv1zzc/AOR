@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/akimisaka/aor/pkg/contracts"
+	"github.com/google/uuid"
 )
 
 func TestPostgresRegistryStoreRequiresDatabase(t *testing.T) {
@@ -18,7 +19,7 @@ func TestPostgresRegistryStoreRequiresDatabase(t *testing.T) {
 
 func TestPersistedWorkspaceRoundTripIncludesServiceOwnedPaths(t *testing.T) {
 	workspace := Workspace{
-		ID: "tenant-1:project-1:task-1:1", TenantID: "tenant-1", ProjectID: "project-1",
+		ID: "tenant-1:" + uuid.Must(uuid.NewV7()).String(), TenantID: "tenant-1", ProjectID: "project-1",
 		TaskID: "task-1", Attempt: 1, AttemptSeriesID: "series-1", Path: "/srv/aor/workspace",
 		Branch: "agent/project-1/task-1/attempt-1", BaseCommit: strings.Repeat("a", 40),
 		AllowedPaths: []string{"owned/..."}, ForbiddenPaths: []string{".git/..."},

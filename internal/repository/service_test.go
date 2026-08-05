@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/akimisaka/aor/pkg/contracts"
+	"github.com/google/uuid"
 )
 
 type testLeaseValidator struct{}
@@ -22,6 +23,21 @@ type revokingLeaseValidator struct {
 	mu     sync.Mutex
 	calls  int
 	failAt int
+}
+
+func TestNewWorkspaceIDReturnsDistinctTenantScopedUUIDv7Values(t *testing.T) {
+	first, firstErr := newWorkspaceID("tenant-1")
+	second, secondErr := newWorkspaceID("tenant-1")
+	if firstErr != nil || secondErr != nil || first == second || !validWorkspaceID(first) || !validWorkspaceID(second) {
+		t.Fatalf("workspace ids = %q, %q errors=%v,%v", first, second, firstErr, secondErr)
+	}
+	for _, value := range []string{first, second} {
+		raw := strings.TrimPrefix(value, "tenant-1:")
+		parsed, err := uuid.Parse(raw)
+		if err != nil || parsed.Version() != uuid.Version(7) || parsed.String() != raw {
+			t.Fatalf("workspace id %q is not tenant-scoped UUIDv7", value)
+		}
+	}
 }
 
 func (testLeaseValidator) Validate(_ context.Context, validation LeaseValidation) error {
@@ -204,6 +220,10 @@ func TestWorkspaceHidesForbiddenFilesAndKeepsGitMetadataOutsideMount(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	replay, err := service.CreateWorkspace(context.Background(), request)
+	if err != nil || replay.ID != workspace.ID {
+		t.Fatalf("workspace replay id = %q want %q error=%v", replay.ID, workspace.ID, err)
+	}
 	for _, forbidden := range []string{"hidden-tests/exploit_test.go", "audit/private-policy.rego"} {
 		if _, err := os.Stat(filepath.Join(workspace.Path, filepath.FromSlash(forbidden))); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("forbidden file %s is visible: %v", forbidden, err)
@@ -326,8 +346,8 @@ func TestServiceRevalidatesLeaseBeforeWorkspaceRegistration(t *testing.T) {
 	if _, err := service.CreateWorkspace(context.Background(), request); !errors.Is(err, ErrLeaseStale) {
 		t.Fatalf("revoked workspace registration error = %v", err)
 	}
-	if _, found := service.Workspace(workspaceID(request)); found {
-		t.Fatal("workspace created under revoked lease was registered")
+	if _, found, err := service.workspaceStore.LoadWorkspaceByAttempt(context.Background(), request.TenantID, request.TaskID, request.AttemptSeriesID, request.Attempt); err != nil || found {
+		t.Fatalf("revoked workspace registration found=%t error=%v", found, err)
 	}
 }
 

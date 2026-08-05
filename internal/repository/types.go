@@ -141,6 +141,7 @@ type SubmissionStore interface {
 
 type WorkspaceStore interface {
 	LoadWorkspace(context.Context, string) (Workspace, bool, error)
+	LoadWorkspaceByAttempt(context.Context, string, string, string, int) (Workspace, bool, error)
 	StoreWorkspace(context.Context, Workspace) error
 }
 
@@ -174,15 +175,17 @@ type ProjectRepositoryImportRequest struct {
 }
 
 type MemoryRegistryStore struct {
-	mu           sync.RWMutex
-	workspaces   map[string]Workspace
-	repositories map[string]ProjectRepository
+	mu            sync.RWMutex
+	workspaces    map[string]Workspace
+	workspaceKeys map[string]string
+	repositories  map[string]ProjectRepository
 }
 
 func NewMemoryRegistryStore() *MemoryRegistryStore {
 	return &MemoryRegistryStore{
-		workspaces:   make(map[string]Workspace),
-		repositories: make(map[string]ProjectRepository),
+		workspaces:    make(map[string]Workspace),
+		workspaceKeys: make(map[string]string),
+		repositories:  make(map[string]ProjectRepository),
 	}
 }
 
@@ -196,19 +199,46 @@ func (s *MemoryRegistryStore) LoadWorkspace(_ context.Context, id string) (Works
 	return cloneWorkspace(workspace), found, nil
 }
 
+func (s *MemoryRegistryStore) LoadWorkspaceByAttempt(_ context.Context, tenantID, taskID, attemptSeriesID string, attempt int) (Workspace, bool, error) {
+	if s == nil || !safeIDPattern.MatchString(tenantID) || !safeIDPattern.MatchString(taskID) || !safeIDPattern.MatchString(attemptSeriesID) || attempt < 1 || attempt > 3 {
+		return Workspace{}, false, ErrInvalidRequest
+	}
+	s.mu.RLock()
+	id, found := s.workspaceKeys[workspaceNaturalKey(tenantID, taskID, attemptSeriesID, attempt)]
+	workspace := s.workspaces[id]
+	s.mu.RUnlock()
+	return cloneWorkspace(workspace), found, nil
+}
+
 func (s *MemoryRegistryStore) StoreWorkspace(_ context.Context, workspace Workspace) error {
-	if s == nil || workspace.ID == "" {
+	tenantID, validID := workspaceTenantID(workspace.ID)
+	if s == nil || !validID || tenantID != workspace.TenantID || !validWorkspaceID(workspace.ID) {
 		return ErrInvalidRequest
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.workspaces == nil {
+		s.workspaces = make(map[string]Workspace)
+	}
+	if s.workspaceKeys == nil {
+		s.workspaceKeys = make(map[string]string)
+	}
 	if prior, found := s.workspaces[workspace.ID]; found {
 		if sameWorkspace(prior, workspace) {
 			return nil
 		}
 		return ErrWorkspaceConflict
 	}
+	naturalKey := workspaceNaturalKey(workspace.TenantID, workspace.TaskID, workspace.AttemptSeriesID, workspace.Attempt)
+	if priorID, found := s.workspaceKeys[naturalKey]; found {
+		prior := s.workspaces[priorID]
+		if sameWorkspaceBinding(prior, workspace) {
+			return nil
+		}
+		return ErrWorkspaceConflict
+	}
 	s.workspaces[workspace.ID] = cloneWorkspace(workspace)
+	s.workspaceKeys[naturalKey] = workspace.ID
 	return nil
 }
 
@@ -298,6 +328,10 @@ func projectRepositoryKey(tenantID, projectID string) string {
 	return tenantID + "\x00" + projectID
 }
 
+func workspaceNaturalKey(tenantID, taskID, attemptSeriesID string, attempt int) string {
+	return tenantID + "\x00" + taskID + "\x00" + attemptSeriesID + "\x00" + strconv.Itoa(attempt)
+}
+
 func sameWorkspace(left, right Workspace) bool {
 	return left.ID == right.ID && left.TenantID == right.TenantID && left.ProjectID == right.ProjectID &&
 		left.TaskID == right.TaskID && left.Attempt == right.Attempt && left.AttemptSeriesID == right.AttemptSeriesID &&
@@ -306,6 +340,12 @@ func sameWorkspace(left, right Workspace) bool {
 		left.gitDir == right.gitDir && left.repositoryPath == right.repositoryPath &&
 		sameStrings(left.AllowedPaths, right.AllowedPaths) && sameStrings(left.ForbiddenPaths, right.ForbiddenPaths) &&
 		sameStrings(left.AcceptanceCriteria, right.AcceptanceCriteria)
+}
+
+func sameWorkspaceBinding(left, right Workspace) bool {
+	left.ID = ""
+	right.ID = ""
+	return sameWorkspace(left, right)
 }
 
 func sameProjectRepository(left, right ProjectRepository) bool {

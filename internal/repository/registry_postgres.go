@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/akimisaka/aor/pkg/contracts"
+	"github.com/google/uuid"
 )
 
 type PostgresRegistryStore struct {
@@ -46,7 +47,7 @@ func NewPostgresRegistryStore(database *sql.DB) (*PostgresRegistryStore, error) 
 }
 
 func (store *PostgresRegistryStore) LoadWorkspace(ctx context.Context, id string) (Workspace, bool, error) {
-	if store == nil || store.database == nil || ctx == nil || id == "" {
+	if store == nil || store.database == nil || ctx == nil || !validWorkspaceID(id) {
 		return Workspace{}, false, ErrInvalidRequest
 	}
 	tenantID, ok := workspaceTenantID(id)
@@ -63,6 +64,37 @@ func (store *PostgresRegistryStore) LoadWorkspace(ctx context.Context, id string
 SELECT workspace_jsonb
 FROM repository_workspaces
 WHERE tenant_id = $1::uuid AND id = $2`, tenantID, id).Scan(&content)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Workspace{}, false, nil
+	}
+	if err != nil {
+		return Workspace{}, false, err
+	}
+	workspace, err := unmarshalPersistedWorkspace(content)
+	if err != nil {
+		return Workspace{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Workspace{}, false, err
+	}
+	return workspace, true, nil
+}
+
+func (store *PostgresRegistryStore) LoadWorkspaceByAttempt(ctx context.Context, tenantID, taskID, attemptSeriesID string, attempt int) (Workspace, bool, error) {
+	if store == nil || store.database == nil || ctx == nil || !safeIDPattern.MatchString(tenantID) || !safeIDPattern.MatchString(taskID) || !safeIDPattern.MatchString(attemptSeriesID) || attempt < 1 || attempt > 3 {
+		return Workspace{}, false, ErrInvalidRequest
+	}
+	tx, err := store.begin(ctx, tenantID, true)
+	if err != nil {
+		return Workspace{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var content []byte
+	err = tx.QueryRowContext(ctx, `
+SELECT workspace_jsonb
+FROM repository_workspaces
+WHERE tenant_id = $1::uuid AND module_task_id = $2::uuid
+  AND attempt_series_id = $3::uuid AND attempt = $4`, tenantID, taskID, attemptSeriesID, attempt).Scan(&content)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Workspace{}, false, nil
 	}
@@ -96,7 +128,7 @@ func (store *PostgresRegistryStore) StoreWorkspace(ctx context.Context, workspac
 INSERT INTO repository_workspaces
   (id, tenant_id, project_id, module_task_id, attempt_series_id, attempt, workspace_jsonb)
 VALUES ($1, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6, $7::jsonb)
-ON CONFLICT (tenant_id, id) DO NOTHING`, workspace.ID, workspace.TenantID, workspace.ProjectID,
+ON CONFLICT DO NOTHING`, workspace.ID, workspace.TenantID, workspace.ProjectID,
 		workspace.TaskID, workspace.AttemptSeriesID, workspace.Attempt, content)
 	if err != nil {
 		return err
@@ -107,14 +139,23 @@ ON CONFLICT (tenant_id, id) DO NOTHING`, workspace.ID, workspace.TenantID, works
 	}
 	if inserted == 0 {
 		var priorContent []byte
-		if err := tx.QueryRowContext(ctx, `SELECT workspace_jsonb FROM repository_workspaces WHERE tenant_id = $1::uuid AND id = $2`, workspace.TenantID, workspace.ID).Scan(&priorContent); err != nil {
+		err := tx.QueryRowContext(ctx, `
+SELECT workspace_jsonb
+FROM repository_workspaces
+WHERE tenant_id = $1::uuid AND module_task_id = $2::uuid
+  AND attempt_series_id = $3::uuid AND attempt = $4`, workspace.TenantID, workspace.TaskID,
+			workspace.AttemptSeriesID, workspace.Attempt).Scan(&priorContent)
+		if errors.Is(err, sql.ErrNoRows) {
+			err = tx.QueryRowContext(ctx, `SELECT workspace_jsonb FROM repository_workspaces WHERE tenant_id = $1::uuid AND id = $2`, workspace.TenantID, workspace.ID).Scan(&priorContent)
+		}
+		if err != nil {
 			return err
 		}
 		prior, err := unmarshalPersistedWorkspace(priorContent)
 		if err != nil {
 			return err
 		}
-		if !sameWorkspace(prior, workspace) {
+		if !sameWorkspaceBinding(prior, workspace) {
 			return ErrWorkspaceConflict
 		}
 	}
@@ -263,8 +304,8 @@ func readWorkspaceRegistration(gitDirectory string) (Workspace, error) {
 }
 
 func validStoredWorkspace(workspace Workspace) bool {
-	request := WorkspaceRequest{TenantID: workspace.TenantID, ProjectID: workspace.ProjectID, TaskID: workspace.TaskID, Attempt: workspace.Attempt}
-	return len(workspace.ID) <= 512 && workspace.ID == workspaceID(request) && safeIDPattern.MatchString(workspace.TenantID) && safeIDPattern.MatchString(workspace.ProjectID) && safeIDPattern.MatchString(workspace.TaskID) && safeIDPattern.MatchString(workspace.AttemptSeriesID) && workspace.Attempt >= 1 && workspace.Attempt <= 3 && validateCommit(workspace.BaseCommit) == nil && workspace.ModuleSpecRef.Validate() == nil && workspace.AgentIdentity.AgentInstanceID != "" && workspace.AgentIdentity.Role == "EXECUTOR" && workspace.AgentIdentity.LeaseID != "" && filepath.IsAbs(workspace.Path) && filepath.IsAbs(workspace.gitDir) && filepath.IsAbs(workspace.repositoryPath)
+	tenantID, validID := workspaceTenantID(workspace.ID)
+	return validID && tenantID == workspace.TenantID && validWorkspaceID(workspace.ID) && safeIDPattern.MatchString(workspace.TenantID) && safeIDPattern.MatchString(workspace.ProjectID) && safeIDPattern.MatchString(workspace.TaskID) && safeIDPattern.MatchString(workspace.AttemptSeriesID) && workspace.Attempt >= 1 && workspace.Attempt <= 3 && validateCommit(workspace.BaseCommit) == nil && workspace.ModuleSpecRef.Validate() == nil && workspace.AgentIdentity.AgentInstanceID != "" && workspace.AgentIdentity.Role == "EXECUTOR" && workspace.AgentIdentity.LeaseID != "" && filepath.IsAbs(workspace.Path) && filepath.IsAbs(workspace.gitDir) && filepath.IsAbs(workspace.repositoryPath)
 }
 
 func validStoredProjectRepository(repository ProjectRepository) bool {
@@ -278,6 +319,17 @@ func workspaceTenantID(id string) (string, bool) {
 	}
 	tenantID := id[:index]
 	return tenantID, safeIDPattern.MatchString(tenantID)
+}
+
+func validWorkspaceID(id string) bool {
+	index := strings.IndexByte(id, ':')
+	if index <= 0 || index == len(id)-1 {
+		return false
+	}
+	tenantID := id[:index]
+	rawID := id[index+1:]
+	parsed, err := uuid.Parse(rawID)
+	return safeIDPattern.MatchString(tenantID) && err == nil && parsed != uuid.Nil && parsed.Version() == uuid.Version(7) && parsed.String() == rawID
 }
 
 var _ WorkspaceStore = (*PostgresRegistryStore)(nil)
