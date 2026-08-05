@@ -74,8 +74,11 @@ type DeterministicInput struct {
 }
 
 type BlindAuditInput struct {
+	AuditRunID          string
+	TenantID            string
 	ProjectID           string
 	TaskID              string
+	AttemptSeriesID     string
 	Attempt             int
 	ModuleSpecRef       contracts.SpecRef
 	BaseCommit          string
