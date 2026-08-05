@@ -528,6 +528,12 @@ func validMergeResult(result MergeResult, pending bool) bool {
 		result.Audit.IntegrationID != result.IntegrationID || result.Audit.ProjectID != result.ProjectID || !result.Audit.Passed || len(result.Audit.Findings) != 0 || !digestPattern(result.Audit.EvidenceSHA256) || result.Audit.CreatedAt.IsZero() {
 		return false
 	}
+	if result.Checks != nil && !validCheckResults(result.Checks, true) {
+		return false
+	}
+	if !validStoredCandidates(result.Candidates) {
+		return false
+	}
 	if !validAttemptBinding(result.OwnerTaskID, result.Attempt) || result.Attempt > 0 && !canonicalUUID(result.OwnerTaskID) {
 		return false
 	}

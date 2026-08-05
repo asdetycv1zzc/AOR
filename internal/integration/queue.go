@@ -8,6 +8,7 @@ import (
 	"path"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +52,10 @@ func (q *Queue) Audit(ctx context.Context, request Request) (Audit, error) {
 
 func (q *Queue) Task(ctx context.Context, tenantID, integrationID string) (IntegrationTask, bool, error) {
 	return q.store.GetTask(ctx, tenantID, integrationID)
+}
+
+func (q *Queue) Result(ctx context.Context, tenantID, integrationID string) (MergeResult, bool, error) {
+	return q.store.Get(ctx, tenantID, integrationID)
 }
 
 func (q *Queue) StartAttempt(ctx context.Context, request StartAttemptRequest) (IntegrationTask, bool, error) {
@@ -99,10 +104,25 @@ func (q *Queue) auditVerified(request VerifiedRequest) (Audit, error) {
 	if err != nil {
 		return Audit{}, err
 	}
-	return Audit{IntegrationID: request.IntegrationID, ProjectID: request.ProjectID, Findings: findings, EvidenceSHA256: digest, Passed: len(findings) == 0, CreatedAt: q.clock().UTC()}, nil
+	return Audit{IntegrationID: request.IntegrationID, ProjectID: request.ProjectID, BaseCommit: request.BaseCommit, Candidates: cloneCandidates(request.Candidates), Findings: findings, EvidenceSHA256: digest, Passed: len(findings) == 0, CreatedAt: q.clock().UTC()}, nil
 }
 
 func (q *Queue) Merge(ctx context.Context, request Request) (MergeResult, error) {
+	return q.merge(ctx, request, nil)
+}
+
+// MergeWithChecks reserves and creates the integration commit, then runs the
+// fixed cross-module verification suite before making the result immutable.
+// A failed check is recorded as an owner-bound IntegrationTask and therefore
+// follows the same rework/attempt lifecycle as a merge conflict.
+func (q *Queue) MergeWithChecks(ctx context.Context, request Request, verifier MergeVerifier) (MergeResult, error) {
+	if verifier == nil {
+		return MergeResult{}, ErrInvalidRequest
+	}
+	return q.merge(ctx, request, verifier)
+}
+
+func (q *Queue) merge(ctx context.Context, request Request, verifier MergeVerifier) (MergeResult, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	verified, err := q.verify(ctx, request)
@@ -120,7 +140,8 @@ func (q *Queue) Merge(ctx context.Context, request Request) (MergeResult, error)
 	if err != nil {
 		return MergeResult{}, err
 	}
-	reservation := MergeResult{TenantID: verified.TenantID, IntegrationID: verified.IntegrationID, ProjectID: verified.ProjectID, OwnerTaskID: verified.OwnerTaskID, Attempt: verified.Attempt, RequestDigest: requestDigest, Audit: audit, Pending: true}
+	reservation := MergeResult{TenantID: verified.TenantID, IntegrationID: verified.IntegrationID, ProjectID: verified.ProjectID, OwnerTaskID: verified.OwnerTaskID, Attempt: verified.Attempt, RequestDigest: requestDigest, Audit: audit, Candidates: cloneCandidates(verified.Candidates), Pending: true}
+	executionID := mergeExecutionID(verified.IntegrationID, verified.Attempt)
 	prior, owner, err := q.store.Reserve(ctx, reservation)
 	if err != nil {
 		return MergeResult{}, err
@@ -131,13 +152,13 @@ func (q *Queue) Merge(ctx context.Context, request Request) (MergeResult, error)
 	}
 	if !owner {
 		reservation.Duplicate = true
-		if recovered, found, lookupErr := q.executor.Lookup(ctx, verified.IntegrationID); lookupErr != nil {
+		if recovered, found, lookupErr := q.executor.Lookup(ctx, executionID); lookupErr != nil {
 			return MergeResult{}, lookupErr
 		} else if found {
 			if _, verifyErr := q.reverifyReservation(ctx, request, reservation); verifyErr != nil {
 				return reservation, verifyErr
 			}
-			return q.completeRecovered(ctx, reservation, recovered)
+			return q.completeRecovered(ctx, verified, reservation, recovered, verifier)
 		}
 	}
 	verified, err = q.reverifyReservation(ctx, request, reservation)
@@ -149,15 +170,15 @@ func (q *Queue) Merge(ctx context.Context, request Request) (MergeResult, error)
 		commits = append(commits, candidate.SubmissionCommit)
 	}
 	sort.Strings(commits)
-	commit, err := q.executor.Merge(ctx, verified.BaseCommit, commits, verified.IntegrationID)
+	commit, err := q.executor.Merge(ctx, verified.BaseCommit, commits, executionID)
 	if err != nil {
-		if recovered, found, lookupErr := q.executor.Lookup(ctx, verified.IntegrationID); lookupErr != nil {
+		if recovered, found, lookupErr := q.executor.Lookup(ctx, executionID); lookupErr != nil {
 			return reservation, errors.Join(ErrMergePending, err, lookupErr)
 		} else if found {
 			if _, verifyErr := q.reverifyReservation(ctx, request, reservation); verifyErr != nil {
 				return reservation, verifyErr
 			}
-			return q.completeRecovered(ctx, reservation, recovered)
+			return q.completeRecovered(ctx, verified, reservation, recovered, verifier)
 		}
 		if !errors.Is(err, ErrMergeConflict) {
 			return reservation, errors.Join(ErrMergePending, err)
@@ -171,7 +192,14 @@ func (q *Queue) Merge(ctx context.Context, request Request) (MergeResult, error)
 	if _, err := q.reverifyReservation(ctx, request, reservation); err != nil {
 		return reservation, err
 	}
-	return q.completeRecovered(ctx, reservation, commit)
+	return q.completeRecovered(ctx, verified, reservation, commit, verifier)
+}
+
+func mergeExecutionID(integrationID string, attempt int) string {
+	if attempt == 0 {
+		return integrationID
+	}
+	return integrationID + ":attempt:" + strconv.Itoa(attempt)
 }
 
 func (q *Queue) recordConflict(ctx context.Context, request VerifiedRequest, audit Audit) (MergeResult, error) {
@@ -218,7 +246,7 @@ func (q *Queue) mergeFailureAudit(request VerifiedRequest) (Audit, error) {
 		return Audit{}, err
 	}
 	return Audit{
-		IntegrationID: request.IntegrationID, ProjectID: request.ProjectID,
+		IntegrationID: request.IntegrationID, ProjectID: request.ProjectID, BaseCommit: request.BaseCommit, Candidates: cloneCandidates(request.Candidates),
 		Findings: []Finding{finding}, EvidenceSHA256: digest, CreatedAt: q.clock().UTC(),
 	}, nil
 }
@@ -235,17 +263,229 @@ func (q *Queue) reverifyReservation(ctx context.Context, request Request, reserv
 	return verified, nil
 }
 
-func (q *Queue) completeRecovered(ctx context.Context, reservation MergeResult, commit string) (MergeResult, error) {
+func (q *Queue) completeRecovered(ctx context.Context, verified VerifiedRequest, reservation MergeResult, commit string, verifier MergeVerifier) (MergeResult, error) {
 	if !commitID(commit) {
 		return MergeResult{}, ErrMergeConflict
 	}
 	result := reservation
 	result.Commit = commit
 	result.Pending = false
+	if verifier != nil {
+		rawChecks, runErr := verifier.Verify(ctx, MergeVerificationInput{
+			TenantID: verified.TenantID, ProjectID: verified.ProjectID, IntegrationID: verified.IntegrationID,
+			IntegrationCommit: commit, BaseCommit: verified.BaseCommit, Candidates: cloneCandidates(verified.Candidates),
+		})
+		checks, passed, err := q.normalizeCheckResults(verified, commit, rawChecks, runErr)
+		if err != nil {
+			return result, err
+		}
+		if !passed {
+			failure, failureErr := q.checkFailureAudit(verified, checks, runErr)
+			if failureErr != nil {
+				return result, failureErr
+			}
+			conflict, conflictErr := q.recordConflict(ctx, verified, failure)
+			return conflict, errors.Join(ErrChecksFailed, conflictErr)
+		}
+		result.Checks = cloneChecks(checks)
+	}
 	if err := q.store.Complete(ctx, result); err != nil {
 		return MergeResult{}, err
 	}
 	return result, nil
+}
+
+func (q *Queue) normalizeCheckResults(request VerifiedRequest, commit string, raw []CheckResult, runErr error) ([]CheckResult, bool, error) {
+	now := q.clock().UTC()
+	tasks := candidateTaskIDs(request.Candidates)
+	byKind := make(map[CheckKind]CheckResult, len(raw))
+	malformed := false
+	for _, check := range cloneChecks(raw) {
+		if !validCheckKind(check.Kind) {
+			malformed = true
+			continue
+		}
+		if _, exists := byKind[check.Kind]; exists {
+			malformed = true
+			continue
+		}
+		byKind[check.Kind] = check
+	}
+	checks := make([]CheckResult, 0, len(requiredCheckKinds))
+	for _, kind := range requiredCheckKinds {
+		check, found := byKind[kind]
+		if !found {
+			check = CheckResult{Kind: kind, Status: CheckError, Summary: "required integration check did not return a result"}
+			malformed = true
+		}
+		if check.Status != CheckPassed && check.Status != CheckFailed && check.Status != CheckError {
+			check.Status = CheckError
+			check.Summary = "integration check returned an invalid status"
+			malformed = true
+		}
+		check.Tasks = validatedCheckTasks(check.Tasks, tasks)
+		if check.OwnerTaskID == "" || !containsString(check.Tasks, check.OwnerTaskID) {
+			check.OwnerTaskID = request.OwnerTaskID
+			if check.OwnerTaskID == "" && len(check.Tasks) > 0 {
+				check.OwnerTaskID = check.Tasks[0]
+			}
+		}
+		if check.StartedAt.IsZero() {
+			check.StartedAt = now
+		}
+		if check.CompletedAt.IsZero() || check.CompletedAt.Before(check.StartedAt) {
+			check.CompletedAt = now
+			if check.CompletedAt.Before(check.StartedAt) {
+				check.CompletedAt = check.StartedAt
+			}
+		}
+		if !digestPattern(check.EvidenceSHA256) {
+			digest, err := normalizedCheckDigest(request, commit, check)
+			if err != nil {
+				return nil, false, err
+			}
+			check.EvidenceSHA256 = digest
+		}
+		checks = append(checks, check)
+	}
+	if runErr != nil {
+		malformed = true
+		for index := range checks {
+			if checks[index].Kind == CheckIntegration {
+				checks[index].Status = CheckError
+				checks[index].Summary = runErr.Error()
+				checks[index].EvidenceSHA256 = ""
+				digest, err := normalizedCheckDigest(request, commit, checks[index])
+				if err != nil {
+					return nil, false, err
+				}
+				checks[index].EvidenceSHA256 = digest
+				break
+			}
+		}
+	}
+	if malformed {
+		allPassed := true
+		for _, check := range checks {
+			if check.Status != CheckPassed {
+				allPassed = false
+				break
+			}
+		}
+		if allPassed {
+			for index := range checks {
+				if checks[index].Kind == CheckIntegration {
+					checks[index].Status = CheckError
+					checks[index].Summary = "integration check suite returned malformed results"
+					checks[index].EvidenceSHA256 = ""
+					digest, err := normalizedCheckDigest(request, commit, checks[index])
+					if err != nil {
+						return nil, false, err
+					}
+					checks[index].EvidenceSHA256 = digest
+					break
+				}
+			}
+		}
+	}
+	passed := !malformed && validCheckResults(checks, true)
+	return checks, passed, nil
+}
+
+func normalizedCheckDigest(request VerifiedRequest, commit string, check CheckResult) (string, error) {
+	check.EvidenceSHA256 = ""
+	value, err := json.Marshal(struct {
+		TenantID          string      `json:"tenantId"`
+		ProjectID         string      `json:"projectId"`
+		IntegrationID     string      `json:"integrationId"`
+		IntegrationCommit string      `json:"integrationCommit"`
+		Check             CheckResult `json:"check"`
+	}{request.TenantID, request.ProjectID, request.IntegrationID, commit, check})
+	if err != nil {
+		return "", err
+	}
+	return canonicaljson.Digest(value)
+}
+
+func validatedCheckTasks(provided, candidates []string) []string {
+	allowed := make(map[string]struct{}, len(candidates))
+	for _, taskID := range candidates {
+		allowed[taskID] = struct{}{}
+	}
+	validated := make([]string, 0, len(provided))
+	for _, taskID := range provided {
+		if _, exists := allowed[taskID]; exists {
+			validated = append(validated, taskID)
+		}
+	}
+	if len(validated) == 0 {
+		validated = append(validated, candidates...)
+	}
+	return uniqueStrings(validated)
+}
+
+func (q *Queue) checkFailureAudit(request VerifiedRequest, checks []CheckResult, runErr error) (Audit, error) {
+	if len(checks) == 0 && runErr == nil {
+		return Audit{}, ErrChecksFailed
+	}
+	tasks := candidateTaskIDs(request.Candidates)
+	findings := make([]Finding, 0, len(checks)+1)
+	for _, check := range checks {
+		if check.Status == CheckPassed {
+			continue
+		}
+		owner := check.OwnerTaskID
+		if owner == "" {
+			owner = request.OwnerTaskID
+		}
+		findingTasks := append([]string(nil), check.Tasks...)
+		if len(findingTasks) == 0 {
+			findingTasks = append([]string(nil), tasks...)
+		}
+		if owner != "" && !containsString(findingTasks, owner) {
+			findingTasks = append(findingTasks, owner)
+		}
+		findings = append(findings, Finding{
+			ID: "integration-check-" + strings.ToLower(string(check.Kind)), Severity: "BLOCKING",
+			Category: string(check.Kind), Summary: check.Summary, Tasks: uniqueStrings(findingTasks),
+		})
+	}
+	if runErr != nil {
+		findings = append(findings, Finding{ID: "integration-check-runner", Severity: "BLOCKING", Category: "CHECK_RUNNER", Summary: runErr.Error(), Tasks: tasks})
+	}
+	if len(findings) == 0 {
+		findings = append(findings, Finding{ID: "integration-checks-incomplete", Severity: "BLOCKING", Category: "CHECKS", Summary: "required integration checks did not all pass", Tasks: tasks})
+	}
+	digest, err := auditDigestWithChecks(request, findings, checks)
+	if err != nil {
+		return Audit{}, err
+	}
+	return Audit{IntegrationID: request.IntegrationID, ProjectID: request.ProjectID, BaseCommit: request.BaseCommit, Candidates: cloneCandidates(request.Candidates), Findings: findings, Checks: cloneChecks(checks), EvidenceSHA256: digest, CreatedAt: q.clock().UTC()}, nil
+}
+
+func candidateTaskIDs(candidates []Candidate) []string {
+	ids := make([]string, 0, len(candidates))
+	for _, candidate := range canonicalCandidates(candidates) {
+		ids = append(ids, candidate.TaskID)
+	}
+	return ids
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func (q *Queue) verify(ctx context.Context, request Request) (VerifiedRequest, error) {
@@ -297,19 +537,24 @@ func validateVerifiedRequest(request VerifiedRequest) error {
 }
 
 func auditDigest(request VerifiedRequest, findings []Finding) (string, error) {
+	return auditDigestWithChecks(request, findings, nil)
+}
+
+func auditDigestWithChecks(request VerifiedRequest, findings []Finding, checks []CheckResult) (string, error) {
 	value, err := json.Marshal(struct {
-		TenantID      string      `json:"tenantId"`
-		IntegrationID string      `json:"integrationId"`
-		ProjectID     string      `json:"projectId"`
-		BaseCommit    string      `json:"baseCommit"`
-		Candidates    []Candidate `json:"candidates"`
-		Findings      []Finding   `json:"findings"`
-		PolicyDigest  string      `json:"policyDigest"`
-		StateVersion  int64       `json:"stateVersion"`
-		Authorization string      `json:"authorization"`
-		OwnerTaskID   string      `json:"ownerTaskId,omitempty"`
-		Attempt       int         `json:"attempt"`
-	}{request.TenantID, request.IntegrationID, request.ProjectID, request.BaseCommit, request.Candidates, findings, request.PolicyDigest, request.ExpectedVersion, request.Authorization, request.OwnerTaskID, request.Attempt})
+		TenantID      string        `json:"tenantId"`
+		IntegrationID string        `json:"integrationId"`
+		ProjectID     string        `json:"projectId"`
+		BaseCommit    string        `json:"baseCommit"`
+		Candidates    []Candidate   `json:"candidates"`
+		Findings      []Finding     `json:"findings"`
+		PolicyDigest  string        `json:"policyDigest"`
+		StateVersion  int64         `json:"stateVersion"`
+		Authorization string        `json:"authorization"`
+		OwnerTaskID   string        `json:"ownerTaskId,omitempty"`
+		Attempt       int           `json:"attempt"`
+		Checks        []CheckResult `json:"checks,omitempty"`
+	}{request.TenantID, request.IntegrationID, request.ProjectID, request.BaseCommit, request.Candidates, findings, request.PolicyDigest, request.ExpectedVersion, request.Authorization, request.OwnerTaskID, request.Attempt, checks})
 	if err != nil {
 		return "", err
 	}

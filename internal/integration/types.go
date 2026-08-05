@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,7 +20,66 @@ var (
 	ErrAttemptState      = errors.New("integration attempt state conflict")
 	ErrAttemptsExhausted = errors.New("integration attempts exhausted")
 	ErrImmutable         = errors.New("integration result is immutable")
+	ErrChecksFailed      = errors.New("integration checks failed")
 )
+
+// CheckKind identifies the fixed cross-module verification stages required
+// before an integration commit can become a release candidate.
+type CheckKind string
+
+const (
+	CheckCompile     CheckKind = "COMPILE"
+	CheckContract    CheckKind = "CONTRACT"
+	CheckIntegration CheckKind = "INTEGRATION"
+	CheckE2E         CheckKind = "E2E"
+	CheckMigration   CheckKind = "MIGRATION"
+)
+
+var requiredCheckKinds = [...]CheckKind{
+	CheckCompile,
+	CheckContract,
+	CheckIntegration,
+	CheckE2E,
+	CheckMigration,
+}
+
+// CheckResult is the immutable, bounded result of one cross-module check.
+// EvidenceSHA256 binds the result to the artifact/check output retained by
+// the check runner; the integration store persists it with the merge result.
+type CheckResult struct {
+	Kind           CheckKind `json:"kind"`
+	Status         string    `json:"status"`
+	EvidenceSHA256 string    `json:"evidenceSha256"`
+	Summary        string    `json:"summary,omitempty"`
+	OwnerTaskID    string    `json:"ownerTaskId,omitempty"`
+	Tasks          []string  `json:"tasks,omitempty"`
+	StartedAt      time.Time `json:"startedAt"`
+	CompletedAt    time.Time `json:"completedAt"`
+}
+
+const (
+	CheckPassed = "PASS"
+	CheckFailed = "FAIL"
+	CheckError  = "ERROR"
+)
+
+// MergeVerificationInput is the exact immutable snapshot passed to the
+// cross-module check runner.
+type MergeVerificationInput struct {
+	TenantID          string
+	ProjectID         string
+	IntegrationID     string
+	IntegrationCommit string
+	BaseCommit        string
+	Candidates        []Candidate
+}
+
+// MergeVerifier executes the required cross-module checks against the
+// candidate integration commit. Implementations must not mutate the repo or
+// any request-owned data.
+type MergeVerifier interface {
+	Verify(context.Context, MergeVerificationInput) ([]CheckResult, error)
+}
 
 type TaskState string
 
@@ -88,25 +148,30 @@ type Finding struct {
 }
 
 type Audit struct {
-	IntegrationID  string    `json:"integrationId"`
-	ProjectID      string    `json:"projectId"`
-	Findings       []Finding `json:"findings"`
-	EvidenceSHA256 string    `json:"evidenceSha256"`
-	Passed         bool      `json:"passed"`
-	CreatedAt      time.Time `json:"createdAt"`
+	IntegrationID  string        `json:"integrationId"`
+	ProjectID      string        `json:"projectId"`
+	BaseCommit     string        `json:"baseCommit,omitempty"`
+	Candidates     []Candidate   `json:"candidates,omitempty"`
+	Findings       []Finding     `json:"findings"`
+	Checks         []CheckResult `json:"checks,omitempty"`
+	EvidenceSHA256 string        `json:"evidenceSha256"`
+	Passed         bool          `json:"passed"`
+	CreatedAt      time.Time     `json:"createdAt"`
 }
 
 type MergeResult struct {
-	TenantID      string `json:"tenantId"`
-	IntegrationID string `json:"integrationId"`
-	ProjectID     string `json:"projectId"`
-	OwnerTaskID   string `json:"ownerTaskId,omitempty"`
-	Attempt       int    `json:"attempt"`
-	Commit        string `json:"commit"`
-	RequestDigest string `json:"requestDigest"`
-	Audit         Audit  `json:"audit"`
-	Duplicate     bool   `json:"duplicate"`
-	Pending       bool   `json:"pending"`
+	TenantID      string        `json:"tenantId"`
+	IntegrationID string        `json:"integrationId"`
+	ProjectID     string        `json:"projectId"`
+	OwnerTaskID   string        `json:"ownerTaskId,omitempty"`
+	Attempt       int           `json:"attempt"`
+	Commit        string        `json:"commit"`
+	RequestDigest string        `json:"requestDigest"`
+	Audit         Audit         `json:"audit"`
+	Candidates    []Candidate   `json:"candidates,omitempty"`
+	Checks        []CheckResult `json:"checks,omitempty"`
+	Duplicate     bool          `json:"duplicate"`
+	Pending       bool          `json:"pending"`
 }
 
 type IntegrationTask struct {
@@ -277,6 +342,9 @@ func (s *MemoryStore) Reserve(_ context.Context, result MergeResult) (MergeResul
 }
 
 func (s *MemoryStore) Complete(_ context.Context, result MergeResult) error {
+	if result.Checks != nil && !validCheckResults(result.Checks, true) || !validStoredCandidates(result.Candidates) {
+		return ErrInvalidRequest
+	}
 	key := result.TenantID + "\x00" + result.IntegrationID
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -303,15 +371,31 @@ func (s *MemoryStore) Complete(_ context.Context, result MergeResult) error {
 
 func cloneResult(result MergeResult) MergeResult {
 	result.Audit = cloneAudit(result.Audit)
+	result.Candidates = cloneCandidates(result.Candidates)
+	result.Checks = cloneChecks(result.Checks)
 	return result
 }
 
 func cloneAudit(audit Audit) Audit {
+	audit.Candidates = cloneCandidates(audit.Candidates)
 	audit.Findings = append([]Finding(nil), audit.Findings...)
 	for index := range audit.Findings {
 		audit.Findings[index].Tasks = append([]string(nil), audit.Findings[index].Tasks...)
 	}
+	audit.Checks = cloneChecks(audit.Checks)
 	return audit
+}
+
+func cloneChecks(checks []CheckResult) []CheckResult {
+	if checks == nil {
+		return nil
+	}
+	cloned := make([]CheckResult, len(checks))
+	copy(cloned, checks)
+	for index := range cloned {
+		cloned[index].Tasks = append([]string(nil), checks[index].Tasks...)
+	}
+	return cloned
 }
 
 func cloneIntegrationTask(task IntegrationTask) IntegrationTask {
@@ -322,9 +406,9 @@ func cloneIntegrationTask(task IntegrationTask) IntegrationTask {
 func validConflictResult(result MergeResult) bool {
 	return result.TenantID != "" && result.ProjectID != "" && result.IntegrationID != "" &&
 		result.OwnerTaskID != "" && result.Attempt >= 0 && result.Attempt <= 3 &&
-		result.Commit == "" && result.RequestDigest == "" && !result.Duplicate && !result.Pending &&
+		result.Commit == "" && result.RequestDigest == "" && len(result.Candidates) == 0 && len(result.Checks) == 0 && !result.Duplicate && !result.Pending &&
 		result.Audit.IntegrationID == result.IntegrationID && result.Audit.ProjectID == result.ProjectID &&
-		!result.Audit.Passed && len(result.Audit.Findings) > 0 && digestPattern(result.Audit.EvidenceSHA256) &&
+		!result.Audit.Passed && len(result.Audit.Findings) > 0 && validStoredCandidates(result.Audit.Candidates) && validCheckResults(result.Audit.Checks, false) && digestPattern(result.Audit.EvidenceSHA256) &&
 		!result.Audit.CreatedAt.IsZero()
 }
 
@@ -341,15 +425,121 @@ func validStartAttemptRequest(request StartAttemptRequest) bool {
 }
 
 func isMergeFailureAudit(audit Audit, ownerTaskID string) bool {
-	if len(audit.Findings) != 1 {
+	if len(audit.Findings) == 0 {
 		return false
 	}
-	finding := audit.Findings[0]
-	if finding.ID != "merge-conflict" || finding.Severity != "BLOCKING" || finding.Category != "MERGE" {
+	if len(audit.Findings) == 1 && audit.Findings[0].ID == "merge-conflict" {
+		finding := audit.Findings[0]
+		return finding.Severity == "BLOCKING" && finding.Category == "MERGE" && len(audit.Checks) == 0 && containsString(finding.Tasks, ownerTaskID)
+	}
+	if len(audit.Checks) != len(requiredCheckKinds) || !validCheckResults(audit.Checks, false) {
 		return false
 	}
-	for _, taskID := range finding.Tasks {
-		if taskID == ownerTaskID {
+	failedChecks := make(map[CheckKind]struct{}, len(audit.Checks))
+	for _, check := range audit.Checks {
+		if check.Status != CheckPassed {
+			failedChecks[check.Kind] = struct{}{}
+		}
+	}
+	if len(failedChecks) == 0 {
+		return false
+	}
+	ownerFound := false
+	for _, finding := range audit.Findings {
+		checkFailure := strings.HasPrefix(finding.ID, "integration-check-") || finding.ID == "integration-checks-incomplete"
+		if finding.Severity != "BLOCKING" || !checkFailure {
+			return false
+		}
+		if strings.HasPrefix(finding.ID, "integration-check-") && finding.ID != "integration-check-runner" {
+			kind := CheckKind(strings.ToUpper(strings.TrimPrefix(finding.ID, "integration-check-")))
+			if _, failed := failedChecks[kind]; !failed {
+				return false
+			}
+		}
+		for _, taskID := range finding.Tasks {
+			if taskID == ownerTaskID {
+				ownerFound = true
+			}
+		}
+	}
+	return ownerFound
+}
+
+func validCheckResults(checks []CheckResult, requireAllPassed bool) bool {
+	if checks == nil {
+		return !requireAllPassed
+	}
+	seen := make(map[CheckKind]struct{}, len(checks))
+	for _, check := range checks {
+		if !validCheckKind(check.Kind) || (check.Status != CheckPassed && check.Status != CheckFailed && check.Status != CheckError) {
+			return false
+		}
+		if _, exists := seen[check.Kind]; exists {
+			return false
+		}
+		seen[check.Kind] = struct{}{}
+		if !digestPattern(check.EvidenceSHA256) || check.StartedAt.IsZero() || check.CompletedAt.IsZero() || check.CompletedAt.Before(check.StartedAt) {
+			return false
+		}
+		if check.OwnerTaskID != "" && !containsString(check.Tasks, check.OwnerTaskID) {
+			return false
+		}
+	}
+	if requireAllPassed {
+		if len(checks) != len(requiredCheckKinds) {
+			return false
+		}
+		for _, kind := range requiredCheckKinds {
+			check, exists := findCheck(checks, kind)
+			if !exists || check.Status != CheckPassed {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func validCheckKind(kind CheckKind) bool {
+	for _, required := range requiredCheckKinds {
+		if kind == required {
+			return true
+		}
+	}
+	return false
+}
+
+func validStoredCandidates(candidates []Candidate) bool {
+	if candidates == nil {
+		return true
+	}
+	if len(candidates) == 0 || len(candidates) > 1024 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.TaskID == "" || candidate.ModuleID == "" || !commitID(candidate.SubmissionCommit) || candidate.ModuleSpecRef.Validate() != nil || !digestPattern(candidate.EvidenceSHA256) || !candidate.AuditPassed {
+			return false
+		}
+		if _, duplicate := seen[candidate.TaskID]; duplicate {
+			return false
+		}
+		seen[candidate.TaskID] = struct{}{}
+	}
+	return true
+}
+
+func findCheck(checks []CheckResult, kind CheckKind) (CheckResult, bool) {
+	for _, check := range checks {
+		if check.Kind == kind {
+			return check, true
+		}
+	}
+	return CheckResult{}, false
+}
+
+func containsString(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
 			return true
 		}
 	}
