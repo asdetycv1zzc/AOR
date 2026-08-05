@@ -271,6 +271,18 @@ services:
         if [ "$$integration_scheduler_installed" != "t" ]; then
           psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000035_integration_scheduler.up.sql
         fi
+        artifact_publication_keys_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT to_regclass('public.artifact_publication_keys') IS NOT NULL")"
+        if [ "$$artifact_publication_keys_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000036_artifact_publication_keys.up.sql
+        fi
+        lease_idempotency_keys_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT to_regclass('public.agent_leases_issue_idempotency_key_idx') IS NOT NULL")"
+        if [ "$$lease_idempotency_keys_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000037_lease_idempotency_keys.up.sql
+        fi
+        budget_reservation_ids_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT to_regclass('public.budget_reservations_idempotency_key_idx') IS NOT NULL")"
+        if [ "$$budget_reservation_ids_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000038_budget_reservation_ids.up.sql
+        fi
         unset AOR_APP_PASSWORD
     secrets: [postgres_password, postgres_app_password]
     volumes:
@@ -309,6 +321,9 @@ services:
       - ../../migrations/postgres/000033_global_audit_scheduler.up.sql:/migrations/000033_global_audit_scheduler.up.sql:ro
       - ../../migrations/postgres/000034_module_audit_scheduler.up.sql:/migrations/000034_module_audit_scheduler.up.sql:ro
       - ../../migrations/postgres/000035_integration_scheduler.up.sql:/migrations/000035_integration_scheduler.up.sql:ro
+      - ../../migrations/postgres/000036_artifact_publication_keys.up.sql:/migrations/000036_artifact_publication_keys.up.sql:ro
+      - ../../migrations/postgres/000037_lease_idempotency_keys.up.sql:/migrations/000037_lease_idempotency_keys.up.sql:ro
+      - ../../migrations/postgres/000038_budget_reservation_ids.up.sql:/migrations/000038_budget_reservation_ids.up.sql:ro
       - ./postgres-app-password.sql:/migrations/postgres-app-password.sql:ro
     read_only: true
     tmpfs: [/tmp]

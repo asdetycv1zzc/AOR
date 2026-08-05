@@ -1,6 +1,7 @@
 package deployment
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -73,6 +74,47 @@ func TestDeploymentProfilesFailClosed(t *testing.T) {
 	}
 	if err := ValidateWindowsProfile(windows); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestComposeAppliesEveryManifestMigration(t *testing.T) {
+	manifestJSON, err := os.ReadFile("../../migrations/postgres/manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest struct {
+		Migrations []struct {
+			File string `json:"file"`
+		} `json:"migrations"`
+	}
+	if err := json.Unmarshal(manifestJSON, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	compose, err := os.ReadFile("../../deploy/compose/docker-compose.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	composeText := string(compose)
+	lastExecution := -1
+	lastMount := -1
+	for _, migration := range manifest.Migrations {
+		execution := "--file /migrations/" + migration.File
+		executionIndex := strings.Index(composeText, execution)
+		if executionIndex < 0 {
+			t.Errorf("compose does not execute manifest migration %q", migration.File)
+		} else if executionIndex <= lastExecution {
+			t.Errorf("compose executes manifest migration %q out of order", migration.File)
+		}
+		lastExecution = executionIndex
+
+		mount := "../../migrations/postgres/" + migration.File + ":/migrations/" + migration.File + ":ro"
+		mountIndex := strings.Index(composeText, mount)
+		if mountIndex < 0 {
+			t.Errorf("compose does not mount manifest migration %q read-only", migration.File)
+		} else if mountIndex <= lastMount {
+			t.Errorf("compose mounts manifest migration %q out of order", migration.File)
+		}
+		lastMount = mountIndex
 	}
 }
 
