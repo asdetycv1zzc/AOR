@@ -134,6 +134,33 @@ human_control_allowed if {
 	input.principal.role in {"USER", "BREAK_GLASS_ADMIN"}
 }
 
+audit_service_state_valid if {
+	input.resource.attributes.command == "START_AUDIT"
+	input.task.state == "SUBMITTED"
+}
+
+audit_service_state_valid if {
+	input.resource.attributes.command in {"DETERMINISTIC_SUCCESS", "DETERMINISTIC_FAILURE"}
+	input.task.state == "DETERMINISTIC_AUDIT"
+}
+
+audit_service_state_valid if {
+	input.resource.attributes.command in {"LLM_SUCCESS", "LLM_FAILURE"}
+	input.task.state == "LLM_AUDIT"
+}
+
+audit_service_control_allowed if {
+	valid_task_scope
+	input.action == "task.command"
+	input.principal.type == "SERVICE"
+	input.principal.role == "SERVICE"
+	input.project.state in {"EXECUTING", "GLOBAL_AUDIT"}
+	input.resource.type == "task"
+	input.resource.id == input.task.id
+	input.resource.attributes.policy_digest == data.aor.policy.version
+	audit_service_state_valid
+}
+
 active_lease if {
     input.lease.id != ""
     input.lease.policyVersion == data.aor.policy.version
@@ -376,6 +403,15 @@ decision := {
 }
 
 decision := {
+	"decision": "ALLOW",
+	"policyVersion": data.aor.policy.version,
+	"reasonCodes": ["AUDIT_SERVICE_ALLOWED", "TASK_STATE_VALID"],
+	"ruleId": "aor.audit.service.control",
+} if {
+	audit_service_control_allowed
+}
+
+decision := {
     "decision": "ALLOW",
     "policyVersion": data.aor.policy.version,
     "reasonCodes": ["MODEL_POLICY_ALLOWED", "PROJECT_SCOPE_VALID"],
@@ -446,6 +482,10 @@ matched if {
 
 matched if {
 	human_control_allowed
+}
+
+matched if {
+	audit_service_control_allowed
 }
 
 matched if {

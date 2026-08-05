@@ -183,6 +183,13 @@
       "file": "000026_execution_assignments.up.sql",
       "sha256": "sha256:1e337566ed595e4f78eae84898a5f0b896d820b9aff76f4f3fcf2240efa0a4ef",
       "destructive": false
+    },
+    {
+      "version": 27,
+      "mode": "EXPAND",
+      "file": "000027_module_audit_coordination.up.sql",
+      "sha256": "sha256:e311a4fdcc07890b13c0501e0a0451dcc811cb1cd52be40a4afd25232e21f558",
+      "destructive": false
     }
   ]
 }
