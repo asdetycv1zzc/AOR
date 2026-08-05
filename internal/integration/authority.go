@@ -18,6 +18,81 @@ type OrchestratorAuthority struct {
 	principal authn.Principal
 }
 
+// ProjectSource is the read side of the Orchestrator authority used by the
+// narrow global-audit IntegrationTask creation boundary below.
+type ProjectSource interface {
+	Project(context.Context, string, string) (state.Project, bool, error)
+}
+
+// GlobalAuditConflictAuthority is the smallest authoritative write entrypoint
+// for a conflict discovered outside the integration merge queue. It keeps the
+// durable Store behind the Orchestrator-owned service principal and verifies
+// that the project is still in GLOBAL_AUDIT before creating the task.
+type GlobalAuditConflictAuthority struct {
+	store     Store
+	projects  ProjectSource
+	principal authn.Principal
+}
+
+func NewGlobalAuditConflictAuthority(store Store, projects ProjectSource, principal authn.Principal) (*GlobalAuditConflictAuthority, error) {
+	if store == nil || projects == nil || !validIntegrationServicePrincipal(principal) {
+		return nil, ErrWorkflowUnavailable
+	}
+	return &GlobalAuditConflictAuthority{store: store, projects: projects, principal: cloneIntegrationPrincipal(principal)}, nil
+}
+
+func (authority *GlobalAuditConflictAuthority) CreateGlobalAuditConflict(ctx context.Context, result MergeResult) (MergeResult, bool, error) {
+	if authority == nil || authority.store == nil || authority.projects == nil || ctx == nil || ctx.Err() != nil ||
+		!canonicalUUID(result.TenantID) || !canonicalUUID(result.ProjectID) || !canonicalUUID(result.IntegrationID) ||
+		!canonicalUUID(result.OwnerTaskID) || result.Attempt != 0 || !validConflictResult(result) ||
+		!globalAuditConflictEvidence(result) {
+		return MergeResult{}, false, ErrInvalidRequest
+	}
+	principal, found := authn.PrincipalFromContext(ctx)
+	if !found || !validIntegrationServicePrincipal(principal) || principal.ID != authority.principal.ID ||
+		authority.principal.TenantID != "" && authority.principal.TenantID != result.TenantID ||
+		authority.principal.ProjectID != "" && authority.principal.ProjectID != result.ProjectID ||
+		principal.TenantID != "" && principal.TenantID != result.TenantID || principal.ProjectID != "" && principal.ProjectID != result.ProjectID {
+		return MergeResult{}, false, ErrNotAudited
+	}
+	principal.TenantID = result.TenantID
+	principal.ProjectID = result.ProjectID
+	bound, err := authn.ContextWithPrincipal(ctx, principal)
+	if err != nil {
+		return MergeResult{}, false, ErrNotAudited
+	}
+	project, found, err := authority.projects.Project(bound, result.TenantID, result.ProjectID)
+	if err != nil {
+		return MergeResult{}, false, err
+	}
+	if !found || project.TenantID != result.TenantID || project.ID != result.ProjectID || project.State != contracts.ProjectGlobalAudit {
+		return MergeResult{}, false, ErrNotAudited
+	}
+	return authority.store.RecordConflict(bound, result)
+}
+
+func globalAuditConflictEvidence(result MergeResult) bool {
+	if len(result.Audit.Checks) != 1 {
+		return false
+	}
+	check := result.Audit.Checks[0]
+	return check.Kind == CheckIntegration && check.Status == CheckError && check.EvidenceSHA256 == result.Audit.EvidenceSHA256 &&
+		check.OwnerTaskID == result.OwnerTaskID && containsString(check.Tasks, result.OwnerTaskID) &&
+		allConflictFindingsOwned(result.Audit.Findings, result.OwnerTaskID)
+}
+
+func allConflictFindingsOwned(findings []Finding, ownerTaskID string) bool {
+	if len(findings) == 0 {
+		return false
+	}
+	for _, finding := range findings {
+		if !containsString(finding.Tasks, ownerTaskID) {
+			return false
+		}
+	}
+	return true
+}
+
 func NewOrchestratorAuthority(store eventing.Store, policy authz.PolicyEvaluator, principal authn.Principal, clock func() time.Time) (*OrchestratorAuthority, error) {
 	if store == nil || policy == nil || !validIntegrationServicePrincipal(principal) {
 		return nil, ErrWorkflowUnavailable

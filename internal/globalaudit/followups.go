@@ -2,7 +2,6 @@ package globalaudit
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"path"
@@ -30,10 +29,25 @@ type FollowupResult struct {
 }
 
 type PostgresFollowupCreator struct {
-	database     *sql.DB
-	orchestrator *orchestrator.Service
-	integrations integration.Store
-	principal    authn.Principal
+	database       *sql.DB
+	orchestrator   *orchestrator.Service
+	integrations   integration.Store
+	conflictReader integrationConflictReader
+	conflicts      integrationConflictCreator
+	principal      authn.Principal
+}
+
+type integrationConflictCreator interface {
+	CreateGlobalAuditConflict(context.Context, integration.MergeResult) (integration.MergeResult, bool, error)
+}
+
+type integrationConflictReader interface {
+	FindConflictByEvidence(context.Context, string, string, string) (integration.IntegrationTask, bool, error)
+}
+
+func conflictReader(store integration.Store) integrationConflictReader {
+	reader, _ := store.(integrationConflictReader)
+	return reader
 }
 
 func NewPostgresFollowupCreator(database *sql.DB, events eventing.Store, integrations integration.Store, principal authn.Principal, clock func() time.Time) (*PostgresFollowupCreator, error) {
@@ -44,14 +58,19 @@ func NewPostgresFollowupCreator(database *sql.DB, events eventing.Store, integra
 		clock = time.Now
 	}
 	boundary := &followupCommitBoundary{principalID: principal.ID}
+	commandOrchestrator := orchestrator.NewWithBoundary(events, clock, boundary)
+	conflicts, err := integration.NewGlobalAuditConflictAuthority(integrations, commandOrchestrator, principal)
+	if err != nil {
+		return nil, err
+	}
 	return &PostgresFollowupCreator{
-		database: database, orchestrator: orchestrator.NewWithBoundary(events, clock, boundary),
-		integrations: integrations, principal: cloneFollowupPrincipal(principal),
+		database: database, orchestrator: commandOrchestrator, integrations: integrations,
+		conflictReader: conflictReader(integrations), conflicts: conflicts, principal: cloneFollowupPrincipal(principal),
 	}, nil
 }
 
 func (creator *PostgresFollowupCreator) Create(ctx context.Context, report Report, evidenceSHA256 string) (FollowupResult, error) {
-	if creator == nil || creator.database == nil || creator.orchestrator == nil || creator.integrations == nil ||
+	if creator == nil || creator.database == nil || creator.orchestrator == nil || creator.integrations == nil || creator.conflicts == nil ||
 		ctx == nil || ctx.Err() != nil || report.Validate() != nil || !digestPattern.MatchString(evidenceSHA256) {
 		return FollowupResult{}, ErrFollowupUnavailable
 	}
@@ -90,7 +109,7 @@ func (creator *PostgresFollowupCreator) Create(ctx context.Context, report Repor
 
 	moduleFindings, integrationFindings, integrationModules := classifyFollowupFindings(open, plan.Modules)
 	moduleIDs := sortedFindingModules(moduleFindings)
-	existing, complete, progressed, err := creator.inspectExistingFollowups(bound, report, evidenceSHA256, moduleIDs, len(integrationFindings) != 0, tasks)
+	existing, complete, progressed, err := creator.inspectExistingFollowups(bound, report, evidenceSHA256, moduleIDs, len(integrationFindings) != 0)
 	if err != nil {
 		return FollowupResult{}, err
 	}
@@ -110,7 +129,7 @@ func (creator *PostgresFollowupCreator) Create(ctx context.Context, report Repor
 	replacements := make(map[string]state.ModuleTask, len(moduleIDs))
 	result := FollowupResult{ModuleTaskIDs: make([]string, 0, len(moduleIDs)), IntegrationTaskIDs: []string{}}
 	for _, moduleID := range moduleIDs {
-		task, createErr := creator.createModuleTask(bound, report, evidenceSHA256, moduleID, tasks, currentTasks[moduleID])
+		task, createErr := creator.createModuleTask(bound, report, evidenceSHA256, moduleID, currentTasks[moduleID])
 		if createErr != nil {
 			return FollowupResult{}, createErr
 		}
@@ -142,24 +161,27 @@ func (creator *PostgresFollowupCreator) Create(ctx context.Context, report Repor
 	return result, nil
 }
 
-func (creator *PostgresFollowupCreator) inspectExistingFollowups(ctx context.Context, report Report, evidenceSHA256 string, moduleIDs []string, integrationExpected bool, tasks []state.ModuleTask) (FollowupResult, bool, bool, error) {
+func (creator *PostgresFollowupCreator) inspectExistingFollowups(ctx context.Context, report Report, evidenceSHA256 string, moduleIDs []string, integrationExpected bool) (FollowupResult, bool, bool, error) {
 	result := FollowupResult{ModuleTaskIDs: make([]string, 0, len(moduleIDs)), IntegrationTaskIDs: []string{}}
 	complete := true
 	progressed := false
 	for _, moduleID := range moduleIDs {
-		taskID := followupUUID(report.RunID, report.TenantID, report.ProjectID, "module-task", moduleID)
-		seriesID := followupUUID(report.RunID, report.TenantID, report.ProjectID, "attempt-series", moduleID)
-		task, found := taskByID(tasks, taskID)
+		defined, found, err := creator.loadFollowupTaskMapping(ctx, report, moduleID)
+		if err != nil {
+			return FollowupResult{}, false, false, err
+		}
 		if !found {
 			complete = false
 			continue
 		}
-		if task.TenantID != report.TenantID || task.ProjectID != report.ProjectID || task.ModuleID != moduleID ||
-			task.ModuleSpecRef.Validate() != nil || task.AttemptSeriesID != seriesID ||
-			task.State != contracts.TaskDefined && !validFollowupTaskState(task.State) {
+		task, taskFound, err := creator.orchestrator.Task(ctx, report.TenantID, report.ProjectID, defined.ID)
+		if err != nil {
+			return FollowupResult{}, false, false, err
+		}
+		if !taskFound || !validMappedFollowupTask(report, moduleID, defined, task) {
 			return FollowupResult{}, false, false, ErrFollowupConflict
 		}
-		result.ModuleTaskIDs = append(result.ModuleTaskIDs, taskID)
+		result.ModuleTaskIDs = append(result.ModuleTaskIDs, task.ID)
 		if task.State == contracts.TaskDefined {
 			complete = false
 		} else if task.State != contracts.TaskReadyExecution {
@@ -167,19 +189,21 @@ func (creator *PostgresFollowupCreator) inspectExistingFollowups(ctx context.Con
 		}
 	}
 	if integrationExpected {
-		integrationID := followupUUID(report.RunID, report.TenantID, report.ProjectID, "integration-task")
-		task, found, err := creator.integrations.GetTask(ctx, report.TenantID, integrationID)
+		if creator.conflictReader == nil {
+			return FollowupResult{}, false, false, ErrFollowupUnavailable
+		}
+		task, found, err := creator.conflictReader.FindConflictByEvidence(ctx, report.TenantID, report.ProjectID, evidenceSHA256)
 		if err != nil {
 			return FollowupResult{}, false, false, err
 		}
 		if !found {
 			complete = false
 		} else {
-			if task.TenantID != report.TenantID || task.ProjectID != report.ProjectID || task.ID != integrationID || task.OwnerTaskID == "" ||
-				task.Attempt == 0 && task.Conflict.EvidenceSHA256 != evidenceSHA256 {
+			if task.TenantID != report.TenantID || task.ProjectID != report.ProjectID || !uuidV7(task.ID) || task.OwnerTaskID == "" ||
+				task.Conflict.IntegrationID != task.ID || task.Conflict.ProjectID != report.ProjectID || task.Conflict.EvidenceSHA256 != evidenceSHA256 {
 				return FollowupResult{}, false, false, ErrFollowupConflict
 			}
-			result.IntegrationTaskIDs = append(result.IntegrationTaskIDs, integrationID)
+			result.IntegrationTaskIDs = append(result.IntegrationTaskIDs, task.ID)
 			if task.State != integration.TaskReworkRequired || task.Attempt != 0 || task.Version != 1 {
 				progressed = true
 			}
@@ -189,40 +213,75 @@ func (creator *PostgresFollowupCreator) inspectExistingFollowups(ctx context.Con
 	return result, complete, progressed, nil
 }
 
-func (creator *PostgresFollowupCreator) createModuleTask(ctx context.Context, report Report, evidenceSHA256, moduleID string, tasks []state.ModuleTask, original state.ModuleTask) (state.ModuleTask, error) {
-	taskID := followupUUID(report.RunID, report.TenantID, report.ProjectID, "module-task", moduleID)
-	seriesID := followupUUID(report.RunID, report.TenantID, report.ProjectID, "attempt-series", moduleID)
-	existing, exists := taskByID(tasks, taskID)
+func (creator *PostgresFollowupCreator) createModuleTask(ctx context.Context, report Report, evidenceSHA256, moduleID string, original state.ModuleTask) (state.ModuleTask, error) {
+	key := followupModuleKey(report.RunID, moduleID)
+	defined, exists, err := creator.loadFollowupTaskMapping(ctx, report, moduleID)
+	if err != nil {
+		return state.ModuleTask{}, err
+	}
+	var existing state.ModuleTask
 	if exists {
-		if existing.TenantID != report.TenantID || existing.ProjectID != report.ProjectID || existing.ModuleID != moduleID || existing.ModuleSpecRef.Validate() != nil || existing.AttemptSeriesID != seriesID {
+		existing, exists, err = creator.orchestrator.Task(ctx, report.TenantID, report.ProjectID, defined.ID)
+		if err != nil {
+			return state.ModuleTask{}, err
+		}
+		if !exists || !validMappedFollowupTask(report, moduleID, defined, existing) {
 			return state.ModuleTask{}, ErrFollowupConflict
 		}
 		if original.ID == existing.ID {
 			original = state.ModuleTask{}
-		} else if original.ID != "" && original.ModuleSpecRef != existing.ModuleSpecRef {
+		} else if original.ID != "" && (original.ModuleSpecRef != defined.ModuleSpecRef || !sameTaskPlanMetadata(original, defined)) {
 			return state.ModuleTask{}, ErrFollowupConflict
 		}
 	} else {
-		if original.ID == "" || original.State != contracts.TaskIntegrated || original.ModuleID != moduleID || original.ModuleSpecRef.Validate() != nil {
+		if original.ID == "" || original.State != contracts.TaskIntegrated || original.ModuleID != moduleID ||
+			original.PlanningSpecRef != report.PlanSpecRef || original.ModuleSpecRef.Validate() != nil {
 			return state.ModuleTask{}, ErrFollowupConflict
 		}
-		outcome, err := creator.orchestrator.HandleTask(ctx, orchestrator.TaskRequest{
+		taskID, idErr := newFollowupUUID()
+		if idErr != nil {
+			return state.ModuleTask{}, idErr
+		}
+		seriesID, idErr := newFollowupUUID()
+		if idErr != nil {
+			return state.ModuleTask{}, idErr
+		}
+		outcome, handleErr := creator.orchestrator.HandleTask(ctx, orchestrator.TaskRequest{
 			TenantID: report.TenantID, ProjectID: report.ProjectID, TaskID: taskID, PrincipalID: creator.principal.ID,
-			IdempotencyKey: "global-audit:" + report.RunID + ":module:" + taskID + ":define", ExpectedVersion: 0,
+			IdempotencyKey: key + ":define", ExpectedVersion: 0,
 			Command: state.TaskCommand{
-				Type: state.TaskCommandDefine, ModuleID: moduleID, ModuleSpecRef: original.ModuleSpecRef,
-				AttemptSeriesID: seriesID, AuditEvidenceSHA256: evidenceSHA256,
+				Type: state.TaskCommandDefine, ModuleID: moduleID, PlanningSpecRef: original.PlanningSpecRef,
+				ModuleSpecRef: original.ModuleSpecRef, AttemptSeriesID: seriesID,
+				DependentTaskIDs:   append([]string(nil), original.DependentTaskIDs...),
+				FrozenDependentIDs: append([]string(nil), original.FrozenDependentIDs...),
+				BlockingTaskIDs:    append([]string(nil), original.BlockingTaskIDs...), BlockedFromState: original.BlockedFromState,
+				ModuleSpecSourceTaskID: moduleSpecSourceTaskID(original),
+				AuditEvidenceSHA256:    evidenceSHA256,
 			},
 		})
-		if err != nil {
-			return state.ModuleTask{}, err
+		if handleErr != nil {
+			defined, mapped, lookupErr := creator.loadFollowupTaskMapping(ctx, report, moduleID)
+			if lookupErr != nil {
+				return state.ModuleTask{}, lookupErr
+			}
+			if !mapped {
+				return state.ModuleTask{}, handleErr
+			}
+			existing, exists, lookupErr = creator.orchestrator.Task(ctx, report.TenantID, report.ProjectID, defined.ID)
+			if lookupErr != nil {
+				return state.ModuleTask{}, lookupErr
+			}
+			if !exists || !validMappedFollowupTask(report, moduleID, defined, existing) || original.ModuleSpecRef != defined.ModuleSpecRef || !sameTaskPlanMetadata(original, defined) {
+				return state.ModuleTask{}, ErrFollowupConflict
+			}
+		} else {
+			existing = outcome.Task
 		}
-		existing = outcome.Task
 	}
 	if existing.State == contracts.TaskDefined {
 		outcome, err := creator.orchestrator.HandleTask(ctx, orchestrator.TaskRequest{
-			TenantID: report.TenantID, ProjectID: report.ProjectID, TaskID: taskID, PrincipalID: creator.principal.ID,
-			IdempotencyKey: "global-audit:" + report.RunID + ":module:" + taskID + ":ready", ExpectedVersion: existing.Version,
+			TenantID: report.TenantID, ProjectID: report.ProjectID, TaskID: existing.ID, PrincipalID: creator.principal.ID,
+			IdempotencyKey: key + ":ready", ExpectedVersion: existing.Version,
 			Command: state.TaskCommand{Type: state.TaskCommandReadyExecution, AuditEvidenceSHA256: evidenceSHA256},
 		})
 		if err != nil {
@@ -236,7 +295,7 @@ func (creator *PostgresFollowupCreator) createModuleTask(ctx context.Context, re
 	if original.ID != "" && original.State == contracts.TaskIntegrated {
 		_, err := creator.orchestrator.HandleTask(ctx, orchestrator.TaskRequest{
 			TenantID: report.TenantID, ProjectID: report.ProjectID, TaskID: original.ID, PrincipalID: creator.principal.ID,
-			IdempotencyKey: "global-audit:" + report.RunID + ":module:" + taskID + ":supersede", ExpectedVersion: original.Version,
+			IdempotencyKey: key + ":supersede", ExpectedVersion: original.Version,
 			Command: state.TaskCommand{Type: state.TaskCommandSupersede, AuditEvidenceSHA256: evidenceSHA256},
 		})
 		if err != nil {
@@ -252,7 +311,22 @@ func (creator *PostgresFollowupCreator) createIntegrationTask(ctx context.Contex
 		return "", ErrFollowupConflict
 	}
 	ownerTaskID := taskIDs[0]
-	integrationID := followupUUID(report.RunID, report.TenantID, report.ProjectID, "integration-task")
+	if creator.conflictReader == nil {
+		return "", ErrFollowupUnavailable
+	}
+	existing, found, err := creator.conflictReader.FindConflictByEvidence(ctx, report.TenantID, report.ProjectID, evidenceSHA256)
+	if err != nil {
+		return "", err
+	}
+	integrationID := existing.ID
+	if !found {
+		integrationID, err = newFollowupUUID()
+		if err != nil {
+			return "", err
+		}
+	} else if !uuidV7(integrationID) || existing.Conflict.EvidenceSHA256 != evidenceSHA256 {
+		return "", ErrFollowupConflict
+	}
 	integrationFindings := make([]integration.Finding, 0, len(findings))
 	for _, finding := range findings {
 		severity := string(finding.Severity)
@@ -275,17 +349,62 @@ func (creator *PostgresFollowupCreator) createIntegrationTask(ctx context.Contex
 		}},
 		EvidenceSHA256: evidenceSHA256, Passed: false, CreatedAt: report.CompletedAt,
 	}
-	stored, _, err := creator.integrations.RecordConflict(ctx, integration.MergeResult{
+	stored, _, err := creator.conflicts.CreateGlobalAuditConflict(ctx, integration.MergeResult{
 		TenantID: report.TenantID, ProjectID: report.ProjectID, IntegrationID: integrationID,
 		OwnerTaskID: ownerTaskID, Attempt: 0, Audit: audit,
 	})
 	if err != nil {
-		return "", err
+		recovered, recoveredFound, lookupErr := creator.conflictReader.FindConflictByEvidence(ctx, report.TenantID, report.ProjectID, evidenceSHA256)
+		if lookupErr != nil {
+			return "", lookupErr
+		}
+		if !recoveredFound || !uuidV7(recovered.ID) {
+			return "", err
+		}
+		stored = integration.MergeResult{
+			TenantID: recovered.TenantID, ProjectID: recovered.ProjectID, IntegrationID: recovered.ID,
+			OwnerTaskID: recovered.OwnerTaskID, Attempt: recovered.Attempt, Audit: recovered.Conflict,
+		}
+		integrationID = recovered.ID
 	}
 	if stored.IntegrationID != integrationID || stored.ProjectID != report.ProjectID || stored.OwnerTaskID != ownerTaskID || stored.Audit.EvidenceSHA256 != evidenceSHA256 {
 		return "", ErrFollowupConflict
 	}
 	return integrationID, nil
+}
+
+func (creator *PostgresFollowupCreator) loadFollowupTaskMapping(ctx context.Context, report Report, moduleID string) (state.ModuleTask, bool, error) {
+	if creator == nil || creator.database == nil || !tenantBound(ctx, report.TenantID) {
+		return state.ModuleTask{}, false, ErrFollowupUnavailable
+	}
+	tx, err := creator.database.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable, ReadOnly: true})
+	if err != nil {
+		return state.ModuleTask{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `SELECT set_config('aor.tenant_id', $1, true)`, report.TenantID); err != nil {
+		return state.ModuleTask{}, false, err
+	}
+	var encoded []byte
+	err = tx.QueryRowContext(ctx, `
+SELECT result_jsonb
+FROM command_results
+WHERE tenant_id = $1::uuid AND principal_id = $2 AND idempotency_key = $3`,
+		report.TenantID, creator.principal.ID, followupModuleKey(report.RunID, moduleID)+":define").Scan(&encoded)
+	if errors.Is(err, sql.ErrNoRows) {
+		return state.ModuleTask{}, false, nil
+	}
+	if err != nil {
+		return state.ModuleTask{}, false, err
+	}
+	var task state.ModuleTask
+	if decodeStrict(encoded, &task) != nil || !validDefinedFollowupMapping(report, moduleID, task) {
+		return state.ModuleTask{}, false, ErrFollowupConflict
+	}
+	if err := tx.Commit(); err != nil {
+		return state.ModuleTask{}, false, err
+	}
+	return task, true, nil
 }
 
 func (creator *PostgresFollowupCreator) loadPlan(ctx context.Context, report Report) (contracts.PlanSpec, error) {
@@ -526,13 +645,57 @@ func sortedFindingModules(findings map[string][]contracts.AuditFinding) []string
 	return result
 }
 
-func taskByID(tasks []state.ModuleTask, taskID string) (state.ModuleTask, bool) {
-	for _, task := range tasks {
-		if task.ID == taskID {
-			return task, true
+func sameTaskPlanMetadata(original, replacement state.ModuleTask) bool {
+	return original.PlanningSpecRef == replacement.PlanningSpecRef &&
+		moduleSpecSourceTaskID(original) == replacement.ModuleSpecSourceTaskID &&
+		original.BlockedFromState == replacement.BlockedFromState &&
+		sameStrings(original.DependentTaskIDs, replacement.DependentTaskIDs) &&
+		sameStrings(original.FrozenDependentIDs, replacement.FrozenDependentIDs) &&
+		sameStrings(original.BlockingTaskIDs, replacement.BlockingTaskIDs)
+}
+
+func moduleSpecSourceTaskID(task state.ModuleTask) string {
+	if task.ModuleSpecSourceTaskID != "" {
+		return task.ModuleSpecSourceTaskID
+	}
+	return task.ID
+}
+
+func sameStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
 		}
 	}
-	return state.ModuleTask{}, false
+	return true
+}
+
+func hasString(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func validDefinedFollowupMapping(report Report, moduleID string, task state.ModuleTask) bool {
+	return task.TenantID == report.TenantID && task.ProjectID == report.ProjectID && task.ModuleID == moduleID &&
+		uuidV7(task.ID) && uuidV7(task.AttemptSeriesID) && uuidV7(task.ModuleSpecSourceTaskID) && task.State == contracts.TaskDefined && task.Version == 1 &&
+		task.PlanningSpecRef == report.PlanSpecRef && task.ModuleSpecRef.Validate() == nil &&
+		len(task.AttemptSeriesIDs) == 1 && task.AttemptSeriesIDs[0] == task.AttemptSeriesID
+}
+
+func validMappedFollowupTask(report Report, moduleID string, defined, current state.ModuleTask) bool {
+	return validDefinedFollowupMapping(report, moduleID, defined) && current.TenantID == defined.TenantID &&
+		current.ProjectID == defined.ProjectID && current.ID == defined.ID && current.ModuleID == defined.ModuleID &&
+		current.ModuleSpecSourceTaskID == defined.ModuleSpecSourceTaskID &&
+		current.PlanningSpecRef == defined.PlanningSpecRef && current.ModuleSpecRef == defined.ModuleSpecRef &&
+		sameStrings(current.DependentTaskIDs, defined.DependentTaskIDs) &&
+		hasString(current.AttemptSeriesIDs, defined.AttemptSeriesID) && validFollowupTaskState(current.State)
 }
 
 func validFollowupTaskState(value contracts.ModuleTaskState) bool {
@@ -552,20 +715,19 @@ func emptyFollowupTask(task state.ModuleTask) bool {
 	return task.TenantID == "" && task.ProjectID == "" && task.ID == "" && task.ModuleID == "" && task.State == "" && task.Version == 0 &&
 		task.PlanningSpecRef == (contracts.SpecRef{}) && task.ModuleSpecRef == (contracts.SpecRef{}) && task.AttemptSeriesID == "" &&
 		len(task.AttemptSeriesIDs) == 0 && task.Attempt == 0 && task.FencingToken == 0 && len(task.DependentTaskIDs) == 0 &&
-		len(task.FrozenDependentIDs) == 0 && len(task.BlockingTaskIDs) == 0 && task.BlockedFromState == ""
+		len(task.FrozenDependentIDs) == 0 && len(task.BlockingTaskIDs) == 0 && task.BlockedFromState == "" && task.ModuleSpecSourceTaskID == ""
 }
 
-func followupUUID(runID string, parts ...string) string {
-	source, _ := uuid.Parse(runID)
-	input := []byte(runID + "\x00" + strings.Join(parts, "\x00"))
-	digest := sha256.Sum256(input)
-	var raw [16]byte
-	copy(raw[:6], source[:6])
-	copy(raw[6:], digest[:10])
-	raw[6] = raw[6]&0x0f | 0x70
-	raw[8] = raw[8]&0x3f | 0x80
-	id, _ := uuid.FromBytes(raw[:])
-	return id.String()
+func followupModuleKey(runID, moduleID string) string {
+	return "global-audit:" + runID + ":module:" + moduleID
+}
+
+func newFollowupUUID() (string, error) {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return "", ErrFollowupUnavailable
+	}
+	return id.String(), nil
 }
 
 func validFollowupPrincipal(principal authn.Principal) bool {

@@ -107,6 +107,44 @@ func (store *PostgresStore) GetTask(ctx context.Context, tenantID, integrationID
 	return task, true, nil
 }
 
+func (store *PostgresStore) FindConflictByEvidence(ctx context.Context, tenantID, projectID, evidenceSHA256 string) (IntegrationTask, bool, error) {
+	if store == nil || store.database == nil || ctx == nil || ctx.Err() != nil || !canonicalUUID(tenantID) || !canonicalUUID(projectID) || !digestPattern(evidenceSHA256) {
+		return IntegrationTask{}, false, ErrInvalidRequest
+	}
+	tx, err := store.begin(ctx, tenantID, true)
+	if err != nil {
+		return IntegrationTask{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var integrationID sql.NullString
+	var matches int
+	err = tx.QueryRowContext(ctx, `
+SELECT min(id::text), count(*)
+FROM integration_tasks
+WHERE tenant_id = $1::uuid AND project_id = $2::uuid
+  AND conflict_jsonb->>'evidenceSha256' = $3`, tenantID, projectID, evidenceSHA256).Scan(&integrationID, &matches)
+	if err != nil {
+		return IntegrationTask{}, false, err
+	}
+	if matches == 0 {
+		return IntegrationTask{}, false, nil
+	}
+	if matches != 1 || !integrationID.Valid {
+		return IntegrationTask{}, false, ErrImmutable
+	}
+	task, found, err := loadIntegrationTask(ctx, tx, tenantID, integrationID.String, false)
+	if err != nil {
+		return IntegrationTask{}, false, err
+	}
+	if !found || task.ProjectID != projectID || task.Conflict.EvidenceSHA256 != evidenceSHA256 {
+		return IntegrationTask{}, false, ErrImmutable
+	}
+	if err := tx.Commit(); err != nil {
+		return IntegrationTask{}, false, err
+	}
+	return task, true, nil
+}
+
 func (store *PostgresStore) StartAttempt(ctx context.Context, request StartAttemptRequest) (IntegrationTask, bool, error) {
 	if store == nil || store.database == nil || ctx == nil || !validStartAttemptRequest(request) ||
 		!canonicalUUID(request.TenantID) || !canonicalUUID(request.ProjectID) || !canonicalUUID(request.IntegrationID) || !canonicalUUID(request.OwnerTaskID) {

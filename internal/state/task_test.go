@@ -1,6 +1,7 @@
 package state
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/akimisaka/aor/pkg/contracts"
@@ -96,6 +97,29 @@ func TestTaskDefinitionRejectsInvalidDependantsAndAttemptSeriesReuse(t *testing.
 	_, err = DecideTask(blocked, TaskCommand{Type: TaskCommandAuthorizeNewSeries, Decision: contracts.DecisionAuthorizeNewAttemptSeries, NewAttemptSeriesID: "series_1", Approval: attemptApproval(blocked, "usr_1"), ActorID: "usr_1", ModuleSpecRef: ref, At: testTime()})
 	if err == nil {
 		t.Fatal("previous attempt series ID was reused")
+	}
+}
+
+func TestTaskDefinitionPreservesPlanAndDependencyMetadata(t *testing.T) {
+	moduleRef := contracts.SpecRef{Version: 1, SHA256: digestZero()}
+	planningRef := contracts.SpecRef{Version: 2, SHA256: digestZero()}
+	command := TaskCommand{
+		Type: TaskCommandDefine, TenantID: "tenant_1", ProjectID: "prj_1", TaskID: "task_1", ModuleID: "module_1",
+		PlanningSpecRef: planningRef, ModuleSpecRef: moduleRef, AttemptSeriesID: "series_1",
+		DependentTaskIDs: []string{"task_2", "task_3"}, FrozenDependentIDs: []string{"task_3"},
+		BlockingTaskIDs: []string{"task_blocker"}, BlockedFromState: contracts.TaskBlockedDependency,
+		ModuleSpecSourceTaskID: "task_original", At: testTime(),
+	}
+	event, err := DecideTask(ModuleTask{}, command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Projection.PlanningSpecRef != planningRef || event.Projection.ModuleID != command.ModuleID ||
+		!reflect.DeepEqual(event.Projection.DependentTaskIDs, command.DependentTaskIDs) ||
+		!reflect.DeepEqual(event.Projection.FrozenDependentIDs, command.FrozenDependentIDs) ||
+		!reflect.DeepEqual(event.Projection.BlockingTaskIDs, command.BlockingTaskIDs) || event.Projection.BlockedFromState != command.BlockedFromState ||
+		event.Projection.ModuleSpecSourceTaskID != command.ModuleSpecSourceTaskID {
+		t.Fatalf("definition metadata was not preserved: %#v", event.Projection)
 	}
 }
 

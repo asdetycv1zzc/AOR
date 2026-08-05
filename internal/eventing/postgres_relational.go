@@ -62,20 +62,21 @@ type relationalProjectProjection struct {
 }
 
 type relationalTaskProjection struct {
-	TenantID         string                    `json:"tenantId"`
-	ProjectID        string                    `json:"projectId"`
-	ID               string                    `json:"id"`
-	ModuleID         string                    `json:"moduleId,omitempty"`
-	State            contracts.ModuleTaskState `json:"state"`
-	Version          int64                     `json:"version"`
-	PlanningSpecRef  contracts.SpecRef         `json:"planningSpecRef,omitempty"`
-	ModuleSpecRef    contracts.SpecRef         `json:"moduleSpecRef"`
-	AttemptSeriesID  string                    `json:"attemptSeriesId"`
-	AttemptSeriesIDs []string                  `json:"attemptSeriesIds"`
-	Attempt          int                       `json:"attempt"`
-	FencingToken     int64                     `json:"fencingToken"`
-	DependentTaskIDs []string                  `json:"dependentTaskIds"`
-	BlockingTaskIDs  []string                  `json:"blockingTaskIds"`
+	TenantID               string                    `json:"tenantId"`
+	ProjectID              string                    `json:"projectId"`
+	ID                     string                    `json:"id"`
+	ModuleID               string                    `json:"moduleId,omitempty"`
+	State                  contracts.ModuleTaskState `json:"state"`
+	Version                int64                     `json:"version"`
+	PlanningSpecRef        contracts.SpecRef         `json:"planningSpecRef,omitempty"`
+	ModuleSpecRef          contracts.SpecRef         `json:"moduleSpecRef"`
+	AttemptSeriesID        string                    `json:"attemptSeriesId"`
+	AttemptSeriesIDs       []string                  `json:"attemptSeriesIds"`
+	Attempt                int                       `json:"attempt"`
+	FencingToken           int64                     `json:"fencingToken"`
+	DependentTaskIDs       []string                  `json:"dependentTaskIds"`
+	BlockingTaskIDs        []string                  `json:"blockingTaskIds"`
+	ModuleSpecSourceTaskID string                    `json:"moduleSpecSourceTaskId,omitempty"`
 }
 
 type relationalModuleSpec struct {
@@ -180,7 +181,11 @@ func syncTaskRow(ctx context.Context, tx *sql.Tx, request TransactionRequest, up
 			if planErr != nil {
 				return relationalTaskProjection{}, planErr
 			}
-			if plan.ID != module.PlanID || task.ModuleID != module.ModuleID || module.CreatedBy != planningAgentID(update.ProjectID, task.ID) {
+			creatorTaskID := task.ID
+			if task.ModuleSpecSourceTaskID != "" {
+				creatorTaskID = task.ModuleSpecSourceTaskID
+			}
+			if plan.ID != module.PlanID || task.ModuleID != module.ModuleID || module.CreatedBy != planningAgentID(update.ProjectID, creatorTaskID) {
 				return relationalTaskProjection{}, relationalError("planned ModuleSpec binding")
 			}
 		}
@@ -761,6 +766,9 @@ func decodeRelationalTask(input []byte, tenantID, projectID, taskID string, vers
 	}
 	if !validUUID(task.ID) {
 		return relationalTaskProjection{}, relationalError("module task relational identity")
+	}
+	if task.ModuleSpecSourceTaskID != "" && (!validUUID(task.ModuleSpecSourceTaskID) || task.ModuleSpecSourceTaskID == task.ID) {
+		return relationalTaskProjection{}, relationalError("ModuleSpec source task identity")
 	}
 	if planningTaskState(task.State) {
 		if task.ModuleID == "" || task.PlanningSpecRef.Validate() != nil || task.ModuleSpecRef != (contracts.SpecRef{}) || task.AttemptSeriesID != "" || len(task.AttemptSeriesIDs) != 0 || task.Attempt != 0 || task.FencingToken != 0 {

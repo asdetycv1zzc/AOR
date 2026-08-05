@@ -9,22 +9,23 @@ import (
 )
 
 type ModuleTask struct {
-	TenantID           string                    `json:"tenantId"`
-	ProjectID          string                    `json:"projectId"`
-	ID                 string                    `json:"id"`
-	ModuleID           string                    `json:"moduleId,omitempty"`
-	State              contracts.ModuleTaskState `json:"state"`
-	Version            int64                     `json:"version"`
-	PlanningSpecRef    contracts.SpecRef         `json:"planningSpecRef,omitempty"`
-	ModuleSpecRef      contracts.SpecRef         `json:"moduleSpecRef"`
-	AttemptSeriesID    string                    `json:"attemptSeriesId"`
-	AttemptSeriesIDs   []string                  `json:"attemptSeriesIds"`
-	Attempt            int                       `json:"attempt"`
-	FencingToken       int64                     `json:"fencingToken"`
-	DependentTaskIDs   []string                  `json:"dependentTaskIds"`
-	FrozenDependentIDs []string                  `json:"frozenDependentIds"`
-	BlockingTaskIDs    []string                  `json:"blockingTaskIds"`
-	BlockedFromState   contracts.ModuleTaskState `json:"blockedFromState,omitempty"`
+	TenantID               string                    `json:"tenantId"`
+	ProjectID              string                    `json:"projectId"`
+	ID                     string                    `json:"id"`
+	ModuleID               string                    `json:"moduleId,omitempty"`
+	State                  contracts.ModuleTaskState `json:"state"`
+	Version                int64                     `json:"version"`
+	PlanningSpecRef        contracts.SpecRef         `json:"planningSpecRef,omitempty"`
+	ModuleSpecRef          contracts.SpecRef         `json:"moduleSpecRef"`
+	AttemptSeriesID        string                    `json:"attemptSeriesId"`
+	AttemptSeriesIDs       []string                  `json:"attemptSeriesIds"`
+	Attempt                int                       `json:"attempt"`
+	FencingToken           int64                     `json:"fencingToken"`
+	DependentTaskIDs       []string                  `json:"dependentTaskIds"`
+	FrozenDependentIDs     []string                  `json:"frozenDependentIds"`
+	BlockingTaskIDs        []string                  `json:"blockingTaskIds"`
+	BlockedFromState       contracts.ModuleTaskState `json:"blockedFromState,omitempty"`
+	ModuleSpecSourceTaskID string                    `json:"moduleSpecSourceTaskId,omitempty"`
 }
 
 type TaskCommandType string
@@ -51,32 +52,38 @@ const (
 )
 
 type TaskCommand struct {
-	Type            TaskCommandType
-	TenantID        string
-	ProjectID       string
-	TaskID          string
-	ModuleID        string
+	Type      TaskCommandType
+	TenantID  string
+	ProjectID string
+	TaskID    string
+	ModuleID  string
+	// Define-only metadata copied from an authoritative task when a new
+	// attempt/task supersedes an integrated task.
 	PlanningSpecRef contracts.SpecRef
 	ModuleSpecRef   contracts.SpecRef
 	AttemptSeriesID string
 	FencingToken    int64
 	// Recover permits replacing an expired EXECUTING lease with a higher
 	// fencing generation while retaining the same attempt series.
-	Recover               bool
-	DependentTaskIDs      []string
-	BlockingTaskID        string
-	ActorID               string
-	Decision              contracts.Decision
-	NewAttemptSeriesID    string
-	Approval              *ApprovalBinding
-	SubmissionValidated   bool
-	AuditEvidenceSHA256   string
-	FreshAuditor          bool
-	BlindAuditContext     bool
-	NoBlockingFindings    bool
-	DependenciesSatisfied bool
-	MergeGatePassed       bool
-	At                    time.Time
+	Recover                bool
+	DependentTaskIDs       []string
+	FrozenDependentIDs     []string
+	BlockingTaskIDs        []string
+	BlockedFromState       contracts.ModuleTaskState
+	ModuleSpecSourceTaskID string
+	BlockingTaskID         string
+	ActorID                string
+	Decision               contracts.Decision
+	NewAttemptSeriesID     string
+	Approval               *ApprovalBinding
+	SubmissionValidated    bool
+	AuditEvidenceSHA256    string
+	FreshAuditor           bool
+	BlindAuditContext      bool
+	NoBlockingFindings     bool
+	DependenciesSatisfied  bool
+	MergeGatePassed        bool
+	At                     time.Time
 }
 
 type TaskEvent struct {
@@ -94,13 +101,15 @@ func DecideTask(current ModuleTask, command TaskCommand) (TaskEvent, *aorerrors.
 	eventType := ""
 	switch command.Type {
 	case TaskCommandDefine:
-		if current.Version != 0 || current.ID != "" || command.TenantID == "" || command.ProjectID == "" || command.TaskID == "" || command.AttemptSeriesID == "" || command.ModuleSpecRef.Validate() != nil || invalidDependents(command.TaskID, command.DependentTaskIDs) {
+		if current.Version != 0 || current.ID != "" || command.TenantID == "" || command.ProjectID == "" || command.TaskID == "" || command.AttemptSeriesID == "" || command.ModuleSpecRef.Validate() != nil || optionalSpecRefInvalid(command.PlanningSpecRef) || invalidDependents(command.TaskID, command.DependentTaskIDs) || invalidTaskMetadata(command.TaskID, command.FrozenDependentIDs) || invalidTaskMetadata(command.TaskID, command.BlockingTaskIDs) || command.ModuleSpecSourceTaskID == command.TaskID || command.ModuleSpecSourceTaskID != "" && command.PlanningSpecRef == (contracts.SpecRef{}) {
 			return TaskEvent{}, invalidTask(command, "task definition guard")
 		}
 		next = ModuleTask{
 			TenantID: command.TenantID, ProjectID: command.ProjectID, ID: command.TaskID, State: contracts.TaskDefined,
-			ModuleID: command.ModuleID, ModuleSpecRef: command.ModuleSpecRef, AttemptSeriesID: command.AttemptSeriesID,
+			ModuleID: command.ModuleID, PlanningSpecRef: command.PlanningSpecRef, ModuleSpecRef: command.ModuleSpecRef, AttemptSeriesID: command.AttemptSeriesID,
 			AttemptSeriesIDs: []string{command.AttemptSeriesID}, DependentTaskIDs: append([]string(nil), command.DependentTaskIDs...),
+			FrozenDependentIDs: append([]string(nil), command.FrozenDependentIDs...), BlockingTaskIDs: append([]string(nil), command.BlockingTaskIDs...), BlockedFromState: command.BlockedFromState,
+			ModuleSpecSourceTaskID: command.ModuleSpecSourceTaskID,
 		}
 		eventType = "io.aor.module.defined.v1"
 	case TaskCommandQueuePlanning:
@@ -310,6 +319,14 @@ func invalidDependents(taskID string, values []string) bool {
 		seen[value] = true
 	}
 	return false
+}
+
+func invalidTaskMetadata(taskID string, values []string) bool {
+	return len(values) != 0 && invalidDependents(taskID, values)
+}
+
+func optionalSpecRefInvalid(ref contracts.SpecRef) bool {
+	return ref != (contracts.SpecRef{}) && ref.Validate() != nil
 }
 
 func containsString(values []string, wanted string) bool {

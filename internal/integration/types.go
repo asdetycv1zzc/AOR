@@ -236,6 +236,28 @@ func (s *MemoryStore) GetTask(_ context.Context, tenantID, id string) (Integrati
 	return cloneIntegrationTask(record.task), ok, nil
 }
 
+func (s *MemoryStore) FindConflictByEvidence(ctx context.Context, tenantID, projectID, evidenceSHA256 string) (IntegrationTask, bool, error) {
+	if s == nil || ctx == nil || ctx.Err() != nil || !canonicalUUID(tenantID) || !canonicalUUID(projectID) || !digestPattern(evidenceSHA256) {
+		return IntegrationTask{}, false, ErrInvalidRequest
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result IntegrationTask
+	found := false
+	for _, record := range s.items {
+		task := record.task
+		if task.TenantID != tenantID || task.ProjectID != projectID || task.Conflict.EvidenceSHA256 != evidenceSHA256 {
+			continue
+		}
+		if found {
+			return IntegrationTask{}, false, ErrImmutable
+		}
+		result = cloneIntegrationTask(task)
+		found = true
+	}
+	return result, found, nil
+}
+
 func (s *MemoryStore) StartAttempt(_ context.Context, request StartAttemptRequest) (IntegrationTask, bool, error) {
 	if !validStartAttemptRequest(request) {
 		return IntegrationTask{}, false, ErrInvalidRequest
