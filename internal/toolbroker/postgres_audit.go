@@ -2,13 +2,12 @@ package toolbroker
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"strings"
 
 	"github.com/akimisaka/aor/internal/authn"
+	"github.com/google/uuid"
 )
 
 type PostgresInvocationRecorder struct {
@@ -46,7 +45,10 @@ SELECT EXISTS (
 			return ErrInvocationRecord
 		}
 	}
-	id := invocationUUID(invocation)
+	id, idErr := invocationUUID(invocation)
+	if idErr != nil {
+		return ErrInvocationRecord
+	}
 	var inserted string
 	err = tx.QueryRowContext(ctx, `
 INSERT INTO tool_invocations
@@ -146,13 +148,12 @@ func beginInvocationTx(ctx context.Context, database *sql.DB, tenantID string, r
 	return tx, nil
 }
 
-func invocationUUID(invocation Invocation) string {
-	sum := sha256.Sum256([]byte(invocation.TenantID + "\x00" + invocation.RequestID))
-	b := sum[:16]
-	b[6] = b[6]&0x0f | 0x50
-	b[8] = b[8]&0x3f | 0x80
-	encoded := hex.EncodeToString(b)
-	return encoded[:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:]
+func invocationUUID(_ Invocation) (string, error) {
+	value, err := uuid.NewV7()
+	if err != nil {
+		return "", err
+	}
+	return value.String(), nil
 }
 
 func validRisk(value Risk) bool {
