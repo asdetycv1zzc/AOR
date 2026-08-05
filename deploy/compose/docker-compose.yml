@@ -184,6 +184,38 @@ services:
         if [ "$$audit_integration_runtime_installed" != "t" ]; then
           psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000024_audit_integration_runtime.up.sql
         fi
+        integration_task_lifecycle_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.integration_tasks'::regclass AND conname = 'integration_tasks_lifecycle')")"
+        if [ "$$integration_task_lifecycle_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000025_integration_task_lifecycle.up.sql
+        fi
+        execution_assignments_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT to_regclass('public.execution_assignments') IS NOT NULL")"
+        if [ "$$execution_assignments_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000026_execution_assignments.up.sql
+        fi
+        module_audit_coordination_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT to_regclass('public.module_audit_coordinations') IS NOT NULL")"
+        if [ "$$module_audit_coordination_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000027_module_audit_coordination.up.sql
+        fi
+        ready_execution_scheduler_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT to_regprocedure('public.aor_ready_execution_tasks(integer)') IS NOT NULL")"
+        if [ "$$ready_execution_scheduler_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000028_ready_execution_scheduler.up.sql
+        fi
+        project_scoped_read_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.tool_invocations'::regclass AND conname = 'tool_invocations_project_scoped_read_only')")"
+        if [ "$$project_scoped_read_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000029_project_scoped_read_invocations.up.sql
+        fi
+        aging_capacity_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT EXISTS (SELECT 1 FROM pg_proc WHERE oid = 'public.aor_ready_execution_tasks(integer)'::regprocedure AND prosrc LIKE '%effective_priority%')")"
+        if [ "$$aging_capacity_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000030_scheduler_aging_capacity.up.sql
+        fi
+        scheduler_lease_recovery_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT to_regprocedure('public.aor_ready_execution_tasks_v2(integer)') IS NOT NULL")"
+        if [ "$$scheduler_lease_recovery_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000031_scheduler_lease_recovery.up.sql
+        fi
+        lease_fencing_equality_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT pg_get_functiondef('public.aor_advance_task_fencing(uuid,uuid,uuid,bigint)'::regprocedure) LIKE '%latest_fencing_token <= requested_token%'")"
+        if [ "$$lease_fencing_equality_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000032_lease_fencing_equality.up.sql
+        fi
         unset AOR_APP_PASSWORD
     secrets: [postgres_password, postgres_app_password]
     volumes:
@@ -211,6 +243,14 @@ services:
       - ../../migrations/postgres/000022_project_agent_leases.up.sql:/migrations/000022_project_agent_leases.up.sql:ro
       - ../../migrations/postgres/000023_staged_module_planning.up.sql:/migrations/000023_staged_module_planning.up.sql:ro
       - ../../migrations/postgres/000024_audit_integration_runtime.up.sql:/migrations/000024_audit_integration_runtime.up.sql:ro
+      - ../../migrations/postgres/000025_integration_task_lifecycle.up.sql:/migrations/000025_integration_task_lifecycle.up.sql:ro
+      - ../../migrations/postgres/000026_execution_assignments.up.sql:/migrations/000026_execution_assignments.up.sql:ro
+      - ../../migrations/postgres/000027_module_audit_coordination.up.sql:/migrations/000027_module_audit_coordination.up.sql:ro
+      - ../../migrations/postgres/000028_ready_execution_scheduler.up.sql:/migrations/000028_ready_execution_scheduler.up.sql:ro
+      - ../../migrations/postgres/000029_project_scoped_read_invocations.up.sql:/migrations/000029_project_scoped_read_invocations.up.sql:ro
+      - ../../migrations/postgres/000030_scheduler_aging_capacity.up.sql:/migrations/000030_scheduler_aging_capacity.up.sql:ro
+      - ../../migrations/postgres/000031_scheduler_lease_recovery.up.sql:/migrations/000031_scheduler_lease_recovery.up.sql:ro
+      - ../../migrations/postgres/000032_lease_fencing_equality.up.sql:/migrations/000032_lease_fencing_equality.up.sql:ro
       - ./postgres-app-password.sql:/migrations/postgres-app-password.sql:ro
     read_only: true
     tmpfs: [/tmp]
