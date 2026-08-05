@@ -529,6 +529,7 @@ services:
         condition: service_healthy
       identity:
         condition: service_healthy
+    user: "${AOR_SANDBOX_ENGINE_UID:?Set AOR_SANDBOX_ENGINE_UID to the non-root rootless-engine owner UID}:${AOR_SANDBOX_ENGINE_GID:?Set AOR_SANDBOX_ENGINE_GID to the rootless-engine socket GID}"
     environment:
       AOR_ENVIRONMENT: test
       AOR_DEPLOYMENT_PROFILE: TEST
@@ -601,6 +602,16 @@ services:
       AOR_API_URL: http://aor-api:8080
       AOR_MODEL_GATEWAY_URL: http://aor-model-gateway:8080
       AOR_TOOL_BROKER_URL: http://aor-tool-broker:8080
+      AOR_KNOWLEDGE_ROOT: /var/lib/aor/knowledge
+      AOR_REPOSITORY_ROOT: /var/lib/aor/repositories
+      AOR_MODEL_GATEWAY_OAUTH_TOKEN_ENDPOINT: http://identity:5556/dex/token
+      AOR_MODEL_GATEWAY_OAUTH_CLIENT_ID: aor-server
+      AOR_MODEL_GATEWAY_OAUTH_CLIENT_SECRET_REF: secret://aor_server_oauth_client_secret
+      AOR_MODEL_GATEWAY_OAUTH_SCOPES: audience:server:client_id:aor-control-plane
+      AOR_MODEL_GATEWAY_OAUTH_AUDIENCE: aor-control-plane
+      AOR_EXECUTOR_ROUTE_JSON: >-
+        {"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-4o-mini}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3}
+      AOR_EXECUTOR_MAX_TOOL_ROUNDS: "8"
       AOR_SANDBOX_LINUX_LEVEL: CONTAINER
       AOR_SANDBOX_LINUX_NETWORK_MODE: DENY_ALL
       AOR_SANDBOX_WINDOWS_LEVEL: NONE
@@ -613,10 +624,12 @@ services:
       AOR_SANDBOX_MANDATORY_POLICY: apparmor=aor-sandbox
       AOR_SANDBOX_HOLD_COMMAND_JSON: '["/bin/sh","-c","while :; do sleep 3600; done"]'
       AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON: '["${AOR_SANDBOX_SHARED_ROOT:?Set AOR_SANDBOX_SHARED_ROOT to an absolute host path shared with the rootless engine}"]'
-    secrets: [postgres_app_password, lease_signing_key, minio_root_user, minio_root_password]
+    secrets: [postgres_app_password, lease_signing_key, minio_root_user, minio_root_password, aor_server_oauth_client_secret]
     volumes:
       - "${AOR_SANDBOX_ENGINE_SOCKET:?Set AOR_SANDBOX_ENGINE_SOCKET to the rootless engine socket}:/run/aor-sandbox/engine.sock"
       - "${AOR_SANDBOX_SHARED_ROOT:?Set AOR_SANDBOX_SHARED_ROOT to an absolute host path shared with the rootless engine}:${AOR_SANDBOX_SHARED_ROOT:?Set AOR_SANDBOX_SHARED_ROOT to an absolute host path shared with the rootless engine}"
+      - "${AOR_KNOWLEDGE_HOST_PATH:-../../knowledge}:/var/lib/aor/knowledge:ro"
+      - repository-data:/var/lib/aor/repositories
     cap_drop: [ALL]
     ports:
       - 127.0.0.1:8093:8080

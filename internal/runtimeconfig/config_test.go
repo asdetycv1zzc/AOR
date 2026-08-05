@@ -318,11 +318,16 @@ func TestWorkerRequiresImmutableSandboxRuntimeAndDedicatedRootlessEndpoint(t *te
 
 func TestWorkerConfigurationAllowsWindowsNativeBackendWithoutLinuxEngine(t *testing.T) {
 	config, err := Load("aor-worker", environment(map[string]string{
-		"AOR_DEPLOYMENT_PROFILE":    "TEST",
-		"AOR_DATABASE_PASSWORD_REF": "secret://postgres/password",
-		"AOR_LEASE_SIGNING_KEY_REF": "secret://authz/lease-signing-key",
-		"AOR_S3_ACCESS_KEY_REF":     "secret://minio/access-key",
-		"AOR_S3_SECRET_KEY_REF":     "secret://minio/secret-key",
+		"AOR_DEPLOYMENT_PROFILE":                    "TEST",
+		"AOR_DATABASE_PASSWORD_REF":                 "secret://postgres/password",
+		"AOR_LEASE_SIGNING_KEY_REF":                 "secret://authz/lease-signing-key",
+		"AOR_S3_ACCESS_KEY_REF":                     "secret://minio/access-key",
+		"AOR_S3_SECRET_KEY_REF":                     "secret://minio/secret-key",
+		"AOR_MODEL_GATEWAY_OAUTH_TOKEN_ENDPOINT":    "http://identity:5556/dex/token",
+		"AOR_MODEL_GATEWAY_OAUTH_CLIENT_ID":         "aor-server",
+		"AOR_MODEL_GATEWAY_OAUTH_CLIENT_SECRET_REF": "secret://aor_server_oauth_client_secret",
+		"AOR_MODEL_GATEWAY_OAUTH_AUDIENCE":          "aor-control-plane",
+		"AOR_EXECUTOR_ROUTE_JSON":                   validExecutorRouteJSON(),
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -424,16 +429,25 @@ func validModelProvidersJSON() string {
 
 func validWorkerEnvironment() map[string]string {
 	return map[string]string{
-		"AOR_DATABASE_PASSWORD_REF":            "secret://postgres/password",
-		"AOR_DEPLOYMENT_PROFILE":               "TEST",
-		"AOR_LEASE_SIGNING_KEY_REF":            "secret://authz/lease-signing-key",
-		"AOR_S3_ACCESS_KEY_REF":                "secret://minio/access-key",
-		"AOR_S3_SECRET_KEY_REF":                "secret://minio/secret-key",
-		"AOR_SANDBOX_ENGINE_ENDPOINT":          "unix:///run/aor-sandbox/engine.sock",
-		"AOR_SANDBOX_IMAGE_REFERENCE":          "golang:1.26@sha256:0000000000000000000000000000000000000000000000000000000000000000",
-		"AOR_SANDBOX_SECCOMP_PROFILE":          "builtin",
-		"AOR_SANDBOX_MANDATORY_POLICY":         "apparmor=aor-sandbox",
-		"AOR_SANDBOX_HOLD_COMMAND_JSON":        `["/bin/sh","-c","while :; do sleep 3600; done"]`,
-		"AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON": `["/var/lib/aor/sandbox-data"]`,
+		"AOR_DATABASE_PASSWORD_REF":                 "secret://postgres/password",
+		"AOR_DEPLOYMENT_PROFILE":                    "TEST",
+		"AOR_LEASE_SIGNING_KEY_REF":                 "secret://authz/lease-signing-key",
+		"AOR_S3_ACCESS_KEY_REF":                     "secret://minio/access-key",
+		"AOR_S3_SECRET_KEY_REF":                     "secret://minio/secret-key",
+		"AOR_SANDBOX_ENGINE_ENDPOINT":               "unix:///run/aor-sandbox/engine.sock",
+		"AOR_SANDBOX_IMAGE_REFERENCE":               "golang:1.26@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+		"AOR_SANDBOX_SECCOMP_PROFILE":               "builtin",
+		"AOR_SANDBOX_MANDATORY_POLICY":              "apparmor=aor-sandbox",
+		"AOR_SANDBOX_HOLD_COMMAND_JSON":             `["/bin/sh","-c","while :; do sleep 3600; done"]`,
+		"AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON":      `["/var/lib/aor/sandbox-data"]`,
+		"AOR_MODEL_GATEWAY_OAUTH_TOKEN_ENDPOINT":    "http://identity:5556/dex/token",
+		"AOR_MODEL_GATEWAY_OAUTH_CLIENT_ID":         "aor-server",
+		"AOR_MODEL_GATEWAY_OAUTH_CLIENT_SECRET_REF": "secret://aor_server_oauth_client_secret",
+		"AOR_MODEL_GATEWAY_OAUTH_AUDIENCE":          "aor-control-plane",
+		"AOR_EXECUTOR_ROUTE_JSON":                   validExecutorRouteJSON(),
 	}
+}
+
+func validExecutorRouteJSON() string {
+	return `{"provider":"primary","model":"model-a","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3}`
 }

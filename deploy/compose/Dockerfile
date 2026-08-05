@@ -43,7 +43,8 @@ FROM ${GO_IMAGE} AS tool-broker-runtime
 COPY --from=build /out/aor /usr/local/bin/aor
 RUN apk add --no-cache git=2.52.0-r0 && \
     mkdir -p /var/lib/aor/repositories && \
-    chown -R 65532:65532 /var/lib/aor
+    chown -R 65532:65532 /var/lib/aor && \
+    chmod 1777 /var/lib/aor/repositories
 ENV HOME=/tmp
 USER 65532:65532
 EXPOSE 8080

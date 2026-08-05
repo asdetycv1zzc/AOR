@@ -40,6 +40,7 @@ type Config struct {
 	ModelGateway       ModelGatewayConfig
 	ModelGatewayClient ModelGatewayClientConfig
 	GoalPlan           GoalPlanConfig
+	Execution          ExecutionConfig
 	Services           ServiceEndpoints
 	Sandbox            SandboxConfig
 }
@@ -112,6 +113,11 @@ type ModelGatewayClientConfig struct {
 
 type GoalPlanConfig struct {
 	Routes map[string]GoalPlanRouteConfig
+}
+
+type ExecutionConfig struct {
+	Route         GoalPlanRouteConfig
+	MaxToolRounds int
 }
 
 type GoalPlanRouteConfig struct {
@@ -257,6 +263,10 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	config.Execution.MaxToolRounds, err = integer(lookup, "AOR_EXECUTOR_MAX_TOOL_ROUNDS", 8, 2, 8)
+	if err != nil {
+		return Config{}, err
+	}
 	config.ModelGatewayClient.Scopes, err = oauthScopes(lookup, "AOR_MODEL_GATEWAY_OAUTH_SCOPES")
 	if err != nil {
 		return Config{}, err
@@ -310,6 +320,16 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 		}
 		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 			return Config{}, configurationError("AOR_GOAL_PLAN_ROUTES_JSON")
+		}
+	}
+	if raw, found := lookup("AOR_EXECUTOR_ROUTE_JSON"); found && strings.TrimSpace(raw) != "" {
+		decoder := json.NewDecoder(strings.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&config.Execution.Route); err != nil {
+			return Config{}, configurationError("AOR_EXECUTOR_ROUTE_JSON")
+		}
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			return Config{}, configurationError("AOR_EXECUTOR_ROUTE_JSON")
 		}
 	}
 	applyProviderCapabilityDefaults(config.ModelGateway.Providers)
@@ -386,7 +406,7 @@ func (config Config) Validate() error {
 		}
 	}
 	if config.Component == "aor-worker" {
-		if !validSecretReference(config.LeaseSigningKeyRef) || !validDeploymentProfile(config.DeploymentProfile) || !validURL(config.Services.API, "http", "https") || !validURL(config.Services.ModelGateway, "http", "https") || !validURL(config.Services.ToolBroker, "http", "https") {
+		if !validSecretReference(config.LeaseSigningKeyRef) || !validDeploymentProfile(config.DeploymentProfile) || !validKnowledgeRoot(config.KnowledgeRoot) || !validKnowledgeRoot(config.RepositoryRoot) || !validURL(config.Services.API, "http", "https") || !validURL(config.Services.ModelGateway, "http", "https") || !validURL(config.Services.ToolBroker, "http", "https") || !validGoalPlanRoute(config.Execution.Route) || config.Execution.MaxToolRounds < 2 || config.Execution.MaxToolRounds > 8 {
 			return ErrInvalidConfiguration
 		}
 		if config.Sandbox.LinuxLevel != "CONTAINER" || config.Sandbox.WindowsLevel != "NONE" || config.Sandbox.AllowWindowsUntrusted || config.Sandbox.LinuxDefaultNetworkMode != "DENY_ALL" || config.Sandbox.WindowsNetworkIsolationLevel != "NONE" {
@@ -460,14 +480,18 @@ func validateGoalPlanRoutes(routes map[string]GoalPlanRouteConfig) error {
 	}
 	for _, role := range required {
 		route, found := routes[role]
-		if !found || !validIdentityPart(route.Provider, 128) || !validIdentityPart(route.Model, 256) ||
-			route.MaxOutputTokens < 1 || route.MaxOutputTokens > 1_000_000 || route.Temperature < 0 || route.Temperature > 2 ||
-			!validIdentityPart(route.ProviderPolicy, 256) || !validIdentityPart(route.CachePolicy, 128) ||
-			route.WorstCaseCostMicros < 0 || route.MaxAttempts < 1 || route.MaxAttempts > 3 {
+		if !found || !validGoalPlanRoute(route) {
 			return ErrInvalidConfiguration
 		}
 	}
 	return nil
+}
+
+func validGoalPlanRoute(route GoalPlanRouteConfig) bool {
+	return validIdentityPart(route.Provider, 128) && validIdentityPart(route.Model, 256) &&
+		route.MaxOutputTokens >= 1 && route.MaxOutputTokens <= 1_000_000 && route.Temperature >= 0 && route.Temperature <= 2 &&
+		validIdentityPart(route.ProviderPolicy, 256) && validIdentityPart(route.CachePolicy, 128) &&
+		route.WorstCaseCostMicros >= 0 && route.MaxAttempts >= 1 && route.MaxAttempts <= 3
 }
 
 func allowsNonPublic(classifications []string) bool {
@@ -826,7 +850,7 @@ func needsIdentity(component string) bool {
 }
 
 func needsModelGatewayClient(component string) bool {
-	return component == "aor-server"
+	return component == "aor-server" || component == "aor-worker"
 }
 
 func configurationError(key string) error {
