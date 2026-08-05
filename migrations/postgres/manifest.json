@@ -211,6 +211,20 @@
       "file": "000030_scheduler_aging_capacity.up.sql",
       "sha256": "sha256:c55299f8fb3e52006ca8d37b2d5cb9a573d822b4e12f8a20ec337111ddd21474",
       "destructive": false
+    },
+    {
+      "version": 31,
+      "mode": "EXPAND",
+      "file": "000031_scheduler_lease_recovery.up.sql",
+      "sha256": "sha256:2ebbb87f336af71ba1a576678444e21f1aa917bb5d5ed7e6a46c988d0c010e21",
+      "destructive": false
+    },
+    {
+      "version": 32,
+      "mode": "EXPAND",
+      "file": "000032_lease_fencing_equality.up.sql",
+      "sha256": "sha256:2dec68cb9e6f8c1c66c7cbaef614768e40f2b5269e393d8f30d10a5e0f6780ab",
+      "destructive": false
     }
   ]
 }

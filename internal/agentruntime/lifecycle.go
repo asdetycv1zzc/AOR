@@ -106,6 +106,28 @@ func validateHeartbeatLease(previous, heartbeat AgentLease) error {
 	return nil
 }
 
+// validateHeartbeatRenewalLease permits the trusted authority to extend the
+// absolute lease deadline while retaining the same ownership generation.
+func validateHeartbeatRenewalLease(previous, heartbeat AgentLease, now time.Time) error {
+	if heartbeat.LeaseID != previous.LeaseID || heartbeat.AgentInstanceID != previous.AgentInstanceID ||
+		heartbeat.TenantID != previous.TenantID || heartbeat.ProjectID != previous.ProjectID ||
+		heartbeat.TaskID != previous.TaskID || heartbeat.Role != previous.Role ||
+		!heartbeat.IssuedAt.Equal(previous.IssuedAt) || heartbeat.PolicyVersion != previous.PolicyVersion ||
+		heartbeat.BudgetAccountID != previous.BudgetAccountID || heartbeat.FencingToken != previous.FencingToken ||
+		heartbeat.Nonce != previous.Nonce ||
+		heartbeat.ExpiresAt.Before(previous.ExpiresAt) || !heartbeat.LastHeartbeatAt.After(previous.LastHeartbeatAt) ||
+		heartbeat.LastHeartbeatAt.After(heartbeat.ExpiresAt) || now.Before(heartbeat.LastHeartbeatAt) ||
+		len(heartbeat.Capabilities) != len(previous.Capabilities) {
+		return ErrLeaseBinding
+	}
+	for index := range heartbeat.Capabilities {
+		if heartbeat.Capabilities[index] != previous.Capabilities[index] {
+			return ErrLeaseBinding
+		}
+	}
+	return nil
+}
+
 func sameCapabilities(left, right []string) bool {
 	if len(left) != len(right) {
 		return false

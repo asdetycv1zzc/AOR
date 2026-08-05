@@ -243,7 +243,11 @@ type LeaseRenewalRequest struct {
 	TTL           time.Duration
 	Grant         PolicyDecision
 	RequestDigest string
-	Now           time.Time
+	// PreserveFencing keeps the task ownership generation stable when the
+	// existing execution lease is merely extended by its owner.  Replacement
+	// generations must still issue a fresh lease with a higher fence.
+	PreserveFencing bool
+	Now             time.Time
 }
 
 type LeaseHeartbeatRequest struct {
@@ -512,7 +516,9 @@ func (m *LeaseManager) Renew(ctx context.Context, request LeaseRenewalRequest) (
 	updated := cloneLease(current)
 	updated.ExpiresAt = now.Add(ttl)
 	updated.LastHeartbeatAt = now
-	updated.FencingToken++
+	if !request.PreserveFencing {
+		updated.FencingToken++
+	}
 	if request.RequestDigest != "" {
 		updated.Nonce = request.RequestDigest
 	}
@@ -561,6 +567,14 @@ func (m *LeaseManager) Heartbeat(ctx context.Context, request LeaseHeartbeatRequ
 	}
 	updated := cloneLease(current)
 	updated.LastHeartbeatAt = now
+	// Heartbeats are the liveness extension for long-running executions.  Keep
+	// the ownership generation unchanged; replacing an expired execution is the
+	// operation that must advance fencing.  The absolute expiry is still bounded
+	// by the manager's configured lease TTL on every heartbeat.
+	heartbeatExpiry := now.Add(m.defaultTTL)
+	if heartbeatExpiry.After(updated.ExpiresAt) {
+		updated.ExpiresAt = heartbeatExpiry
+	}
 	if err := m.sign(&updated); err != nil {
 		return CapabilityLease{}, err
 	}

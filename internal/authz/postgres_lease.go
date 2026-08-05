@@ -304,7 +304,7 @@ SELECT aor_advance_task_fencing($1::uuid, $2::uuid, $3::uuid, $4)`,
 	if err != nil {
 		return err
 	}
-	if lease.FencingToken == 1 && (!advanced.Valid || !advanced.Bool) {
+	if !advanced.Valid || !advanced.Bool {
 		return aorerrors.New(aorerrors.CodeConflict, "", map[string]any{"scope": "task fencing"})
 	}
 	return nil

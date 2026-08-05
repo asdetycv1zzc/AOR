@@ -76,10 +76,13 @@ func (authority *OrchestratorTaskAuthority) LeaseExecution(ctx context.Context, 
 	if err != nil || !found {
 		return state.ModuleTask{}, false, err
 	}
-	if current.Version != request.ExpectedVersion || current.State != contracts.TaskReadyExecution || request.FencingToken <= current.FencingToken {
+	if current.Version != request.ExpectedVersion ||
+		(current.State != contracts.TaskReadyExecution && !(request.Recover && current.State == contracts.TaskExecuting)) ||
+		request.FencingToken <= current.FencingToken || request.Recover && current.State != contracts.TaskExecuting ||
+		!request.Recover && current.State != contracts.TaskReadyExecution {
 		return state.ModuleTask{}, false, ErrAssignmentInvalid
 	}
-	command := state.TaskCommand{Type: state.TaskCommandLeaseExecution, FencingToken: request.FencingToken}
+	command := state.TaskCommand{Type: state.TaskCommandLeaseExecution, FencingToken: request.FencingToken, Recover: request.Recover}
 	digest, err := orchestrator.TaskParameterDigest(orchestrator.TaskRequest{
 		TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID,
 		PrincipalID: request.AgentInstanceID, ExpectedVersion: request.ExpectedVersion, Command: command,
@@ -250,7 +253,9 @@ WHERE p.tenant_id = $1::uuid AND p.id = $2::uuid AND t.id = $3::uuid
 	}
 	switch capability.Action {
 	case string(state.TaskCommandLeaseExecution):
-		if taskState != string(contracts.TaskReadyExecution) || latestFence+1 != capability.FencingToken || assignmentFence != capability.FencingToken || executionID != capability.LeaseID || assignmentLeaseID != "" || capability.PolicyVersion != executionCommitPolicyVersion {
+		if (taskState != string(contracts.TaskReadyExecution) && taskState != string(contracts.TaskExecuting)) ||
+			latestFence+1 != capability.FencingToken || assignmentFence != capability.FencingToken ||
+			executionID != capability.LeaseID || assignmentLeaseID != "" || capability.PolicyVersion != executionCommitPolicyVersion {
 			return ErrAssignmentInvalid
 		}
 	case string(state.TaskCommandSubmit):

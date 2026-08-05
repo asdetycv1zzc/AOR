@@ -61,6 +61,7 @@ type LeaseTaskRequest struct {
 	AgentInstanceID string
 	ExpectedVersion int64
 	FencingToken    int64
+	Recover         bool
 }
 
 type SubmitTaskRequest struct {
@@ -231,10 +232,17 @@ func (service *Service) Execute(ctx context.Context, request Request) (Result, e
 		if submission, exists, lookupErr := service.submissions.Submission(ctx, request.TenantID, request.TaskID, task.AttemptSeriesID, attempt); lookupErr != nil {
 			return Result{}, lookupErr
 		} else if exists {
-			if err := validateSubmission(submission, task, attempt, baseCommit, "", ""); err != nil {
-				return Result{}, err
+			if validateSubmission(submission, task, attempt, baseCommit, "", "") == nil {
+				result, commitErr := service.commitSubmission(ctx, request, task, submission.Manifest, true)
+				if commitErr == nil {
+					return result, nil
+				}
+				// A submission produced by an expired generation is retained for
+				// diagnosis, but must not prevent a fresh fenced execution.
+				if !errors.Is(commitErr, ErrSubmissionInvalid) {
+					return Result{}, commitErr
+				}
 			}
-			return service.commitSubmission(ctx, request, task, submission.Manifest, true)
 		}
 	}
 
@@ -252,7 +260,7 @@ func (service *Service) Execute(ctx context.Context, request Request) (Result, e
 		task, _, err = service.tasks.LeaseExecution(ctx, LeaseTaskRequest{
 			ExecutionID: request.ExecutionID, TenantID: request.TenantID, ProjectID: request.ProjectID,
 			TaskID: request.TaskID, AgentInstanceID: assignment.AgentInstanceID,
-			ExpectedVersion: task.Version, FencingToken: assignment.FencingToken,
+			ExpectedVersion: task.Version, FencingToken: assignment.FencingToken, Recover: false,
 		})
 		if err != nil {
 			return Result{}, err
@@ -260,6 +268,27 @@ func (service *Service) Execute(ctx context.Context, request Request) (Result, e
 		if task.State != contracts.TaskExecuting || task.FencingToken != assignment.FencingToken || task.ModuleSpecRef != moduleRef(module) {
 			return Result{}, ErrAssignmentInvalid
 		}
+	} else {
+		// A recovered assignment is created at the next generation before the
+		// task transition.  The transition then fences the expired generation.
+		if assignment.FencingToken > task.FencingToken {
+			task, _, err = service.tasks.LeaseExecution(ctx, LeaseTaskRequest{
+				ExecutionID: request.ExecutionID, TenantID: request.TenantID, ProjectID: request.ProjectID,
+				TaskID: request.TaskID, AgentInstanceID: assignment.AgentInstanceID,
+				ExpectedVersion: task.Version, FencingToken: assignment.FencingToken, Recover: true,
+			})
+			if err != nil {
+				return Result{}, err
+			}
+		} else if assignment.FencingToken < task.FencingToken {
+			return Result{}, ErrAssignmentInvalid
+		}
+		if task.State != contracts.TaskExecuting || task.FencingToken != assignment.FencingToken || task.ModuleSpecRef != moduleRef(module) {
+			return Result{}, ErrAssignmentInvalid
+		}
+	}
+	if assignment.FencingToken != task.FencingToken {
+		return Result{}, ErrAssignmentInvalid
 	}
 	if baseCommit == "" {
 		baseCommit, err = service.bases.ResolveWorkspaceBaseCommit(ctx, request.TenantID, request.ProjectID, request.TaskID, task.AttemptSeriesID, attempt)
@@ -471,7 +500,7 @@ func validateAssignment(task state.ModuleTask, assignment Assignment) error {
 	if !validID(assignment.AgentInstanceID) || !validID(assignment.SandboxID) || assignment.FencingToken < 1 {
 		return ErrAssignmentInvalid
 	}
-	if task.State == contracts.TaskReadyExecution && assignment.FencingToken <= task.FencingToken || task.State == contracts.TaskExecuting && assignment.FencingToken != task.FencingToken {
+	if task.State == contracts.TaskReadyExecution && assignment.FencingToken <= task.FencingToken || task.State == contracts.TaskExecuting && assignment.FencingToken <= task.FencingToken {
 		return ErrAssignmentInvalid
 	}
 	return nil

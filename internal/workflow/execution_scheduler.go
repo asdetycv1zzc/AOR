@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/akimisaka/aor/pkg/contracts"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	temporalclient "go.temporal.io/sdk/client"
@@ -33,10 +34,13 @@ var (
 )
 
 type ReadyExecution struct {
-	TenantID    string
-	ProjectID   string
-	TaskID      string
-	TaskVersion int64
+	TenantID     string
+	ProjectID    string
+	TaskID       string
+	TaskVersion  int64
+	TaskState    contracts.ModuleTaskState
+	FencingToken int64
+	Recovery     bool
 }
 
 type ReadyExecutionSource interface {
@@ -60,7 +64,8 @@ func (source *PostgresReadyExecutionSource) ReadyExecutions(ctx context.Context,
 	}
 	rows, err := source.database.QueryContext(ctx, `
 SELECT tenant_id::text, project_id::text, task_id::text, state_version
-FROM aor_ready_execution_tasks($1)`, limit)
+       , task_state, fencing_token, recovery
+FROM aor_ready_execution_tasks_v2($1)`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -68,7 +73,7 @@ FROM aor_ready_execution_tasks($1)`, limit)
 	ready := make([]ReadyExecution, 0, limit)
 	for rows.Next() {
 		var item ReadyExecution
-		if err := rows.Scan(&item.TenantID, &item.ProjectID, &item.TaskID, &item.TaskVersion); err != nil {
+		if err := rows.Scan(&item.TenantID, &item.ProjectID, &item.TaskID, &item.TaskVersion, &item.TaskState, &item.FencingToken, &item.Recovery); err != nil {
 			return nil, err
 		}
 		if !validReadyExecution(item) {
@@ -105,23 +110,33 @@ func NewProjectExecutionStarter(client executionWorkflowClient, taskQueue string
 }
 
 func (starter *ProjectExecutionStarter) Ensure(ctx context.Context, ready ReadyExecution) (ProjectExecutionStartResult, error) {
+	ready = normalizeReadyExecution(ready)
 	if starter == nil || starter.client == nil || ctx == nil || !validReadyExecution(ready) {
 		return ProjectExecutionStartResult{}, ErrInvalidExecutionScheduler
 	}
 	// One task version identifies one READY_EXECUTION opportunity. Rework gets a
 	// new version, while repeated scans and controller restarts reuse this ID.
 	identity := readyExecutionIdentity(ready)
+	executionPrefix := "exec_"
+	activityPrefix := "execute_"
+	if ready.Recovery {
+		executionPrefix = "recover_"
+		activityPrefix = "recover_"
+	}
+	executionID := executionPrefix + identity
+	activityID := activityPrefix + identity
 	payload, err := json.Marshal(struct {
 		Action      string `json:"action"`
 		ExecutionID string `json:"executionId"`
-	}{Action: ExecutionActivityAction, ExecutionID: "exec_" + identity})
+		Recovery    bool   `json:"recovery,omitempty"`
+	}{Action: ExecutionActivityAction, ExecutionID: executionID, Recovery: ready.Recovery})
 	if err != nil {
 		return ProjectExecutionStartResult{}, err
 	}
 	workflowID := executionWorkflowIdentityPrefix + identity
 	input := ExecutionInput{
 		TenantID: ready.TenantID, ProjectID: ready.ProjectID, TaskID: ready.TaskID,
-		ActivityID: "execute_" + identity, Payload: payload,
+		ActivityID: activityID, Payload: payload,
 	}
 	run, err := starter.client.ExecuteWorkflow(ctx, temporalclient.StartWorkflowOptions{
 		ID: workflowID, TaskQueue: starter.taskQueue,
@@ -229,12 +244,26 @@ func (scheduler *ReadyExecutionScheduler) Ready() error {
 }
 
 func validReadyExecution(ready ReadyExecution) bool {
-	return identifierPattern.MatchString(ready.TenantID) && identifierPattern.MatchString(ready.ProjectID) &&
-		identifierPattern.MatchString(ready.TaskID) && ready.TaskVersion > 0
+	ready = normalizeReadyExecution(ready)
+	if !identifierPattern.MatchString(ready.TenantID) || !identifierPattern.MatchString(ready.ProjectID) ||
+		!identifierPattern.MatchString(ready.TaskID) || ready.TaskVersion <= 0 {
+		return false
+	}
+	if ready.TaskState == contracts.TaskExecuting {
+		return ready.Recovery && ready.FencingToken > 0
+	}
+	return ready.TaskState == contracts.TaskReadyExecution && !ready.Recovery && ready.FencingToken >= 0
+}
+
+func normalizeReadyExecution(ready ReadyExecution) ReadyExecution {
+	if ready.TaskState == "" {
+		ready.TaskState = contracts.TaskReadyExecution
+	}
+	return ready
 }
 
 func readyExecutionIdentity(ready ReadyExecution) string {
-	digest := sha256.Sum256([]byte(ready.TenantID + "\x00" + ready.ProjectID + "\x00" + ready.TaskID + "\x00" + strconv.FormatInt(ready.TaskVersion, 10)))
+	digest := sha256.Sum256([]byte(ready.TenantID + "\x00" + ready.ProjectID + "\x00" + ready.TaskID + "\x00" + strconv.FormatInt(ready.TaskVersion, 10) + "\x00" + string(ready.TaskState) + "\x00" + strconv.FormatInt(ready.FencingToken, 10)))
 	return hex.EncodeToString(digest[:])
 }
 

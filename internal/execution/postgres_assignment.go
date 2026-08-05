@@ -81,7 +81,7 @@ FOR UPDATE OF t`, request.Project.TenantID, request.Project.ID, request.Task.ID)
 		return Assignment{}, ErrAssignmentInvalid
 	}
 	targetFence := fencingToken
-	if request.Task.State == contracts.TaskReadyExecution {
+	if request.Task.State == contracts.TaskReadyExecution || request.Recover {
 		targetFence++
 	}
 	if targetFence < 1 {
@@ -90,6 +90,35 @@ FOR UPDATE OF t`, request.Project.TenantID, request.Project.ID, request.Task.ID)
 	fenceValue := strconv.FormatInt(targetFence, 10)
 	agentID := stableAssignmentID("agt_executor_", request.Project.TenantID, request.Project.ID, request.Task.ID, attemptSeriesID, fenceValue)
 	sandboxID := stableAssignmentID("sbx_executor_", request.Project.TenantID, request.Project.ID, request.Task.ID, attemptSeriesID, fenceValue)
+	// Replays must recover the assignment created before a task transition was
+	// committed.  The execution ID is the durable idempotency key; do not derive
+	// a newer generation merely because the task projection has advanced.
+	var existingAgent, existingSandbox, existingProject, existingTask, existingSeries, existingModule string
+	var existingFence int64
+	existingErr := tx.QueryRowContext(ctx, `
+SELECT agent_instance_id, sandbox_id, project_id::text, module_task_id::text,
+       attempt_series_id::text, module_spec_id::text, fencing_token
+FROM execution_assignments
+WHERE tenant_id = $1::uuid AND execution_id = $2
+FOR UPDATE`, request.Project.TenantID, request.ExecutionID).Scan(
+		&existingAgent, &existingSandbox, &existingProject, &existingTask,
+		&existingSeries, &existingModule, &existingFence)
+	if existingErr == nil {
+		existingFenceValue := strconv.FormatInt(existingFence, 10)
+		expectedExistingAgent := stableAssignmentID("agt_executor_", request.Project.TenantID, request.Project.ID, request.Task.ID, attemptSeriesID, existingFenceValue)
+		expectedExistingSandbox := stableAssignmentID("sbx_executor_", request.Project.TenantID, request.Project.ID, request.Task.ID, attemptSeriesID, existingFenceValue)
+		if existingProject != request.Project.ID || existingTask != request.Task.ID || existingSeries != attemptSeriesID ||
+			existingModule == "" || existingAgent != expectedExistingAgent || existingSandbox != expectedExistingSandbox || existingFence != targetFence && existingFence != request.Task.FencingToken {
+			return Assignment{}, ErrAssignmentInvalid
+		}
+		if err := tx.Commit(); err != nil {
+			return Assignment{}, err
+		}
+		return Assignment{AgentInstanceID: existingAgent, SandboxID: existingSandbox, FencingToken: existingFence}, nil
+	}
+	if !errors.Is(existingErr, sql.ErrNoRows) {
+		return Assignment{}, existingErr
+	}
 
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO agent_instances

@@ -51,15 +51,18 @@ const (
 )
 
 type TaskCommand struct {
-	Type                  TaskCommandType
-	TenantID              string
-	ProjectID             string
-	TaskID                string
-	ModuleID              string
-	PlanningSpecRef       contracts.SpecRef
-	ModuleSpecRef         contracts.SpecRef
-	AttemptSeriesID       string
-	FencingToken          int64
+	Type            TaskCommandType
+	TenantID        string
+	ProjectID       string
+	TaskID          string
+	ModuleID        string
+	PlanningSpecRef contracts.SpecRef
+	ModuleSpecRef   contracts.SpecRef
+	AttemptSeriesID string
+	FencingToken    int64
+	// Recover permits replacing an expired EXECUTING lease with a higher
+	// fencing generation while retaining the same attempt series.
+	Recover               bool
 	DependentTaskIDs      []string
 	BlockingTaskID        string
 	ActorID               string
@@ -137,15 +140,24 @@ func DecideTask(current ModuleTask, command TaskCommand) (TaskEvent, *aorerrors.
 		next.State = contracts.TaskReadyExecution
 		eventType = "io.aor.module.execution-ready.v1"
 	case TaskCommandLeaseExecution:
-		if current.State != contracts.TaskReadyExecution || command.FencingToken <= current.FencingToken {
-			if command.FencingToken <= current.FencingToken {
+		if current.State == contracts.TaskReadyExecution {
+			if command.Recover || command.FencingToken <= current.FencingToken {
 				return TaskEvent{}, aorerrors.New(aorerrors.CodeLeaseExpired, "", nil)
 			}
+		} else if current.State == contracts.TaskExecuting {
+			if !command.Recover || command.FencingToken <= current.FencingToken {
+				return TaskEvent{}, aorerrors.New(aorerrors.CodeLeaseExpired, "", nil)
+			}
+		} else {
 			return TaskEvent{}, transitionTask(command, current.State)
 		}
 		next.FencingToken = command.FencingToken
 		next.State = contracts.TaskExecuting
-		eventType = "io.aor.module.execution-leased.v1"
+		if command.Recover {
+			eventType = "io.aor.module.execution-recovered.v1"
+		} else {
+			eventType = "io.aor.module.execution-leased.v1"
+		}
 	case TaskCommandSubmit:
 		if current.State != contracts.TaskExecuting {
 			return TaskEvent{}, transitionTask(command, current.State)

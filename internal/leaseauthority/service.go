@@ -189,7 +189,12 @@ func (service *Service) Renew(ctx context.Context, principal authn.Principal, re
 	if !found {
 		return authz.CapabilityLease{}, aorerrors.New(aorerrors.CodeNotFound, "", nil)
 	}
-	if current.FencingToken == request.FencingToken+1 && current.Nonce == requestDigest {
+	preserveFencing := request.GrantRequest.Action == authz.ActionModelGenerate && request.GrantRequest.TaskID != ""
+	expectedFencing := request.FencingToken + 1
+	if preserveFencing {
+		expectedFencing = request.FencingToken
+	}
+	if current.FencingToken == expectedFencing && current.Nonce == requestDigest {
 		return current, nil
 	}
 	renewed, renewErr := service.manager.Renew(ctx, authz.LeaseRenewalRequest{
@@ -197,13 +202,14 @@ func (service *Service) Renew(ctx context.Context, principal authn.Principal, re
 		FencingToken: request.FencingToken, PrincipalID: principal.ID,
 		PrincipalType: principal.Type, Role: principal.Role,
 		PolicyVersion: request.PolicyVersion, TTL: request.TTL, Grant: grant,
-		RequestDigest: requestDigest,
+		RequestDigest:   requestDigest,
+		PreserveFencing: preserveFencing,
 	})
 	if renewErr == nil {
 		return renewed, nil
 	}
 	current, found, lookupErr := service.manager.GetForTenant(ctx, request.TenantID, request.LeaseID)
-	if lookupErr == nil && found && current.FencingToken == request.FencingToken+1 && current.Nonce == requestDigest {
+	if lookupErr == nil && found && current.FencingToken == expectedFencing && current.Nonce == requestDigest {
 		return current, nil
 	}
 	return authz.CapabilityLease{}, renewErr

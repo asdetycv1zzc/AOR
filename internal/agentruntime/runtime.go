@@ -200,7 +200,7 @@ func (r *Runtime) Heartbeat(ctx context.Context, runID string) error {
 	if err != nil {
 		return r.authorityFailure(runID, err)
 	}
-	if err := validateRenewedLease(lease, updated, r.clock()); err != nil || validateHeartbeatLease(lease, updated) != nil || !updated.LastHeartbeatAt.After(lease.LastHeartbeatAt) {
+	if err := validateRenewedLease(lease, updated, r.clock()); err != nil || validateHeartbeatRenewalLease(lease, updated, r.clock()) != nil {
 		r.expire(runID)
 		if err != nil {
 			return err
@@ -226,7 +226,11 @@ func (r *Runtime) RenewLease(ctx context.Context, runID string) error {
 	if err != nil {
 		return r.authorityFailure(runID, err)
 	}
-	if err := validateRenewedLease(lease, updated, r.clock()); err != nil || !updated.ExpiresAt.After(lease.ExpiresAt) || updated.FencingToken != lease.FencingToken+1 {
+	expectedFencing := lease.FencingToken + 1
+	if lease.TaskID != "" && lease.Role == RoleExecutor {
+		expectedFencing = lease.FencingToken
+	}
+	if err := validateRenewedLease(lease, updated, r.clock()); err != nil || !updated.ExpiresAt.After(lease.ExpiresAt) || updated.FencingToken != expectedFencing {
 		r.expire(runID)
 		if err != nil {
 			return err
