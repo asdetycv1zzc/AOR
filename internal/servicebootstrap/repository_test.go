@@ -102,3 +102,17 @@ func TestRepositoryMCPClientRequiresProductionDependencies(t *testing.T) {
 		t.Fatalf("constructor error = %v", err)
 	}
 }
+
+func TestRepositoryAttemptIsNextUncommittedAttempt(t *testing.T) {
+	for completed := 0; completed < 3; completed++ {
+		if !repositoryAttemptIsCurrent(completed, completed+1) {
+			t.Fatalf("completed attempt %d must authorize attempt %d", completed, completed+1)
+		}
+		if repositoryAttemptIsCurrent(completed, completed) {
+			t.Fatalf("completed attempt %d must not be writable again", completed)
+		}
+	}
+	if repositoryAttemptIsCurrent(-1, 1) || repositoryAttemptIsCurrent(3, 4) {
+		t.Fatal("out-of-range attempt state must fail closed")
+	}
+}

@@ -375,13 +375,17 @@ WHERE p.tenant_id = $1::uuid AND p.id = $2::uuid AND t.id = $3::uuid`,
 		return repositoryExecutionScope{}, repository.ErrLeaseStale
 	}
 	var module contracts.ModuleSpec
-	if json.Unmarshal(moduleJSON, &module) != nil || module.Validate() != nil || module.ProjectID != claim.ProjectID || module.ModuleSpecVersion != moduleVersion || module.SHA256 != moduleDigest || projectState != "EXECUTING" || taskState != "EXECUTING" || activeSeriesID != attemptSeriesID || attemptCount != attempt || latestFencing != claim.Lease.FencingToken || agentRole != "EXECUTOR" || !activeRepositoryAgentState(agentState) {
+	if json.Unmarshal(moduleJSON, &module) != nil || module.Validate() != nil || module.ProjectID != claim.ProjectID || module.ModuleSpecVersion != moduleVersion || module.SHA256 != moduleDigest || projectState != "EXECUTING" || taskState != "EXECUTING" || activeSeriesID != attemptSeriesID || !repositoryAttemptIsCurrent(attemptCount, attempt) || latestFencing != claim.Lease.FencingToken || agentRole != "EXECUTOR" || !activeRepositoryAgentState(agentState) {
 		return repositoryExecutionScope{}, repository.ErrLeaseStale
 	}
 	if err := tx.Commit(); err != nil {
 		return repositoryExecutionScope{}, err
 	}
 	return repositoryExecutionScope{module: module, provider: provider, model: model}, nil
+}
+
+func repositoryAttemptIsCurrent(completed, requested int) bool {
+	return completed >= 0 && completed < 3 && requested == completed+1
 }
 
 func activeRepositoryAgentState(state string) bool {
