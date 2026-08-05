@@ -537,6 +537,74 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/KnowledgeManifest'}
         default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}/knowledge:propose-update:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    post:
+      tags: [Knowledge]
+      operationId: proposeKnowledgeUpdate
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/KnowledgeUpdateDraftRequest'}
+      responses:
+        '201':
+          description: Immutable Curator draft awaiting exact human approval
+          headers:
+            ETag: {$ref: '#/components/headers/ETag'}
+            Location: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/KnowledgeUpdate'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}/knowledge/updates/{updateId}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: updateId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    get:
+      tags: [Knowledge]
+      operationId: getKnowledgeUpdate
+      responses:
+        '200':
+          description: Exact Curator proposal and its durable status
+          headers:
+            ETag: {$ref: '#/components/headers/ETag'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/KnowledgeUpdate'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}/knowledge/updates/{updateId}:approve:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: updateId
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      tags: [Knowledge]
+      operationId: approveKnowledgeUpdate
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/KnowledgeUpdateApprovalRequest'}
+      responses:
+        '200':
+          description: Approved proposal atomically committed and indexed
+          headers:
+            ETag: {$ref: '#/components/headers/ETag'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/KnowledgeUpdate'}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/projects/{projectId}/budgets:
     parameters:
       - $ref: '#/components/parameters/ProjectId'
@@ -1007,6 +1075,15 @@ components:
           type: array
           items: {$ref: '#/components/schemas/Artifact'}
         nextCursor: {type: string, maxLength: 512}
+    KnowledgeSourceReference:
+      type: object
+      additionalProperties: false
+      required: [uri, revision, sha256, trustLevel]
+      properties:
+        uri: {type: string, format: uri, minLength: 1, maxLength: 2048}
+        revision: {type: string, minLength: 1, maxLength: 256, pattern: '^[A-Za-z0-9][A-Za-z0-9._:/+@=-]{0,255}$'}
+        sha256: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        trustLevel: {enum: [SIGNED_POLICY, CURATED, PROJECT_APPROVED, GENERATED_UNREVIEWED, EXTERNAL_UNTRUSTED]}
     KnowledgeReference:
       type: object
       additionalProperties: false
@@ -1030,6 +1107,7 @@ components:
           maxItems: 64
           items: {type: string, minLength: 1, maxLength: 128}
         trustLevel: {enum: [SIGNED_POLICY, CURATED, PROJECT_APPROVED, GENERATED_UNREVIEWED, EXTERNAL_UNTRUSTED]}
+        source: {$ref: '#/components/schemas/KnowledgeSourceReference'}
         retrievalScore: {type: number, minimum: 0}
     KnowledgeSearchRequest:
       type: object
@@ -1098,6 +1176,7 @@ components:
         contentType: {type: string, minLength: 1, maxLength: 256}
         sha256: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
         lineCount: {type: integer, minimum: 1}
+        source: {$ref: '#/components/schemas/KnowledgeSourceReference'}
     KnowledgeManifest:
       type: object
       additionalProperties: false
@@ -1119,6 +1198,107 @@ components:
         documents:
           type: array
           items: {$ref: '#/components/schemas/KnowledgeDocumentMetadata'}
+    KnowledgeUpdateDocument:
+      type: object
+      additionalProperties: false
+      required: [path, title, tags, trustLevel, contentType, content, source]
+      properties:
+        path:
+          type: string
+          maxLength: 4096
+          pattern: '^(inherited|requirements|architecture|modules|interfaces|decisions|prompts|workflows|tools|security|operations|lessons)/.+'
+        title: {type: string, minLength: 1, maxLength: 512}
+        tags:
+          type: array
+          maxItems: 128
+          items: {type: string, minLength: 1, maxLength: 128}
+        trustLevel: {enum: [CURATED, PROJECT_APPROVED, GENERATED_UNREVIEWED, EXTERNAL_UNTRUSTED]}
+        source: {$ref: '#/components/schemas/KnowledgeSourceReference'}
+        contentType: {type: string, minLength: 1, maxLength: 256}
+        content: {type: string, minLength: 1, maxLength: 262144}
+    KnowledgeUpdateProposal:
+      type: object
+      additionalProperties: false
+      required: [baseRevision, parentOrderExplicit, parents, overrides, documents, deletePaths]
+      properties:
+        baseRevision: {type: string, pattern: '^(|sha256:[0-9a-f]{64})$'}
+        parentOrderExplicit: {type: boolean}
+        parents:
+          type: array
+          maxItems: 32
+          items: {$ref: '#/components/schemas/KnowledgeParentSnapshot'}
+        overrides:
+          type: array
+          maxItems: 4096
+          items: {type: string, minLength: 1, maxLength: 4096}
+        documents:
+          type: array
+          maxItems: 1000
+          items: {$ref: '#/components/schemas/KnowledgeUpdateDocument'}
+        deletePaths:
+          type: array
+          maxItems: 4096
+          items: {type: string, minLength: 1, maxLength: 4096}
+    KnowledgeUpdateDraftRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedVersion, instruction, proposal]
+      properties:
+        expectedVersion: {type: integer, format: int64, minimum: 1}
+        instruction: {type: string, minLength: 1, maxLength: 16384}
+        proposal: {$ref: '#/components/schemas/KnowledgeUpdateProposal'}
+    KnowledgeUpdateApprovalRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedVersion, proposalDigest, reason]
+      properties:
+        expectedVersion: {type: integer, format: int64, minimum: 1}
+        proposalDigest: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        reason: {type: string, minLength: 1, maxLength: 4096}
+    KnowledgeUpdate:
+      type: object
+      additionalProperties: false
+      required: [updateId, tenantId, projectId, projectVersion, status, proposalDigest, changeSummary, validationReport, proposal, draftUri, draftSha256, sourceRunId, createdAt]
+      properties:
+        updateId: {type: string, format: uuid}
+        tenantId: {type: string, format: uuid}
+        projectId: {type: string, format: uuid}
+        projectVersion: {type: integer, format: int64, minimum: 1}
+        status: {enum: [DRAFT, APPROVED, APPLIED]}
+        proposalDigest: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        changeSummary: {type: string, minLength: 1, maxLength: 8192}
+        validationReport: {$ref: '#/components/schemas/KnowledgeValidationReport'}
+        proposal: {$ref: '#/components/schemas/KnowledgeUpdateProposal'}
+        draftUri: {type: string, pattern: '^artifact://sha256/[0-9a-f]{64}$'}
+        draftSha256: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        sourceRunId: {type: string, minLength: 1, maxLength: 128}
+        approvalId: {type: string, format: uuid}
+        revision: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        createdAt: {type: string, format: date-time}
+        approvedAt: {type: string, format: date-time}
+        appliedAt: {type: string, format: date-time}
+    KnowledgeValidationCheck:
+      type: object
+      additionalProperties: false
+      required: [ruleId, status]
+      properties:
+        ruleId: {type: string, minLength: 1, maxLength: 128}
+        status: {enum: [PASS, FAIL]}
+        path: {type: string, maxLength: 4096}
+        message: {type: string, maxLength: 512}
+    KnowledgeValidationReport:
+      type: object
+      additionalProperties: false
+      required: [version, proposalDigest, passed, checks, sha256]
+      properties:
+        version: {const: 1}
+        proposalDigest: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        passed: {type: boolean, const: true}
+        checks:
+          type: array
+          minItems: 1
+          items: {$ref: '#/components/schemas/KnowledgeValidationCheck'}
+        sha256: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
     BudgetAccount:
       type: object
       additionalProperties: false

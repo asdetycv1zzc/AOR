@@ -1,11 +1,14 @@
 package knowledge
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"io"
 	"time"
 
 	"github.com/akimisaka/aor/internal/eventing"
@@ -50,6 +53,10 @@ type KnowledgeUpdatedSigner interface {
 
 type KnowledgeUpdatedPublisher interface {
 	Publish(context.Context, Access, string, UpdateResult, IndexSnapshot) error
+}
+
+type KnowledgeUpdatedLookup interface {
+	Find(context.Context, string, string, string, string) (KnowledgeUpdatedEvent, bool, error)
 }
 
 type HMACKnowledgeUpdatedSigner struct {
@@ -232,6 +239,42 @@ func (publisher *EventKnowledgeUpdatedPublisher) Publish(ctx context.Context, ac
 	return nil
 }
 
+// Find returns a historical update only after verifying its domain envelope,
+// payload digest, aggregate binding, and detached signature.
+func (publisher *EventKnowledgeUpdatedPublisher) Find(ctx context.Context, tenantID, projectID, proposalDigest, approvalID string) (KnowledgeUpdatedEvent, bool, error) {
+	if publisher == nil || publisher.store == nil || publisher.signer == nil || ctx == nil || tenantID == "" || projectID == "" || !revisionPattern.MatchString(proposalDigest) || approvalID == "" {
+		return KnowledgeUpdatedEvent{}, false, invalid("knowledge event lookup")
+	}
+	events, ok := publisher.store.(eventing.EventLog)
+	if !ok {
+		return KnowledgeUpdatedEvent{}, false, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "knowledge event log"})
+	}
+	history, err := events.ListEvents(ctx, tenantID)
+	if err != nil {
+		return KnowledgeUpdatedEvent{}, false, err
+	}
+	for _, domain := range history {
+		if domain.ProjectID != projectID || domain.Type != knowledgeUpdatedEventType {
+			continue
+		}
+		if domain.TenantID != tenantID || domain.AggregateType != knowledgeAggregateType || domain.AggregateID != projectID || domain.AggregateVersion < 1 {
+			return KnowledgeUpdatedEvent{}, false, aorerrors.New(aorerrors.CodeArtifactHashMismatch, "", map[string]any{"scope": "knowledge event aggregate"})
+		}
+		digest, digestErr := canonicaljson.Digest(domain.Payload)
+		if digestErr != nil || digest != domain.PayloadSHA256 {
+			return KnowledgeUpdatedEvent{}, false, aorerrors.New(aorerrors.CodeArtifactHashMismatch, "", map[string]any{"scope": "knowledge event payload"})
+		}
+		var candidate KnowledgeUpdatedEvent
+		if decodeKnowledgeEvent(domain.Payload, &candidate) != nil || publisher.verifyEvent(ctx, candidate, tenantID, projectID, domain.AggregateVersion) != nil || !candidate.OccurredAt.Equal(domain.OccurredAt) {
+			return KnowledgeUpdatedEvent{}, false, aorerrors.New(aorerrors.CodeArtifactHashMismatch, "", map[string]any{"scope": "knowledge event integrity"})
+		}
+		if candidate.ProposalDigest == proposalDigest && candidate.ApprovalID == approvalID {
+			return candidate, true, nil
+		}
+	}
+	return KnowledgeUpdatedEvent{}, false, nil
+}
+
 func (publisher *EventKnowledgeUpdatedPublisher) decodeProjection(ctx context.Context, projection eventing.Projection, tenantID, projectID string) (KnowledgeUpdatedEvent, error) {
 	if projection.TenantID != tenantID || projection.ProjectID != projectID || projection.AggregateType != knowledgeAggregateType || projection.AggregateID != projectID {
 		return KnowledgeUpdatedEvent{}, aorerrors.New(aorerrors.CodeArtifactHashMismatch, "", map[string]any{"scope": "knowledge event projection"})
@@ -306,5 +349,18 @@ func knowledgeEventTrace(ctx context.Context) (string, string, error) {
 	return traceparent, trace.TraceState, err
 }
 
+func decodeKnowledgeEvent(payload []byte, target *KnowledgeUpdatedEvent) error {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return invalid("knowledge event json")
+	}
+	return nil
+}
+
 var _ KnowledgeUpdatedSigner = (*HMACKnowledgeUpdatedSigner)(nil)
 var _ KnowledgeUpdatedPublisher = (*EventKnowledgeUpdatedPublisher)(nil)
+var _ KnowledgeUpdatedLookup = (*EventKnowledgeUpdatedPublisher)(nil)

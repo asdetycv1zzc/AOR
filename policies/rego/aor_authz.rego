@@ -79,6 +79,7 @@ valid_project_scope if {
     input.project.tenantId != ""
     input.project.id != ""
     input.principal.tenantId in {"", input.project.tenantId}
+	object.get(input.principal, "projectId", "") in {"", input.project.id}
 }
 
 valid_task_scope if {

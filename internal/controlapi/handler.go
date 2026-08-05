@@ -46,6 +46,7 @@ type Config struct {
 	Budgets              modelgateway.BudgetAdministration
 	Artifacts            artifact.Catalog
 	Knowledge            KnowledgeReader
+	KnowledgeCurator     KnowledgeCuratorService
 	TaskHistory          TaskHistoryReader
 	DecisionReports      TaskDecisionReportReader
 	DecisionReportSigner TaskDecisionReportSigner
@@ -87,6 +88,7 @@ type Handler struct {
 	artifacts        artifact.Catalog
 	publisher        artifact.Publisher
 	knowledge        KnowledgeReader
+	knowledgeCurator KnowledgeCuratorService
 	taskHistory      TaskHistoryReader
 	decisionReports  TaskDecisionReportReader
 	decisionVerifier TaskDecisionReportVerifier
@@ -285,6 +287,7 @@ func New(config Config) (*Handler, error) {
 		budgets:          config.Budgets,
 		artifacts:        config.Artifacts,
 		knowledge:        config.Knowledge,
+		knowledgeCurator: config.KnowledgeCurator,
 		taskHistory:      config.TaskHistory,
 		decisionReports:  config.DecisionReports,
 		decisionVerifier: decisionVerifier,
@@ -306,6 +309,19 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 		return
 	}
 	request = request.WithContext(contextWithPrincipal(request.Context(), principal))
+	if strings.HasPrefix(request.URL.Path, "/v1/admin/") {
+		switch request.URL.Path {
+		case "/v1/admin/doctor":
+			handler.admin(response, request, principal, "doctor")
+		case "/v1/admin/policies:test":
+			handler.admin(response, request, principal, "policy-test")
+		case "/v1/admin/sandboxes:probe":
+			handler.admin(response, request, principal, "sandbox-probe")
+		default:
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+		}
+		return
+	}
 
 	if request.URL.Path == "/v1/projects" {
 		if request.Method == http.MethodPost {
@@ -541,6 +557,35 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 		}
 		if request.Method == http.MethodGet {
 			handler.getKnowledgeManifest(response, request, principal, projectID)
+			return
+		}
+		writeMethodNotAllowed(response, request)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "knowledge:propose-update" {
+		if !validProjectID(projectID) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		if request.Method == http.MethodPost {
+			handler.proposeKnowledgeUpdate(response, request, principal, projectID)
+			return
+		}
+		writeMethodNotAllowed(response, request)
+		return
+	}
+	if len(parts) == 4 && parts[1] == "knowledge" && parts[2] == "updates" {
+		updateID, action, hasAction := strings.Cut(parts[3], ":")
+		if !validProjectID(projectID) || !validArtifactID(updateID) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		if !hasAction && request.Method == http.MethodGet {
+			handler.getKnowledgeUpdate(response, request, principal, projectID, updateID)
+			return
+		}
+		if hasAction && action == "approve" && request.Method == http.MethodPost {
+			handler.approveKnowledgeUpdate(response, request, principal, projectID, updateID)
 			return
 		}
 		writeMethodNotAllowed(response, request)

@@ -162,7 +162,7 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	if err != nil {
 		return nil, err
 	}
-	goalPlanServices, err := configuredGoalPlanServices(config, lifecycleStore, leaseService, authorizer)
+	projectAgents, err := configuredGoalPlanServices(config, lifecycleStore, leaseService, authorizer, knowledgeService, knowledgeEvents)
 	if err != nil {
 		return nil, err
 	}
@@ -171,7 +171,7 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 		Database: clients.Database(), Artifacts: artifactCatalog, Knowledge: knowledgeService,
 		DecisionReportSigner: decisionReportSigner,
 		Eraser:               artifactProjectEraser{catalog: artifactCatalog}, Leases: leaseService,
-		GoalPlan: goalPlanServices, Clock: time.Now,
+		GoalPlan: projectAgents.goalPlan, KnowledgeCurator: projectAgents.curator, Clock: time.Now,
 	})
 	if err != nil {
 		return nil, err

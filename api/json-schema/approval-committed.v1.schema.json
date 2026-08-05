@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aor.local/events/approval-committed.v1.schema.json",
+  "title": "AOR Release Approval Committed Event Data v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["tenantId", "projectId", "aggregateVersion", "projection"],
+  "properties": {
+    "tenantId": {"$ref": "https://schemas.aor.local/common.v1.schema.json#/$defs/opaqueId"},
+    "projectId": {"$ref": "https://schemas.aor.local/common.v1.schema.json#/$defs/opaqueId"},
+    "aggregateVersion": {"type": "integer", "minimum": 1},
+    "projection": {"type": "object", "additionalProperties": true}
+  }
+}

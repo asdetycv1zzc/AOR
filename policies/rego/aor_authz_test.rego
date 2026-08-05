@@ -71,6 +71,13 @@ test_unknown_action_is_denied if {
     result.decision == "DENY"
 }
 
+test_project_bound_principal_cannot_cross_project if {
+	principal := object.union(base_input.principal, {"projectId": "project_2"})
+	request := object.union(base_input, {"principal": principal, "action": "knowledge.read"})
+	result := authz.decision with input as request
+	result.decision == "DENY"
+}
+
 test_repo_write_without_lease_is_denied if {
     result := authz.decision with input as object.union(base_input, {"action": "repo.write"})
     result.decision == "DENY"
