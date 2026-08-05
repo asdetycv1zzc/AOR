@@ -320,6 +320,11 @@ func (s *MemoryStore) Reserve(_ context.Context, result MergeResult) (MergeResul
 		if prior.result.RequestDigest == result.RequestDigest && prior.result.Audit.EvidenceSHA256 == result.Audit.EvidenceSHA256 {
 			return cloneResult(prior.result), false, nil
 		}
+		// A persisted merge request is immutable. A different request may only
+		// reserve a slot after a conflict, whose record has no merge digest.
+		if prior.result.RequestDigest != "" {
+			return MergeResult{}, false, ErrImmutable
+		}
 		if result.Attempt == 0 || prior.task.State != TaskExecuting || prior.task.Attempt != result.Attempt || prior.task.OwnerTaskID != result.OwnerTaskID {
 			return MergeResult{}, false, ErrAttemptState
 		}
