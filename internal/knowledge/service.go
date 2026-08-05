@@ -168,7 +168,7 @@ func (service *Service) ReadRange(ctx context.Context, request ReadRangeRequest)
 	if err != nil {
 		return ReadRangeResponse{}, err
 	}
-	if reference.LineEnd > visible.Document.Metadata.LineCount || reference.ResourceURI != expected.ResourceURI || reference.LocalPath != expected.LocalPath || reference.Encoding != "utf-8" || reference.LineEnding != "LF" || reference.ContentType != expected.ContentType || reference.TrustLevel != expected.TrustLevel || reference.Title != expected.Title || !sameStrings(reference.Tags, expected.Tags) {
+	if reference.LineEnd > visible.Document.Metadata.LineCount || reference.ResourceURI != expected.ResourceURI || reference.LocalPath != expected.LocalPath || reference.Encoding != "utf-8" || reference.LineEnding != "LF" || reference.ContentType != expected.ContentType || reference.TrustLevel != expected.TrustLevel || reference.Title != expected.Title || !sameStrings(reference.Tags, expected.Tags) || !sameSource(reference.Source, expected.Source) {
 		return ReadRangeResponse{}, invalid("knowledge reference")
 	}
 	lines := splitLines(visible.Document.Content)
@@ -294,6 +294,36 @@ func (service *Service) Update(ctx context.Context, access Access, proposal Upda
 	return result, nil
 }
 
+// ValidateProposal runs the deterministic update checks against the current
+// immutable head without committing a snapshot or requiring write proofs.
+func (service *Service) ValidateProposal(ctx context.Context, access Access, proposal UpdateProposal) (ProposalValidation, error) {
+	proposal = cloneProposal(proposal)
+	if err := service.authorize(ctx, access, false); err != nil {
+		return ProposalValidation{}, err
+	}
+	digest, err := proposalDigest(proposal)
+	if err != nil {
+		return ProposalValidation{}, err
+	}
+	snapshot, err := service.prepareUpdate(ctx, access, proposal)
+	if err != nil {
+		return ProposalValidation{}, err
+	}
+	documents, err := service.resolveEffective(ctx, access.TenantID, access.ProjectID, "", &snapshot, make(map[string]bool))
+	if err != nil {
+		return ProposalValidation{}, err
+	}
+	if err := service.validateTrustChange(ctx, access, proposal.BaseRevision, documents); err != nil {
+		return ProposalValidation{}, err
+	}
+	report := buildValidationReport(proposal, digest, documents)
+	validation := ProposalValidation{Digest: digest, DocumentCount: len(documents), Report: report}
+	if !report.Passed {
+		return validation, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "knowledge validation report", "reportSha256": report.SHA256})
+	}
+	return validation, nil
+}
+
 func (service *Service) resumeCommittedUpdate(ctx context.Context, access Access, proposal UpdateProposal, digest string) (UpdateResult, error) {
 	current, err := service.repository.Head(ctx, access.TenantID, access.ProjectID)
 	if err != nil {
@@ -364,6 +394,7 @@ func cloneProposal(input UpdateProposal) UpdateProposal {
 	for index, document := range input.Documents {
 		document.Tags = append([]string(nil), document.Tags...)
 		document.Content = append([]byte(nil), document.Content...)
+		document.Source = cloneSource(document.Source)
 		output.Documents[index] = document
 	}
 	return output
@@ -493,6 +524,7 @@ func (service *Service) authorize(ctx context.Context, access Access, write bool
 	}
 	if write {
 		input.Action = authz.ActionKnowledgeWrite
+		input.Resource.Type = "KNOWLEDGE_CHANGE"
 		input.ParameterDigest = access.ParameterDigest
 		input.Lease = access.Lease
 		input.Approval = access.Approval
@@ -532,6 +564,7 @@ func (service *Service) reference(tenantID, scopeProjectID, scopeRevision string
 		Revision: visible.Revision, SHA256: metadata.SHA256, LineStart: lineStart, LineEnd: lineEnd,
 		Encoding: "utf-8", LineEnding: "LF", ContentType: metadata.ContentType,
 		Title: metadata.Title, Tags: append([]string(nil), metadata.Tags...), TrustLevel: metadata.TrustLevel,
+		Source:         cloneSource(metadata.Source),
 		RetrievalScore: score,
 	}, nil
 }

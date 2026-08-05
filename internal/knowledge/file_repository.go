@@ -212,7 +212,7 @@ func (repository *FileRepository) loadUnlocked(tenantID, projectID, revision str
 		}
 		normalized, normalizeErr := normalizeDocument(DocumentInput{
 			Path: metadata.Path, Title: metadata.Title, Tags: metadata.Tags, TrustLevel: metadata.TrustLevel,
-			ContentType: metadata.ContentType, Content: content,
+			ContentType: metadata.ContentType, Content: content, Source: metadata.Source,
 		})
 		if normalizeErr != nil || !bytes.Equal(normalized.Content, content) || !sameMetadata(normalized.Metadata, metadata) || contentDigest(content) != metadata.SHA256 || len(splitLines(content)) != metadata.LineCount {
 			return Snapshot{}, aorerrors.New(aorerrors.CodeArtifactHashMismatch, "", nil)
@@ -470,7 +470,7 @@ func validateCommitSnapshot(snapshot Snapshot) error {
 		normalized, err := normalizeDocument(DocumentInput{
 			Path: document.Metadata.Path, Title: document.Metadata.Title, Tags: document.Metadata.Tags,
 			TrustLevel: document.Metadata.TrustLevel, ContentType: document.Metadata.ContentType,
-			Content: document.Content,
+			Content: document.Content, Source: document.Metadata.Source,
 		})
 		if err != nil {
 			return err
@@ -674,13 +674,14 @@ func revisionUnavailable() *aorerrors.Error {
 
 func cloneMetadata(input DocumentMetadata) DocumentMetadata {
 	input.Tags = append([]string(nil), input.Tags...)
+	input.Source = cloneSource(input.Source)
 	return input
 }
 
 func sameMetadata(left, right DocumentMetadata) bool {
 	return left.Path == right.Path && left.Title == right.Title && left.TrustLevel == right.TrustLevel &&
 		left.ContentType == right.ContentType && left.SHA256 == right.SHA256 && left.LineCount == right.LineCount &&
-		sameStrings(left.Tags, right.Tags)
+		sameStrings(left.Tags, right.Tags) && sameSource(left.Source, right.Source)
 }
 
 func sameStrings(left, right []string) bool {

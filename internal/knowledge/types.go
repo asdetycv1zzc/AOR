@@ -78,6 +78,16 @@ type ParentSnapshot struct {
 	Order     int    `json:"order"`
 }
 
+// SourceReference records the immutable origin asserted for a knowledge
+// document.  The reference is deliberately small: the URI identifies the
+// source, revision pins its version, and SHA256 binds the cited bytes.
+type SourceReference struct {
+	URI        string     `json:"uri"`
+	Revision   string     `json:"revision"`
+	SHA256     string     `json:"sha256"`
+	TrustLevel TrustLevel `json:"trustLevel"`
+}
+
 type DocumentInput struct {
 	Path        string
 	Title       string
@@ -85,16 +95,18 @@ type DocumentInput struct {
 	TrustLevel  TrustLevel
 	ContentType string
 	Content     []byte
+	Source      *SourceReference
 }
 
 type DocumentMetadata struct {
-	Path        string     `json:"path"`
-	Title       string     `json:"title"`
-	Tags        []string   `json:"tags"`
-	TrustLevel  TrustLevel `json:"trustLevel"`
-	ContentType string     `json:"contentType"`
-	SHA256      string     `json:"sha256"`
-	LineCount   int        `json:"lineCount"`
+	Path        string           `json:"path"`
+	Title       string           `json:"title"`
+	Tags        []string         `json:"tags"`
+	TrustLevel  TrustLevel       `json:"trustLevel"`
+	ContentType string           `json:"contentType"`
+	SHA256      string           `json:"sha256"`
+	LineCount   int              `json:"lineCount"`
+	Source      *SourceReference `json:"source,omitempty"`
 }
 
 type Manifest struct {
@@ -118,23 +130,54 @@ type UpdateProposal struct {
 	DeletePaths         []string
 }
 
+type ProposalValidation struct {
+	Digest        string           `json:"digest"`
+	DocumentCount int              `json:"documentCount"`
+	Report        ValidationReport `json:"validationReport"`
+}
+
+type ValidationStatus string
+
+const (
+	ValidationPassed ValidationStatus = "PASS"
+	ValidationFailed ValidationStatus = "FAIL"
+)
+
+// ValidationCheck is a deterministic, machine-readable gate result.  Checks
+// are sorted by rule ID and path before they are persisted.
+type ValidationCheck struct {
+	RuleID  string           `json:"ruleId"`
+	Status  ValidationStatus `json:"status"`
+	Path    string           `json:"path,omitempty"`
+	Message string           `json:"message,omitempty"`
+}
+
+type ValidationReport struct {
+	Version        int               `json:"version"`
+	ProposalDigest string            `json:"proposalDigest"`
+	Passed         bool              `json:"passed"`
+	Checks         []ValidationCheck `json:"checks"`
+	SHA256         string            `json:"sha256"`
+}
+
 type Reference struct {
-	ResourceURI     string     `json:"resourceUri"`
-	LocalPath       string     `json:"localPath"`
-	ScopeRevision   string     `json:"scopeRevision"`
-	SourceProjectID string     `json:"sourceProjectId"`
-	Path            string     `json:"path"`
-	Revision        string     `json:"revision"`
-	SHA256          string     `json:"sha256"`
-	LineStart       int        `json:"lineStart"`
-	LineEnd         int        `json:"lineEnd"`
-	Encoding        string     `json:"encoding"`
-	LineEnding      string     `json:"lineEnding"`
-	ContentType     string     `json:"contentType"`
-	Title           string     `json:"title"`
-	Tags            []string   `json:"tags"`
-	TrustLevel      TrustLevel `json:"trustLevel"`
-	RetrievalScore  float64    `json:"retrievalScore"`
+	ResourceURI     string           `json:"resourceUri"`
+	LocalPath       string           `json:"localPath"`
+	ScopeRevision   string           `json:"scopeRevision"`
+	SourceProjectID string           `json:"sourceProjectId"`
+	Path            string           `json:"path"`
+	Revision        string           `json:"revision"`
+	SHA256          string           `json:"sha256"`
+	LineStart       int              `json:"lineStart"`
+	LineEnd         int              `json:"lineEnd"`
+	Encoding        string           `json:"encoding"`
+	LineEnding      string           `json:"lineEnding"`
+	ContentType     string           `json:"contentType"`
+	Title           string           `json:"title"`
+	Tags            []string         `json:"tags"`
+	TrustLevel      TrustLevel       `json:"trustLevel"`
+	Source          *SourceReference `json:"source,omitempty"`
+	RetrievalScore  float64          `json:"retrievalScore"`
 }
 
 type SearchRequest struct {

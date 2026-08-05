@@ -530,7 +530,7 @@ func TestServiceUsesWP03LeaseAndApprovalBindings(t *testing.T) {
 		SubjectType: authz.ActionKnowledgeWrite, SubjectID: "project-a", SubjectVersion: project.StateVersion,
 		SubjectDigest: digest, IssuedAt: knowledgeTestNow.Add(-time.Minute), ExpiresAt: knowledgeTestNow.Add(time.Hour), Signature: "verified-test-signature",
 	}
-	resource := authz.Resource{Type: "knowledge.snapshot", ID: "project-a"}
+	resource := authz.Resource{Type: "KNOWLEDGE_CHANGE", ID: "project-a"}
 	policyInput := authz.PolicyInput{
 		Principal: principal, Project: project, Action: authz.ActionKnowledgeWrite,
 		Resource: resource, ParameterDigest: digest, Budget: authz.BudgetScope{AccountID: "knowledge-budget", Available: true}, Approval: approval,

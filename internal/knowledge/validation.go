@@ -4,7 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"net/url"
 	"path"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -14,6 +16,218 @@ import (
 )
 
 const defaultContentType = "text/markdown"
+
+var sourceRevisionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/+@=-]{0,255}$`)
+
+var sourceSchemes = map[string]struct{}{
+	"artifact": {}, "file": {}, "git": {}, "http": {}, "https": {}, "kb": {}, "urn": {},
+}
+
+var markdownLinkPattern = regexp.MustCompile(`\[[^\]]*\]\(\s*<?([^\s)>]+)>?(?:\s+[^)]*)?\)`)
+
+// Validate checks the immutable identity fields of a source declaration.  It
+// intentionally does not fetch the URI: network retrieval would make a
+// proposal non-deterministic and belongs to a separately attested importer.
+func (source SourceReference) Validate() error {
+	if source.URI == "" || len(source.URI) > 2048 || strings.ContainsAny(source.URI, "\r\n\x00") || !utf8.ValidString(source.URI) {
+		return invalid("knowledge source uri")
+	}
+	parsed, err := url.Parse(source.URI)
+	if err != nil || parsed.Scheme == "" || parsed.User != nil {
+		return invalid("knowledge source uri")
+	}
+	if _, allowed := sourceSchemes[strings.ToLower(parsed.Scheme)]; !allowed {
+		return invalid("knowledge source scheme")
+	}
+	if (strings.EqualFold(parsed.Scheme, "http") || strings.EqualFold(parsed.Scheme, "https")) && parsed.Host == "" {
+		return invalid("knowledge source host")
+	}
+	if !sourceRevisionPattern.MatchString(source.Revision) || !revisionPattern.MatchString(source.SHA256) || !source.TrustLevel.Valid() {
+		return invalid("knowledge source identity")
+	}
+	return nil
+}
+
+// VerifiedFor reports whether the source has enough declared provenance for a
+// document trust level.  The check is structural and hash-bound; it does not
+// claim that an external service was contacted.
+func (source SourceReference) VerifiedFor(documentTrust TrustLevel) bool {
+	if source.Validate() != nil {
+		return false
+	}
+	return source.TrustLevel != TrustGeneratedUnreviewed && source.TrustLevel != TrustExternalUntrusted && trustRank(source.TrustLevel) >= trustRank(documentTrust)
+}
+
+// ValidationReportDigest computes the content address of a report without its
+// self-referential SHA256 field.
+func ValidationReportDigest(report ValidationReport) (string, error) {
+	copyReport := report
+	copyReport.SHA256 = ""
+	copyReport.Checks = append([]ValidationCheck(nil), report.Checks...)
+	encoded, err := json.Marshal(copyReport)
+	if err != nil {
+		return "", aorerrors.Wrap(aorerrors.CodeInternalError, "", err, nil)
+	}
+	return contentDigest(encoded), nil
+}
+
+// ValidateValidationReport verifies the durable report's structure, ordering,
+// pass bit and content digest before it can be used as an approval gate.
+func ValidateValidationReport(report ValidationReport) error {
+	if report.Version != 1 || !revisionPattern.MatchString(report.ProposalDigest) || report.SHA256 == "" || !revisionPattern.MatchString(report.SHA256) || len(report.Checks) == 0 {
+		return invalid("knowledge validation report")
+	}
+	passed := true
+	previous := ""
+	seen := make(map[string]struct{}, len(report.Checks))
+	for _, check := range report.Checks {
+		if check.RuleID == "" || (check.Status != ValidationPassed && check.Status != ValidationFailed) {
+			return invalid("knowledge validation check")
+		}
+		key := check.RuleID + "\x00" + check.Path
+		if _, exists := seen[key]; exists || (previous != "" && key < previous) {
+			return invalid("knowledge validation ordering")
+		}
+		seen[key] = struct{}{}
+		previous = key
+		if check.Status != ValidationPassed {
+			passed = false
+		}
+	}
+	if report.Passed != passed {
+		return invalid("knowledge validation result")
+	}
+	digest, err := ValidationReportDigest(report)
+	if err != nil || digest != report.SHA256 {
+		return aorerrors.New(aorerrors.CodeArtifactHashMismatch, "", map[string]any{"scope": "knowledge validation report"})
+	}
+	return nil
+}
+
+func buildValidationReport(proposal UpdateProposal, digest string, documents map[string]visibleDocument) ValidationReport {
+	checks := []ValidationCheck{{RuleID: "schema.proposal", Status: ValidationPassed, Message: "normalized proposal schema accepted"}}
+
+	seenPaths := make(map[string]struct{}, len(proposal.Documents))
+	sourceFailures := 0
+	for _, document := range proposal.Documents {
+		if _, duplicate := seenPaths[document.Path]; duplicate {
+			continue
+		}
+		seenPaths[document.Path] = struct{}{}
+		check := ValidationCheck{RuleID: "source.attribution", Status: ValidationPassed, Path: document.Path, Message: "source identity is hash-bound"}
+		if document.Source != nil {
+			if err := document.Source.Validate(); err != nil {
+				check.Status, check.Message = ValidationFailed, "source identity is invalid"
+				sourceFailures++
+			} else if document.TrustLevel == TrustCurated && !document.Source.VerifiedFor(document.TrustLevel) {
+				check.Status, check.Message = ValidationFailed, "curated document source is not sufficiently trusted"
+				sourceFailures++
+			}
+		} else if document.TrustLevel == TrustCurated {
+			check.Status, check.Message = ValidationFailed, "curated document requires a source reference"
+			sourceFailures++
+		} else {
+			check.Message = "no source required for this trust level"
+		}
+		checks = append(checks, check)
+	}
+	if len(proposal.Documents) == 0 || sourceFailures == 0 {
+		checks = append(checks, ValidationCheck{RuleID: "source.complete", Status: ValidationPassed, Message: "all changed documents have acceptable attribution"})
+	} else {
+		checks = append(checks, ValidationCheck{RuleID: "source.complete", Status: ValidationFailed, Message: "one or more changed documents lack acceptable attribution"})
+	}
+
+	linkChecks := validateMarkdownLinks(proposal, documents)
+	checks = append(checks, linkChecks...)
+	if len(linkChecks) == 0 {
+		checks = append(checks, ValidationCheck{RuleID: "link.references", Status: ValidationPassed, Message: "no broken markdown links"})
+	}
+	checks = append(checks, ValidationCheck{RuleID: "lint.normalized", Status: ValidationPassed, Message: "paths, tags, content and duplicate rules are normalized"})
+
+	sort.SliceStable(checks, func(i, j int) bool {
+		if checks[i].RuleID != checks[j].RuleID {
+			return checks[i].RuleID < checks[j].RuleID
+		}
+		if checks[i].Path != checks[j].Path {
+			return checks[i].Path < checks[j].Path
+		}
+		return checks[i].Status < checks[j].Status
+	})
+	report := ValidationReport{Version: 1, ProposalDigest: digest, Checks: checks, Passed: true}
+	for _, check := range checks {
+		if check.Status != ValidationPassed {
+			report.Passed = false
+			break
+		}
+	}
+	report.SHA256, _ = ValidationReportDigest(report)
+	return report
+}
+
+func validateMarkdownLinks(proposal UpdateProposal, documents map[string]visibleDocument) []ValidationCheck {
+	checks := make([]ValidationCheck, 0)
+	seen := make(map[string]struct{})
+	for _, candidate := range proposal.Documents {
+		links := markdownLinkPattern.FindAllStringSubmatch(string(candidate.Content), -1)
+		for _, match := range links {
+			if len(match) < 2 {
+				continue
+			}
+			destination := strings.TrimSpace(match[1])
+			key := candidate.Path + "\x00" + destination
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			check := ValidationCheck{RuleID: "link.reference", Status: ValidationPassed, Path: candidate.Path + " -> " + destination, Message: "link target is resolvable"}
+			if !validKnowledgeLink(candidate.Path, destination, documents) {
+				check.Status, check.Message = ValidationFailed, "link target is not resolvable"
+			}
+			checks = append(checks, check)
+		}
+	}
+	return checks
+}
+
+func validKnowledgeLink(documentPath, destination string, documents map[string]visibleDocument) bool {
+	if destination == "" {
+		return false
+	}
+	parsed, err := url.Parse(destination)
+	if err != nil {
+		return false
+	}
+	if parsed.Scheme != "" {
+		switch strings.ToLower(parsed.Scheme) {
+		case "http", "https", "mailto", "artifact", "kb", "urn":
+			return parsed.Scheme == "mailto" || parsed.Host != "" || parsed.Opaque != ""
+		default:
+			return false
+		}
+	}
+	target, unescapeErr := url.PathUnescape(parsed.Path)
+	if unescapeErr != nil || strings.ContainsRune(target, '\x00') {
+		return false
+	}
+	if target == "" {
+		target = documentPath
+	} else if strings.HasPrefix(target, "/") {
+		return false
+	} else {
+		for _, segment := range strings.Split(target, "/") {
+			if segment == ".." {
+				return false
+			}
+		}
+		target = path.Join(path.Dir(documentPath), target)
+	}
+	normalized, normalizeErr := normalizePath(target)
+	if normalizeErr != nil {
+		return false
+	}
+	_, exists := documents[normalized]
+	return exists
+}
 
 func normalizeDocument(input DocumentInput) (StoredDocument, error) {
 	normalizedPath, err := normalizePath(input.Path)
@@ -25,6 +239,11 @@ func normalizeDocument(input DocumentInput) (StoredDocument, error) {
 	}
 	if !input.TrustLevel.Valid() {
 		return StoredDocument{}, invalid("trust level")
+	}
+	if input.Source != nil {
+		if err := input.Source.Validate(); err != nil {
+			return StoredDocument{}, err
+		}
 	}
 	contentType := input.ContentType
 	if contentType == "" {
@@ -59,7 +278,7 @@ func normalizeDocument(input DocumentInput) (StoredDocument, error) {
 	return StoredDocument{
 		Metadata: DocumentMetadata{
 			Path: normalizedPath, Title: input.Title, Tags: tags, TrustLevel: input.TrustLevel,
-			ContentType: contentType, SHA256: digest, LineCount: len(lines),
+			ContentType: contentType, SHA256: digest, LineCount: len(lines), Source: cloneSource(input.Source),
 		},
 		Content: content,
 	}, nil
@@ -208,12 +427,13 @@ func proposalDigest(proposal UpdateProposal) (string, error) {
 	copy(documents, proposal.Documents)
 	sort.Slice(documents, func(i, j int) bool { return documents[i].Path < documents[j].Path })
 	type proposalDocument struct {
-		Path        string     `json:"path"`
-		Title       string     `json:"title"`
-		Tags        []string   `json:"tags"`
-		TrustLevel  TrustLevel `json:"trustLevel"`
-		ContentType string     `json:"contentType"`
-		Content     string     `json:"content"`
+		Path        string           `json:"path"`
+		Title       string           `json:"title"`
+		Tags        []string         `json:"tags"`
+		TrustLevel  TrustLevel       `json:"trustLevel"`
+		ContentType string           `json:"contentType"`
+		Content     string           `json:"content"`
+		Source      *SourceReference `json:"source,omitempty"`
 	}
 	canonicalDocuments := make([]proposalDocument, 0, len(documents))
 	for _, input := range documents {
@@ -224,7 +444,7 @@ func proposalDigest(proposal UpdateProposal) (string, error) {
 		canonicalDocuments = append(canonicalDocuments, proposalDocument{
 			Path: document.Metadata.Path, Title: document.Metadata.Title, Tags: document.Metadata.Tags,
 			TrustLevel: document.Metadata.TrustLevel, ContentType: document.Metadata.ContentType,
-			Content: string(document.Content),
+			Content: string(document.Content), Source: cloneSource(document.Metadata.Source),
 		})
 	}
 	deletes, err := normalizePathSet(proposal.DeletePaths)
@@ -267,6 +487,21 @@ func sortedDocumentPaths(documents map[string]StoredDocument) []string {
 
 func invalid(scope string) *aorerrors.Error {
 	return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": scope})
+}
+
+func cloneSource(input *SourceReference) *SourceReference {
+	if input == nil {
+		return nil
+	}
+	copySource := *input
+	return &copySource
+}
+
+func sameSource(left, right *SourceReference) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 func unauthorizedPath() *aorerrors.Error {
