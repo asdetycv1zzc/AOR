@@ -1,0 +1,97 @@
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+receivers:
+  otlp/application:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+  otlp/audit:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4327
+      http:
+        endpoint: 0.0.0.0:4328
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+  attributes/redact:
+    actions:
+      - {key: prompt, action: delete}
+      - {key: prompt.body, action: delete}
+      - {key: model.input, action: delete}
+      - {key: model.output, action: delete}
+      - {key: source.code, action: delete}
+      - {key: code.body, action: delete}
+      - {key: tool.input, action: delete}
+      - {key: tool.output, action: delete}
+      - {key: hidden_test, action: delete}
+      - {key: pii, action: delete}
+      - {key: authorization, action: delete}
+      - {key: credential, action: delete}
+  tail_sampling:
+    decision_wait: 10s
+    expected_new_traces_per_sec: 100
+    policies:
+      - name: errors
+        type: status_code
+        status_code: {status_codes: [ERROR]}
+      - name: critical
+        type: string_attribute
+        string_attribute: {key: aor.severity, values: [CRITICAL]}
+      - name: third-attempt
+        type: numeric_attribute
+        numeric_attribute: {key: aor.attempt, min_value: 3, max_value: 2147483647}
+      - name: security-denial
+        type: string_attribute
+        string_attribute: {key: aor.security.denied, values: ["true"]}
+      - name: budget-denial
+        type: string_attribute
+        string_attribute: {key: aor.budget.denied, values: ["true"]}
+      - name: normal-sample
+        type: probabilistic
+        probabilistic: {sampling_percentage: 10}
+  batch/application:
+    send_batch_size: 1024
+    timeout: 2s
+  batch/audit:
+    send_batch_size: 128
+    timeout: 1s
+
+exporters:
+  debug/traces:
+    verbosity: basic
+  debug/metrics:
+    verbosity: basic
+  debug/application_logs:
+    verbosity: basic
+  debug/audit_logs:
+    verbosity: basic
+
+service:
+  telemetry:
+    logs: {level: info}
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp/application]
+      processors: [memory_limiter, attributes/redact, tail_sampling, batch/application]
+      exporters: [debug/traces]
+    metrics:
+      receivers: [otlp/application]
+      processors: [memory_limiter, batch/application]
+      exporters: [debug/metrics]
+    logs/application:
+      receivers: [otlp/application]
+      processors: [memory_limiter, attributes/redact, batch/application]
+      exporters: [debug/application_logs]
+    logs/audit:
+      receivers: [otlp/audit]
+      processors: [memory_limiter, attributes/redact, batch/audit]
+      exporters: [debug/audit_logs]

@@ -6,7 +6,7 @@ export GOCACHE GOMODCACHE
 export GOTOOLCHAIN = local
 
 COMPOSE = docker compose --parallel 1 -f deploy/compose/docker-compose.yml
-COMPOSE_DEPENDENCIES = postgres temporal temporal-ui nats minio opa identity
+COMPOSE_DEPENDENCIES = postgres temporal temporal-ui nats minio opa identity otel-collector
 COMPOSE_INITIALIZERS = postgres-migrate temporal-init minio-init
 COMPOSE_SANDBOX = aor-sandbox-runtime aor-sandbox-preflight
 COMPOSE_SANDBOX_CACHE = aor-sandbox-cache

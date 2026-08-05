@@ -10,37 +10,78 @@ import (
 )
 
 func TestCollectorSeparatesAuditAndRetainsCriticalTracePolicies(t *testing.T) {
+	for _, path := range []string{"../../observability/otel-collector.yaml", "../../observability/otel-collector.compose.yaml"} {
+		t.Run(path, func(t *testing.T) {
+			var config struct {
+				Processors map[string]struct {
+					Policies []struct {
+						Name string `yaml:"name"`
+					} `yaml:"policies"`
+				} `yaml:"processors"`
+				Service struct {
+					Pipelines map[string]struct {
+						Receivers []string `yaml:"receivers"`
+						Exporters []string `yaml:"exporters"`
+					} `yaml:"pipelines"`
+				} `yaml:"service"`
+			}
+			decodeYAMLFile(t, path, &config)
+			application := config.Service.Pipelines["logs/application"]
+			audit := config.Service.Pipelines["logs/audit"]
+			if len(application.Exporters) != 1 || len(audit.Exporters) != 1 || application.Exporters[0] == audit.Exporters[0] {
+				t.Fatal("collector does not separate application and audit log exporters")
+			}
+			if len(application.Receivers) != 1 || len(audit.Receivers) != 1 || application.Receivers[0] == audit.Receivers[0] {
+				t.Fatal("collector does not separate application and audit ingestion")
+			}
+			required := map[string]bool{"errors": false, "critical": false, "third-attempt": false, "security-denial": false, "budget-denial": false}
+			for _, policy := range config.Processors["tail_sampling"].Policies {
+				if _, exists := required[policy.Name]; exists {
+					required[policy.Name] = true
+				}
+			}
+			for policy, found := range required {
+				if !found {
+					t.Fatalf("mandatory retention policy missing: %s", policy)
+				}
+			}
+		})
+	}
+}
+
+func TestComposeCollectorIsSelfContainedAndHealthy(t *testing.T) {
+	payload, err := os.ReadFile("../../observability/otel-collector.compose.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(payload), "${env:") {
+		t.Fatal("compose collector requires an external exporter endpoint")
+	}
 	var config struct {
-		Processors map[string]struct {
-			Policies []struct {
-				Name string `yaml:"name"`
-			} `yaml:"policies"`
-		} `yaml:"processors"`
-		Service struct {
-			Pipelines map[string]struct {
-				Receivers []string `yaml:"receivers"`
-				Exporters []string `yaml:"exporters"`
-			} `yaml:"pipelines"`
+		Extensions map[string]any `yaml:"extensions"`
+		Exporters  map[string]any `yaml:"exporters"`
+		Service    struct {
+			Extensions []string `yaml:"extensions"`
 		} `yaml:"service"`
 	}
-	decodeYAMLFile(t, "../../observability/otel-collector.yaml", &config)
-	application := config.Service.Pipelines["logs/application"]
-	audit := config.Service.Pipelines["logs/audit"]
-	if len(application.Exporters) != 1 || len(audit.Exporters) != 1 || application.Exporters[0] == audit.Exporters[0] {
-		t.Fatal("collector does not separate application and audit log exporters")
+	if err := yaml.Unmarshal(payload, &config); err != nil {
+		t.Fatal(err)
 	}
-	if len(application.Receivers) != 1 || len(audit.Receivers) != 1 || application.Receivers[0] == audit.Receivers[0] {
-		t.Fatal("collector does not separate application and audit ingestion")
+	if _, exists := config.Extensions["health_check"]; !exists {
+		t.Fatal("compose collector health extension missing")
 	}
-	required := map[string]bool{"errors": false, "critical": false, "third-attempt": false, "security-denial": false, "budget-denial": false}
-	for _, policy := range config.Processors["tail_sampling"].Policies {
-		if _, exists := required[policy.Name]; exists {
-			required[policy.Name] = true
+	healthEnabled := false
+	for _, extension := range config.Service.Extensions {
+		if extension == "health_check" {
+			healthEnabled = true
 		}
 	}
-	for policy, found := range required {
-		if !found {
-			t.Fatalf("mandatory retention policy missing: %s", policy)
+	if !healthEnabled {
+		t.Fatal("compose collector health extension is not enabled")
+	}
+	for _, exporter := range []string{"debug/traces", "debug/metrics", "debug/application_logs", "debug/audit_logs"} {
+		if _, exists := config.Exporters[exporter]; !exists {
+			t.Fatalf("compose collector exporter missing: %s", exporter)
 		}
 	}
 }

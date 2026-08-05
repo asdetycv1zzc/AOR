@@ -517,6 +517,31 @@ services:
       retries: 20
       start_period: 5s
 
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.157.0@sha256:f2f01157055a9b2aab9df7118e1f1c9abf345e99b23bc7a2bc791db374a7d0f6
+    restart: unless-stopped
+    command: [--config=/etc/otelcol-contrib/config.yaml]
+    user: "10001:10001"
+    volumes:
+      - ../../observability/otel-collector.compose.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - 127.0.0.1:13133:13133
+      - 127.0.0.1:4317:4317
+      - 127.0.0.1:4318:4318
+      - 127.0.0.1:4327:4327
+      - 127.0.0.1:4328:4328
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [aor]
+    healthcheck:
+      test: [CMD, /otelcol-contrib, validate, --config=/etc/otelcol-contrib/config.yaml]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
   aor-api:
     <<: *aor-common
     image: aor/aor-server:0.1.0-test
@@ -544,6 +569,8 @@ services:
       opa:
         condition: service_healthy
       identity:
+        condition: service_healthy
+      otel-collector:
         condition: service_healthy
     environment:
       AOR_ENVIRONMENT: test
@@ -617,6 +644,8 @@ services:
         condition: service_healthy
       identity:
         condition: service_healthy
+      otel-collector:
+        condition: service_healthy
     environment:
       AOR_ENVIRONMENT: test
       AOR_LISTEN_ADDR: :8080
@@ -664,6 +693,8 @@ services:
       opa:
         condition: service_healthy
       identity:
+        condition: service_healthy
+      otel-collector:
         condition: service_healthy
     user: "${AOR_SANDBOX_ENGINE_UID:?Set AOR_SANDBOX_ENGINE_UID to the non-root rootless-engine owner UID}:${AOR_SANDBOX_ENGINE_GID:?Set AOR_SANDBOX_ENGINE_GID to the rootless-engine socket GID}"
     environment:

@@ -31,6 +31,7 @@ func TestDeploymentProfilesFailClosed(t *testing.T) {
 		"AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON", "AOR_SANDBOX_SHARED_ROOT",
 		"AOR_LEASE_SIGNING_KEY_REF: secret://lease_signing_key",
 		"aor-curator:", "AOR_SERVER_MODE: CONTROL", "AOR_SERVER_MODE: KNOWLEDGE_CURATOR", "AOR_KNOWLEDGE_CURATOR_URL: http://aor-curator:8080",
+		"otel-collector:", "otel/opentelemetry-collector-contrib:0.157.0@sha256:", "otel-collector.compose.yaml:/etc/otelcol-contrib/config.yaml:ro",
 		"000010_outbox_tenant_discovery.up.sql", "000012_artifact_project_uri_scope.up.sql",
 		"000017_relational_projection_sync.up.sql", "000018_repository_submissions.up.sql", "000019_model_usage_reconciliation.up.sql", "000020_repository_registry.up.sql", "000021_event_replay_state.up.sql", "000022_project_agent_leases.up.sql", "000023_staged_module_planning.up.sql",
 		"target: tool-broker-runtime", "AOR_REPOSITORY_ROOT: /var/lib/aor/repositories", "repository-data:/var/lib/aor/repositories",
@@ -62,6 +63,15 @@ func TestDeploymentProfilesFailClosed(t *testing.T) {
 			t.Errorf("compose contains forbidden runtime setting %q", value)
 		}
 	}
+	makefile, err := os.ReadFile("../../Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"COMPOSE_DEPENDENCIES = postgres temporal temporal-ui nats minio opa identity otel-collector", "compose-aor-up: compose-deps-up"} {
+		if !strings.Contains(string(makefile), value) {
+			t.Errorf("Makefile missing ordered Compose startup setting %q", value)
+		}
+	}
 	values, err := os.ReadFile("../../deploy/helm/values.yaml")
 	if err != nil {
 		t.Fatal(err)
@@ -75,6 +85,27 @@ func TestDeploymentProfilesFailClosed(t *testing.T) {
 	}
 	if err := ValidateWindowsProfile(windows); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestComposeTelemetryDependencyCannotBeDropped(t *testing.T) {
+	compose, err := os.ReadFile("../../deploy/compose/docker-compose.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	composeText := string(compose)
+	for _, replacement := range []struct {
+		old string
+		new string
+	}{
+		{old: "otel/opentelemetry-collector-contrib:0.157.0@sha256:f2f01157055a9b2aab9df7118e1f1c9abf345e99b23bc7a2bc791db374a7d0f6", new: "otel/opentelemetry-collector-contrib:0.157.0"},
+		{old: "otel-collector.compose.yaml:/etc/otelcol-contrib/config.yaml:ro", new: "otel-collector.compose.yaml:/tmp/config.yaml:ro"},
+		{old: "otel-collector:\n        condition: service_healthy", new: "otel-collector:\n        condition: service_started"},
+	} {
+		candidate := strings.Replace(composeText, replacement.old, replacement.new, 1)
+		if candidate == composeText || ValidateCompose([]byte(candidate)) == nil {
+			t.Fatalf("compose telemetry downgrade %q accepted", replacement.new)
+		}
 	}
 }
 

@@ -8,11 +8,14 @@ This profile starts the complete local dependency set before any AOR process:
 - MinIO with the private `aor-artifacts` bucket
 - Open Policy Agent with the repository policy and data
 - Dex with a local OAuth 2.0/OIDC test issuer and rotating JWKS
+- OpenTelemetry Collector with separate application and audit OTLP ingress
 - Two independently configured model-provider families for the Model Gateway
 - A pinned Linux sandbox runtime image and a rootless OCI-engine preflight
 - A versioned Go module cache for network-denied integration sandboxes
 
 All upstream images are pinned by version and multi-platform manifest digest. Host ports bind to `127.0.0.1`; this profile is for development and test only.
+
+The local Collector applies the repository redaction and mandatory trace-sampling policies, then writes basic signal summaries to its container log. This keeps Compose self-contained without pretending to provide a durable or queryable observability backend; production deployments use `observability/otel-collector.yaml` with four independently configured exporter endpoints.
 
 This profile requires the Docker Compose plugin with `--wait` and `--wait-timeout` support; legacy `docker-compose` v1 is not supported. Docker bridge networking also requires IPv4 forwarding on Linux. The Docker host must report `net.ipv4.ip_forward = 1`; enabling it is a host-administration step and is intentionally not performed by this repository. Trusted local AOR image builds use host networking while downloading Go modules, while every runtime container remains on the isolated Compose bridge network.
 
@@ -83,7 +86,7 @@ The target performs these stages in order:
 1. Validate the Compose model and required secret files.
 2. Pull all Compose dependency images, including the pinned Docker CLI and Linux sandbox runtime image.
 3. Validate the dedicated rootless OCI engine, pull the pinned runtime into it, and execute the hardened sandbox probe.
-4. Start PostgreSQL, Temporal, NATS, MinIO, OPA, and Dex, then wait for their health checks and initialization jobs.
+4. Start PostgreSQL, Temporal, NATS, MinIO, OPA, Dex, and OpenTelemetry Collector, then wait for their health checks and initialization jobs.
 5. Apply every PostgreSQL migration listed in `migrations/postgres/manifest.json` in order; reruns detect the installed schema, rotate the fixed `aor_app` password without revoking later grants, and keep permissions idempotent. The app password is supplied through the ignored secret file and is not printed.
 6. Build the AOR server image (shared by the API and curator), Model Gateway, Tool Broker, and worker serially from the current source. The worker image includes the Docker CLI needed to reach the preflighted rootless engine; it does not contain or start a daemon.
 7. Copy the worker build's downloaded Go modules into a content-keyed directory under the shared root and atomically publish the read-only cache path used by integration sandboxes.
@@ -106,6 +109,9 @@ Individual stages are available as `make compose-pull`, `make compose-deps-up`, 
 | MinIO console | `http://127.0.0.1:9001` |
 | OPA | `http://127.0.0.1:8181` |
 | OIDC discovery | `http://127.0.0.1:5556/dex/.well-known/openid-configuration` |
+| OpenTelemetry health | `http://127.0.0.1:13133` |
+| Application OTLP | `grpc://127.0.0.1:4317`, `http://127.0.0.1:4318` |
+| Audit OTLP | `grpc://127.0.0.1:4327`, `http://127.0.0.1:4328` |
 
 ## Test Identity
 

@@ -113,7 +113,13 @@ func ValidateCompose(input []byte) error {
 			SecurityOpt []string          `yaml:"security_opt"`
 			Environment map[string]string `yaml:"environment"`
 			Secrets     []string          `yaml:"secrets"`
-			Build       struct {
+			DependsOn   map[string]struct {
+				Condition string `yaml:"condition"`
+			} `yaml:"depends_on"`
+			Healthcheck struct {
+				Test []string `yaml:"test"`
+			} `yaml:"healthcheck"`
+			Build struct {
 				Target string `yaml:"target"`
 			} `yaml:"build"`
 		} `yaml:"services"`
@@ -145,7 +151,14 @@ func ValidateCompose(input []byte) error {
 	modelGateway, modelGatewayFound := document.Services["aor-model-gateway"]
 	toolBroker, toolBrokerFound := document.Services["aor-tool-broker"]
 	identity, identityFound := document.Services["identity"]
+	collector, collectorFound := document.Services["otel-collector"]
 	if !apiFound || !curatorFound || !modelGatewayFound || !identityFound || !toolBrokerFound || api.Environment["AOR_SERVER_MODE"] != "CONTROL" || curator.Environment["AOR_SERVER_MODE"] != "KNOWLEDGE_CURATOR" || api.Environment["AOR_KNOWLEDGE_ROOT"] != "/var/lib/aor/knowledge" || api.Environment["AOR_KNOWLEDGE_CURATOR_URL"] != "http://aor-curator:8080" || !hasReadOnlyVolume(api.Volumes, "AOR_KNOWLEDGE_HOST_PATH", "/var/lib/aor/knowledge") || curator.Environment["AOR_KNOWLEDGE_CURATOR_URL"] != "" || !hasReadWriteVolume(curator.Volumes, "AOR_KNOWLEDGE_HOST_PATH", "/var/lib/aor/knowledge") || !hasS3Environment(api.Environment) || api.Environment["AOR_DEPLOYMENT_PROFILE"] != "TEST" || api.Environment["AOR_LEASE_SIGNING_KEY_REF"] != "secret://lease_signing_key" || !containsString(api.Secrets, "lease_signing_key") || !hasS3Environment(toolBroker.Environment) || toolBroker.Build.Target != "tool-broker-runtime" || toolBroker.Environment["AOR_REPOSITORY_ROOT"] != "/var/lib/aor/repositories" || !hasVolume(toolBroker.Volumes, "repository-data", "/var/lib/aor/repositories") || !containsString(toolBroker.CapDrop, "ALL") {
+		return ErrInvalidDeployment
+	}
+	apiTelemetry, apiTelemetryFound := api.DependsOn["otel-collector"]
+	modelTelemetry, modelTelemetryFound := modelGateway.DependsOn["otel-collector"]
+	toolTelemetry, toolTelemetryFound := toolBroker.DependsOn["otel-collector"]
+	if !collectorFound || !collector.ReadOnly || collector.User == "" || collector.User == "0" || collector.User == "root" || !isImmutableSHA256Reference(collector.Image) || !hasReadOnlyVolume(collector.Volumes, "otel-collector.compose.yaml", "/etc/otelcol-contrib/config.yaml") || !containsString(collector.CapDrop, "ALL") || !containsString(collector.SecurityOpt, "no-new-privileges:true") || !containsString(collector.Healthcheck.Test, "/otelcol-contrib") || !containsString(collector.Healthcheck.Test, "validate") || !containsString(collector.Healthcheck.Test, "--config=/etc/otelcol-contrib/config.yaml") || !apiTelemetryFound || apiTelemetry.Condition != "service_healthy" || !modelTelemetryFound || modelTelemetry.Condition != "service_healthy" || !toolTelemetryFound || toolTelemetry.Condition != "service_healthy" {
 		return ErrInvalidDeployment
 	}
 	if api.Environment["AOR_MODEL_GATEWAY_URL"] != "http://aor-model-gateway:8080" || api.Environment["AOR_MODEL_GATEWAY_OAUTH_TOKEN_ENDPOINT"] != "http://identity:5556/dex/token" || api.Environment["AOR_MODEL_GATEWAY_OAUTH_CLIENT_ID"] != "aor-server" || api.Environment["AOR_MODEL_GATEWAY_OAUTH_CLIENT_SECRET_REF"] != "secret://aor_server_oauth_client_secret" || api.Environment["AOR_MODEL_GATEWAY_OAUTH_SCOPES"] != "audience:server:client_id:aor-control-plane" || api.Environment["AOR_MODEL_GATEWAY_OAUTH_AUDIENCE"] != "aor-control-plane" || !containsString(api.Secrets, "aor_server_oauth_client_secret") || !containsString(identity.Secrets, "aor_server_oauth_client_secret") || !isImmutableSHA256Reference(identity.Image) {

@@ -11,7 +11,7 @@ The repository is under active implementation. It is not production ready until 
 - Go `1.26.5`
 - GNU Make
 - OCI-compatible Linux container runtime for Executor and Auditor workloads
-- PostgreSQL, Temporal, NATS JetStream, S3-compatible storage, and OPA for deployed profiles
+- PostgreSQL, Temporal, NATS JetStream, S3-compatible storage, OPA, and OpenTelemetry Collector for deployed profiles
 
 Windows workers intentionally provide native-process execution with `isolationLevel=NONE`. They reject untrusted production work and audits requiring hidden-test confidentiality.
 
