@@ -232,6 +232,13 @@
       "file": "000033_global_audit_scheduler.up.sql",
       "sha256": "sha256:fac82038ab4d7c86d8fea3d6c68e54b2f4a84948fb25e50f8f8d94c6409403cf",
       "destructive": false
+    },
+    {
+      "version": 34,
+      "mode": "EXPAND",
+      "file": "000034_module_audit_scheduler.up.sql",
+      "sha256": "sha256:02f34218960a454a6b1a1e4436f517899ace15bb16286b3a44df0c8c0394047d",
+      "destructive": false
     }
   ]
 }
