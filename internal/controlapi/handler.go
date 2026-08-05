@@ -77,23 +77,24 @@ type KnowledgeInitializer interface {
 }
 
 type Handler struct {
-	orchestrator    *orchestrator.Service
-	store           eventing.Store
-	events          eventing.EventLog
-	authenticator   authn.Authenticator
-	authorizer      authz.PolicyEvaluator
-	database        *sql.DB
-	budgets         modelgateway.BudgetAdministration
-	artifacts       artifact.Catalog
-	publisher       artifact.Publisher
-	knowledge       KnowledgeReader
-	taskHistory     TaskHistoryReader
-	decisionReports TaskDecisionReportReader
-	eraser          ProjectEraser
-	leases          LeaseAuthority
-	goalPlan        GoalPlanServices
-	autoBudget      bool
-	clock           func() time.Time
+	orchestrator     *orchestrator.Service
+	store            eventing.Store
+	events           eventing.EventLog
+	authenticator    authn.Authenticator
+	authorizer       authz.PolicyEvaluator
+	database         *sql.DB
+	budgets          modelgateway.BudgetAdministration
+	artifacts        artifact.Catalog
+	publisher        artifact.Publisher
+	knowledge        KnowledgeReader
+	taskHistory      TaskHistoryReader
+	decisionReports  TaskDecisionReportReader
+	decisionVerifier TaskDecisionReportVerifier
+	eraser           ProjectEraser
+	leases           LeaseAuthority
+	goalPlan         GoalPlanServices
+	autoBudget       bool
+	clock            func() time.Time
 }
 
 type projectCreate struct {
@@ -270,26 +271,28 @@ func New(config Config) (*Handler, error) {
 		}
 		config.DecisionReports = reader
 	}
+	decisionVerifier, _ := config.DecisionReportSigner.(TaskDecisionReportVerifier)
 	boundary, err := NewPolicyCommitBoundary(config.Authorizer)
 	if err != nil {
 		return nil, err
 	}
 	handler := &Handler{
-		orchestrator:    orchestrator.NewWithBoundary(config.Store, config.Clock, boundary),
-		store:           config.Store,
-		authenticator:   config.Authenticator,
-		authorizer:      config.Authorizer,
-		database:        config.Database,
-		budgets:         config.Budgets,
-		artifacts:       config.Artifacts,
-		knowledge:       config.Knowledge,
-		taskHistory:     config.TaskHistory,
-		decisionReports: config.DecisionReports,
-		eraser:          config.Eraser,
-		leases:          config.Leases,
-		goalPlan:        config.GoalPlan,
-		autoBudget:      autoBudget,
-		clock:           config.Clock,
+		orchestrator:     orchestrator.NewWithBoundary(config.Store, config.Clock, boundary),
+		store:            config.Store,
+		authenticator:    config.Authenticator,
+		authorizer:       config.Authorizer,
+		database:         config.Database,
+		budgets:          config.Budgets,
+		artifacts:        config.Artifacts,
+		knowledge:        config.Knowledge,
+		taskHistory:      config.TaskHistory,
+		decisionReports:  config.DecisionReports,
+		decisionVerifier: decisionVerifier,
+		eraser:           config.Eraser,
+		leases:           config.Leases,
+		goalPlan:         config.GoalPlan,
+		autoBudget:       autoBudget,
+		clock:            config.Clock,
 	}
 	handler.publisher, _ = config.Artifacts.(artifact.Publisher)
 	handler.events, _ = config.Store.(eventing.EventLog)

@@ -54,7 +54,20 @@ func TestTaskDecisionReportRoutesAuthorizeAndReplay(t *testing.T) {
 	seedDecisionProjection(t, store, "project", projectID, project, projectID)
 	seedDecisionProjection(t, store, "task", taskID, task, projectID)
 	reader := &staticDecisionReportReader{report: testDecisionReport(projectID, taskID, digest)}
+	signer, err := NewHMACTaskDecisionReportSigner([]byte("01234567890123456789012345678901"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsigned, err := canonicalDecisionReport(reader.report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader.report.Signature, err = signer.Sign(context.Background(), unsigned)
+	if err != nil {
+		t.Fatal(err)
+	}
 	handler.decisionReports = reader
+	handler.decisionVerifier = signer
 	headers := map[string]string{"Authorization": "Bearer " + testBearer, "Content-Type": "application/json"}
 	reportResponse := performRequest(handler, http.MethodGet, "/v1/projects/"+projectID+"/tasks/"+taskID+"/decision-report", nil, headers)
 	if reportResponse.Code != http.StatusOK || !strings.Contains(reportResponse.Body.String(), `"dependencyImpact"`) || reportResponse.Header().Get("ETag") == "" {

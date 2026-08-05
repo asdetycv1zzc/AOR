@@ -29,6 +29,10 @@ type TaskDecisionReportSigner interface {
 	Sign(context.Context, []byte) (*contracts.Signature, error)
 }
 
+type TaskDecisionReportVerifier interface {
+	Verify(context.Context, []byte, *contracts.Signature) bool
+}
+
 type HMACTaskDecisionReportSigner struct {
 	key []byte
 }
@@ -437,6 +441,14 @@ func decisionReportDigest(report contracts.UserDecisionReport) (string, error) {
 		return "", err
 	}
 	return canonicaljson.Digest(encoded)
+}
+
+func verifyTaskDecisionReport(ctx context.Context, verifier TaskDecisionReportVerifier, report contracts.UserDecisionReport) bool {
+	if verifier == nil || report.Signature == nil {
+		return false
+	}
+	payload, err := canonicalDecisionReport(report)
+	return err == nil && verifier.Verify(ctx, payload, report.Signature)
 }
 
 func decisionFailureStage(phase string) (string, bool) {

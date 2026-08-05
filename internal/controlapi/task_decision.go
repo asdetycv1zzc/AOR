@@ -50,7 +50,7 @@ func (handler *Handler) getTaskDecisionReport(response http.ResponseWriter, requ
 		writeError(response, request, normalizeError(err))
 		return
 	}
-	if err := validateTaskDecisionReport(report, projectID, taskID); err != nil || report.Signature == nil || report.State != task.State || project.Goal == nil || report.GoalSpec.Version != project.Goal.Version || report.GoalSpec.SHA256 != project.Goal.SHA256 {
+	if err := validateTaskDecisionReport(report, projectID, taskID); err != nil || !verifyTaskDecisionReport(request.Context(), handler.decisionVerifier, report) || report.State != task.State || project.Goal == nil || report.GoalSpec.Version != project.Goal.Version || report.GoalSpec.SHA256 != project.Goal.SHA256 {
 		writeError(response, request, aorerrors.New(aorerrors.CodeAuditEvidenceInvalid, "", map[string]any{"scope": "decision report binding"}))
 		return
 	}
@@ -104,7 +104,7 @@ func (handler *Handler) decideTask(response http.ResponseWriter, request *http.R
 		writeError(response, request, normalizeError(err))
 		return
 	}
-	if err := validateTaskDecisionReport(report, projectID, taskID); err != nil || report.Signature == nil || report.State != task.State || project.Goal == nil || report.GoalSpec.Version != project.Goal.Version || report.GoalSpec.SHA256 != project.Goal.SHA256 {
+	if err := validateTaskDecisionReport(report, projectID, taskID); err != nil || !verifyTaskDecisionReport(request.Context(), handler.decisionVerifier, report) || report.State != task.State || project.Goal == nil || report.GoalSpec.Version != project.Goal.Version || report.GoalSpec.SHA256 != project.Goal.SHA256 {
 		writeError(response, request, aorerrors.New(aorerrors.CodeAuditEvidenceInvalid, "", map[string]any{"scope": "decision report binding"}))
 		return
 	}
