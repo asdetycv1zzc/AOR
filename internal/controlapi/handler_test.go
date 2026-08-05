@@ -1262,5 +1262,25 @@ func performRequest(handler http.Handler, method, path string, body []byte, head
 	return response
 }
 
+func TestValidAPIIdentifierAcceptsUUIDRecordsAndLegacyIdentifiers(t *testing.T) {
+	for _, identifier := range []string{
+		"01989f4d-0000-7000-8000-000000000001",
+		"task_1",
+	} {
+		if !validAPIIdentifier(identifier) {
+			t.Fatalf("expected %q to be a valid API identifier", identifier)
+		}
+	}
+
+	for _, identifier := range []string{
+		"1task",
+		"01989f4d-0000-7000-8000-00000000000z",
+	} {
+		if validAPIIdentifier(identifier) {
+			t.Fatalf("expected %q to be rejected", identifier)
+		}
+	}
+}
+
 var _ authn.Authenticator = fixedAuthenticator{}
 var _ authz.PolicyEvaluator = (*recordingAuthorizer)(nil)

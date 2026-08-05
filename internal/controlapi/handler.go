@@ -2785,6 +2785,9 @@ func validArtifactID(value string) bool {
 }
 
 func validAPIIdentifier(value string) bool {
+	if uuidPattern.MatchString(value) {
+		return true
+	}
 	if len(value) < 3 || len(value) > 128 || value[0] < 'A' || value[0] > 'z' || value[0] > 'Z' && value[0] < 'a' {
 		return false
 	}
