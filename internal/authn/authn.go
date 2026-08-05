@@ -40,6 +40,7 @@ const (
 	RoleModulePlanner    = "MODULE_PLANNER"
 	RoleExecutor         = "EXECUTOR"
 	RoleAuditor          = "AUDITOR"
+	RoleGlobalAuditor    = "GLOBAL_AUDITOR"
 	RoleKnowledgeCurator = "KNOWLEDGE_CURATOR"
 	RoleService          = "SERVICE"
 	RoleUser             = "USER"

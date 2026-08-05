@@ -438,7 +438,7 @@ func RequiresTask(action string) bool {
 // a ModuleTask exists. Unknown and task-level roles remain fail-closed.
 func LeaseRoleRequiresTask(role string) bool {
 	switch role {
-	case authn.RoleGoalProposer, authn.RoleGoalChallenger, authn.RolePlanSupervisor:
+	case authn.RoleGoalProposer, authn.RoleGoalChallenger, authn.RolePlanSupervisor, authn.RoleGlobalAuditor:
 		return false
 	default:
 		return true

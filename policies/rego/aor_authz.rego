@@ -46,6 +46,7 @@ project_lease_roles := {
 	"GOAL_PROPOSER",
 	"GOAL_CHALLENGER",
 	"PLAN_SUPERVISOR",
+	"GLOBAL_AUDITOR",
 }
 
 task_model_lease_roles := {
