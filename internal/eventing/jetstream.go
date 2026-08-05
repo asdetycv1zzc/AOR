@@ -31,6 +31,11 @@ type JetStreamClient interface {
 	CreateOrUpdateConsumer(context.Context, string, jetstream.ConsumerConfig) (jetstream.Consumer, error)
 }
 
+type jetStreamPullConsumer interface {
+	Next(...jetstream.FetchOpt) (jetstream.Msg, error)
+	Info(context.Context) (*jetstream.ConsumerInfo, error)
+}
+
 type JetStreamEventBusConfig struct {
 	Stream        string
 	Source        string
@@ -135,7 +140,7 @@ type DurableConsumerConfig struct {
 // DurableConsumer wraps a durable JetStream pull consumer. Every delivery must
 // be acknowledged or negatively acknowledged by the caller.
 type DurableConsumer struct {
-	consumer      jetstream.Consumer
+	consumer      jetStreamPullConsumer
 	subjectPrefix string
 	tenantID      string
 }

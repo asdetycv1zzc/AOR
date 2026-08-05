@@ -130,6 +130,10 @@ func ReconcileDurable(ctx context.Context, source eventing.ReconciliationSource,
 	if err != nil {
 		return ReconciliationReport{}, fmt.Errorf("load durable reconciliation snapshot: %w", err)
 	}
+	return reconcileDurableSnapshot(snapshot, tenantID)
+}
+
+func reconcileDurableSnapshot(snapshot eventing.ReconciliationSnapshot, tenantID string) (ReconciliationReport, error) {
 	reducers := make(map[string]Reducer)
 	for _, event := range snapshot.Events {
 		if event.AggregateType == "" {
@@ -144,11 +148,22 @@ func ReconcileDurable(ctx context.Context, source eventing.ReconciliationSource,
 // projection-table mutation: relational read models must be corrected through
 // a new authoritative domain command and reconciled again.
 func VerifyDurable(ctx context.Context, source eventing.ReconciliationSource, tenantID string) (ReconciliationReport, error) {
-	report, err := ReconcileDurable(ctx, source, tenantID)
+	if ctx == nil || source == nil || tenantID == "" {
+		return ReconciliationReport{}, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "durable projection verification"})
+	}
+	snapshot, err := source.LoadReconciliationSnapshot(ctx, tenantID)
 	if err != nil {
 		if errors.Is(err, eventing.ErrRelationalProjectionDrift) {
 			return ReconciliationReport{}, fmt.Errorf("%w: %v", ErrProjectionDrift, err)
 		}
+		return ReconciliationReport{}, fmt.Errorf("load durable reconciliation snapshot: %w", err)
+	}
+	return verifyDurableSnapshot(snapshot, tenantID)
+}
+
+func verifyDurableSnapshot(snapshot eventing.ReconciliationSnapshot, tenantID string) (ReconciliationReport, error) {
+	report, err := reconcileDurableSnapshot(snapshot, tenantID)
+	if err != nil {
 		return ReconciliationReport{}, err
 	}
 	if !report.Converged {

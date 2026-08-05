@@ -651,11 +651,17 @@ requirements:
     title: Workflow projection and event bus replay converge after injected faults
     implementation:
       - internal/projection/replay.go
+      - internal/projection/convergence.go
       - internal/eventing/memory.go
       - internal/eventing/postgres.go
+      - internal/eventing/jetstream_replay.go
+      - internal/workflow/lifecycle_snapshot.go
     tests:
       - internal/projection/replay_test.go
       - internal/projection/projector_test.go
+      - internal/projection/convergence_test.go
+      - internal/eventing/jetstream_replay_test.go
+      - internal/workflow/lifecycle_snapshot_test.go
     evidenceType: replay-digest+durable-fault-injection-gate
     owner: persistence
     status: planned
