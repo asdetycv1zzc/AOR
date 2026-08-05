@@ -26,11 +26,13 @@ import (
 
 type controlHandler struct {
 	http.Handler
-	dispatcher *eventing.OutboxDispatcher
-	cancel     context.CancelFunc
-	done       <-chan error
-	close      sync.Once
-	closeErr   error
+	dispatcher    *eventing.OutboxDispatcher
+	scheduler     *aorworkflow.ReadyExecutionScheduler
+	cancel        context.CancelFunc
+	dispatchDone  <-chan error
+	schedulerDone <-chan error
+	close         sync.Once
+	closeErr      error
 }
 
 type artifactProjectEraser struct {
@@ -49,10 +51,13 @@ func (eraser artifactProjectEraser) EraseProject(ctx context.Context, tenantID, 
 }
 
 func (handler *controlHandler) Ready() error {
-	if handler == nil || handler.dispatcher == nil {
+	if handler == nil || handler.dispatcher == nil || handler.scheduler == nil {
 		return runtimeclient.ErrDependencyUnavailable
 	}
-	return handler.dispatcher.Ready()
+	if err := handler.dispatcher.Ready(); err != nil {
+		return err
+	}
+	return handler.scheduler.Ready()
 }
 
 func (handler *controlHandler) Close() error {
@@ -63,10 +68,16 @@ func (handler *controlHandler) Close() error {
 		if handler.cancel != nil {
 			handler.cancel()
 		}
-		if handler.done != nil {
-			err := <-handler.done
+		if handler.dispatchDone != nil {
+			err := <-handler.dispatchDone
 			if err != nil && !errors.Is(err, context.Canceled) {
 				handler.closeErr = err
+			}
+		}
+		if handler.schedulerDone != nil {
+			err := <-handler.schedulerDone
+			if err != nil && !errors.Is(err, context.Canceled) {
+				handler.closeErr = errors.Join(handler.closeErr, err)
 			}
 		}
 	})
@@ -137,10 +148,27 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	if err != nil {
 		return nil, err
 	}
+	readyExecutions, err := aorworkflow.NewPostgresReadyExecutionSource(clients.Database())
+	if err != nil {
+		return nil, err
+	}
+	executionStarter, err := aorworkflow.NewProjectExecutionStarter(clients.Temporal(), config.Temporal.TaskQueue)
+	if err != nil {
+		return nil, err
+	}
+	scheduler, err := aorworkflow.NewReadyExecutionScheduler(readyExecutions, executionStarter)
+	if err != nil {
+		return nil, err
+	}
 	dispatchContext, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- dispatcher.Run(dispatchContext) }()
-	return &controlHandler{Handler: withRequestTrace(domain), dispatcher: dispatcher, cancel: cancel, done: done}, nil
+	dispatchDone := make(chan error, 1)
+	schedulerDone := make(chan error, 1)
+	go func() { dispatchDone <- dispatcher.Run(dispatchContext) }()
+	go func() { schedulerDone <- scheduler.Run(dispatchContext) }()
+	return &controlHandler{
+		Handler: withRequestTrace(domain), dispatcher: dispatcher, scheduler: scheduler, cancel: cancel,
+		dispatchDone: dispatchDone, schedulerDone: schedulerDone,
+	}, nil
 }
 
 func controlLeaseAuthority(config runtimeconfig.Config, database *sql.DB, authorizer authz.LeaseGrantEvaluator) (*leaseauthority.Service, error) {

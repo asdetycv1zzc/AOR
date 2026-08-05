@@ -190,6 +190,13 @@
       "file": "000027_module_audit_coordination.up.sql",
       "sha256": "sha256:e311a4fdcc07890b13c0501e0a0451dcc811cb1cd52be40a4afd25232e21f558",
       "destructive": false
+    },
+    {
+      "version": 28,
+      "mode": "EXPAND",
+      "file": "000028_ready_execution_scheduler.up.sql",
+      "sha256": "sha256:3597a2ff8ddbf7e8a0dbbcf56019c7518adb1cd403061376d25385ef08de6e3f",
+      "destructive": false
     }
   ]
 }

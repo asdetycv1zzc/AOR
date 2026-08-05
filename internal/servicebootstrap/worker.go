@@ -34,7 +34,7 @@ var (
 	ErrWorkerUnavailable   = errors.New("worker execution provider unavailable")
 )
 
-const ExecutionActivityAction = "execution.execute"
+const ExecutionActivityAction = aorworkflow.ExecutionActivityAction
 
 // sandboxActivityInput is intentionally narrow: workflow code can only ask a
 // worker to execute a validated sandbox command. Network, model, repository,
