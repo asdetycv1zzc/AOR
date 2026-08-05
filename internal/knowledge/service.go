@@ -977,5 +977,6 @@ func sameVisibleDocument(left, right visibleDocument) bool {
 	return left.Document.Metadata.SHA256 == right.Document.Metadata.SHA256 &&
 		left.Document.Metadata.TrustLevel == right.Document.Metadata.TrustLevel &&
 		left.Document.Metadata.Title == right.Document.Metadata.Title &&
-		left.Document.Metadata.ContentType == right.Document.Metadata.ContentType
+		left.Document.Metadata.ContentType == right.Document.Metadata.ContentType &&
+		sameSource(left.Document.Metadata.Source, right.Document.Metadata.Source)
 }
