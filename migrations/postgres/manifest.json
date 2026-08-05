@@ -253,6 +253,13 @@
       "file": "000036_artifact_publication_keys.up.sql",
       "sha256": "sha256:7b3495a5836f688665fc69c47d1c321f7e22dfb4792cff39239bcdabdc677833",
       "destructive": false
+    },
+    {
+      "version": 37,
+      "mode": "EXPAND",
+      "file": "000037_lease_idempotency_keys.up.sql",
+      "sha256": "sha256:b954548873303975ae2924dc33730c02d86f7a7f0c26bfcebd42f2c6f00b625b",
+      "destructive": false
     }
   ]
 }

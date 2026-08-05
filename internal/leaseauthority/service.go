@@ -4,8 +4,6 @@ package leaseauthority
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"time"
@@ -14,6 +12,7 @@ import (
 	"github.com/akimisaka/aor/internal/authz"
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
+	"github.com/google/uuid"
 )
 
 type Scope struct {
@@ -44,6 +43,7 @@ type Manager interface {
 	Heartbeat(context.Context, authz.LeaseHeartbeatRequest) (authz.CapabilityLease, error)
 	Revoke(context.Context, authz.LeaseRevokeRequest) error
 	GetForTenant(context.Context, string, string) (authz.CapabilityLease, bool, error)
+	GetByIdempotency(context.Context, string, string, string) (authz.CapabilityLease, bool, error)
 }
 
 type Service struct {
@@ -137,8 +137,7 @@ func (service *Service) issue(ctx context.Context, principal authn.Principal, re
 	if err != nil {
 		return authz.CapabilityLease{}, aorerrors.Wrap(aorerrors.CodeInvalidArgument, "", err, map[string]any{"scope": "lease idempotency"})
 	}
-	leaseID := deterministicLeaseID(principal, request)
-	if existing, found, lookupErr := service.manager.GetForTenant(ctx, request.TenantID, leaseID); lookupErr != nil {
+	if existing, found, lookupErr := service.manager.GetByIdempotency(ctx, request.TenantID, principal.ID, request.IdempotencyKey); lookupErr != nil {
 		return authz.CapabilityLease{}, lookupErr
 	} else if found {
 		if existing.Nonce == requestDigest && (fencingToken == 0 || existing.FencingToken == fencingToken) {
@@ -146,8 +145,12 @@ func (service *Service) issue(ctx context.Context, principal authn.Principal, re
 		}
 		return authz.CapabilityLease{}, aorerrors.New(aorerrors.CodeIdempotencyConflict, "", map[string]any{"scope": "lease issue"})
 	}
+	leaseID, idErr := uuid.NewV7()
+	if idErr != nil {
+		return authz.CapabilityLease{}, idErr
+	}
 	lease, issueErr := service.manager.Issue(ctx, authz.LeaseRequest{
-		ID:              leaseID,
+		ID: leaseID.String(), IdempotencyKey: request.IdempotencyKey,
 		AgentInstanceID: principal.ID, Principal: principal,
 		TenantID: input.Project.TenantID, ProjectID: input.Project.ID,
 		ProjectVersion: input.Project.StateVersion, TaskID: input.Task.ID,
@@ -160,7 +163,7 @@ func (service *Service) issue(ctx context.Context, principal authn.Principal, re
 	if issueErr == nil {
 		return lease, nil
 	}
-	existing, found, lookupErr := service.manager.GetForTenant(ctx, request.TenantID, leaseID)
+	existing, found, lookupErr := service.manager.GetByIdempotency(ctx, request.TenantID, principal.ID, request.IdempotencyKey)
 	if lookupErr == nil && found && existing.Nonce == requestDigest && (fencingToken == 0 || existing.FencingToken == fencingToken) {
 		return existing, nil
 	}
@@ -312,11 +315,6 @@ func (service *Service) validateCaller(ctx context.Context, principal authn.Prin
 
 func invalidRequest() error {
 	return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "lease request"})
-}
-
-func deterministicLeaseID(principal authn.Principal, request GrantRequest) string {
-	digest := sha256.Sum256([]byte(request.TenantID + "\x00" + request.ProjectID + "\x00" + request.TaskID + "\x00" + principal.ID + "\x00" + request.IdempotencyKey))
-	return "lease_" + hex.EncodeToString(digest[:])
 }
 
 func grantRequestDigest(principal authn.Principal, input authz.PolicyInput, grant authz.PolicyDecision, request GrantRequest) (string, error) {

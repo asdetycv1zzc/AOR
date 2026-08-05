@@ -43,17 +43,17 @@ func (store *PostgresLeaseStore) Put(ctx context.Context, lease CapabilityLease)
 	}
 	defer func() { _ = tx.Rollback() }()
 	_, err = tx.ExecContext(ctx, `
-INSERT INTO agent_leases
-  (id, tenant_id, project_id, agent_instance_id, task_id, principal_id, principal_type,
+	INSERT INTO agent_leases
+	  (id, idempotency_key, tenant_id, project_id, agent_instance_id, task_id, principal_id, principal_type,
    role, action, project_version, task_version, spec_sha256, resource_jsonb,
    parameter_sha256, issued_at, expires_at, last_heartbeat_at,
    heartbeat_interval_seconds, capabilities_jsonb, policy_version, budget_account_id,
    nonce_hash, fencing_token, state, revoked_at, signature)
 VALUES
-  ($1, $2::uuid, $3::uuid, $4, $5::uuid, $6, $7, $8, $9, $10, $11, $12,
-   $13::jsonb, $14, $15, $16, $17, $18, $19::jsonb, $20, $21, $22, $23, $24,
-   $25, $26)`,
-		lease.ID, lease.TenantID, lease.ProjectID, lease.AgentInstanceID, nullableLeaseString(lease.TaskID),
+	  ($1, NULLIF($2, ''), $3::uuid, $4::uuid, $5, NULLIF($6, '')::uuid, $7, $8, $9,
+	   $10, $11, $12, $13, $14, $15::jsonb, $16, $17, $18, $19,
+	   $20::jsonb, $21, $22, $23, $24, $25, $26, $27)`,
+		lease.ID, lease.IdempotencyKey, lease.TenantID, lease.ProjectID, lease.AgentInstanceID, nullableLeaseString(lease.TaskID),
 		lease.PrincipalID, string(lease.PrincipalType), lease.Role, lease.Action,
 		lease.ProjectVersion, lease.TaskVersion, nullableLeaseString(lease.SpecDigest), resource,
 		lease.ParameterDigest, lease.IssuedAt.UTC(), lease.ExpiresAt.UTC(),
@@ -183,8 +183,8 @@ func setLeaseTenant(ctx context.Context, tx *sql.Tx, tenantID string) error {
 
 func loadPostgresLease(ctx context.Context, tx *sql.Tx, tenantID, id string, lock bool) (CapabilityLease, bool, error) {
 	query := `
-SELECT id, agent_instance_id, principal_id, principal_type, tenant_id::text,
-	       project_id::text, project_version, COALESCE(task_id::text, ''), task_version,
+	SELECT id, agent_instance_id, principal_id, principal_type, tenant_id::text,
+	       idempotency_key, project_id::text, project_version, COALESCE(task_id::text, ''), task_version,
 	       COALESCE(spec_sha256::text, ''),
        role, action, resource_jsonb, parameter_sha256, capabilities_jsonb, issued_at,
        expires_at, last_heartbeat_at, heartbeat_interval_seconds, policy_version,
@@ -204,12 +204,56 @@ WHERE tenant_id = $1::uuid AND id = $2`
 	return lease, true, nil
 }
 
+func (store *PostgresLeaseStore) GetByIdempotency(ctx context.Context, tenantID, principalID, key string) (CapabilityLease, bool, error) {
+	if store == nil || store.database == nil || ctx == nil || tenantID == "" || principalID == "" || key == "" {
+		return CapabilityLease{}, false, aorerrors.New(aorerrors.CodeInvalidArgument, "", nil)
+	}
+	if err := ctx.Err(); err != nil {
+		return CapabilityLease{}, false, err
+	}
+	if scopedTenant := leaseTenantID(ctx); scopedTenant != "" && scopedTenant != tenantID {
+		return CapabilityLease{}, false, nil
+	}
+	tx, err := store.begin(ctx, tenantID, true)
+	if err != nil {
+		return CapabilityLease{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	lease, found, err := loadPostgresLeaseByIdempotency(ctx, tx, tenantID, principalID, key)
+	if err != nil || !found {
+		return CapabilityLease{}, found, err
+	}
+	if err := tx.Commit(); err != nil {
+		return CapabilityLease{}, false, err
+	}
+	return lease, true, nil
+}
+
+func loadPostgresLeaseByIdempotency(ctx context.Context, tx *sql.Tx, tenantID, principalID, key string) (CapabilityLease, bool, error) {
+	lease, err := scanPostgresLease(tx.QueryRowContext(ctx, `
+SELECT id, agent_instance_id, principal_id, principal_type, tenant_id::text,
+       idempotency_key, project_id::text, project_version, COALESCE(task_id::text, ''), task_version,
+       COALESCE(spec_sha256::text, ''), role, action, resource_jsonb, parameter_sha256, capabilities_jsonb, issued_at,
+       expires_at, last_heartbeat_at, heartbeat_interval_seconds, policy_version,
+       budget_account_id, nonce_hash, fencing_token, state, revoked_at, signature
+FROM agent_leases
+WHERE tenant_id = $1::uuid AND principal_id = $2 AND idempotency_key = $3`, tenantID, principalID, key))
+	if errors.Is(err, sql.ErrNoRows) {
+		return CapabilityLease{}, false, nil
+	}
+	if err != nil {
+		return CapabilityLease{}, false, err
+	}
+	return lease, true, nil
+}
+
 type leaseRowScanner interface {
 	Scan(...any) error
 }
 
 func scanPostgresLease(scanner leaseRowScanner) (CapabilityLease, error) {
 	var lease CapabilityLease
+	var idempotencyKey sql.NullString
 	var principalType string
 	var state string
 	var resource []byte
@@ -217,7 +261,7 @@ func scanPostgresLease(scanner leaseRowScanner) (CapabilityLease, error) {
 	var revokedAt sql.NullTime
 	err := scanner.Scan(
 		&lease.ID, &lease.AgentInstanceID, &lease.PrincipalID, &principalType,
-		&lease.TenantID, &lease.ProjectID, &lease.ProjectVersion, &lease.TaskID,
+		&lease.TenantID, &idempotencyKey, &lease.ProjectID, &lease.ProjectVersion, &lease.TaskID,
 		&lease.TaskVersion, &lease.SpecDigest, &lease.Role, &lease.Action, &resource,
 		&lease.ParameterDigest, &capabilities, &lease.IssuedAt, &lease.ExpiresAt,
 		&lease.LastHeartbeatAt, &lease.HeartbeatIntervalSeconds, &lease.PolicyVersion,
@@ -228,6 +272,7 @@ func scanPostgresLease(scanner leaseRowScanner) (CapabilityLease, error) {
 		return CapabilityLease{}, err
 	}
 	lease.PrincipalType = authn.PrincipalType(principalType)
+	lease.IdempotencyKey = idempotencyKey.String
 	lease.State = LeaseState(state)
 	lease.IssuedAt = lease.IssuedAt.UTC()
 	lease.ExpiresAt = lease.ExpiresAt.UTC()

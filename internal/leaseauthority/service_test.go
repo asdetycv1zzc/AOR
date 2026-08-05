@@ -10,6 +10,7 @@ import (
 	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/authz"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
+	"github.com/google/uuid"
 )
 
 const leasePolicyVersion = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -63,6 +64,10 @@ func TestServiceIssuesExactlyBoundLeaseFromAuthoritativeScope(t *testing.T) {
 	lease, err := service.Issue(ctx, principal, request)
 	if err != nil {
 		t.Fatal(err)
+	}
+	parsedID, parseErr := uuid.Parse(lease.ID)
+	if parseErr != nil || parsedID.Version() != uuid.Version(7) {
+		t.Fatalf("lease ID = %q, parse error = %v", lease.ID, parseErr)
 	}
 	if lease.State != authz.LeaseActive || lease.PrincipalID != principal.ID || lease.AgentInstanceID != principal.ID || lease.ProjectVersion != 7 || lease.TaskVersion != 9 || lease.SpecDigest != testScope().Task.SpecDigest || lease.Action != request.Action || lease.ParameterDigest != request.ParameterDigest || lease.BudgetAccountID != request.BudgetAccountID || lease.PolicyVersion != leasePolicyVersion || lease.FencingToken != 1 || !reflect.DeepEqual(lease.Capabilities, []string{request.Action}) {
 		t.Fatalf("lease = %#v", lease)

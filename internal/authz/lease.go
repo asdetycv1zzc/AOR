@@ -13,6 +13,7 @@ import (
 
 	"github.com/akimisaka/aor/internal/authn"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
+	"github.com/google/uuid"
 )
 
 type LeaseState string
@@ -27,6 +28,7 @@ const (
 // It is safe to serialize as metadata; the signing key is never part of it.
 type CapabilityLease struct {
 	ID                       string              `json:"id"`
+	IdempotencyKey           string              `json:"idempotencyKey,omitempty"`
 	AgentInstanceID          string              `json:"agentInstanceId"`
 	PrincipalID              string              `json:"principalId"`
 	PrincipalType            authn.PrincipalType `json:"principalType"`
@@ -91,7 +93,7 @@ func (lease CapabilityLease) ValidateShape() *aorerrors.Error {
 	if lease.State != LeaseActive && lease.State != LeaseRevoked && lease.State != LeaseExpired {
 		return aorerrors.New(aorerrors.CodePolicyDenied, "", map[string]any{"scope": "lease"})
 	}
-	if strings.ContainsAny(lease.ID+lease.AgentInstanceID+lease.PrincipalID+lease.ProjectID+lease.TaskID+lease.Role+lease.Action+lease.ParameterDigest+lease.PolicyVersion+lease.BudgetAccountID+lease.Nonce, "\r\n\x00") {
+	if (lease.IdempotencyKey != "" && (len(lease.IdempotencyKey) > 256 || strings.TrimSpace(lease.IdempotencyKey) != lease.IdempotencyKey)) || strings.ContainsAny(lease.ID+lease.IdempotencyKey+lease.AgentInstanceID+lease.PrincipalID+lease.ProjectID+lease.TaskID+lease.Role+lease.Action+lease.ParameterDigest+lease.PolicyVersion+lease.BudgetAccountID+lease.Nonce, "\r\n\x00") {
 		return aorerrors.New(aorerrors.CodePolicyDenied, "", map[string]any{"scope": "lease"})
 	}
 	return nil
@@ -145,6 +147,7 @@ func (s *HMACSigner) Verify(payload []byte, signature string) error {
 type LeaseStore interface {
 	Put(context.Context, CapabilityLease) error
 	Get(context.Context, string) (CapabilityLease, bool, error)
+	GetByIdempotency(context.Context, string, string, string) (CapabilityLease, bool, error)
 	CompareAndSwap(context.Context, string, int64, CapabilityLease) (bool, error)
 }
 
@@ -169,6 +172,13 @@ func (s *MemoryLeaseStore) Put(ctx context.Context, lease CapabilityLease) error
 	if _, exists := s.leases[lease.ID]; exists {
 		return aorerrors.New(aorerrors.CodeConflict, "", nil)
 	}
+	if lease.IdempotencyKey != "" {
+		for _, existing := range s.leases {
+			if existing.TenantID == lease.TenantID && existing.PrincipalID == lease.PrincipalID && existing.IdempotencyKey == lease.IdempotencyKey {
+				return aorerrors.New(aorerrors.CodeConflict, "", nil)
+			}
+		}
+	}
 	s.leases[lease.ID] = cloneLease(lease)
 	return nil
 }
@@ -187,6 +197,26 @@ func (s *MemoryLeaseStore) Get(ctx context.Context, id string) (CapabilityLease,
 		return CapabilityLease{}, false, nil
 	}
 	return cloneLease(lease), true, nil
+}
+
+func (s *MemoryLeaseStore) GetByIdempotency(ctx context.Context, tenantID, principalID, key string) (CapabilityLease, bool, error) {
+	if s == nil || tenantID == "" || principalID == "" || key == "" {
+		return CapabilityLease{}, false, aorerrors.New(aorerrors.CodeInvalidArgument, "", nil)
+	}
+	if err := ctx.Err(); err != nil {
+		return CapabilityLease{}, false, err
+	}
+	if scoped := leaseTenantID(ctx); scoped != "" && scoped != tenantID {
+		return CapabilityLease{}, false, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, lease := range s.leases {
+		if lease.TenantID == tenantID && lease.PrincipalID == principalID && lease.IdempotencyKey == key {
+			return cloneLease(lease), true, nil
+		}
+	}
+	return CapabilityLease{}, false, nil
 }
 
 func (s *MemoryLeaseStore) CompareAndSwap(ctx context.Context, id string, expected int64, replacement CapabilityLease) (bool, error) {
@@ -208,6 +238,7 @@ func (s *MemoryLeaseStore) CompareAndSwap(ctx context.Context, id string, expect
 
 type LeaseRequest struct {
 	ID                string
+	IdempotencyKey    string
 	AgentInstanceID   string
 	Principal         authn.Principal
 	TenantID          string
@@ -421,11 +452,11 @@ func (m *LeaseManager) Issue(ctx context.Context, request LeaseRequest) (Capabil
 	}
 	id := request.ID
 	if id == "" {
-		var idErr error
-		id, idErr = randomID("lease_")
+		value, idErr := uuid.NewV7()
 		if idErr != nil {
 			return CapabilityLease{}, idErr
 		}
+		id = value.String()
 	}
 	nonce := request.RequestDigest
 	if nonce == "" {
@@ -440,7 +471,7 @@ func (m *LeaseManager) Issue(ctx context.Context, request LeaseRequest) (Capabil
 	if fencingToken == 0 {
 		fencingToken = 1
 	}
-	lease := CapabilityLease{ID: id, AgentInstanceID: request.AgentInstanceID, PrincipalID: request.Principal.ID, PrincipalType: request.Principal.Type, TenantID: request.TenantID, ProjectID: request.ProjectID, ProjectVersion: request.ProjectVersion, TaskID: request.TaskID, TaskVersion: request.TaskVersion, SpecDigest: request.SpecDigest, Role: request.Role, Action: request.Action, Resource: cloneResource(request.Resource), ParameterDigest: request.ParameterDigest, Capabilities: append([]string(nil), request.Capabilities...), IssuedAt: now, ExpiresAt: now.Add(ttl), LastHeartbeatAt: now, HeartbeatIntervalSeconds: int64(heartbeat / time.Second), PolicyVersion: request.PolicyVersion, BudgetAccountID: request.BudgetAccountID, Nonce: nonce, FencingToken: fencingToken, State: LeaseActive}
+	lease := CapabilityLease{ID: id, IdempotencyKey: request.IdempotencyKey, AgentInstanceID: request.AgentInstanceID, PrincipalID: request.Principal.ID, PrincipalType: request.Principal.Type, TenantID: request.TenantID, ProjectID: request.ProjectID, ProjectVersion: request.ProjectVersion, TaskID: request.TaskID, TaskVersion: request.TaskVersion, SpecDigest: request.SpecDigest, Role: request.Role, Action: request.Action, Resource: cloneResource(request.Resource), ParameterDigest: request.ParameterDigest, Capabilities: append([]string(nil), request.Capabilities...), IssuedAt: now, ExpiresAt: now.Add(ttl), LastHeartbeatAt: now, HeartbeatIntervalSeconds: int64(heartbeat / time.Second), PolicyVersion: request.PolicyVersion, BudgetAccountID: request.BudgetAccountID, Nonce: nonce, FencingToken: fencingToken, State: LeaseActive}
 	if err := lease.ValidateShape(); err != nil {
 		return CapabilityLease{}, err
 	}
@@ -738,6 +769,22 @@ func (m *LeaseManager) GetForTenant(ctx context.Context, tenantID, id string) (C
 	return m.Get(withLeaseTenant(ctx, tenantID), id)
 }
 
+// GetByIdempotency rehydrates a lease through its durable logical request
+// binding. Authorization still verifies the complete signed lease.
+func (m *LeaseManager) GetByIdempotency(ctx context.Context, tenantID, principalID, key string) (CapabilityLease, bool, error) {
+	if m == nil || m.store == nil || tenantID == "" || principalID == "" || key == "" {
+		return CapabilityLease{}, false, aorerrors.New(aorerrors.CodeInvalidArgument, "", nil)
+	}
+	lease, found, err := m.store.GetByIdempotency(withLeaseTenant(ctx, tenantID), tenantID, principalID, key)
+	if err != nil || !found {
+		return CapabilityLease{}, found, err
+	}
+	if err := m.verify(lease); err != nil {
+		return CapabilityLease{}, false, err
+	}
+	return lease, true, nil
+}
+
 func (m *LeaseManager) verify(lease CapabilityLease) error {
 	if err := lease.ValidateShape(); err != nil {
 		return err
@@ -769,6 +816,7 @@ func (m *LeaseManager) expire(ctx context.Context, current CapabilityLease) {
 
 type leaseSigningView struct {
 	ID                       string              `json:"id"`
+	IdempotencyKey           string              `json:"idempotencyKey,omitempty"`
 	AgentInstanceID          string              `json:"agentInstanceId"`
 	PrincipalID              string              `json:"principalId"`
 	PrincipalType            authn.PrincipalType `json:"principalType"`
@@ -796,7 +844,7 @@ type leaseSigningView struct {
 }
 
 func leaseSigningPayload(lease CapabilityLease) []byte {
-	view := leaseSigningView{ID: lease.ID, AgentInstanceID: lease.AgentInstanceID, PrincipalID: lease.PrincipalID, PrincipalType: lease.PrincipalType, TenantID: lease.TenantID, ProjectID: lease.ProjectID, ProjectVersion: lease.ProjectVersion, TaskID: lease.TaskID, TaskVersion: lease.TaskVersion, SpecDigest: lease.SpecDigest, Role: lease.Role, Action: lease.Action, Resource: cloneResource(lease.Resource), ParameterDigest: lease.ParameterDigest, Capabilities: append([]string(nil), lease.Capabilities...), IssuedAt: lease.IssuedAt.UTC(), ExpiresAt: lease.ExpiresAt.UTC(), LastHeartbeatAt: lease.LastHeartbeatAt.UTC(), HeartbeatIntervalSeconds: lease.HeartbeatIntervalSeconds, PolicyVersion: lease.PolicyVersion, BudgetAccountID: lease.BudgetAccountID, Nonce: lease.Nonce, FencingToken: lease.FencingToken, State: lease.State, RevokedAt: lease.RevokedAt}
+	view := leaseSigningView{ID: lease.ID, IdempotencyKey: lease.IdempotencyKey, AgentInstanceID: lease.AgentInstanceID, PrincipalID: lease.PrincipalID, PrincipalType: lease.PrincipalType, TenantID: lease.TenantID, ProjectID: lease.ProjectID, ProjectVersion: lease.ProjectVersion, TaskID: lease.TaskID, TaskVersion: lease.TaskVersion, SpecDigest: lease.SpecDigest, Role: lease.Role, Action: lease.Action, Resource: cloneResource(lease.Resource), ParameterDigest: lease.ParameterDigest, Capabilities: append([]string(nil), lease.Capabilities...), IssuedAt: lease.IssuedAt.UTC(), ExpiresAt: lease.ExpiresAt.UTC(), LastHeartbeatAt: lease.LastHeartbeatAt.UTC(), HeartbeatIntervalSeconds: lease.HeartbeatIntervalSeconds, PolicyVersion: lease.PolicyVersion, BudgetAccountID: lease.BudgetAccountID, Nonce: lease.Nonce, FencingToken: lease.FencingToken, State: lease.State, RevokedAt: lease.RevokedAt}
 	payload, _ := json.Marshal(view)
 	return payload
 }
