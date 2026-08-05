@@ -29,7 +29,8 @@ CREATE FUNCTION aor_integration_candidates(
 ) RETURNS TABLE (
   tenant_id uuid,
   project_id uuid,
-  project_version bigint
+  project_version bigint,
+  integration_id uuid
 )
 LANGUAGE sql
 STABLE
@@ -37,35 +38,53 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public
 SET row_security = off
 AS $$
-  SELECT project.tenant_id, project.id, project.state_version
+  SELECT project.tenant_id, project.id,
+         COALESCE(durable.project_version, project.state_version) AS project_version,
+         COALESCE(remediation.id, durable.integration_id) AS integration_id
   FROM public.projects AS project
+  LEFT JOIN LATERAL (
+    SELECT task.id
+    FROM public.integration_tasks AS task
+    WHERE task.tenant_id = project.tenant_id
+      AND task.project_id = project.id
+      AND task.state IN ('REWORK_REQUIRED', 'EXECUTING', 'MERGE_RESERVED')
+    ORDER BY task.updated_at DESC, task.id DESC
+    LIMIT 1
+  ) AS remediation ON true
+  LEFT JOIN LATERAL (
+    SELECT request.integration_id, request.project_version
+    FROM public.integration_requests AS request
+    LEFT JOIN public.integration_tasks AS task
+      ON task.tenant_id = request.tenant_id
+     AND task.project_id = request.project_id
+     AND task.id = request.integration_id
+    WHERE request.tenant_id = project.tenant_id
+      AND request.project_id = project.id
+      AND (remediation.id IS NULL OR request.integration_id = remediation.id)
+      AND (task.id IS NULL OR task.state <> 'DONE')
+    ORDER BY request.created_at DESC, request.integration_id DESC
+    LIMIT 1
+  ) AS durable ON true
   WHERE requested_limit BETWEEN 1 AND 64
-    AND project.state = 'INTEGRATING'
-    AND EXISTS (
-      SELECT 1
-      FROM public.module_tasks AS task
-      WHERE task.tenant_id = project.tenant_id
-        AND task.project_id = project.id
-        AND task.state = 'PASSED'
-    )
-    AND NOT EXISTS (
-      SELECT 1
-      FROM public.module_tasks AS task
-      WHERE task.tenant_id = project.tenant_id
-        AND task.project_id = project.id
-        AND task.state NOT IN ('PASSED', 'INTEGRATED', 'CANCELED', 'SUPERSEDED')
-    )
-    AND NOT EXISTS (
-      SELECT 1
-      FROM public.integration_requests AS request
-      JOIN public.integration_tasks AS task
-        ON task.tenant_id = request.tenant_id
-       AND task.project_id = request.project_id
-       AND task.id = request.integration_id
-      WHERE request.tenant_id = project.tenant_id
-        AND request.project_id = project.id
-        AND request.project_version = project.state_version
-        AND task.state = 'DONE'
+    AND (
+      (project.state = 'EXECUTING'
+       AND EXISTS (
+        SELECT 1
+        FROM public.module_tasks AS task
+        WHERE task.tenant_id = project.tenant_id
+          AND task.project_id = project.id
+          AND task.state = 'PASSED'
+       )
+       AND NOT EXISTS (
+         SELECT 1
+         FROM public.module_tasks AS task
+         WHERE task.tenant_id = project.tenant_id
+           AND task.project_id = project.id
+           AND task.state NOT IN ('PASSED', 'CANCELED', 'SUPERSEDED')
+       ))
+      OR
+      (project.state = 'INTEGRATING'
+       AND (remediation.id IS NOT NULL OR durable.integration_id IS NOT NULL))
     )
   ORDER BY project.updated_at, project.tenant_id, project.id
   LIMIT requested_limit;

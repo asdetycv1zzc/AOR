@@ -37,6 +37,7 @@ type IntegrationCandidate struct {
 	TenantID       string
 	ProjectID      string
 	ProjectVersion int64
+	IntegrationID  string
 }
 
 type IntegrationCandidateSource interface {
@@ -63,7 +64,8 @@ func (store *PostgresIntegrationRequests) IntegrationCandidates(ctx context.Cont
 		return nil, ErrInvalidIntegrationScheduler
 	}
 	rows, err := store.database.QueryContext(ctx, `
-SELECT tenant_id::text, project_id::text, project_version
+SELECT tenant_id::text, project_id::text, project_version,
+       COALESCE(integration_id::text, '')
 FROM aor_integration_candidates($1)`, limit)
 	if err != nil {
 		return nil, err
@@ -72,7 +74,7 @@ FROM aor_integration_candidates($1)`, limit)
 	candidates := make([]IntegrationCandidate, 0, limit)
 	for rows.Next() {
 		var candidate IntegrationCandidate
-		if err := rows.Scan(&candidate.TenantID, &candidate.ProjectID, &candidate.ProjectVersion); err != nil {
+		if err := rows.Scan(&candidate.TenantID, &candidate.ProjectID, &candidate.ProjectVersion, &candidate.IntegrationID); err != nil {
 			return nil, err
 		}
 		if !validIntegrationCandidate(candidate) {
@@ -90,19 +92,27 @@ func (store *PostgresIntegrationRequests) EnsureIntegrationRequest(ctx context.C
 	if store == nil || store.database == nil || ctx == nil || !validIntegrationCandidate(candidate) || !identifierPattern.MatchString(workflowID) {
 		return "", ErrInvalidIntegrationScheduler
 	}
-	integrationID, err := uuid.NewV7()
-	if err != nil {
-		return "", err
+	integrationID := candidate.IntegrationID
+	if integrationID == "" {
+		generated, err := uuid.NewV7()
+		if err != nil {
+			return "", err
+		}
+		integrationID = generated.String()
 	}
 	var durableIntegrationID string
-	err = store.database.QueryRowContext(ctx, `
+	err := store.database.QueryRowContext(ctx, `
 SELECT aor_ensure_integration_request($1::uuid, $2::uuid, $3, $4::uuid, $5)`,
 		candidate.TenantID, candidate.ProjectID, candidate.ProjectVersion,
-		integrationID.String(), workflowID).Scan(&durableIntegrationID)
+		integrationID, workflowID).Scan(&durableIntegrationID)
 	if err != nil {
 		return "", err
 	}
-	if !validUUIDv7(durableIntegrationID) {
+	validDurableID := validUUIDv7(durableIntegrationID)
+	if candidate.IntegrationID != "" {
+		validDurableID = durableIntegrationID == candidate.IntegrationID && validUUID(durableIntegrationID)
+	}
+	if !validDurableID {
 		return "", ErrInvalidIntegrationScheduler
 	}
 	return durableIntegrationID, nil
@@ -247,7 +257,8 @@ func (scheduler *IntegrationScheduler) Ready() error {
 }
 
 func validIntegrationCandidate(candidate IntegrationCandidate) bool {
-	return validUUID(candidate.TenantID) && validUUID(candidate.ProjectID) && candidate.ProjectVersion > 0
+	return validUUID(candidate.TenantID) && validUUID(candidate.ProjectID) && candidate.ProjectVersion > 0 &&
+		(candidate.IntegrationID == "" || validUUID(candidate.IntegrationID))
 }
 
 func integrationWorkflowID(candidate IntegrationCandidate) string {

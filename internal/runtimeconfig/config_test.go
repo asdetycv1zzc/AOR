@@ -328,6 +328,9 @@ func TestWorkerConfigurationAllowsWindowsNativeBackendWithoutLinuxEngine(t *test
 		"AOR_MODEL_GATEWAY_OAUTH_CLIENT_SECRET_REF": "secret://aor_server_oauth_client_secret",
 		"AOR_MODEL_GATEWAY_OAUTH_AUDIENCE":          "aor-control-plane",
 		"AOR_EXECUTOR_ROUTE_JSON":                   validExecutorRouteJSON(),
+		"AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON":      `["/var/lib/aor/sandbox-data"]`,
+		"AOR_INTEGRATION_WORK_ROOT":                 "/var/lib/aor/sandbox-data/integration",
+		"AOR_INTEGRATION_CHECKS_JSON":               validIntegrationChecksJSON(),
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -445,9 +448,21 @@ func validWorkerEnvironment() map[string]string {
 		"AOR_MODEL_GATEWAY_OAUTH_CLIENT_SECRET_REF": "secret://aor_server_oauth_client_secret",
 		"AOR_MODEL_GATEWAY_OAUTH_AUDIENCE":          "aor-control-plane",
 		"AOR_EXECUTOR_ROUTE_JSON":                   validExecutorRouteJSON(),
+		"AOR_INTEGRATION_WORK_ROOT":                 "/var/lib/aor/sandbox-data/integration",
+		"AOR_INTEGRATION_CHECKS_JSON":               validIntegrationChecksJSON(),
 	}
 }
 
 func validExecutorRouteJSON() string {
 	return `{"provider":"primary","model":"model-a","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3}`
+}
+
+func validIntegrationChecksJSON() string {
+	return `[
+		{"kind":"COMPILE","argv":["/usr/local/go/bin/go","build","./..."],"timeoutSeconds":300},
+		{"kind":"CONTRACT","argv":["/usr/local/go/bin/go","run","./cmd/aor-conformance","contracts"],"timeoutSeconds":300},
+		{"kind":"INTEGRATION","argv":["/usr/local/go/bin/go","test","./internal/integration"],"timeoutSeconds":300},
+		{"kind":"E2E","argv":["/usr/local/go/bin/go","test","./tests/integration"],"timeoutSeconds":300},
+		{"kind":"MIGRATION","argv":["/usr/local/go/bin/go","run","./cmd/aor-conformance","schemas"],"timeoutSeconds":300}
+	]`
 }

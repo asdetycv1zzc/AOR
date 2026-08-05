@@ -43,6 +43,7 @@ type Config struct {
 	ModuleAuditRoute   GoalPlanRouteConfig
 	GlobalAuditRoute   GoalPlanRouteConfig
 	Execution          ExecutionConfig
+	Integration        IntegrationConfig
 	Services           ServiceEndpoints
 	Sandbox            SandboxConfig
 }
@@ -122,6 +123,18 @@ type ExecutionConfig struct {
 	MaxToolRounds int
 }
 
+type IntegrationConfig struct {
+	WorkRoot string
+	Checks   []IntegrationCheckConfig
+}
+
+type IntegrationCheckConfig struct {
+	Kind           string   `json:"kind"`
+	Argv           []string `json:"argv"`
+	Environment    []string `json:"environment,omitempty"`
+	TimeoutSeconds int      `json:"timeoutSeconds"`
+}
+
 type GoalPlanRouteConfig struct {
 	Provider            string  `json:"provider"`
 	Model               string  `json:"model"`
@@ -189,6 +202,9 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 		ListenAddress:      value(lookup, "AOR_LISTEN_ADDR", ":8080"),
 		KnowledgeRoot:      strictValue(lookup, "AOR_KNOWLEDGE_ROOT", "/var/lib/aor/knowledge"),
 		RepositoryRoot:     strictValue(lookup, "AOR_REPOSITORY_ROOT", "/var/lib/aor/repositories"),
+		Integration: IntegrationConfig{
+			WorkRoot: strictValue(lookup, "AOR_INTEGRATION_WORK_ROOT", ""),
+		},
 		Database: DatabaseConfig{
 			Host:        value(lookup, "AOR_DATABASE_HOST", "postgres"),
 			Name:        value(lookup, "AOR_DATABASE_NAME", "aor"),
@@ -354,6 +370,16 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 			return Config{}, configurationError("AOR_MODULE_AUDITOR_ROUTE_JSON")
 		}
 	}
+	if raw, found := lookup("AOR_INTEGRATION_CHECKS_JSON"); found && strings.TrimSpace(raw) != "" {
+		decoder := json.NewDecoder(strings.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&config.Integration.Checks); err != nil {
+			return Config{}, configurationError("AOR_INTEGRATION_CHECKS_JSON")
+		}
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			return Config{}, configurationError("AOR_INTEGRATION_CHECKS_JSON")
+		}
+	}
 	applyProviderCapabilityDefaults(config.ModelGateway.Providers)
 	if err := config.Validate(); err != nil {
 		return Config{}, err
@@ -435,6 +461,9 @@ func (config Config) Validate() error {
 			return ErrInvalidConfiguration
 		}
 		if globalAuditRouteConfigured(config.ModuleAuditRoute) && !validGoalPlanRoute(config.ModuleAuditRoute) {
+			return ErrInvalidConfiguration
+		}
+		if !validIntegrationConfig(config.Integration, config.Sandbox.AllowedMountRoots) {
 			return ErrInvalidConfiguration
 		}
 		if config.Sandbox.LinuxLevel != "CONTAINER" || config.Sandbox.WindowsLevel != "NONE" || config.Sandbox.AllowWindowsUntrusted || config.Sandbox.LinuxDefaultNetworkMode != "DENY_ALL" || config.Sandbox.WindowsNetworkIsolationLevel != "NONE" {
@@ -786,6 +815,87 @@ func validSandboxMountRoots(values []string) bool {
 		seen[value] = struct{}{}
 	}
 	return true
+}
+
+func validIntegrationConfig(config IntegrationConfig, allowedMountRoots []string) bool {
+	requiredKinds := map[string]bool{
+		"COMPILE": false, "CONTRACT": false, "INTEGRATION": false, "E2E": false, "MIGRATION": false,
+	}
+	if !validKnowledgeRoot(config.WorkRoot) || len(config.Checks) != len(requiredKinds) || !pathWithinAllowedRoot(config.WorkRoot, allowedMountRoots) {
+		return false
+	}
+	totalTimeout := 0
+	for _, check := range config.Checks {
+		seen, found := requiredKinds[check.Kind]
+		if !found || seen || len(check.Argv) == 0 || len(check.Argv) > 64 || check.TimeoutSeconds < 1 || check.TimeoutSeconds > 300 || !validIntegrationExecutable(check.Argv[0]) || !validIntegrationEnvironment(check.Environment) {
+			return false
+		}
+		for _, argument := range check.Argv[1:] {
+			if argument == "" || len(argument) > 4096 || strings.ContainsAny(argument, "\r\n\x00") {
+				return false
+			}
+		}
+		requiredKinds[check.Kind] = true
+		totalTimeout += check.TimeoutSeconds
+	}
+	if totalTimeout > 25*60 {
+		return false
+	}
+	for _, found := range requiredKinds {
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+func pathWithinAllowedRoot(candidate string, allowedMountRoots []string) bool {
+	for _, root := range allowedMountRoots {
+		if !validKnowledgeRoot(root) {
+			continue
+		}
+		relative, err := filepath.Rel(root, candidate)
+		if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+func validIntegrationExecutable(value string) bool {
+	return len(value) <= 4096 && filepath.IsAbs(value) && filepath.Clean(value) == value && value != string(filepath.Separator) && !strings.ContainsAny(value, "\r\n\x00")
+}
+
+func validIntegrationEnvironment(values []string) bool {
+	if len(values) > 32 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		separator := strings.IndexByte(value, '=')
+		if separator < 1 || len(value) > 4096 || strings.ContainsAny(value, "\r\n\x00") {
+			return false
+		}
+		key := value[:separator]
+		if !validEnvironmentName(key) {
+			return false
+		}
+		if _, duplicate := seen[key]; duplicate {
+			return false
+		}
+		seen[key] = struct{}{}
+	}
+	return true
+}
+
+func validEnvironmentName(value string) bool {
+	for index, character := range value {
+		if character == '_' || character >= 'A' && character <= 'Z' || character >= 'a' && character <= 'z' || index > 0 && character >= '0' && character <= '9' {
+			continue
+		}
+		return false
+	}
+	return value != ""
 }
 
 func validSandboxEngineEndpoint(value string) bool {

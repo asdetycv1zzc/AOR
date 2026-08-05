@@ -224,6 +224,10 @@ services:
         if [ "$$module_audit_scheduler_installed" != "t" ]; then
           psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000034_module_audit_scheduler.up.sql
         fi
+        integration_scheduler_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT to_regclass('public.integration_requests') IS NOT NULL AND to_regprocedure('public.aor_integration_candidates(integer)') IS NOT NULL AND to_regprocedure('public.aor_ensure_integration_request(uuid,uuid,bigint,uuid,text)') IS NOT NULL")"
+        if [ "$$integration_scheduler_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000035_integration_scheduler.up.sql
+        fi
         unset AOR_APP_PASSWORD
     secrets: [postgres_password, postgres_app_password]
     volumes:
@@ -261,6 +265,7 @@ services:
       - ../../migrations/postgres/000032_lease_fencing_equality.up.sql:/migrations/000032_lease_fencing_equality.up.sql:ro
       - ../../migrations/postgres/000033_global_audit_scheduler.up.sql:/migrations/000033_global_audit_scheduler.up.sql:ro
       - ../../migrations/postgres/000034_module_audit_scheduler.up.sql:/migrations/000034_module_audit_scheduler.up.sql:ro
+      - ../../migrations/postgres/000035_integration_scheduler.up.sql:/migrations/000035_integration_scheduler.up.sql:ro
       - ./postgres-app-password.sql:/migrations/postgres-app-password.sql:ro
     read_only: true
     tmpfs: [/tmp]
@@ -678,6 +683,9 @@ services:
       AOR_SANDBOX_MANDATORY_POLICY: apparmor=aor-sandbox
       AOR_SANDBOX_HOLD_COMMAND_JSON: '["/bin/sh","-c","while :; do sleep 3600; done"]'
       AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON: '["${AOR_SANDBOX_SHARED_ROOT:?Set AOR_SANDBOX_SHARED_ROOT to an absolute host path shared with the rootless engine}"]'
+      AOR_INTEGRATION_WORK_ROOT: "${AOR_SANDBOX_SHARED_ROOT:?Set AOR_SANDBOX_SHARED_ROOT to an absolute host path shared with the rootless engine}"
+      AOR_INTEGRATION_CHECKS_JSON: >-
+        [{"kind":"COMPILE","argv":["/usr/local/go/bin/go","build","-p=1","./..."],"environment":["HOME=/tmp","GOCACHE=/tmp/aor-integration-go-build","GOMODCACHE=/go/pkg/mod","GOMAXPROCS=1","GOMEMLIMIT=512MiB","GOTOOLCHAIN=local","GOPROXY=off","GOSUMDB=off","CGO_ENABLED=0"],"timeoutSeconds":300},{"kind":"CONTRACT","argv":["/usr/local/go/bin/go","run","-p=1","./cmd/aor-conformance","contracts"],"environment":["HOME=/tmp","GOCACHE=/tmp/aor-integration-go-build","GOMODCACHE=/go/pkg/mod","GOMAXPROCS=1","GOMEMLIMIT=512MiB","GOTOOLCHAIN=local","GOPROXY=off","GOSUMDB=off","CGO_ENABLED=0"],"timeoutSeconds":300},{"kind":"INTEGRATION","argv":["/usr/local/go/bin/go","test","-p=1","./internal/integration"],"environment":["HOME=/tmp","GOCACHE=/tmp/aor-integration-go-build","GOMODCACHE=/go/pkg/mod","GOMAXPROCS=1","GOMEMLIMIT=512MiB","GOTOOLCHAIN=local","GOPROXY=off","GOSUMDB=off","CGO_ENABLED=0"],"timeoutSeconds":300},{"kind":"E2E","argv":["/usr/local/go/bin/go","test","-p=1","./tests/integration"],"environment":["HOME=/tmp","GOCACHE=/tmp/aor-integration-go-build","GOMODCACHE=/go/pkg/mod","GOMAXPROCS=1","GOMEMLIMIT=512MiB","GOTOOLCHAIN=local","GOPROXY=off","GOSUMDB=off","CGO_ENABLED=0"],"timeoutSeconds":300},{"kind":"MIGRATION","argv":["/usr/local/go/bin/go","run","-p=1","./cmd/aor-conformance","schemas"],"environment":["HOME=/tmp","GOCACHE=/tmp/aor-integration-go-build","GOMODCACHE=/go/pkg/mod","GOMAXPROCS=1","GOMEMLIMIT=512MiB","GOTOOLCHAIN=local","GOPROXY=off","GOSUMDB=off","CGO_ENABLED=0"],"timeoutSeconds":300}]
     secrets: [postgres_app_password, lease_signing_key, minio_root_user, minio_root_password, aor_server_oauth_client_secret]
     volumes:
       - "${AOR_SANDBOX_ENGINE_SOCKET:?Set AOR_SANDBOX_ENGINE_SOCKET to the rootless engine socket}:/run/aor-sandbox/engine.sock"

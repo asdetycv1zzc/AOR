@@ -9,6 +9,8 @@ WORKDIR /src
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local
 COPY go.* ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download all
+RUN --mount=type=cache,target=/go/pkg/mod \
+    mkdir -p /out/go-mod && cp -a /go/pkg/mod/. /out/go-mod/
 COPY cmd ./cmd
 COPY internal ./internal
 COPY model-adapters ./model-adapters
@@ -31,8 +33,13 @@ EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/aor"]
 CMD ["serve"]
 
-FROM ${DOCKER_CLI_IMAGE} AS worker-runtime
+FROM ${DOCKER_CLI_IMAGE} AS docker-cli
+
+FROM ${GO_IMAGE} AS worker-runtime
 COPY --from=build /out/aor /usr/local/bin/aor
+COPY --from=build /out/go-mod /go/pkg/mod
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
+RUN apk add --no-cache git=2.52.0-r0
 ENV HOME=/tmp
 USER 65532:65532
 EXPOSE 8080
