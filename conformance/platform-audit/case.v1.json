@@ -1,0 +1,37 @@
+{
+  "caseVersion": 1,
+  "tenantId": "tenant-platform-ci",
+  "moduleSpecRef": {
+    "version": 1,
+    "sha256": "sha256:5e9dc061bd5b5bc710d41d7db2789ce73290f94a717e34ca6e930317bfc8b28b"
+  },
+  "manifest": {
+    "submissionVersion": 1,
+    "projectId": "project-platform-ci",
+    "moduleTaskId": "task-platform-ci",
+    "attemptSeriesId": "series-platform-ci",
+    "attempt": 1,
+    "moduleSpecRef": {
+      "version": 1,
+      "sha256": "sha256:5e9dc061bd5b5bc710d41d7db2789ce73290f94a717e34ca6e930317bfc8b28b"
+    },
+    "baseCommit": "0000000000000000000000000000000000000001",
+    "headCommit": "0000000000000000000000000000000000000002",
+    "changedFiles": ["internal/example/example.go"],
+    "deletedFiles": [],
+    "createdFiles": [],
+    "claimedCriteria": ["functional-equivalence"],
+    "localTestEvidenceRefs": [],
+    "agentIdentity": {
+      "agentInstanceId": "agent-platform-ci",
+      "role": "EXECUTOR",
+      "leaseId": "lease-platform-ci"
+    },
+    "createdAt": "2030-01-01T00:00:00Z",
+    "sha256": "sha256:2ffdc28e491d7ea5f810f6ff9a321368f6ba1e6805797f2cd1b0c4cac2f0b208"
+  },
+  "allowedPaths": ["internal/example/..."],
+  "forbiddenPaths": ["internal/example/secrets/..."],
+  "requiredCriteria": ["functional-equivalence"],
+  "policyDigest": "sha256:855b8c2d4c1da7d5c368410587f093964c33712b2f21facb4cf260c44e8955a3"
+}

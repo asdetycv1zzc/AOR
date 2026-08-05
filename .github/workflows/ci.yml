@@ -119,6 +119,17 @@ jobs:
         env:
           GOCACHE: ${{ github.workspace }}/.cache/go-build-linux-arm64-native
         run: go test ./...
+      - name: Generate Linux arm64 functional audit report
+        env:
+          GOCACHE: ${{ github.workspace }}/.cache/go-build-linux-arm64-native
+        run: go run ./cmd/aor-platform-audit generate --input conformance/platform-audit/case.v1.json --output platform-audit-linux-arm64.json
+      - name: Upload Linux arm64 functional audit report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: platform-audit-linux-arm64
+          path: platform-audit-linux-arm64.json
+          if-no-files-found: error
+          retention-days: 14
 
   native-windows-amd64:
     runs-on: windows-2025
@@ -137,6 +148,51 @@ jobs:
         env:
           GOCACHE: ${{ github.workspace }}/.cache/go-build-windows-amd64-native
         run: go test ./...
+      - name: Generate Windows amd64 functional audit report
+        env:
+          GOCACHE: ${{ github.workspace }}/.cache/go-build-windows-amd64-native
+        run: go run ./cmd/aor-platform-audit generate --input conformance/platform-audit/case.v1.json --output platform-audit-windows-amd64.json
+      - name: Upload Windows amd64 functional audit report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: platform-audit-windows-amd64
+          path: platform-audit-windows-amd64.json
+          if-no-files-found: error
+          retention-days: 14
+
+  platform-audit-equivalence:
+    needs:
+      - native-linux-arm64
+      - native-windows-amd64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          persist-credentials: false
+      - name: Install pinned Go toolchain
+        uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Download Linux arm64 functional audit report
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: platform-audit-linux-arm64
+          path: .platform-audit/linux
+      - name: Download Windows amd64 functional audit report
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: platform-audit-windows-amd64
+          path: .platform-audit/windows
+      - name: Compare functional audit semantics and security profiles
+        env:
+          GOCACHE: ${{ github.workspace }}/.cache/go-build-platform-audit-equivalence
+        run: >-
+          go run ./cmd/aor-platform-audit compare
+          --linux .platform-audit/linux/platform-audit-linux-arm64.json
+          --windows .platform-audit/windows/platform-audit-windows-amd64.json
 
   supply-chain:
     runs-on: ubuntu-24.04

@@ -1279,14 +1279,16 @@ requirements:
   - id: AOR-ACC-090
     title: Supported platforms produce equivalent functional audit results with explicit security differences
     implementation:
-      - internal/audit/pipeline.go
-      - internal/sandbox/provider.go
+      - internal/platformaudit/report.go
+      - cmd/aor-platform-audit/main.go
+      - conformance/platform-audit/case.v1.json
+      - .github/workflows/ci.yml
     tests:
-      - internal/audit/pipeline_test.go
-      - internal/sandbox/provider_test.go
-    evidenceType: cross-platform-equivalence-test-required
+      - internal/platformaudit/report_test.go
+      - .github/workflows/ci.yml
+    evidenceType: native-linux-arm64+native-windows-amd64+machine-readable-semantic-comparison
     owner: platform
-    status: planned
+    status: implemented
   - id: AOR-ACC-091
     title: Linux container failure is fatal and Windows rejects isolation-required work
     implementation:
