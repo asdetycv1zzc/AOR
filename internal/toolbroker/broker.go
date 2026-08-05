@@ -155,21 +155,13 @@ func (b *Broker) List() []ToolDescriptor {
 }
 
 func (b *Broker) Invoke(ctx context.Context, request ToolRequest) (result ToolResult, err error) {
-	if ctx == nil || !safeBrokerOpaque(request.RequestID, 512) || !safeBrokerID(request.TenantID) || !safeBrokerID(request.ProjectID) || !safeBrokerID(request.TaskID) || !safeBrokerOpaque(request.Principal.ID, 512) || !safeBrokerOpaque(request.Principal.Type, 128) || !safeBrokerOpaque(request.Principal.Role, 128) || !safeBrokerOpaque(request.ToolID, 128) || !safeBrokerOpaque(request.Version, 64) || !safeBrokerOpaque(request.PolicyVersion, 256) || !safeBrokerID(request.BudgetAccountID) || len(request.Parameters) > maxInputBytes || !json.Valid(request.Parameters) {
+	if ctx == nil || !safeBrokerOpaque(request.RequestID, 512) || !safeBrokerID(request.TenantID) || !safeBrokerID(request.ProjectID) || !safeBrokerID(request.TaskID) || !safeBrokerOpaque(request.Principal.ID, 512) || !safeBrokerOpaque(request.Principal.Type, 128) || !safeBrokerOpaque(request.Principal.Role, 128) || !safeBrokerOpaque(request.ToolID, 128) || !safeBrokerOpaque(request.Version, 64) || !safeBrokerOpaque(request.PolicyVersion, 256) || !safeBrokerID(request.BudgetAccountID) || request.ExecutionLeaseID != "" && !safeBrokerOpaque(request.ExecutionLeaseID, 512) || len(request.Parameters) > maxInputBytes || !json.Valid(request.Parameters) {
 		return ToolResult{}, ErrInvalidRequest
 	}
 	if err := ctx.Err(); err != nil {
 		return ToolResult{}, err
 	}
-	digestInput, err := json.Marshal(struct {
-		ToolID     string          `json:"toolId"`
-		Version    string          `json:"version"`
-		Parameters json.RawMessage `json:"parameters"`
-	}{ToolID: request.ToolID, Version: request.Version, Parameters: request.Parameters})
-	if err != nil {
-		return ToolResult{}, ErrInvalidRequest
-	}
-	digest, err := canonicaljson.Digest(digestInput)
+	digest, err := requestDigest(request.ToolID, request.Version, request.Parameters)
 	if err != nil {
 		return ToolResult{}, ErrInvalidRequest
 	}
@@ -561,7 +553,7 @@ func (b *Broker) leaseValidation(request ToolRequest, descriptor ToolDescriptor,
 	if err != nil || request.Lease.ID == "" || request.Lease.FencingToken < 1 || now.IsZero() || !now.Before(expires) {
 		return LeaseValidation{}, ErrLeaseInvalid
 	}
-	parameterDigest, err := canonicaljson.Digest(request.Parameters)
+	parameterDigest, err := AuthorizationParameterDigest(request.Parameters)
 	if err != nil {
 		return LeaseValidation{}, ErrInvalidRequest
 	}
@@ -570,7 +562,29 @@ func (b *Broker) leaseValidation(request ToolRequest, descriptor ToolDescriptor,
 		approvalID = request.Approval.ID
 	}
 	resource := authorizationResourceID(descriptor.MCPServerID, descriptor.ToolID, descriptor.Version)
-	return LeaseValidation{Lease: request.Lease, Principal: request.Principal, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, ToolID: descriptor.ToolID, ToolVersion: descriptor.Version, MCPServerID: descriptor.MCPServerID, Action: "tool.invoke", Resource: resource, ParameterSHA256: parameterDigest, PolicyVersion: request.PolicyVersion, BudgetAccountID: request.BudgetAccountID, ApprovalID: approvalID, At: now}, nil
+	return LeaseValidation{Lease: request.Lease, ExecutionLeaseID: request.ExecutionLeaseID, Principal: request.Principal, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, ToolID: descriptor.ToolID, ToolVersion: descriptor.Version, MCPServerID: descriptor.MCPServerID, Action: "tool.invoke", Resource: resource, ParameterSHA256: parameterDigest, PolicyVersion: request.PolicyVersion, BudgetAccountID: request.BudgetAccountID, ApprovalID: approvalID, At: now}, nil
+}
+
+func requestDigest(toolID, version string, parameters json.RawMessage) (string, error) {
+	if !safeBrokerOpaque(toolID, 128) || !safeBrokerOpaque(version, 64) || len(parameters) == 0 || len(parameters) > maxInputBytes || !json.Valid(parameters) {
+		return "", ErrInvalidRequest
+	}
+	digestInput, err := json.Marshal(struct {
+		ToolID     string          `json:"toolId"`
+		Version    string          `json:"version"`
+		Parameters json.RawMessage `json:"parameters"`
+	}{ToolID: toolID, Version: version, Parameters: parameters})
+	if err != nil {
+		return "", ErrInvalidRequest
+	}
+	return canonicaljson.Digest(digestInput)
+}
+
+func AuthorizationParameterDigest(parameters json.RawMessage) (string, error) {
+	if len(parameters) == 0 || len(parameters) > maxInputBytes || !json.Valid(parameters) {
+		return "", ErrInvalidRequest
+	}
+	return canonicaljson.Digest(parameters)
 }
 
 func cloneDescriptor(value ToolDescriptor) ToolDescriptor {

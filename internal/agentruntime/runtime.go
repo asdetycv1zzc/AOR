@@ -250,17 +250,23 @@ func (r *Runtime) generate(ctx context.Context, runID string, call ModelCall, me
 	if validateModelCall(call) != nil {
 		return modelgateway.NormalizedResponse{}, modelgateway.ErrInvalidRequest
 	}
-	opCtx, lease, declaration, prompt, finish, err := r.beginOperation(ctx, runID, "model.generate", LeaseOperationModel, false)
+	opCtx, executionLease, declaration, prompt, finish, err := r.beginOperation(ctx, runID, "model.generate", LeaseOperationModel, false)
 	if err != nil {
 		return modelgateway.NormalizedResponse{}, err
 	}
 	defer finish()
+	lease, err := r.operationLease(opCtx, executionLease, OperationLeaseRequest{
+		Operation: LeaseOperationModel, RequestID: call.RequestID, Provider: call.Provider, Model: call.Model, ModelCall: call,
+	})
+	if err != nil {
+		return modelgateway.NormalizedResponse{}, err
+	}
 	release, err := r.slots.Acquire(opCtx, declaration.Role, declarationPriority(declaration))
 	if err != nil {
 		return modelgateway.NormalizedResponse{}, err
 	}
 	defer release()
-	if err := r.operationReady(opCtx, runID, lease, "model.generate", LeaseOperationModel, false); err != nil {
+	if err := r.operationReady(opCtx, runID, executionLease, "model.generate", LeaseOperationModel, false); err != nil {
 		return modelgateway.NormalizedResponse{}, err
 	}
 	if messages == nil {
@@ -284,8 +290,17 @@ func (r *Runtime) generate(ctx context.Context, runID string, call ModelCall, me
 	if callErr != nil {
 		return modelgateway.NormalizedResponse{}, callErr
 	}
-	if err := r.validateLease(opCtx, runID, lease, "model.generate", LeaseOperationResult); err != nil {
-		return modelgateway.NormalizedResponse{}, err
+	if sameLeaseRevision(lease, executionLease) {
+		if err := r.validateLease(opCtx, runID, lease, "model.generate", LeaseOperationResult); err != nil {
+			return modelgateway.NormalizedResponse{}, err
+		}
+	} else {
+		if err := r.validateDetachedLease(opCtx, lease, LeaseOperationResult); err != nil {
+			return modelgateway.NormalizedResponse{}, err
+		}
+		if err := r.validateLease(opCtx, runID, executionLease, "", LeaseOperationResult); err != nil {
+			return modelgateway.NormalizedResponse{}, err
+		}
 	}
 	return response, nil
 }
@@ -308,23 +323,30 @@ func (r *Runtime) InvokeTool(ctx context.Context, runID string, call ToolCall) (
 		len(call.Parameters) == 0 || len(call.Parameters) > MaximumAgentOutputBytes || !json.Valid(call.Parameters) {
 		return toolbroker.ToolResult{}, toolbroker.ErrInvalidRequest
 	}
-	opCtx, lease, declaration, _, finish, err := r.beginOperation(ctx, runID, "tool.invoke", LeaseOperationTool, true)
+	opCtx, executionLease, declaration, _, finish, err := r.beginOperation(ctx, runID, "tool.invoke", LeaseOperationTool, true)
 	if err != nil {
 		return toolbroker.ToolResult{}, err
 	}
 	defer finish()
+	lease, err := r.operationLease(opCtx, executionLease, OperationLeaseRequest{
+		Operation: LeaseOperationTool, RequestID: call.RequestID, ToolID: call.ToolID,
+		ToolVersion: call.Version, Parameters: append(json.RawMessage(nil), call.Parameters...),
+	})
+	if err != nil {
+		return toolbroker.ToolResult{}, err
+	}
 	release, err := r.slots.Acquire(opCtx, declaration.Role, declarationPriority(declaration))
 	if err != nil {
 		return toolbroker.ToolResult{}, err
 	}
 	defer release()
-	if err := r.operationReady(opCtx, runID, lease, "tool.invoke", LeaseOperationTool, true); err != nil {
+	if err := r.operationReady(opCtx, runID, executionLease, "tool.invoke", LeaseOperationTool, true); err != nil {
 		return toolbroker.ToolResult{}, err
 	}
 	request := toolbroker.ToolRequest{
 		RequestID: call.RequestID, TenantID: declaration.TenantID, ProjectID: declaration.ProjectID, TaskID: declaration.TaskID,
 		Principal: toolbroker.Principal{ID: declaration.AgentInstanceID, Type: "AGENT_INSTANCE", Role: string(declaration.Role)},
-		Lease:     toolbroker.Lease{ID: lease.LeaseID, ExpiresAt: lease.ExpiresAt.UTC().Format(time.RFC3339Nano), FencingToken: lease.FencingToken}, Approval: cloneApproval(call.Approval),
+		Lease:     toolbroker.Lease{ID: lease.LeaseID, ExpiresAt: lease.ExpiresAt.UTC().Format(time.RFC3339Nano), FencingToken: lease.FencingToken}, ExecutionLeaseID: executionLease.LeaseID, Approval: cloneApproval(call.Approval),
 		ToolID: call.ToolID, Version: call.Version, Parameters: append([]byte(nil), call.Parameters...),
 		PolicyVersion: lease.PolicyVersion, BudgetAccountID: lease.BudgetAccountID,
 	}
@@ -332,8 +354,17 @@ func (r *Runtime) InvokeTool(ctx context.Context, runID string, call ToolCall) (
 	if callErr != nil {
 		return toolbroker.ToolResult{}, callErr
 	}
-	if err := r.validateLease(opCtx, runID, lease, "tool.invoke", LeaseOperationResult); err != nil {
-		return toolbroker.ToolResult{}, err
+	if sameLeaseRevision(lease, executionLease) {
+		if err := r.validateLease(opCtx, runID, lease, "tool.invoke", LeaseOperationResult); err != nil {
+			return toolbroker.ToolResult{}, err
+		}
+	} else {
+		if err := r.validateDetachedLease(opCtx, lease, LeaseOperationResult); err != nil {
+			return toolbroker.ToolResult{}, err
+		}
+		if err := r.validateLease(opCtx, runID, executionLease, "", LeaseOperationResult); err != nil {
+			return toolbroker.ToolResult{}, err
+		}
 	}
 	return result, nil
 }
@@ -468,6 +499,10 @@ func (r *Runtime) beginOperation(ctx context.Context, runID, capability string, 
 	prompt := clonePrompt(run.prompt)
 	r.mu.Unlock()
 	finish := func() { r.finishOperation(runID, tool) }
+	if _, dynamic := r.authority.(OperationLeaseAuthority); dynamic {
+		capability = ""
+		operation = LeaseOperationAssign
+	}
 	if err := r.validateLease(opCtx, runID, lease, capability, operation); err != nil {
 		finish()
 		return nil, AgentLease{}, Declaration{}, AssembledPrompt{}, nil, err
@@ -535,7 +570,44 @@ func (r *Runtime) operationReady(ctx context.Context, runID string, lease AgentL
 		}
 		return ErrInvalidTransition
 	}
+	if _, dynamic := r.authority.(OperationLeaseAuthority); dynamic {
+		capability = ""
+		operation = LeaseOperationAssign
+	}
 	return r.validateLease(ctx, runID, lease, capability, operation)
+}
+
+func (r *Runtime) operationLease(ctx context.Context, executionLease AgentLease, request OperationLeaseRequest) (AgentLease, error) {
+	authority, dynamic := r.authority.(OperationLeaseAuthority)
+	if !dynamic {
+		return executionLease, nil
+	}
+	lease, err := authority.AcquireOperationLease(ctx, cloneLease(executionLease), request)
+	if err != nil || validateLeaseShape(lease, r.clock()) != nil || !operationLeaseBinding(executionLease, lease) {
+		return AgentLease{}, ErrLeaseInvalid
+	}
+	if err := authority.Validate(ctx, cloneLease(lease), request.Operation); err != nil {
+		return AgentLease{}, ErrLeaseInvalid
+	}
+	return lease, nil
+}
+
+func (r *Runtime) validateDetachedLease(ctx context.Context, lease AgentLease, operation LeaseOperation) error {
+	if validateLeaseShape(lease, r.clock()) != nil {
+		return ErrLeaseInvalid
+	}
+	if err := r.authority.Validate(ctx, cloneLease(lease), operation); err != nil {
+		return ErrLeaseInvalid
+	}
+	return nil
+}
+
+func operationLeaseBinding(executionLease, operationLease AgentLease) bool {
+	return executionLease.AgentInstanceID == operationLease.AgentInstanceID &&
+		executionLease.TenantID == operationLease.TenantID && executionLease.ProjectID == operationLease.ProjectID &&
+		executionLease.TaskID == operationLease.TaskID && executionLease.Role == operationLease.Role &&
+		executionLease.PolicyVersion == operationLease.PolicyVersion && executionLease.BudgetAccountID == operationLease.BudgetAccountID &&
+		executionLease.FencingToken == operationLease.FencingToken
 }
 
 func (r *Runtime) currentLease(runID string) (AgentLease, error) {

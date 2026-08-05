@@ -71,6 +71,7 @@ type GrantRequest struct {
 	ApprovalID      string
 	IdempotencyKey  string
 	TTL             time.Duration
+	NotAfter        time.Time
 }
 
 type RenewRequest struct {
@@ -108,6 +109,26 @@ func New(config Config) (*Service, error) {
 }
 
 func (service *Service) Issue(ctx context.Context, principal authn.Principal, request GrantRequest) (authz.CapabilityLease, error) {
+	return service.issue(ctx, principal, request, 0)
+}
+
+// IssueExecution creates the stable model-bound lease for one task execution.
+// It is an internal scheduler boundary and is not exposed through the lease API.
+func (service *Service) IssueExecution(ctx context.Context, principal authn.Principal, request GrantRequest, fencingToken int64) (authz.CapabilityLease, error) {
+	if request.Action != authz.ActionModelGenerate || fencingToken < 1 {
+		return authz.CapabilityLease{}, invalidRequest()
+	}
+	return service.issue(ctx, principal, request, fencingToken)
+}
+
+func (service *Service) issueAtFencing(ctx context.Context, principal authn.Principal, request GrantRequest, fencingToken int64) (authz.CapabilityLease, error) {
+	if fencingToken < 1 {
+		return authz.CapabilityLease{}, invalidRequest()
+	}
+	return service.issue(ctx, principal, request, fencingToken)
+}
+
+func (service *Service) issue(ctx context.Context, principal authn.Principal, request GrantRequest, fencingToken int64) (authz.CapabilityLease, error) {
 	input, grant, err := service.authorizeGrant(ctx, principal, request)
 	if err != nil {
 		return authz.CapabilityLease{}, err
@@ -120,7 +141,7 @@ func (service *Service) Issue(ctx context.Context, principal authn.Principal, re
 	if existing, found, lookupErr := service.manager.GetForTenant(ctx, request.TenantID, leaseID); lookupErr != nil {
 		return authz.CapabilityLease{}, lookupErr
 	} else if found {
-		if existing.Nonce == requestDigest {
+		if existing.Nonce == requestDigest && (fencingToken == 0 || existing.FencingToken == fencingToken) {
 			return existing, nil
 		}
 		return authz.CapabilityLease{}, aorerrors.New(aorerrors.CodeIdempotencyConflict, "", map[string]any{"scope": "lease issue"})
@@ -134,13 +155,13 @@ func (service *Service) Issue(ctx context.Context, principal authn.Principal, re
 		Role: principal.Role, Action: input.Action, Resource: input.Resource,
 		ParameterDigest: input.ParameterDigest, Capabilities: []string{input.Action},
 		PolicyVersion: grant.PolicyVersion, BudgetAccountID: input.Budget.AccountID,
-		TTL: request.TTL, Grant: grant, RequestDigest: requestDigest,
+		TTL: request.TTL, NotAfter: request.NotAfter, Grant: grant, RequestDigest: requestDigest, FencingToken: fencingToken,
 	})
 	if issueErr == nil {
 		return lease, nil
 	}
 	existing, found, lookupErr := service.manager.GetForTenant(ctx, request.TenantID, leaseID)
-	if lookupErr == nil && found && existing.Nonce == requestDigest {
+	if lookupErr == nil && found && existing.Nonce == requestDigest && (fencingToken == 0 || existing.FencingToken == fencingToken) {
 		return existing, nil
 	}
 	return authz.CapabilityLease{}, issueErr
@@ -293,6 +314,11 @@ func deterministicLeaseID(principal authn.Principal, request GrantRequest) strin
 }
 
 func grantRequestDigest(principal authn.Principal, input authz.PolicyInput, grant authz.PolicyDecision, request GrantRequest) (string, error) {
+	var notAfter *time.Time
+	if !request.NotAfter.IsZero() {
+		value := request.NotAfter.UTC()
+		notAfter = &value
+	}
 	encoded, err := json.Marshal(struct {
 		Principal       authn.Principal    `json:"principal"`
 		Project         authz.ProjectScope `json:"project"`
@@ -306,11 +332,12 @@ func grantRequestDigest(principal authn.Principal, input authz.PolicyInput, gran
 		PolicyVersion   string             `json:"policyVersion"`
 		Constraints     authz.Constraints  `json:"constraints"`
 		TTLNanoseconds  int64              `json:"ttlNanoseconds"`
+		NotAfter        *time.Time         `json:"notAfter,omitempty"`
 	}{
 		Principal: principal, Project: input.Project, Task: input.Task,
 		Action: input.Action, Resource: input.Resource, ParameterDigest: input.ParameterDigest,
 		Budget: input.Budget, ApprovalID: request.ApprovalID, IdempotencyKey: request.IdempotencyKey, PolicyVersion: grant.PolicyVersion,
-		Constraints: grant.Constraints, TTLNanoseconds: int64(request.TTL),
+		Constraints: grant.Constraints, TTLNanoseconds: int64(request.TTL), NotAfter: notAfter,
 	})
 	if err != nil {
 		return "", err

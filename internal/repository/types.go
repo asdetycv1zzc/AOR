@@ -41,18 +41,19 @@ const (
 )
 
 type LeaseValidation struct {
-	Proof           LeaseProof
-	Action          LeaseAction
-	TenantID        string
-	ProjectID       string
-	TaskID          string
-	AttemptSeriesID string
-	Attempt         int
-	ModuleSpecRef   contracts.SpecRef
-	AgentInstanceID string
-	Role            string
-	ResourcePath    string
-	ParameterDigest string
+	Proof            LeaseProof
+	ExecutionLeaseID string
+	Action           LeaseAction
+	TenantID         string
+	ProjectID        string
+	TaskID           string
+	AttemptSeriesID  string
+	Attempt          int
+	ModuleSpecRef    contracts.SpecRef
+	AgentInstanceID  string
+	Role             string
+	ResourcePath     string
+	ParameterDigest  string
 }
 
 type LeaseValidator interface {
@@ -60,16 +61,17 @@ type LeaseValidator interface {
 }
 
 type WorkspaceRequest struct {
-	RepositoryPath  string
-	TenantID        string
-	ProjectID       string
-	TaskID          string
-	Attempt         int
-	AttemptSeriesID string
-	BaseCommit      string
-	ModuleSpec      contracts.ModuleSpec
-	AgentIdentity   contracts.AgentIdentity
-	Lease           LeaseProof
+	RepositoryPath   string
+	TenantID         string
+	ProjectID        string
+	TaskID           string
+	Attempt          int
+	AttemptSeriesID  string
+	BaseCommit       string
+	ModuleSpec       contracts.ModuleSpec
+	AgentIdentity    contracts.AgentIdentity
+	ExecutionLeaseID string
+	Lease            LeaseProof
 }
 
 type Workspace struct {
@@ -87,6 +89,7 @@ type Workspace struct {
 	AcceptanceCriteria []string
 	ModuleSpecRef      contracts.SpecRef
 	AgentIdentity      contracts.AgentIdentity
+	OperationLeases    bool
 	// gitDir is service-owned metadata outside the mounted workspace. It is
 	// intentionally private so API consumers cannot use it as a repository
 	// capability.
@@ -291,7 +294,7 @@ func sameWorkspace(left, right Workspace) bool {
 	return left.ID == right.ID && left.TenantID == right.TenantID && left.ProjectID == right.ProjectID &&
 		left.TaskID == right.TaskID && left.Attempt == right.Attempt && left.AttemptSeriesID == right.AttemptSeriesID &&
 		left.Path == right.Path && left.Branch == right.Branch && left.BaseCommit == right.BaseCommit &&
-		left.ModuleSpecRef == right.ModuleSpecRef && left.AgentIdentity == right.AgentIdentity &&
+		left.ModuleSpecRef == right.ModuleSpecRef && left.AgentIdentity == right.AgentIdentity && left.OperationLeases == right.OperationLeases &&
 		left.gitDir == right.gitDir && left.repositoryPath == right.repositoryPath &&
 		sameStrings(left.AllowedPaths, right.AllowedPaths) && sameStrings(left.ForbiddenPaths, right.ForbiddenPaths) &&
 		sameStrings(left.AcceptanceCriteria, right.AcceptanceCriteria)

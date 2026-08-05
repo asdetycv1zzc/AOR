@@ -272,9 +272,10 @@ func (authority *repositoryExecutionAuthority) workspaceRequest(ctx context.Cont
 			Role:            claim.Principal.Role,
 			Provider:        scope.provider,
 			Model:           scope.model,
-			LeaseID:         claim.Lease.ID,
+			LeaseID:         claim.ExecutionLeaseID,
 		},
-		Lease: proof,
+		ExecutionLeaseID: claim.ExecutionLeaseID,
+		Lease:            proof,
 	}, nil
 }
 
@@ -288,7 +289,7 @@ func (authority *repositoryExecutionAuthority) claim(ctx context.Context, toolID
 		return toolbroker.LeaseValidation{}, repository.LeaseProof{}, repository.ErrLeaseStale
 	}
 	claim, ok := toolbroker.ExecutionAuthorizationFromContext(ctx)
-	if !ok || claim.MCPServerID != repositoryMCPServerID || claim.ToolVersion != repositoryMCPVersion || claim.ToolID != toolID || claim.Principal.Type != "AGENT_INSTANCE" || claim.Principal.Role != "EXECUTOR" || claim.Principal.ID == "" {
+	if !ok || claim.MCPServerID != repositoryMCPServerID || claim.ToolVersion != repositoryMCPVersion || claim.ToolID != toolID || claim.Principal.Type != "AGENT_INSTANCE" || claim.Principal.Role != "EXECUTOR" || claim.Principal.ID == "" || claim.ExecutionLeaseID == "" {
 		return toolbroker.LeaseValidation{}, repository.LeaseProof{}, repository.ErrLeaseStale
 	}
 	expiresAt, err := time.Parse(time.RFC3339, claim.Lease.ExpiresAt)
@@ -308,7 +309,7 @@ func (authority *repositoryExecutionAuthority) Validate(ctx context.Context, val
 	if err != nil {
 		return err
 	}
-	if validation.Proof.ID != proof.ID || validation.Proof.FencingToken != proof.FencingToken || !validation.Proof.ExpiresAt.Equal(proof.ExpiresAt) || validation.TenantID != claim.TenantID || validation.ProjectID != claim.ProjectID || validation.TaskID != claim.TaskID || validation.AgentInstanceID != claim.Principal.ID || validation.Role != claim.Principal.Role {
+	if validation.Proof.ID != proof.ID || validation.ExecutionLeaseID != claim.ExecutionLeaseID || validation.Proof.FencingToken != proof.FencingToken || !validation.Proof.ExpiresAt.Equal(proof.ExpiresAt) || validation.TenantID != claim.TenantID || validation.ProjectID != claim.ProjectID || validation.TaskID != claim.TaskID || validation.AgentInstanceID != claim.Principal.ID || validation.Role != claim.Principal.Role {
 		return repository.ErrLeaseStale
 	}
 	scope, err := authority.loadScope(ctx, claim, validation.AttemptSeriesID, validation.Attempt)
@@ -323,7 +324,7 @@ func (authority *repositoryExecutionAuthority) validateRead(ctx context.Context,
 	if err != nil {
 		return err
 	}
-	if workspace.TenantID != claim.TenantID || workspace.ProjectID != claim.ProjectID || workspace.TaskID != claim.TaskID || workspace.AgentIdentity.AgentInstanceID != claim.Principal.ID || workspace.AgentIdentity.LeaseID != claim.Lease.ID {
+	if workspace.TenantID != claim.TenantID || workspace.ProjectID != claim.ProjectID || workspace.TaskID != claim.TaskID || workspace.AgentIdentity.AgentInstanceID != claim.Principal.ID || workspace.AgentIdentity.LeaseID != claim.ExecutionLeaseID {
 		return repository.ErrLeaseStale
 	}
 	scope, err := authority.loadScope(ctx, claim, workspace.AttemptSeriesID, workspace.Attempt)

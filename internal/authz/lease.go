@@ -227,6 +227,8 @@ type LeaseRequest struct {
 	HeartbeatInterval time.Duration
 	Grant             PolicyDecision
 	RequestDigest     string
+	FencingToken      int64
+	NotAfter          time.Time
 	Now               time.Time
 }
 
@@ -361,7 +363,7 @@ func (m *LeaseManager) Issue(ctx context.Context, request LeaseRequest) (Capabil
 	if request.Principal.ID != request.AgentInstanceID {
 		return CapabilityLease{}, aorerrors.New(aorerrors.CodeForbidden, "", map[string]any{"scope": "agent"})
 	}
-	if request.TenantID == "" || request.ProjectID == "" || request.ProjectVersion < 0 || !validLeaseTaskBinding(request.Role, request.TaskID, request.TaskVersion, request.SpecDigest) || request.Role == "" || request.Action == "" || resourceEmpty(request.Resource) || !digestPattern.MatchString(request.ParameterDigest) || request.PolicyVersion == "" || request.BudgetAccountID == "" || len(request.Capabilities) == 0 || len(request.Capabilities) > 64 || !containsString(request.Capabilities, request.Action) || request.RequestDigest != "" && !digestPattern.MatchString(request.RequestDigest) {
+	if request.TenantID == "" || request.ProjectID == "" || request.ProjectVersion < 0 || !validLeaseTaskBinding(request.Role, request.TaskID, request.TaskVersion, request.SpecDigest) || request.Role == "" || request.Action == "" || resourceEmpty(request.Resource) || !digestPattern.MatchString(request.ParameterDigest) || request.PolicyVersion == "" || request.BudgetAccountID == "" || len(request.Capabilities) == 0 || len(request.Capabilities) > 64 || !containsString(request.Capabilities, request.Action) || request.RequestDigest != "" && !digestPattern.MatchString(request.RequestDigest) || request.FencingToken < 0 {
 		return CapabilityLease{}, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "lease"})
 	}
 	if request.Principal.TenantID != "" && request.Principal.TenantID != request.TenantID {
@@ -397,6 +399,15 @@ func (m *LeaseManager) Issue(ctx context.Context, request LeaseRequest) (Capabil
 			ttl = grantTTL
 		}
 	}
+	if !request.NotAfter.IsZero() {
+		remaining := request.NotAfter.Sub(now)
+		if remaining <= 0 {
+			return CapabilityLease{}, aorerrors.New(aorerrors.CodeLeaseExpired, "", nil)
+		}
+		if ttl > remaining {
+			ttl = remaining
+		}
+	}
 	heartbeat := request.HeartbeatInterval
 	if heartbeat <= 0 {
 		heartbeat = m.heartbeatInterval
@@ -421,7 +432,11 @@ func (m *LeaseManager) Issue(ctx context.Context, request LeaseRequest) (Capabil
 		nonceSum := sha256.Sum256([]byte(rawNonce))
 		nonce = "sha256:" + hex.EncodeToString(nonceSum[:])
 	}
-	lease := CapabilityLease{ID: id, AgentInstanceID: request.AgentInstanceID, PrincipalID: request.Principal.ID, PrincipalType: request.Principal.Type, TenantID: request.TenantID, ProjectID: request.ProjectID, ProjectVersion: request.ProjectVersion, TaskID: request.TaskID, TaskVersion: request.TaskVersion, SpecDigest: request.SpecDigest, Role: request.Role, Action: request.Action, Resource: cloneResource(request.Resource), ParameterDigest: request.ParameterDigest, Capabilities: append([]string(nil), request.Capabilities...), IssuedAt: now, ExpiresAt: now.Add(ttl), LastHeartbeatAt: now, HeartbeatIntervalSeconds: int64(heartbeat / time.Second), PolicyVersion: request.PolicyVersion, BudgetAccountID: request.BudgetAccountID, Nonce: nonce, FencingToken: 1, State: LeaseActive}
+	fencingToken := request.FencingToken
+	if fencingToken == 0 {
+		fencingToken = 1
+	}
+	lease := CapabilityLease{ID: id, AgentInstanceID: request.AgentInstanceID, PrincipalID: request.Principal.ID, PrincipalType: request.Principal.Type, TenantID: request.TenantID, ProjectID: request.ProjectID, ProjectVersion: request.ProjectVersion, TaskID: request.TaskID, TaskVersion: request.TaskVersion, SpecDigest: request.SpecDigest, Role: request.Role, Action: request.Action, Resource: cloneResource(request.Resource), ParameterDigest: request.ParameterDigest, Capabilities: append([]string(nil), request.Capabilities...), IssuedAt: now, ExpiresAt: now.Add(ttl), LastHeartbeatAt: now, HeartbeatIntervalSeconds: int64(heartbeat / time.Second), PolicyVersion: request.PolicyVersion, BudgetAccountID: request.BudgetAccountID, Nonce: nonce, FencingToken: fencingToken, State: LeaseActive}
 	if err := lease.ValidateShape(); err != nil {
 		return CapabilityLease{}, err
 	}

@@ -2,14 +2,18 @@ package leaseauthority
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/akimisaka/aor/internal/agentruntime"
 	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/authz"
+	"github.com/akimisaka/aor/internal/toolbroker"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
 )
 
@@ -26,10 +30,34 @@ type runtimeAuthority struct {
 	renewalTTL time.Duration
 }
 
+type runtimeOperationAuthority struct {
+	*runtimeAuthority
+	tools RuntimeToolResolver
+}
+
+type RuntimeToolResolver interface {
+	MCPServerID(context.Context, string, string) (string, error)
+}
+
 // NewRuntimeAuthority adapts signed capability leases to Agent Runtime's
 // lifecycle interface. Every operation is checked against the authoritative
 // signed lease rather than the caller-provided transport view.
 func NewRuntimeAuthority(service *Service, renewalTTL time.Duration) (agentruntime.LeaseAuthority, error) {
+	return newRuntimeAuthority(service, renewalTTL)
+}
+
+func NewRuntimeOperationAuthority(service *Service, renewalTTL time.Duration, tools RuntimeToolResolver) (agentruntime.OperationLeaseAuthority, error) {
+	if tools == nil {
+		return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "runtime tool resolver"})
+	}
+	authority, err := newRuntimeAuthority(service, renewalTTL)
+	if err != nil {
+		return nil, err
+	}
+	return &runtimeOperationAuthority{runtimeAuthority: authority, tools: tools}, nil
+}
+
+func newRuntimeAuthority(service *Service, renewalTTL time.Duration) (*runtimeAuthority, error) {
 	if service == nil {
 		return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "runtime lease authority"})
 	}
@@ -44,6 +72,73 @@ func NewRuntimeAuthority(service *Service, renewalTTL time.Duration) (agentrunti
 		return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "runtime lease ttl"})
 	}
 	return &runtimeAuthority{service: service, manager: manager, renewalTTL: renewalTTL}, nil
+}
+
+func (authority *runtimeOperationAuthority) AcquireOperationLease(ctx context.Context, execution agentruntime.AgentLease, request agentruntime.OperationLeaseRequest) (agentruntime.AgentLease, error) {
+	current, err := authority.current(ctx, execution, agentruntime.LeaseOperationAssign)
+	if err != nil {
+		return agentruntime.AgentLease{}, err
+	}
+	if _, err := authority.manager.Validate(ctx, leaseCheck(current)); err != nil {
+		return agentruntime.AgentLease{}, runtimeLeaseError(err)
+	}
+	var action string
+	var resource authz.Resource
+	var parameterDigest string
+	switch request.Operation {
+	case agentruntime.LeaseOperationModel:
+		resourceID, digest, bindingErr := agentruntime.ModelOperationBinding(request.ModelCall)
+		if bindingErr != nil || request.RequestID != request.ModelCall.RequestID || request.Provider != request.ModelCall.Provider || request.Model != request.ModelCall.Model {
+			return agentruntime.AgentLease{}, agentruntime.ErrLeaseInvalid
+		}
+		action = authz.ActionModelGenerate
+		resource = authz.Resource{Type: "model", ID: resourceID, Path: current.ID}
+		parameterDigest = digest
+		if current.Action == action && current.Resource.Type == resource.Type && current.Resource.ID == resource.ID && current.Resource.Path == "" && current.ParameterDigest == parameterDigest {
+			return execution, nil
+		}
+	case agentruntime.LeaseOperationTool:
+		if authority.tools == nil {
+			return agentruntime.AgentLease{}, agentruntime.ErrLeaseInvalid
+		}
+		serverID, resolveErr := authority.tools.MCPServerID(ctx, request.ToolID, request.ToolVersion)
+		digest, digestErr := toolbroker.AuthorizationParameterDigest(request.Parameters)
+		if resolveErr != nil || digestErr != nil || strings.TrimSpace(serverID) == "" {
+			return agentruntime.AgentLease{}, agentruntime.ErrLeaseInvalid
+		}
+		action = authz.ActionToolInvoke
+		resource = toolbroker.AuthorizationResource(serverID, request.ToolID, request.ToolVersion, current.ID)
+		parameterDigest = digest
+	default:
+		return agentruntime.AgentLease{}, agentruntime.ErrLeaseInvalid
+	}
+	principal, principalCtx, err := runtimeLeasePrincipal(ctx, current)
+	if err != nil {
+		return agentruntime.AgentLease{}, err
+	}
+	if !authority.service.clock().UTC().Before(current.ExpiresAt) {
+		return agentruntime.AgentLease{}, agentruntime.ErrLeaseExpired
+	}
+	issued, err := authority.service.issueAtFencing(principalCtx, principal, GrantRequest{
+		TenantID: current.TenantID, ProjectID: current.ProjectID, TaskID: current.TaskID,
+		Action: action, Resource: resource, ParameterDigest: parameterDigest,
+		BudgetAccountID: current.BudgetAccountID,
+		IdempotencyKey:  runtimeOperationKey(current.ID, current.FencingToken, request.RequestID, action, parameterDigest),
+		TTL:             authority.renewalTTL,
+		NotAfter:        current.ExpiresAt,
+	}, current.FencingToken)
+	if err != nil {
+		return agentruntime.AgentLease{}, runtimeLeaseError(err)
+	}
+	if issued.AgentInstanceID != current.AgentInstanceID || issued.TenantID != current.TenantID || issued.ProjectID != current.ProjectID || issued.TaskID != current.TaskID || issued.Role != current.Role || issued.Action != action || issued.Resource.Type != resource.Type || issued.Resource.ID != resource.ID || issued.Resource.Path != resource.Path || len(issued.Resource.Attributes) != 0 || issued.ParameterDigest != parameterDigest || issued.FencingToken != current.FencingToken || issued.BudgetAccountID != current.BudgetAccountID {
+		return agentruntime.AgentLease{}, agentruntime.ErrLeaseInvalid
+	}
+	return toRuntimeLease(issued), nil
+}
+
+func runtimeOperationKey(executionLeaseID string, fencingToken int64, requestID, action, parameterDigest string) string {
+	digest := sha256.Sum256([]byte(executionLeaseID + "\x00" + strconv.FormatInt(fencingToken, 10) + "\x00" + requestID + "\x00" + action + "\x00" + parameterDigest))
+	return "runtime-operation-" + hex.EncodeToString(digest[:])
 }
 
 func (authority *runtimeAuthority) Validate(ctx context.Context, lease agentruntime.AgentLease, operation agentruntime.LeaseOperation) error {
@@ -193,3 +288,4 @@ func runtimeLeaseError(err error) error {
 }
 
 var _ agentruntime.LeaseAuthority = (*runtimeAuthority)(nil)
+var _ agentruntime.OperationLeaseAuthority = (*runtimeOperationAuthority)(nil)

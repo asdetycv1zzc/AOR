@@ -88,18 +88,19 @@ type Approval struct {
 }
 
 type ToolRequest struct {
-	RequestID       string
-	TenantID        string
-	ProjectID       string
-	TaskID          string
-	Principal       Principal
-	Lease           Lease
-	Approval        *Approval
-	ToolID          string
-	Version         string
-	Parameters      []byte
-	PolicyVersion   string
-	BudgetAccountID string
+	RequestID        string
+	TenantID         string
+	ProjectID        string
+	TaskID           string
+	Principal        Principal
+	Lease            Lease
+	ExecutionLeaseID string
+	Approval         *Approval
+	ToolID           string
+	Version          string
+	Parameters       []byte
+	PolicyVersion    string
+	BudgetAccountID  string
 }
 
 type ArtifactRef struct {
@@ -123,21 +124,22 @@ type LeaseChecker interface {
 }
 
 type LeaseValidation struct {
-	Lease           Lease
-	Principal       Principal
-	TenantID        string
-	ProjectID       string
-	TaskID          string
-	ToolID          string
-	ToolVersion     string
-	MCPServerID     string
-	Action          string
-	Resource        string
-	ParameterSHA256 string
-	PolicyVersion   string
-	BudgetAccountID string
-	ApprovalID      string
-	At              time.Time
+	Lease            Lease
+	ExecutionLeaseID string
+	Principal        Principal
+	TenantID         string
+	ProjectID        string
+	TaskID           string
+	ToolID           string
+	ToolVersion      string
+	MCPServerID      string
+	Action           string
+	Resource         string
+	ParameterSHA256  string
+	PolicyVersion    string
+	BudgetAccountID  string
+	ApprovalID       string
+	At               time.Time
 }
 
 type executionAuthorizationContextKey struct{}

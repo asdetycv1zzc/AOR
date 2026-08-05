@@ -59,7 +59,7 @@ func (checker AuthzLeaseChecker) Validate(ctx context.Context, validation LeaseV
 		SpecDigest:      scope.SpecDigest,
 		Role:            validation.Principal.Role,
 		Action:          validation.Action,
-		Resource:        AuthorizationResource(validation.MCPServerID, validation.ToolID, validation.ToolVersion),
+		Resource:        AuthorizationResource(validation.MCPServerID, validation.ToolID, validation.ToolVersion, validation.ExecutionLeaseID),
 		ParameterDigest: validation.ParameterSHA256,
 		PolicyVersion:   validation.PolicyVersion,
 		BudgetAccountID: validation.BudgetAccountID,
@@ -78,8 +78,12 @@ func (checker AuthzLeaseChecker) Validate(ctx context.Context, validation LeaseV
 
 // AuthorizationResource is the canonical authz resource used both when a
 // tool capability lease is issued and when the Tool Broker commits it.
-func AuthorizationResource(mcpServerID, toolID, version string) authz.Resource {
-	return authz.Resource{Type: "tool", ID: authorizationResourceID(mcpServerID, toolID, version)}
+func AuthorizationResource(mcpServerID, toolID, version string, executionLeaseID ...string) authz.Resource {
+	resource := authz.Resource{Type: "tool", ID: authorizationResourceID(mcpServerID, toolID, version)}
+	if len(executionLeaseID) == 1 {
+		resource.Path = executionLeaseID[0]
+	}
+	return resource
 }
 
 func authorizationResourceID(mcpServerID, toolID, version string) string {

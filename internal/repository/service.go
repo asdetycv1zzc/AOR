@@ -104,7 +104,11 @@ func (s *Service) CreateWorkspace(ctx context.Context, request WorkspaceRequest)
 	if err := contextErr(ctx); err != nil {
 		return Workspace{}, err
 	}
-	if !safeIDPattern.MatchString(request.TenantID) || !safeIDPattern.MatchString(request.ProjectID) || !safeIDPattern.MatchString(request.TaskID) || !safeIDPattern.MatchString(request.AttemptSeriesID) || request.Attempt < 1 || request.Attempt > 3 || request.ModuleSpec.Validate() != nil || request.AgentIdentity.AgentInstanceID == "" || request.AgentIdentity.Role != "EXECUTOR" || request.AgentIdentity.LeaseID != request.Lease.ID || request.Lease.ID == "" || request.Lease.FencingToken < 1 {
+	executionLeaseID := request.ExecutionLeaseID
+	if executionLeaseID == "" {
+		executionLeaseID = request.Lease.ID
+	}
+	if !safeIDPattern.MatchString(request.TenantID) || !safeIDPattern.MatchString(request.ProjectID) || !safeIDPattern.MatchString(request.TaskID) || !safeIDPattern.MatchString(request.AttemptSeriesID) || request.Attempt < 1 || request.Attempt > 3 || request.ModuleSpec.Validate() != nil || request.AgentIdentity.AgentInstanceID == "" || request.AgentIdentity.Role != "EXECUTOR" || request.AgentIdentity.LeaseID != executionLeaseID || request.Lease.ID == "" || request.Lease.FencingToken < 1 {
 		return Workspace{}, ErrInvalidRequest
 	}
 	if err := validateCommit(request.BaseCommit); err != nil {
@@ -132,11 +136,11 @@ func (s *Service) CreateWorkspace(ctx context.Context, request WorkspaceRequest)
 	if err != nil {
 		return Workspace{}, err
 	}
-	validation := LeaseValidation{Proof: request.Lease, Action: LeaseActionCreateWorkspace, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, AttemptSeriesID: request.AttemptSeriesID, Attempt: request.Attempt, ModuleSpecRef: moduleSpecRef, AgentInstanceID: request.AgentIdentity.AgentInstanceID, Role: request.AgentIdentity.Role, ResourcePath: directory, ParameterDigest: parameterDigest}
+	validation := LeaseValidation{Proof: request.Lease, ExecutionLeaseID: executionLeaseID, Action: LeaseActionCreateWorkspace, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, AttemptSeriesID: request.AttemptSeriesID, Attempt: request.Attempt, ModuleSpecRef: moduleSpecRef, AgentInstanceID: request.AgentIdentity.AgentInstanceID, Role: request.AgentIdentity.Role, ResourcePath: directory, ParameterDigest: parameterDigest}
 	if err := s.validateLease(ctx, validation); err != nil {
 		return Workspace{}, err
 	}
-	workspace := Workspace{ID: id, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, Attempt: request.Attempt, AttemptSeriesID: request.AttemptSeriesID, Path: directory, Branch: workspaceBranch(request), BaseCommit: request.BaseCommit, AllowedPaths: append([]string(nil), request.ModuleSpec.AllowedPaths...), ForbiddenPaths: effectiveForbiddenPaths(request.ModuleSpec.ForbiddenPaths), AcceptanceCriteria: append([]string(nil), request.ModuleSpec.AcceptanceCriteria...), ModuleSpecRef: moduleSpecRef, AgentIdentity: request.AgentIdentity, gitDir: gitDirectory, repositoryPath: source}
+	workspace := Workspace{ID: id, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, Attempt: request.Attempt, AttemptSeriesID: request.AttemptSeriesID, Path: directory, Branch: workspaceBranch(request), BaseCommit: request.BaseCommit, AllowedPaths: append([]string(nil), request.ModuleSpec.AllowedPaths...), ForbiddenPaths: effectiveForbiddenPaths(request.ModuleSpec.ForbiddenPaths), AcceptanceCriteria: append([]string(nil), request.ModuleSpec.AcceptanceCriteria...), ModuleSpecRef: moduleSpecRef, AgentIdentity: request.AgentIdentity, OperationLeases: request.ExecutionLeaseID != "" && request.ExecutionLeaseID != request.Lease.ID, gitDir: gitDirectory, repositoryPath: source}
 	if prior, priorErr := s.workspace(ctx, id); priorErr == nil {
 		if !sameWorkspace(prior, workspace) {
 			return Workspace{}, ErrWorkspaceConflict
@@ -517,10 +521,10 @@ func pathExists(name string) bool {
 }
 
 func (s *Service) validateWorkspaceLease(ctx context.Context, workspace Workspace, proof LeaseProof, action LeaseAction, resourcePath, parameterDigest string) error {
-	if proof.ID == "" || proof.ID != workspace.AgentIdentity.LeaseID {
+	if proof.ID == "" || workspace.AgentIdentity.LeaseID == "" || !workspace.OperationLeases && proof.ID != workspace.AgentIdentity.LeaseID {
 		return ErrLeaseStale
 	}
-	return s.validateLease(ctx, LeaseValidation{Proof: proof, Action: action, TenantID: workspace.TenantID, ProjectID: workspace.ProjectID, TaskID: workspace.TaskID, AttemptSeriesID: workspace.AttemptSeriesID, Attempt: workspace.Attempt, ModuleSpecRef: workspace.ModuleSpecRef, AgentInstanceID: workspace.AgentIdentity.AgentInstanceID, Role: workspace.AgentIdentity.Role, ResourcePath: resourcePath, ParameterDigest: parameterDigest})
+	return s.validateLease(ctx, LeaseValidation{Proof: proof, ExecutionLeaseID: workspace.AgentIdentity.LeaseID, Action: action, TenantID: workspace.TenantID, ProjectID: workspace.ProjectID, TaskID: workspace.TaskID, AttemptSeriesID: workspace.AttemptSeriesID, Attempt: workspace.Attempt, ModuleSpecRef: workspace.ModuleSpecRef, AgentInstanceID: workspace.AgentIdentity.AgentInstanceID, Role: workspace.AgentIdentity.Role, ResourcePath: resourcePath, ParameterDigest: parameterDigest})
 }
 
 func (s *Service) validateLease(ctx context.Context, validation LeaseValidation) error {
@@ -528,7 +532,7 @@ func (s *Service) validateLease(ctx context.Context, validation LeaseValidation)
 		return err
 	}
 	lease := validation.Proof
-	if lease.ID == "" || lease.FencingToken < 1 || lease.ExpiresAt.IsZero() || !s.clock().Before(lease.ExpiresAt) || validation.Action == "" || validation.TenantID == "" || validation.ProjectID == "" || validation.TaskID == "" || validation.AttemptSeriesID == "" || validation.Attempt < 1 || validation.Attempt > 3 || validation.ModuleSpecRef.Validate() != nil || validation.AgentInstanceID == "" || validation.Role != "EXECUTOR" || validation.ResourcePath == "" || !strings.HasPrefix(validation.ParameterDigest, "sha256:") {
+	if lease.ID == "" || validation.ExecutionLeaseID == "" || lease.FencingToken < 1 || lease.ExpiresAt.IsZero() || !s.clock().Before(lease.ExpiresAt) || validation.Action == "" || validation.TenantID == "" || validation.ProjectID == "" || validation.TaskID == "" || validation.AttemptSeriesID == "" || validation.Attempt < 1 || validation.Attempt > 3 || validation.ModuleSpecRef.Validate() != nil || validation.AgentInstanceID == "" || validation.Role != "EXECUTOR" || validation.ResourcePath == "" || !strings.HasPrefix(validation.ParameterDigest, "sha256:") {
 		return ErrLeaseStale
 	}
 	if s.leases == nil {

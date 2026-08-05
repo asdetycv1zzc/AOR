@@ -33,6 +33,7 @@ type persistedWorkspace struct {
 	AcceptanceCriteria []string                `json:"acceptanceCriteria"`
 	ModuleSpecRef      contracts.SpecRef       `json:"moduleSpecRef"`
 	AgentIdentity      contracts.AgentIdentity `json:"agentIdentity"`
+	OperationLeases    bool                    `json:"operationLeases"`
 	GitDir             string                  `json:"gitDir"`
 	RepositoryPath     string                  `json:"repositoryPath"`
 }
@@ -218,7 +219,7 @@ func marshalPersistedWorkspace(workspace Workspace) ([]byte, error) {
 		TaskID: workspace.TaskID, Attempt: workspace.Attempt, AttemptSeriesID: workspace.AttemptSeriesID,
 		Path: workspace.Path, Branch: workspace.Branch, BaseCommit: workspace.BaseCommit,
 		AllowedPaths: append([]string(nil), workspace.AllowedPaths...), ForbiddenPaths: append([]string(nil), workspace.ForbiddenPaths...),
-		AcceptanceCriteria: append([]string(nil), workspace.AcceptanceCriteria...), GitDir: workspace.gitDir,
+		AcceptanceCriteria: append([]string(nil), workspace.AcceptanceCriteria...), OperationLeases: workspace.OperationLeases, GitDir: workspace.gitDir,
 		RepositoryPath: workspace.repositoryPath,
 	}
 	record.ModuleSpecRef = workspace.ModuleSpecRef
@@ -236,7 +237,7 @@ func unmarshalPersistedWorkspace(content []byte) (Workspace, error) {
 		Attempt: record.Attempt, AttemptSeriesID: record.AttemptSeriesID, Path: record.Path, Branch: record.Branch,
 		BaseCommit: record.BaseCommit, AllowedPaths: append([]string(nil), record.AllowedPaths...),
 		ForbiddenPaths: append([]string(nil), record.ForbiddenPaths...), AcceptanceCriteria: append([]string(nil), record.AcceptanceCriteria...),
-		ModuleSpecRef: record.ModuleSpecRef, AgentIdentity: record.AgentIdentity,
+		ModuleSpecRef: record.ModuleSpecRef, AgentIdentity: record.AgentIdentity, OperationLeases: record.OperationLeases,
 		gitDir: record.GitDir, repositoryPath: record.RepositoryPath,
 	}
 	if !validStoredWorkspace(workspace) {
