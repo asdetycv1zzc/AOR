@@ -135,6 +135,13 @@ func TestArtifactContentPolicyRejectsCredentialMaterial(t *testing.T) {
 	if err := validateContent([]byte("deterministic audit output")); err != nil {
 		t.Fatalf("ordinary artifact content error = %v", err)
 	}
+	metadata, err := json.Marshal(map[string]any{"authorization": "Bearer abcdefghijklmnopqrstuvwxyz"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateContent(metadata); !errors.Is(err, ErrCredentialDetected) {
+		t.Fatalf("credential metadata error = %v", err)
+	}
 }
 
 func TestRetentionRequiresTerminalProjectWithoutActiveLegalHold(t *testing.T) {

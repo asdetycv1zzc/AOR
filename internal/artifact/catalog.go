@@ -360,6 +360,9 @@ func (catalog *PostgresS3Catalog) Publish(ctx context.Context, publication Publi
 	if err != nil || len(metadataBytes) > maxMetadataBytes {
 		return Record{}, ErrInvalidRequest
 	}
+	if err := validateContent(metadataBytes); err != nil {
+		return Record{}, err
+	}
 	now := catalog.clock().UTC()
 	retentionUntil := publication.RetentionUntil
 	if retentionUntil == nil {
