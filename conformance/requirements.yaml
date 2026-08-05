@@ -1402,9 +1402,11 @@ requirements:
       - conformance/requirements.yaml
       - internal/bootstrap/validate.go
       - internal/conformance/runner.go
+      - internal/conformance/target.go
     tests:
       - internal/bootstrap/validate_test.go
       - internal/conformance/runner_test.go
-    evidenceType: catalog-validation+all-production-gates-required
+      - internal/conformance/target_test.go
+    evidenceType: catalog-validation+target-build-identity+sha256-bound-raw-http-evidence+all-production-gates-required
     owner: operations
     status: planned

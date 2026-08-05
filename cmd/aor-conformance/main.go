@@ -25,7 +25,7 @@ type result struct {
 
 func main() {
 	if len(os.Args) < 2 {
-		fail("usage", []bootstrap.Finding{{Code: "INVALID_ARGUMENT", Message: "usage: aor-conformance <check> or run --profile <test|preproduction|production> --spec-version <version>"}})
+		fail("usage", []bootstrap.Finding{{Code: "INVALID_ARGUMENT", Message: "usage: aor-conformance <check> or run --profile <test|preproduction|production> --spec-version <version> [--target <url> --output <directory>]"}})
 	}
 	root, err := os.Getwd()
 	if err != nil {
@@ -136,10 +136,13 @@ func runConformance(root string, arguments []string) {
 		}{Check: "run", Status: "PASS", Evidence: filepath.Join(output, "release-evidence.json")})
 	}
 	if err != nil {
-		fail("run", []bootstrap.Finding{{Code: "CONFORMANCE_FAILED", Path: output, Message: err.Error()}})
+		message := err.Error()
+		if len(evidence.Exceptions) > 0 {
+			message += ": " + strings.Join(evidence.Exceptions, "; ")
+		}
+		fail("run", []bootstrap.Finding{{Code: "CONFORMANCE_FAILED", Path: output, Message: message}})
 	}
 	os.Stdout.Write(append(encoded, '\n'))
-	_ = evidence
 }
 
 func releaseSigner(profile string) (aorconformance.Signer, error) {

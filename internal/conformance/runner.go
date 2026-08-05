@@ -12,6 +12,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -79,7 +80,8 @@ type Request struct {
 }
 
 type Runner struct {
-	clock func() time.Time
+	clock  func() time.Time
+	client *http.Client
 }
 
 var productionGroups = []string{"contracts", "state-machine", "idempotency", "a2a", "aop", "mcp", "security", "authn", "authz", "budget", "tool-broker", "sandbox-linux", "sandbox-windows", "knowledge", "audit", "integration", "observability", "backup-restore", "chaos", "performance", "supply-chain", "full"}
@@ -93,7 +95,7 @@ func NewRunner(clock func() time.Time) *Runner {
 	if clock == nil {
 		clock = time.Now
 	}
-	return &Runner{clock: clock}
+	return &Runner{clock: clock, client: newTargetHTTPClient()}
 }
 
 func (r *Runner) Run(ctx context.Context, request Request) (ReleaseEvidence, error) {
@@ -119,6 +121,12 @@ func (r *Runner) Run(ctx context.Context, request Request) (ReleaseEvidence, err
 	if err != nil {
 		return ReleaseEvidence{}, ErrInvalidRequest
 	}
+	if request.Target != "" {
+		request.Target, err = normalizeTarget(request.Target, request.Profile)
+		if err != nil {
+			return ReleaseEvidence{}, ErrInvalidRequest
+		}
+	}
 	if len(request.Groups) == 0 {
 		if request.Profile == "production" {
 			request.Groups = append([]string(nil), productionGroups...)
@@ -139,6 +147,14 @@ func (r *Runner) Run(ctx context.Context, request Request) (ReleaseEvidence, err
 	}
 	evidence := ReleaseEvidence{EvidenceVersion: "1.0", SpecVersion: request.SpecVersion, ReleaseVersion: request.ReleaseVersion, SourceCommit: request.SourceCommit, BuildDigest: build, StartedAt: started.Format(time.RFC3339), Environment: request.Profile, Target: request.Target, Results: []RequirementResult{}, Exceptions: []string{}}
 	hardFailure := false
+	targetEvidence := []string{}
+	if request.Target != "" {
+		targetEvidence, err = r.probeTarget(ctx, request)
+		if err != nil {
+			evidence.Exceptions = append(evidence.Exceptions, "target: "+err.Error())
+			hardFailure = true
+		}
+	}
 	if request.Profile == "production" {
 		spec, specErr := os.ReadFile(filepath.Join(root, "SPEC.md"))
 		catalog, catalogErr := os.ReadFile(filepath.Join(root, "conformance", "requirements.yaml"))
@@ -154,6 +170,9 @@ func (r *Runner) Run(ctx context.Context, request Request) (ReleaseEvidence, err
 	}
 	for _, group := range request.Groups {
 		results, gateErr, environmentGate := runGroup(ctx, root, group)
+		for index := range results {
+			results[index].EvidenceURIs = append(results[index].EvidenceURIs, targetEvidence...)
+		}
 		evidence.Results = append(evidence.Results, results...)
 		if environmentGate {
 			if request.Profile == "production" {
@@ -371,7 +390,7 @@ func buildDigest(root, outputDirectory string) (string, error) {
 			return walkErr
 		}
 		clean := filepath.Clean(name)
-		if entry.IsDir() && (entry.Name() == ".git" || excluded != "" && clean == excluded) {
+		if entry.IsDir() && (entry.Name() == ".git" || clean == filepath.Join(root, ".cache") || excluded != "" && clean == excluded) {
 			return filepath.SkipDir
 		}
 		if entry.IsDir() {

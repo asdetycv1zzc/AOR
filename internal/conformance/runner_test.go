@@ -84,6 +84,19 @@ func TestBuildDigestBindsRepositoryContentAndProductionVerifyRequiresSigner(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(root, ".cache"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".cache", "generated"), []byte("ignored"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	withoutCache, err := buildDigest(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != withoutCache {
+		t.Fatal("build digest included the local build cache")
+	}
 	if err := os.WriteFile(file, []byte("two"), 0o600); err != nil {
 		t.Fatal(err)
 	}
