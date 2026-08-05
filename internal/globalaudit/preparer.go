@@ -51,12 +51,28 @@ type InputSource interface {
 	Load(context.Context, Request, state.Project) (InputSnapshot, error)
 }
 
+type AgentRegistration struct {
+	TenantID            string
+	ProjectID           string
+	ProjectVersion      int64
+	RunID               string
+	AgentInstanceID     string
+	Provider            string
+	Model               string
+	PromptBundleVersion string
+}
+
+type AgentRegistry interface {
+	Register(context.Context, AgentRegistration) error
+}
+
 type globalAuditLeaseIssuer interface {
 	Issue(context.Context, authn.Principal, leaseauthority.GrantRequest) (authz.CapabilityLease, error)
 }
 
 type PreparerConfig struct {
 	Inputs        InputSource
+	Agents        AgentRegistry
 	Leases        globalAuditLeaseIssuer
 	Tools         []toolbroker.ToolDescriptor
 	Route         goalplan.ModelRoute
@@ -67,6 +83,7 @@ type PreparerConfig struct {
 
 type AuthoritativePreparer struct {
 	inputs        InputSource
+	agents        AgentRegistry
 	leases        globalAuditLeaseIssuer
 	tools         []modelgateway.ToolDefinition
 	route         goalplan.ModelRoute
@@ -76,7 +93,7 @@ type AuthoritativePreparer struct {
 }
 
 func NewAuthoritativePreparer(config PreparerConfig) (*AuthoritativePreparer, error) {
-	if config.Inputs == nil || config.Leases == nil || !validGlobalAuditRoute(config.Route) {
+	if config.Inputs == nil || config.Agents == nil || config.Leases == nil || !validGlobalAuditRoute(config.Route) {
 		return nil, ErrRuntimeUnavailable
 	}
 	if config.Clock == nil {
@@ -99,7 +116,7 @@ func NewAuthoritativePreparer(config PreparerConfig) (*AuthoritativePreparer, er
 		return nil, err
 	}
 	return &AuthoritativePreparer{
-		inputs: config.Inputs, leases: config.Leases, tools: tools,
+		inputs: config.Inputs, agents: config.Agents, leases: config.Leases, tools: tools,
 		route: cloneGlobalAuditRoute(config.Route), leaseTTL: config.LeaseTTL,
 		maxToolRounds: config.MaxToolRounds, clock: config.Clock,
 	}, nil
@@ -142,6 +159,13 @@ func (preparer *AuthoritativePreparer) Prepare(ctx context.Context, request Requ
 		return PreparedRun{}, ErrInvalidRequest
 	}
 	agentID := request.ProjectID + ":" + string(agentruntime.RoleGlobalAuditor) + ":" + request.RunID
+	if err := preparer.agents.Register(ctx, AgentRegistration{
+		TenantID: request.TenantID, ProjectID: request.ProjectID, ProjectVersion: project.Version,
+		RunID: request.RunID, AgentInstanceID: agentID, Provider: preparer.route.Provider,
+		Model: preparer.route.Model, PromptBundleVersion: bundle.Version,
+	}); err != nil {
+		return PreparedRun{}, err
+	}
 	principal := authn.Principal{
 		ID: agentID, Type: authn.PrincipalAgentInstance, Role: authn.RoleGlobalAuditor,
 		TenantID: request.TenantID, ProjectID: request.ProjectID,
