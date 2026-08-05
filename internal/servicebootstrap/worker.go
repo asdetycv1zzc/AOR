@@ -13,10 +13,13 @@ import (
 
 	"github.com/akimisaka/aor/internal/agentruntime"
 	"github.com/akimisaka/aor/internal/artifact"
+	"github.com/akimisaka/aor/internal/audit"
+	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/authz"
 	"github.com/akimisaka/aor/internal/credentials"
 	"github.com/akimisaka/aor/internal/eventing"
 	"github.com/akimisaka/aor/internal/execution"
+	"github.com/akimisaka/aor/internal/globalaudit"
 	"github.com/akimisaka/aor/internal/goalplan"
 	"github.com/akimisaka/aor/internal/knowledge"
 	"github.com/akimisaka/aor/internal/leaseauthority"
@@ -62,9 +65,15 @@ type executionActivityInput struct {
 	ExecutionID string `json:"executionId"`
 }
 
+type globalAuditActivityInput struct {
+	Action string `json:"action"`
+	RunID  string `json:"runId"`
+}
+
 type workerActivityEffect struct {
-	sandbox   sandboxActivityEffect
-	execution *execution.Service
+	sandbox       sandboxActivityEffect
+	execution     *execution.Service
+	globalAuditor *globalaudit.Service
 }
 
 func (effect workerActivityEffect) Execute(ctx context.Context, key string, payload json.RawMessage) (json.RawMessage, error) {
@@ -76,6 +85,39 @@ func (effect workerActivityEffect) Execute(ctx context.Context, key string, payl
 	}
 	if route.Action == authz.ActionSandboxExec {
 		return effect.sandbox.Execute(ctx, key, payload)
+	}
+	if route.Action == aorworkflow.GlobalAuditActivityAction {
+		if effect.globalAuditor == nil {
+			return nil, aorworkflow.ErrInvalidExecution
+		}
+		var input globalAuditActivityInput
+		decoder := json.NewDecoder(strings.NewReader(string(payload)))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&input) != nil {
+			return nil, aorworkflow.ErrInvalidExecution
+		}
+		var trailing struct{}
+		if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) || input.Action != aorworkflow.GlobalAuditActivityAction || strings.TrimSpace(input.RunID) != input.RunID || input.RunID == "" || len(input.RunID) > 256 {
+			return nil, aorworkflow.ErrInvalidExecution
+		}
+		executionInput, found := aorworkflow.ExecutionInputFromContext(ctx)
+		if !found || input.RunID != executionInput.TaskID {
+			return nil, aorworkflow.ErrInvalidExecution
+		}
+		principalContext, err := authn.ContextWithPrincipal(ctx, authn.Principal{
+			ID: "aor-global-audit-service", Type: authn.PrincipalService, Role: authn.RoleService,
+			TenantID: executionInput.TenantID, ProjectID: executionInput.ProjectID,
+		})
+		if err != nil {
+			return nil, err
+		}
+		result, err := effect.globalAuditor.Run(principalContext, globalaudit.Request{
+			RunID: input.RunID, TenantID: executionInput.TenantID, ProjectID: executionInput.ProjectID,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(result)
 	}
 	if route.Action != ExecutionActivityAction || effect.execution == nil {
 		return nil, aorworkflow.ErrInvalidExecution
@@ -102,6 +144,15 @@ func (effect workerActivityEffect) Execute(ctx context.Context, key string, payl
 		return nil, err
 	}
 	return json.Marshal(result)
+}
+
+type workerExecutionServices struct {
+	execution       *execution.Service
+	host            *toolbroker.Host
+	agentRuntime    *agentruntime.Runtime
+	tasks           *execution.OrchestratorTaskAuthority
+	leaseService    *leaseauthority.Service
+	artifactCatalog *artifact.PostgresS3Catalog
 }
 
 func (effect sandboxActivityEffect) Execute(ctx context.Context, key string, payload json.RawMessage) (output json.RawMessage, resultErr error) {
@@ -239,15 +290,20 @@ func Worker(config runtimeconfig.Config, clients *runtimeclient.Clients) (http.H
 		return nil, ErrWorkerConfiguration
 	}
 	repositoryKey := deriveRepositorySigningKey(leaseKey)
+	globalAuditKey := deriveGlobalAuditSigningKey(leaseKey)
 	leaseSigner, err := authz.NewHMACSigner(leaseKey)
 	repositorySigner, repositorySignerErr := repository.NewHMACSigner(repositoryKey)
+	globalAuditSigner, globalAuditSignerErr := audit.NewHMACSigner(globalAuditKey)
 	for index := range leaseKey {
 		leaseKey[index] = 0
 	}
 	for index := range repositoryKey {
 		repositoryKey[index] = 0
 	}
-	if err != nil || repositorySignerErr != nil {
+	for index := range globalAuditKey {
+		globalAuditKey[index] = 0
+	}
+	if err != nil || repositorySignerErr != nil || globalAuditSignerErr != nil {
 		return nil, ErrWorkerConfiguration
 	}
 	leaseStore, err := authz.NewPostgresLeaseStore(clients.Database())
@@ -270,154 +326,159 @@ func Worker(config runtimeconfig.Config, clients *runtimeclient.Clients) (http.H
 	if err != nil {
 		return nil, err
 	}
-	executionService, host, err := configuredWorkerExecution(config, clients, leaseManager, leaseSigner, repositorySigner, secretResolver)
+	services, err := configuredWorkerExecution(config, clients, leaseManager, leaseSigner, repositorySigner, secretResolver)
 	if err != nil {
 		return nil, err
 	}
+	globalAuditor, err := configuredGlobalAudit(config, clients, provider, services, globalAuditSigner, secretResolver)
+	if err != nil {
+		_ = services.host.Close()
+		return nil, err
+	}
 	activities, err := aorworkflow.NewActivitiesWithStore(workerActivityEffect{
-		sandbox: sandboxActivityEffect{provider: provider, authorizer: authorizer}, execution: executionService,
+		sandbox: sandboxActivityEffect{provider: provider, authorizer: authorizer}, execution: services.execution, globalAuditor: globalAuditor,
 	}, activityResults)
 	if err != nil {
-		_ = host.Close()
+		_ = services.host.Close()
 		return nil, err
 	}
 	runtimeWorker, err := aorworkflow.NewTemporalWorker(clients.Temporal(), config.Temporal.TaskQueue, os.Getenv("AOR_WORKER_BUILD_ID"), activities)
 	if err != nil {
-		_ = host.Close()
+		_ = services.host.Close()
 		return nil, err
 	}
 	if err := runtimeWorker.Start(); err != nil {
-		_ = host.Close()
+		_ = services.host.Close()
 		return nil, err
 	}
-	return &workerHandler{runtime: runtimeWorker, closer: host}, nil
+	return &workerHandler{runtime: runtimeWorker, closer: services.host}, nil
 }
 
-func configuredWorkerExecution(config runtimeconfig.Config, clients *runtimeclient.Clients, leaseManager *authz.LeaseManager, leaseSigner authz.Signer, repositorySigner repository.Signer, secretResolver *credentials.SecretResolver) (*execution.Service, *toolbroker.Host, error) {
+func configuredWorkerExecution(config runtimeconfig.Config, clients *runtimeclient.Clients, leaseManager *authz.LeaseManager, leaseSigner authz.Signer, repositorySigner repository.Signer, secretResolver *credentials.SecretResolver) (*workerExecutionServices, error) {
 	if clients == nil || leaseManager == nil || leaseSigner == nil || repositorySigner == nil || secretResolver == nil {
-		return nil, nil, ErrWorkerConfiguration
+		return nil, ErrWorkerConfiguration
 	}
 	policyClient, err := policy.NewOPAClient(config.OPA.URL)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	toolScopes, err := toolbroker.NewPostgresScopeResolver(toolbroker.PostgresScopeResolverConfig{Database: clients.Database(), DeploymentProfile: config.DeploymentProfile})
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	leaseChecker := toolbroker.AuthzLeaseChecker{Manager: leaseManager, Scopes: toolScopes}
 	policyEvaluator := toolbroker.OPAPolicyEvaluator{Policy: policyClient, Scopes: toolScopes, Clock: time.Now}
 	streamRecorder, err := toolbroker.NewJetStreamInvocationRecorder(clients.JetStream(), config.NATS.Stream)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	durableRecorder, err := toolbroker.NewPostgresInvocationRecorder(clients.Database())
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	recorder, err := toolbroker.NewCompositeInvocationRecorder(durableRecorder, streamRecorder)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	artifactCatalog, err := artifact.NewPostgresS3Catalog(clients.Database(), clients.S3(), config.S3.Bucket, time.Now)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	artifactPublisher, err := toolbroker.NewArtifactPublisher(artifactCatalog)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	broker := toolbroker.New(leaseChecker, policyEvaluator, nil, artifactPublisher, recorder, policyEvaluator.Revalidate, time.Now)
 	host, err := toolbroker.NewHost(broker)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	repositoryClient, err := newRepositoryMCPClient(config.RepositoryRoot, clients.Database(), leaseChecker, repositorySigner, time.Now)
 	if err != nil {
 		_ = host.Close()
-		return nil, nil, err
+		return nil, err
 	}
 	loadContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	err = host.AddServerWithPolicies(loadContext, repositoryMCPServerID, repositoryMCPVersion, repositoryClient, repositoryMCPPolicies())
 	cancel()
 	if err != nil {
 		_ = host.Close()
-		return nil, nil, err
+		return nil, err
 	}
 
 	leaseScopes, err := leaseauthority.NewPostgresScopeResolver(clients.Database(), config.DeploymentProfile)
 	if err != nil {
 		_ = host.Close()
-		return nil, nil, err
+		return nil, err
 	}
 	leaseService, err := leaseauthority.New(leaseauthority.Config{Manager: leaseManager, Policy: policyClient, Scopes: leaseScopes, Clock: time.Now})
 	if err != nil {
 		_ = host.Close()
-		return nil, nil, err
+		return nil, err
 	}
 	toolResolver, err := leaseauthority.NewDescriptorToolResolver(host.Broker().List())
 	if err != nil {
 		_ = host.Close()
-		return nil, nil, err
+		return nil, err
 	}
 	runtimeAuthority, err := leaseauthority.NewRuntimeOperationAuthority(leaseService, 5*time.Minute, toolResolver)
 	if err != nil {
 		_ = host.Close()
-		return nil, nil, err
+		return nil, err
 	}
 	slots, err := agentruntime.NewSlotPool(agentruntime.MaximumActiveAgentLimit, time.Now)
 	if err != nil {
 		_ = host.Close()
-		return nil, nil, err
+		return nil, err
 	}
 	resolveContext, resolveCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	gateway, err := configuredModelGatewayClient(resolveContext, config, secretResolver)
 	resolveCancel()
 	if err != nil {
 		_ = host.Close()
-		return nil, nil, err
+		return nil, err
 	}
 	agentRuntime, err := agentruntime.New(runtimeAuthority, gateway, host.Broker(), slots, time.Now)
 	if err != nil {
 		_ = host.Close()
-		return nil, nil, err
+		return nil, err
 	}
 
 	store := eventing.NewPostgresStore(clients.Database())
 	tasks, err := execution.NewOrchestratorTaskAuthority(store, clients.Database(), leaseSigner, leaseManager, time.Now)
 	if err != nil {
 		_ = host.Close()
-		return nil, nil, err
+		return nil, err
 	}
 	artifacts, err := goalplan.NewEventArtifactStore(store, time.Now)
 	if err != nil {
 		_ = host.Close()
-		return nil, nil, err
+		return nil, err
 	}
 	specs, err := execution.NewArtifactModuleSpecs(artifacts)
 	if err != nil {
 		_ = host.Close()
-		return nil, nil, err
+		return nil, err
 	}
 	assignments, err := execution.NewPostgresAssignmentAuthority(clients.Database())
 	if err != nil {
 		_ = host.Close()
-		return nil, nil, err
+		return nil, err
 	}
 	knowledgeRepository, err := knowledge.NewFileRepository(config.KnowledgeRoot)
 	if err != nil {
 		_ = host.Close()
-		return nil, nil, err
+		return nil, err
 	}
 	knowledgeScopes, err := knowledge.NewEventingScopeResolver(store)
 	if err != nil {
 		_ = host.Close()
-		return nil, nil, err
+		return nil, err
 	}
 	knowledgeService, err := knowledge.NewService(knowledge.ServiceConfig{Repository: knowledgeRepository, Authorizer: policyClient, Scopes: knowledgeScopes, Clock: time.Now})
 	if err != nil {
 		_ = host.Close()
-		return nil, nil, err
+		return nil, err
 	}
 	route := config.Execution.Route
 	preparer, err := execution.NewExecutorRuntimePreparer(execution.ExecutorRuntimePreparerConfig{
@@ -430,24 +491,76 @@ func configuredWorkerExecution(config runtimeconfig.Config, clients *runtimeclie
 	})
 	if err != nil {
 		_ = host.Close()
-		return nil, nil, err
+		return nil, err
 	}
 	submissionStore, err := repository.NewPostgresSubmissionStore(clients.Database())
 	if err != nil {
 		_ = host.Close()
-		return nil, nil, err
+		return nil, err
 	}
 	submissions, err := execution.NewVerifiedSubmissions(submissionStore, repositorySigner)
 	if err != nil {
 		_ = host.Close()
-		return nil, nil, err
+		return nil, err
 	}
 	service, err := execution.New(execution.Config{Tasks: tasks, Specs: specs, Assignments: assignments, Preparer: preparer, Runtime: agentRuntime, Bases: repositoryClient.service, Submissions: submissions})
 	if err != nil {
 		_ = host.Close()
-		return nil, nil, err
+		return nil, err
 	}
-	return service, host, nil
+	return &workerExecutionServices{
+		execution: service, host: host, agentRuntime: agentRuntime, tasks: tasks,
+		leaseService: leaseService, artifactCatalog: artifactCatalog,
+	}, nil
+}
+
+func configuredGlobalAudit(config runtimeconfig.Config, clients *runtimeclient.Clients, provider sandbox.SandboxProvider, services *workerExecutionServices, signer *audit.HMACSigner, secretResolver *credentials.SecretResolver) (*globalaudit.Service, error) {
+	if clients == nil || provider == nil || services == nil || services.agentRuntime == nil || services.tasks == nil || services.leaseService == nil || services.artifactCatalog == nil || signer == nil || secretResolver == nil || runtime.GOOS != "linux" {
+		return nil, ErrWorkerConfiguration
+	}
+	routeConfig, found := config.GoalPlan.Routes[string(agentruntime.RoleGlobalAuditor)]
+	if !found {
+		routeConfig = config.Execution.Route
+	}
+	route := goalplan.ModelRoute{
+		Provider: routeConfig.Provider, Model: routeConfig.Model, MaxOutputTokens: routeConfig.MaxOutputTokens,
+		Temperature: routeConfig.Temperature, Seed: routeConfig.Seed, ProviderPolicy: routeConfig.ProviderPolicy,
+		CachePolicy: routeConfig.CachePolicy, WorstCaseCostMicros: routeConfig.WorstCaseCostMicros, MaxAttempts: routeConfig.MaxAttempts,
+	}
+	inputs, err := globalaudit.NewPostgresInputSource(clients.Database())
+	if err != nil {
+		return nil, err
+	}
+	agents, err := globalaudit.NewPostgresAgentRegistry(clients.Database())
+	if err != nil {
+		return nil, err
+	}
+	profile := sandbox.ProfileLocal
+	if config.DeploymentProfile == "PREPRODUCTION" || config.DeploymentProfile == "PRODUCTION" {
+		profile = sandbox.ProfileProduction
+	}
+	environment, err := globalaudit.NewSandboxEnvironment(globalaudit.SandboxEnvironmentConfig{
+		Provider: provider, ImageDigest: configuredImageDigest(config.Sandbox.ImageReference), DeploymentProfile: profile,
+	})
+	if err != nil {
+		return nil, err
+	}
+	preparer, err := globalaudit.NewAuthoritativePreparer(globalaudit.PreparerConfig{
+		Inputs: inputs, Agents: agents, Environment: environment, Leases: services.leaseService,
+		Tools: services.host.Broker().List(), Route: route, LeaseTTL: 5 * time.Minute,
+		MaxToolRounds: config.Execution.MaxToolRounds, Clock: time.Now,
+	})
+	if err != nil {
+		return nil, err
+	}
+	store, err := globalaudit.NewPostgresStore(clients.Database(), services.artifactCatalog, signer)
+	if err != nil {
+		return nil, err
+	}
+	return globalaudit.New(globalaudit.Config{
+		Projects: services.tasks, Preparer: preparer, Runtime: services.agentRuntime,
+		Store: store, Signer: signer, PipelineVersion: "1.0.0",
+	})
 }
 
 func newExecutionProvider(config runtimeconfig.Config) (*sandbox.Provider, error) {

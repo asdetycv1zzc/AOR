@@ -21,6 +21,7 @@ import (
 const (
 	ProjectExecutionWorkflowName = "aor.project.execution.v1"
 	ExecuteActivityName          = "aor.activity.execute.v1"
+	GlobalAuditActivityAction    = "global-audit.run"
 	WorkerBuildID                = "aor-worker-v2"
 )
 
