@@ -47,6 +47,29 @@ func TestFileStoreStagesVerifiesAndPublishesManifest(t *testing.T) {
 	}
 }
 
+func TestStoreRejectsCredentialContentAcrossWriterBoundaries(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewFileStore(root, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := PutRequest{TenantID: "tenant_1", ProjectID: "project_1", TaskID: "task_1", ArtifactID: "artifact_1", MediaType: "text/plain", CreatedBy: "agent_1", RetentionPolicy: "project", Encrypted: true}
+	_, err = store.Put(context.Background(), request, func(destination io.Writer) error {
+		for _, part := range []string{"provider api_", "key=sk-test-secret-", "1234567890123456"} {
+			if _, writeErr := io.WriteString(destination, part); writeErr != nil {
+				return writeErr
+			}
+		}
+		return nil
+	})
+	if !errors.Is(err, ErrCredentialDetected) {
+		t.Fatalf("credential artifact error = %v", err)
+	}
+	if entries, readErr := os.ReadDir(filepath.Join(root, "manifests")); readErr != nil || len(entries) != 0 {
+		t.Fatalf("credential artifact left a manifest: entries=%d err=%v", len(entries), readErr)
+	}
+}
+
 func TestStoreDoesNotPublishManifestWhenObjectVerificationFails(t *testing.T) {
 	wantErr := errors.New("temporary object verification unavailable")
 	objects := &failingObjectStore{verifyErr: wantErr}

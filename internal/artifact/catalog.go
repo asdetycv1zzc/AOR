@@ -324,6 +324,9 @@ func (catalog *PostgresS3Catalog) Publish(ctx context.Context, publication Publi
 	if catalog == nil || catalog.database == nil || catalog.objects == nil || !trustedTenant(ctx, publication.TenantID) || !validPublication(publication) {
 		return Record{}, ErrInvalidRequest
 	}
+	if err := validateContent(publication.Data); err != nil {
+		return Record{}, err
+	}
 	sum := sha256.Sum256(publication.Data)
 	digest := "sha256:" + hex.EncodeToString(sum[:])
 	uri, _ := URIFromDigest(digest)

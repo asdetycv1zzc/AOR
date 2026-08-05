@@ -102,7 +102,14 @@ func (s *Store) Put(ctx context.Context, request PutRequest, produce func(io.Wri
 	if ctx == nil || ctx.Err() != nil || validateRequest(request) != nil || produce == nil {
 		return Manifest{}, ErrInvalidRequest
 	}
-	staged, err := s.objects.Stage(ctx, produce)
+	var scanner *credentialScanningWriter
+	staged, err := s.objects.Stage(ctx, func(destination io.Writer) error {
+		scanner = newCredentialScanningWriter(destination)
+		if err := produce(scanner); err != nil {
+			return err
+		}
+		return scanner.Err()
+	})
 	if err != nil {
 		return Manifest{}, err
 	}
@@ -112,6 +119,12 @@ func (s *Store) Put(ctx context.Context, request PutRequest, produce func(io.Wri
 			_ = s.objects.Abort(context.Background(), staged)
 		}
 	}()
+	if scanner == nil || scanner.Err() != nil {
+		if scanner != nil {
+			return Manifest{}, scanner.Err()
+		}
+		return Manifest{}, ErrInvalidRequest
+	}
 	if err := validateStaged(staged); err != nil {
 		return Manifest{}, err
 	}

@@ -127,6 +127,16 @@ func TestPublicationRejectsUnsafeContentType(t *testing.T) {
 	}
 }
 
+func TestArtifactContentPolicyRejectsCredentialMaterial(t *testing.T) {
+	secret := []byte("refresh_token=synthetic-production-credential")
+	if err := validateContent(secret); !errors.Is(err, ErrCredentialDetected) {
+		t.Fatalf("credential content error = %v", err)
+	}
+	if err := validateContent([]byte("deterministic audit output")); err != nil {
+		t.Fatalf("ordinary artifact content error = %v", err)
+	}
+}
+
 func TestRetentionRequiresTerminalProjectWithoutActiveLegalHold(t *testing.T) {
 	tenantID := "11111111-1111-4111-8111-111111111111"
 	projectID := "22222222-2222-4222-8222-222222222222"
