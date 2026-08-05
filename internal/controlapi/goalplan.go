@@ -98,7 +98,7 @@ func (handler *Handler) approveGoalAndPlan(ctx context.Context, principal authn.
 		TenantID: principal.TenantID, ProjectID: projectID, GoalSpecID: projection.GoalSpecID, GoalRef: goalRef,
 		UserPrincipalID: principal.ID, ExpectedProjectVersion: body.ExpectedVersion, IdempotencyKey: idempotencyKey,
 		Approval: goalplan.ApprovalBinding{
-			RecordID:     goalApprovalRecordID(principal.TenantID, principal.ID, idempotencyKey),
+			RecordID:     approvalRecordID(principal.TenantID, principal.ID, idempotencyKey),
 			ApprovalType: "GOAL_APPROVAL", SubjectType: "GOAL_SPEC", SubjectID: projection.GoalSpecID,
 			SubjectVersion: goalRef.Version, SubjectSHA256: goalRef.SHA256, PrincipalID: principal.ID,
 			Reason: reason, IssuedAt: issuedAt,
