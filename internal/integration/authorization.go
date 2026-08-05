@@ -84,12 +84,10 @@ func (authorizer *LeaseAuthorizer) Authorize(ctx context.Context, request Author
 	}
 	encoded, err := json.Marshal(struct {
 		RequestSHA256 string         `json:"requestSha256"`
-		LeaseID       string         `json:"leaseId"`
-		FencingToken  int64          `json:"fencingToken"`
 		PolicyVersion string         `json:"policyVersion"`
 		RuleID        string         `json:"ruleId"`
 		Decision      authz.Decision `json:"decision"`
-	}{parameterDigest, lease.ID, lease.FencingToken, decision.PolicyVersion, decision.RuleID, decision.Decision})
+	}{parameterDigest, decision.PolicyVersion, decision.RuleID, decision.Decision})
 	if err != nil {
 		return "", ErrNotAudited
 	}
