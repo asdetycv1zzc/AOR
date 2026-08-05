@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/akimisaka/aor/internal/credentials"
 )
 
 type WindowsBackendOptions struct {
@@ -220,8 +222,8 @@ func (b *WindowsNativeBackend) state(id string) *windowsProcessState {
 func allowedEnvironment(allowlist, environment []string) []string {
 	result := make([]string, 0, len(allowlist))
 	for _, entry := range environment {
-		name, _, found := strings.Cut(entry, "=")
-		if !found {
+		name, value, found := strings.Cut(entry, "=")
+		if !found || credentials.Contains(value) {
 			continue
 		}
 		for _, allowed := range allowlist {

@@ -13,6 +13,9 @@ type fakeBackend struct {
 	created     SandboxSpec
 	attestation Attestation
 	destroyed   int
+	execResult  ExecResult
+	execErr     error
+	execCalls   int
 }
 
 func (b *fakeBackend) Create(_ context.Context, spec SandboxSpec) (Attestation, error) {
@@ -33,7 +36,8 @@ func hardenedAttestation(digest string) Attestation {
 	return Attestation{SecurityProfileSHA256: profileDigest, ImageDigest: digest, Runtime: "runc", NonRoot: true, Rootless: true, ReadOnlyRootFS: true, CapabilitiesDropped: true, SeccompEnabled: true, MandatoryPolicy: true, CgroupsV2: true, Tmpfs: true, WorkdirReadWrite: true}
 }
 func (b *fakeBackend) Exec(context.Context, string, ExecRequest) (ExecResult, error) {
-	return ExecResult{ExitCode: 0}, nil
+	b.execCalls++
+	return b.execResult, b.execErr
 }
 func (b *fakeBackend) Export(_ context.Context, _ string, paths []string) ([]ArtifactRef, error) {
 	return []ArtifactRef{{Path: paths[0]}}, nil
@@ -107,6 +111,27 @@ func TestExportRejectsTraversal(t *testing.T) {
 	}
 	if _, err := provider.Export(context.Background(), "sbx", []string{`..\secret`}); !errors.Is(err, ErrInvalidSpec) {
 		t.Fatalf("Windows traversal = %v", err)
+	}
+}
+
+func TestProviderRejectsCredentialsAtExecutionBoundary(t *testing.T) {
+	backend := &fakeBackend{}
+	provider := NewLinuxProvider(backend, "runc", time.Now)
+	if _, err := provider.Create(context.Background(), linuxSpec()); err != nil {
+		t.Fatal(err)
+	}
+	request := ExecRequest{Executable: "go", Arguments: []string{"api_key=synthetic-production-credential"}, Timeout: time.Second}
+	if _, err := provider.Exec(context.Background(), "sbx", request); !errors.Is(err, ErrCredentialDetected) || backend.execCalls != 0 {
+		t.Fatalf("credential argument error=%v backend calls=%d", err, backend.execCalls)
+	}
+	backend.execResult = ExecResult{Stdout: []byte("Bearer abcdefghijklmnopqrstuvwxyz")}
+	if result, err := provider.Exec(context.Background(), "sbx", ExecRequest{Executable: "go", Timeout: time.Second}); !errors.Is(err, ErrCredentialDetected) || len(result.Stdout) != 0 {
+		t.Fatalf("credential output result=%#v error=%v", result, err)
+	}
+	backend.execResult = ExecResult{}
+	backend.execErr = errors.New("provider failed with sk-test-secret-1234567890")
+	if _, err := provider.Exec(context.Background(), "sbx", ExecRequest{Executable: "go", Timeout: time.Second}); !errors.Is(err, ErrCredentialDetected) || err.Error() != ErrCredentialDetected.Error() {
+		t.Fatalf("credential error was exposed: %v", err)
 	}
 }
 

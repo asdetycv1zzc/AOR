@@ -16,16 +16,19 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/akimisaka/aor/internal/credentials"
 )
 
 var (
-	ErrInvalidSpec       = errors.New("invalid sandbox specification")
-	ErrUnsupported       = errors.New("unsupported sandbox capability")
-	ErrUnsafeWorkload    = errors.New("unsafe workload for sandbox provider")
-	ErrSandboxNotFound   = errors.New("sandbox not found")
-	ErrSandboxTerminated = errors.New("sandbox terminated")
-	ErrAttestationFailed = errors.New("sandbox attestation failed")
-	ErrCleanupFailed     = errors.New("sandbox cleanup failed")
+	ErrInvalidSpec        = errors.New("invalid sandbox specification")
+	ErrUnsupported        = errors.New("unsupported sandbox capability")
+	ErrUnsafeWorkload     = errors.New("unsafe workload for sandbox provider")
+	ErrSandboxNotFound    = errors.New("sandbox not found")
+	ErrSandboxTerminated  = errors.New("sandbox terminated")
+	ErrAttestationFailed  = errors.New("sandbox attestation failed")
+	ErrCleanupFailed      = errors.New("sandbox cleanup failed")
+	ErrCredentialDetected = errors.New("credential-like sandbox content rejected")
 )
 
 type sandboxState struct {
@@ -151,6 +154,9 @@ func (p *Provider) Exec(ctx context.Context, id string, req ExecRequest) (ExecRe
 	if req.WorkingDir != "" && !validRelativePath(req.WorkingDir) {
 		return ExecResult{}, ErrInvalidSpec
 	}
+	if execRequestContainsCredential(req) {
+		return ExecResult{}, ErrCredentialDetected
+	}
 	remaining := handle.CreatedAt.Add(time.Duration(spec.WallTimeSeconds) * time.Second).Sub(p.clock())
 	if remaining <= 0 {
 		return ExecResult{}, ErrSandboxTerminated
@@ -161,7 +167,29 @@ func (p *Provider) Exec(ctx context.Context, id string, req ExecRequest) (ExecRe
 	}
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	return p.backend.Exec(execCtx, id, cloneExec(req))
+	result, err := p.backend.Exec(execCtx, id, cloneExec(req))
+	if err != nil {
+		if credentials.Contains(err.Error()) {
+			return ExecResult{}, ErrCredentialDetected
+		}
+		return result, err
+	}
+	if len(credentials.ScanBytes(result.Stdout)) != 0 || len(credentials.ScanBytes(result.Stderr)) != 0 {
+		return ExecResult{}, ErrCredentialDetected
+	}
+	return result, nil
+}
+
+func execRequestContainsCredential(request ExecRequest) bool {
+	if credentials.Contains(request.Executable) || credentials.Contains(request.WorkingDir) {
+		return true
+	}
+	for _, argument := range request.Arguments {
+		if credentials.Contains(argument) {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Provider) Export(ctx context.Context, id string, paths []string) ([]ArtifactRef, error) {
