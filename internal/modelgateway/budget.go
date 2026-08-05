@@ -190,19 +190,11 @@ func (l *BudgetLedger) reserve(ctx context.Context, tenantID, accountID, reserva
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	reservationKey, existing, exists := l.lookupReservationLocked(tenantID, reservationID)
-	fromRequest := false
-	if !exists {
-		reservationKey, existing, exists = l.lookupReservationByRequestLocked(tenantID, accountID, requestID)
-		fromRequest = exists
-	}
 	if exists {
 		if existing.State == ReservationOpen && !l.clock().UTC().Before(existing.ExpiresAt) {
 			existing.State = ReservationReconcile
 			l.reservations[reservationKey] = existing
 			return Reservation{}, false, ErrReconciliationRequired
-		}
-		if fromRequest && claim {
-			return Reservation{}, false, ErrRequestConflict
 		}
 		if existing.AccountID == accountID && existing.RequestID == requestID && existing.ReservedMicros == amountMicros && existing.State == ReservationOpen {
 			return existing, !claim, nil
@@ -212,15 +204,18 @@ func (l *BudgetLedger) reserve(ctx context.Context, tenantID, accountID, reserva
 		}
 		return Reservation{}, false, ErrReservationConflict
 	}
-	if claim {
-		for _, existing := range l.reservations {
-			if existing.TenantID != tenantID || existing.RequestID != requestID {
-				continue
-			}
-			if existing.State == ReservationReconcile || existing.State == ReservationOpen && !l.clock().UTC().Before(existing.ExpiresAt) {
-				return Reservation{}, false, ErrReconciliationRequired
-			}
+	for _, existing := range l.reservations {
+		if existing.TenantID != tenantID || existing.RequestID != requestID {
+			continue
+		}
+		if existing.State == ReservationReconcile || existing.State == ReservationOpen && !l.clock().UTC().Before(existing.ExpiresAt) {
+			return Reservation{}, false, ErrReconciliationRequired
+		}
+		if claim {
 			return Reservation{}, false, ErrRequestConflict
+		}
+		if existing.AccountID == accountID {
+			return Reservation{}, false, ErrReservationConflict
 		}
 	}
 	accountKey := budgetKey(tenantID, accountID)
@@ -598,15 +593,6 @@ func (l *BudgetLedger) lookupReservationLocked(tenantID, id string) (string, Res
 	key = budgetKey(tenantID, generatedID)
 	reservation, found := l.reservations[key]
 	return key, reservation, found
-}
-
-func (l *BudgetLedger) lookupReservationByRequestLocked(tenantID, accountID, requestID string) (string, Reservation, bool) {
-	for key, reservation := range l.reservations {
-		if reservation.TenantID == tenantID && reservation.AccountID == accountID && reservation.RequestID == requestID {
-			return key, reservation, true
-		}
-	}
-	return "", Reservation{}, false
 }
 
 func (l *BudgetLedger) ExpireReservations(ctx context.Context, tenantID string, limit int) ([]Reservation, error) {
