@@ -184,3 +184,50 @@ jobs:
           GOPROXY: https://proxy.golang.org
           GOSUMDB: sum.golang.org
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+
+  container-vulnerabilities:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: aor-server
+            target: final
+            image: aor/aor-server:ci
+          - component: aor-model-gateway
+            target: final
+            image: aor/aor-model-gateway:ci
+          - component: aor-tool-broker
+            target: tool-broker-runtime
+            image: aor/aor-tool-broker:ci
+          - component: aor-worker
+            target: worker-runtime
+            image: aor/aor-worker:ci
+    steps:
+      - name: Check out source
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          persist-credentials: false
+      - name: Build runtime image
+        run: >-
+          docker build
+          --file deploy/compose/Dockerfile
+          --target ${{ matrix.target }}
+          --build-arg AOR_COMPONENT=${{ matrix.component }}
+          --tag ${{ matrix.image }}
+          .
+      - name: Reject High and Critical image vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ matrix.image }}
+          version: v0.73.0
+          scanners: vuln
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: 1
+          format: table
+          timeout: 10m0s
