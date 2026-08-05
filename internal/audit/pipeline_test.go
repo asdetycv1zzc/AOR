@@ -154,7 +154,7 @@ func TestPersistentPipelineStoresStructuredLLMRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	manifest := testManifest()
-	input := DeterministicInput{TenantID: "tenant-1", SubmissionID: "11111111-1111-4111-8111-111111111111", Manifest: manifest, ModuleSpecRef: manifest.ModuleSpecRef, AllowedPaths: []string{"owned/..."}, RequiredCriteria: []string{"criterion-1"}, PolicyDigest: digestBytes([]byte("policy")), Platform: contracts.PlatformLinux, Isolation: contracts.IsolationContainer, SandboxAttestation: "oci:sha256:container"}
+	input := DeterministicInput{TenantID: "tenant-1", AuditRunID: "01936f3e-0000-7000-8000-000000000002", SubmissionID: "11111111-1111-4111-8111-111111111111", Manifest: manifest, ModuleSpecRef: manifest.ModuleSpecRef, AllowedPaths: []string{"owned/..."}, RequiredCriteria: []string{"criterion-1"}, PolicyDigest: digestBytes([]byte("policy")), Platform: contracts.PlatformLinux, Isolation: contracts.IsolationContainer, SandboxAttestation: "oci:sha256:container"}
 	result, err := pipeline.Run(context.Background(), input)
 	if err != nil {
 		t.Fatal(err)
@@ -163,7 +163,7 @@ func TestPersistentPipelineStoresStructuredLLMRun(t *testing.T) {
 		t.Fatalf("stored runs = %d", len(runs.runs))
 	}
 	run := runs.runs[0]
-	if run.TenantID != input.TenantID || run.ProjectID != manifest.ProjectID || run.SubmissionID != input.SubmissionID || run.Phase != auditPhaseLLM || run.Verdict != "PASS" || run.EvidenceBundleRef != result.Bundle.ManifestSHA256 || !run.StartedAt.Equal(instant) || !run.CompletedAt.Equal(instant) {
+	if run.ID != input.AuditRunID || run.TenantID != input.TenantID || run.ProjectID != manifest.ProjectID || run.SubmissionID != input.SubmissionID || run.Phase != auditPhaseLLM || run.Verdict != "PASS" || run.EvidenceBundleRef != result.Bundle.ManifestSHA256 || !run.StartedAt.Equal(instant) || !run.CompletedAt.Equal(instant) {
 		t.Fatalf("unexpected persisted run: %#v", run)
 	}
 	if len(run.Findings) != 1 || run.Findings[0].StableFingerprint == "" || run.Findings[0].ObservedBehavior != finding.ObservedBehavior {
@@ -181,7 +181,7 @@ func TestPersistentPipelineStoresDeterministicFailure(t *testing.T) {
 	}
 	manifest := testManifest()
 	manifest.ChangedFiles = []string{"forbidden/file.go"}
-	input := DeterministicInput{TenantID: "tenant-1", SubmissionID: "11111111-1111-4111-8111-111111111111", Manifest: manifest, ModuleSpecRef: manifest.ModuleSpecRef, AllowedPaths: []string{"owned/..."}, RequiredCriteria: []string{"criterion-1"}, PolicyDigest: digestBytes([]byte("policy")), Platform: contracts.PlatformLinux, Isolation: contracts.IsolationContainer, SandboxAttestation: "oci:sha256:container"}
+	input := DeterministicInput{TenantID: "tenant-1", AuditRunID: "01936f3e-0000-7000-8000-000000000003", SubmissionID: "11111111-1111-4111-8111-111111111111", Manifest: manifest, ModuleSpecRef: manifest.ModuleSpecRef, AllowedPaths: []string{"owned/..."}, RequiredCriteria: []string{"criterion-1"}, PolicyDigest: digestBytes([]byte("policy")), Platform: contracts.PlatformLinux, Isolation: contracts.IsolationContainer, SandboxAttestation: "oci:sha256:container"}
 	if _, err := pipeline.Run(context.Background(), input); !errors.Is(err, ErrDeterministicGate) {
 		t.Fatalf("deterministic failure error = %v", err)
 	}
@@ -200,7 +200,7 @@ func TestPersistentPipelineFailsClosedAfterEvidenceWhenRunStoreFails(t *testing.
 		t.Fatal(err)
 	}
 	manifest := testManifest()
-	input := DeterministicInput{TenantID: "tenant-1", SubmissionID: "11111111-1111-4111-8111-111111111111", Manifest: manifest, ModuleSpecRef: manifest.ModuleSpecRef, AllowedPaths: []string{"owned/..."}, RequiredCriteria: []string{"criterion-1"}, PolicyDigest: digestBytes([]byte("policy")), Platform: contracts.PlatformLinux, Isolation: contracts.IsolationContainer, SandboxAttestation: "oci:sha256:container"}
+	input := DeterministicInput{TenantID: "tenant-1", AuditRunID: "01936f3e-0000-7000-8000-000000000004", SubmissionID: "11111111-1111-4111-8111-111111111111", Manifest: manifest, ModuleSpecRef: manifest.ModuleSpecRef, AllowedPaths: []string{"owned/..."}, RequiredCriteria: []string{"criterion-1"}, PolicyDigest: digestBytes([]byte("policy")), Platform: contracts.PlatformLinux, Isolation: contracts.IsolationContainer, SandboxAttestation: "oci:sha256:container"}
 	if _, err := pipeline.Run(context.Background(), input); !errors.Is(err, persistenceErr) {
 		t.Fatalf("persistence error = %v", err)
 	}

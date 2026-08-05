@@ -34,6 +34,7 @@ func TestPostgresAuditRunStorePersistsCompletedRunIdempotently(t *testing.T) {
 	run.TenantID = uuid.Must(uuid.NewV7()).String()
 	run.ProjectID = uuid.Must(uuid.NewV7()).String()
 	run.SubmissionID = uuid.Must(uuid.NewV7()).String()
+	run.ID = uuid.Must(uuid.NewV7()).String()
 	goalID := uuid.Must(uuid.NewV7()).String()
 	planID := uuid.Must(uuid.NewV7()).String()
 	moduleSpecID := uuid.Must(uuid.NewV7()).String()
@@ -131,14 +132,14 @@ VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, 1,
 	if err := admin.QueryRowContext(ctx, `
 SELECT count(*), max(state), max(verdict), max(evidence_bundle_ref)
 FROM audit_runs
-WHERE tenant_id = $1::uuid AND id = $2::uuid`, run.TenantID, auditRunID(canonical)).Scan(
+WHERE tenant_id = $1::uuid AND id = $2::uuid`, run.TenantID, run.ID).Scan(
 		&runCount, &state, &verdict, &evidenceRef); err != nil {
 		t.Fatal(err)
 	}
 	if err := admin.QueryRowContext(ctx, `
 SELECT count(*), max(content_jsonb->>'observedBehavior')
 FROM audit_findings
-WHERE tenant_id = $1::uuid AND audit_run_id = $2::uuid`, run.TenantID, auditRunID(canonical)).Scan(
+WHERE tenant_id = $1::uuid AND audit_run_id = $2::uuid`, run.TenantID, run.ID).Scan(
 		&findingCount, &observed); err != nil {
 		t.Fatal(err)
 	}

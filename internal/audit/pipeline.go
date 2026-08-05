@@ -71,7 +71,7 @@ func (p *Pipeline) Run(ctx context.Context, input DeterministicInput) (AuditResu
 	}
 	var runStarted time.Time
 	if p.runStore != nil {
-		if strings.TrimSpace(input.SubmissionID) == "" {
+		if !validAuditRunID(input.AuditRunID) || strings.TrimSpace(input.SubmissionID) == "" {
 			return AuditResult{}, ErrInvalidInput
 		}
 		runStarted = p.clock().UTC()
@@ -180,6 +180,7 @@ func (p *Pipeline) persistResult(ctx context.Context, input DeterministicInput, 
 		phase = "LLM"
 	}
 	return p.runStore.Put(ctx, AuditRun{
+		ID:                input.AuditRunID,
 		TenantID:          input.TenantID,
 		ProjectID:         input.Manifest.ProjectID,
 		SubmissionID:      input.SubmissionID,

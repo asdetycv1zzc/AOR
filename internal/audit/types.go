@@ -10,6 +10,7 @@ import (
 
 	"github.com/akimisaka/aor/internal/artifact"
 	"github.com/akimisaka/aor/pkg/contracts"
+	"github.com/google/uuid"
 )
 
 var (
@@ -59,6 +60,7 @@ type Check interface {
 
 type DeterministicInput struct {
 	TenantID           string
+	AuditRunID         string
 	SubmissionID       string
 	Manifest           contracts.SubmissionManifest
 	ModuleSpecRef      contracts.SpecRef
@@ -115,6 +117,7 @@ type EvidenceStore interface {
 }
 
 type AuditRun struct {
+	ID                string
 	TenantID          string
 	ProjectID         string
 	SubmissionID      string
@@ -127,6 +130,11 @@ type AuditRun struct {
 	Verdict           string
 	EvidenceBundleRef string
 	Findings          []contracts.AuditFinding
+}
+
+func validAuditRunID(value string) bool {
+	parsed, err := uuid.Parse(value)
+	return err == nil && parsed != uuid.Nil && parsed.Version() == 7 && parsed.String() == value
 }
 
 type AuditRunStore interface {

@@ -41,7 +41,6 @@ func (store *PostgresAuditRunStore) Put(ctx context.Context, run AuditRun) error
 	if err != nil {
 		return err
 	}
-	runID := auditRunID(run)
 	tx, err := store.begin(ctx, run.TenantID)
 	if err != nil {
 		return err
@@ -54,7 +53,7 @@ INSERT INTO audit_runs
    state, pipeline_version, execution_platform, isolation_level, started_at)
 VALUES
   ($1::uuid, $2::uuid, $3::uuid, 'SUBMISSION', $4, $4::uuid, $5, $6, $7, $8, $9, $10)
-ON CONFLICT (id) DO NOTHING`, runID, run.TenantID, run.ProjectID, run.SubmissionID,
+ON CONFLICT (id) DO NOTHING`, run.ID, run.TenantID, run.ProjectID, run.SubmissionID,
 		run.Phase, auditRunRunning, run.PipelineVersion, run.Platform, run.Isolation, run.StartedAt)
 	if err != nil {
 		return err
@@ -64,21 +63,21 @@ ON CONFLICT (id) DO NOTHING`, runID, run.TenantID, run.ProjectID, run.Submission
 		return err
 	}
 	if inserted == 0 {
-		if err := verifyStoredAuditRun(ctx, tx, runID, run); err != nil {
+		if err := verifyStoredAuditRun(ctx, tx, run.ID, run); err != nil {
 			return err
 		}
 		return tx.Commit()
 	}
 
 	for _, finding := range run.Findings {
-		if err := insertAuditFinding(ctx, tx, runID, run.TenantID, finding); err != nil {
+		if err := insertAuditFinding(ctx, tx, run.ID, run.TenantID, finding); err != nil {
 			return err
 		}
 	}
 	result, err = tx.ExecContext(ctx, `
 UPDATE audit_runs
 SET state = $3, completed_at = $4, verdict = $5, evidence_bundle_ref = $6
-WHERE tenant_id = $1::uuid AND id = $2::uuid AND state = $7`, run.TenantID, runID,
+WHERE tenant_id = $1::uuid AND id = $2::uuid AND state = $7`, run.TenantID, run.ID,
 		auditRunCompleted, run.CompletedAt, run.Verdict, run.EvidenceBundleRef, auditRunRunning)
 	if err != nil {
 		return err
@@ -114,7 +113,7 @@ func (store *PostgresAuditRunStore) begin(ctx context.Context, tenantID string) 
 }
 
 func canonicalAuditRun(run AuditRun) (AuditRun, error) {
-	if !canonicalAuditUUID(run.TenantID) || !canonicalAuditUUID(run.ProjectID) || !canonicalAuditUUID(run.SubmissionID) ||
+	if !validAuditRunID(run.ID) || !canonicalAuditUUID(run.TenantID) || !canonicalAuditUUID(run.ProjectID) || !canonicalAuditUUID(run.SubmissionID) ||
 		(run.Phase != auditPhaseDeterministic && run.Phase != auditPhaseLLM) ||
 		!pipelineVersionPattern.MatchString(run.PipelineVersion) ||
 		!contractsPlatformIsolation(run.Platform, run.Isolation) ||
@@ -137,16 +136,11 @@ func canonicalAuditUUID(value string) bool {
 	return err == nil && parsed != uuid.Nil && parsed.String() == value
 }
 
-func auditRunID(run AuditRun) string {
-	seed := run.TenantID + "\x00" + run.SubmissionID + "\x00" + run.Phase + "\x00" + run.PipelineVersion
-	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(seed)).String()
-}
-
-func auditFindingID(runID, fingerprint string) string {
-	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(runID+"\x00"+fingerprint)).String()
-}
-
 func insertAuditFinding(ctx context.Context, tx *sql.Tx, runID, tenantID string, finding contracts.AuditFinding) error {
+	findingID, err := uuid.NewV7()
+	if err != nil {
+		return err
+	}
 	content, err := json.Marshal(finding)
 	if err != nil {
 		return ErrInvalidInput
@@ -161,7 +155,7 @@ INSERT INTO audit_findings
    file_path, line_start, line_end, status, content_jsonb, evidence_refs_jsonb)
 VALUES
   ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13::jsonb)`,
-		auditFindingID(runID, finding.StableFingerprint), tenantID, runID, finding.StableFingerprint,
+		findingID.String(), tenantID, runID, finding.StableFingerprint,
 		finding.Severity, finding.Category, finding.RuleID, nullableFindingFile(finding.File),
 		nullableFindingLine(finding.LineStart), nullableFindingLine(finding.LineEnd), finding.Status,
 		content, evidenceRefs)
