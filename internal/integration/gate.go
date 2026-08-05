@@ -118,11 +118,11 @@ func (g *AuthoritativeGate) Validate(ctx context.Context, request Request) (Veri
 			return VerifiedRequest{}, ErrNotAudited
 		}
 		submission, err := g.submissions.Current(ctx, task)
-		if err != nil || submission.Manifest.ProjectID != request.ProjectID || submission.Manifest.ModuleTaskID != task.ID || submission.Manifest.AttemptSeriesID != task.AttemptSeriesID || submission.Manifest.Attempt != task.Attempt || submission.Manifest.ModuleSpecRef != task.ModuleSpecRef || submission.Manifest.HeadCommit != untrusted.SubmissionCommit || submission.Manifest.BaseCommit != request.BaseCommit || submission.Manifest.Validate() != nil {
+		if err != nil || submission.Manifest.ProjectID != request.ProjectID || submission.Manifest.ModuleTaskID != task.ID || submission.Manifest.AttemptSeriesID != task.AttemptSeriesID || submission.Manifest.Attempt != task.Attempt || submission.Manifest.ModuleSpecRef != task.ModuleSpecRef || submission.Manifest.HeadCommit != untrusted.SubmissionCommit || submission.Manifest.Validate() != nil {
 			return VerifiedRequest{}, ErrNotAudited
 		}
 		record, err := g.evidence.Verified(ctx, task, submission, untrusted.EvidenceSHA256)
-		if err != nil || !record.Passed || record.SHA256 != untrusted.EvidenceSHA256 || record.ProjectID != request.ProjectID || record.TaskID != task.ID || record.AttemptSeriesID != task.AttemptSeriesID || record.Attempt != task.Attempt || record.ModuleSpecRef != task.ModuleSpecRef || record.BaseCommit != request.BaseCommit || record.SubmissionCommit != submission.Manifest.HeadCommit || record.PolicyDigest != request.PolicyDigest {
+		if err != nil || !record.Passed || record.SHA256 != untrusted.EvidenceSHA256 || record.ProjectID != request.ProjectID || record.TaskID != task.ID || record.AttemptSeriesID != task.AttemptSeriesID || record.Attempt != task.Attempt || record.ModuleSpecRef != task.ModuleSpecRef || record.BaseCommit != submission.Manifest.BaseCommit || record.SubmissionCommit != submission.Manifest.HeadCommit || record.PolicyDigest != request.PolicyDigest {
 			return VerifiedRequest{}, ErrNotAudited
 		}
 		module, err := g.modules.Current(ctx, request.TenantID, request.ProjectID, untrusted.ModuleID, task.ModuleSpecRef)
