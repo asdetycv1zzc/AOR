@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"time"
 
 	"github.com/akimisaka/aor/internal/agentruntime"
 	"github.com/akimisaka/aor/internal/modelgateway"
@@ -47,6 +48,7 @@ type PreparedRun struct {
 	ExecutionPlatform  contracts.ExecutionPlatform
 	IsolationLevel     contracts.IsolationLevel
 	SandboxImageDigest string
+	Environment        EnvironmentSession
 }
 
 // Preparer must load the approved GoalSpec, published PlanSpec, integrated
@@ -54,6 +56,7 @@ type PreparedRun struct {
 // authoritative services. Request fields are identities, not evidence.
 type Preparer interface {
 	Prepare(context.Context, Request, state.Project) (PreparedRun, error)
+	Release(context.Context, PreparedRun) error
 }
 
 type Runtime interface {
@@ -95,7 +98,7 @@ func New(config Config) (*Service, error) {
 	}, nil
 }
 
-func (service *Service) Run(ctx context.Context, request Request) (Result, error) {
+func (service *Service) Run(ctx context.Context, request Request) (result Result, err error) {
 	if service == nil || ctx == nil || ctx.Err() != nil || !uuidV7(request.RunID) || !canonicalUUID(request.TenantID) || !canonicalUUID(request.ProjectID) {
 		return Result{}, ErrInvalidRequest
 	}
@@ -119,6 +122,28 @@ func (service *Service) Run(ctx context.Context, request Request) (Result, error
 	if err != nil {
 		return Result{}, err
 	}
+	activeEnvironment := prepared.Environment.ID != ""
+	releasedEnvironment := false
+	releaseEnvironment := func() error {
+		if !activeEnvironment || releasedEnvironment {
+			return nil
+		}
+		cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		releaseErr := service.preparer.Release(cleanupContext, prepared)
+		cancel()
+		if releaseErr == nil {
+			releasedEnvironment = true
+		}
+		return releaseErr
+	}
+	defer func() {
+		if !activeEnvironment || releasedEnvironment {
+			return
+		}
+		if cleanupErr := releaseEnvironment(); cleanupErr != nil {
+			err = errors.Join(err, cleanupErr)
+		}
+	}()
 	if err := validatePreparedRun(request, project, prepared); err != nil {
 		return Result{}, err
 	}
@@ -129,6 +154,9 @@ func (service *Service) Run(ctx context.Context, request Request) (Result, error
 	var decision Decision
 	if err := decodeStrict(accepted.Payload, &decision); err != nil {
 		return Result{}, ErrInvalidReport
+	}
+	if err := releaseEnvironment(); err != nil {
+		return Result{}, err
 	}
 	report := Report{
 		ReportVersion: ReportVersion, RunID: request.RunID, TenantID: request.TenantID, ProjectID: request.ProjectID,
@@ -219,6 +247,8 @@ func validatePreparedRun(request Request, project state.Project, prepared Prepar
 		prepared.ModelCall.RequestID == "" || !safeText(prepared.ModelCall.Provider, 256) || !safeText(prepared.ModelCall.Model, 256) ||
 		prepared.MaxToolRounds < 1 || prepared.MaxToolRounds > agentruntime.MaximumNativeToolRounds || !commitPattern.MatchString(prepared.ReleaseCommit) ||
 		prepared.ExecutionPlatform != contracts.PlatformLinux || prepared.IsolationLevel != contracts.IsolationContainer || !digestPattern.MatchString(prepared.SandboxImageDigest) ||
+		!validEnvironmentSession(prepared.Environment) || prepared.Environment.Facts.ExecutionPlatform != prepared.ExecutionPlatform ||
+		prepared.Environment.Facts.IsolationLevel != prepared.IsolationLevel || prepared.Environment.Facts.SandboxImageDigest != prepared.SandboxImageDigest ||
 		!validCriteria(prepared.RequiredCriteria) || declaration.ResponseSchemaRef != DecisionSchemaReference || !sameDecisionSchema(declaration.ResponseSchema) ||
 		!readOnlyTools(declaration.Tools) {
 		return ErrInvalidRequest

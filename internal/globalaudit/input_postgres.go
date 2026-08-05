@@ -25,26 +25,19 @@ type EnvironmentFacts struct {
 	SandboxImageDigest string
 }
 
-// EnvironmentSource resolves facts from the already-created, attested audit
-// environment. Configuration values supplied by the caller are not evidence.
-type EnvironmentSource interface {
-	Resolve(context.Context, Request, state.Project, string) (EnvironmentFacts, error)
-}
-
 type PostgresInputSource struct {
-	database    *sql.DB
-	environment EnvironmentSource
+	database *sql.DB
 }
 
-func NewPostgresInputSource(database *sql.DB, environment EnvironmentSource) (*PostgresInputSource, error) {
-	if database == nil || environment == nil {
+func NewPostgresInputSource(database *sql.DB) (*PostgresInputSource, error) {
+	if database == nil {
 		return nil, ErrRuntimeUnavailable
 	}
-	return &PostgresInputSource{database: database, environment: environment}, nil
+	return &PostgresInputSource{database: database}, nil
 }
 
 func (source *PostgresInputSource) Load(ctx context.Context, request Request, project state.Project) (InputSnapshot, error) {
-	if source == nil || source.database == nil || source.environment == nil || ctx == nil || ctx.Err() != nil ||
+	if source == nil || source.database == nil || ctx == nil || ctx.Err() != nil ||
 		!tenantBound(ctx, request.TenantID) || !uuidV7(request.RunID) || !validProject(project, request) {
 		return InputSnapshot{}, ErrInvalidRequest
 	}
@@ -63,17 +56,6 @@ func (source *PostgresInputSource) Load(ctx context.Context, request Request, pr
 	if err := tx.Commit(); err != nil {
 		return InputSnapshot{}, err
 	}
-	facts, err := source.environment.Resolve(ctx, request, project, snapshot.ReleaseCommit)
-	if err != nil {
-		return InputSnapshot{}, err
-	}
-	if facts.ExecutionPlatform != contracts.PlatformLinux || facts.IsolationLevel != contracts.IsolationContainer ||
-		!digestPattern.MatchString(facts.SandboxImageDigest) {
-		return InputSnapshot{}, ErrProjectNotReady
-	}
-	snapshot.ExecutionPlatform = facts.ExecutionPlatform
-	snapshot.IsolationLevel = facts.IsolationLevel
-	snapshot.SandboxImageDigest = facts.SandboxImageDigest
 	return snapshot, nil
 }
 

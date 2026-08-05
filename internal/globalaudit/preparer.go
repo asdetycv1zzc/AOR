@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"math"
 	"reflect"
 	"sort"
@@ -73,6 +74,7 @@ type globalAuditLeaseIssuer interface {
 type PreparerConfig struct {
 	Inputs        InputSource
 	Agents        AgentRegistry
+	Environment   EnvironmentSource
 	Leases        globalAuditLeaseIssuer
 	Tools         []toolbroker.ToolDescriptor
 	Route         goalplan.ModelRoute
@@ -84,6 +86,7 @@ type PreparerConfig struct {
 type AuthoritativePreparer struct {
 	inputs        InputSource
 	agents        AgentRegistry
+	environment   EnvironmentSource
 	leases        globalAuditLeaseIssuer
 	tools         []modelgateway.ToolDefinition
 	route         goalplan.ModelRoute
@@ -93,7 +96,7 @@ type AuthoritativePreparer struct {
 }
 
 func NewAuthoritativePreparer(config PreparerConfig) (*AuthoritativePreparer, error) {
-	if config.Inputs == nil || config.Agents == nil || config.Leases == nil || !validGlobalAuditRoute(config.Route) {
+	if config.Inputs == nil || config.Agents == nil || config.Environment == nil || config.Leases == nil || !validGlobalAuditRoute(config.Route) {
 		return nil, ErrRuntimeUnavailable
 	}
 	if config.Clock == nil {
@@ -116,13 +119,13 @@ func NewAuthoritativePreparer(config PreparerConfig) (*AuthoritativePreparer, er
 		return nil, err
 	}
 	return &AuthoritativePreparer{
-		inputs: config.Inputs, agents: config.Agents, leases: config.Leases, tools: tools,
+		inputs: config.Inputs, agents: config.Agents, environment: config.Environment, leases: config.Leases, tools: tools,
 		route: cloneGlobalAuditRoute(config.Route), leaseTTL: config.LeaseTTL,
 		maxToolRounds: config.MaxToolRounds, clock: config.Clock,
 	}, nil
 }
 
-func (preparer *AuthoritativePreparer) Prepare(ctx context.Context, request Request, project state.Project) (PreparedRun, error) {
+func (preparer *AuthoritativePreparer) Prepare(ctx context.Context, request Request, project state.Project) (prepared PreparedRun, err error) {
 	if preparer == nil || ctx == nil || ctx.Err() != nil || !uuidV7(request.RunID) || !validProject(project, request) || project.PromptBundleVersion != prompts.BaselineVersion {
 		return PreparedRun{}, ErrInvalidRequest
 	}
@@ -130,6 +133,25 @@ func (preparer *AuthoritativePreparer) Prepare(ctx context.Context, request Requ
 	if err != nil {
 		return PreparedRun{}, err
 	}
+	environment, err := preparer.environment.Acquire(ctx, request, project, input.ReleaseCommit)
+	if err != nil {
+		return PreparedRun{}, err
+	}
+	acquired := environment.ID != ""
+	defer func() {
+		if !acquired {
+			return
+		}
+		cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		cleanupErr := preparer.environment.Release(cleanupContext, environment)
+		cancel()
+		if cleanupErr != nil {
+			err = errors.Join(err, cleanupErr)
+		}
+	}()
+	input.ExecutionPlatform = environment.Facts.ExecutionPlatform
+	input.IsolationLevel = environment.Facts.IsolationLevel
+	input.SandboxImageDigest = environment.Facts.SandboxImageDigest
 	goalJSON, planJSON, criteria, artifactRefs, err := validateGlobalAuditInput(project, input)
 	if err != nil {
 		return PreparedRun{}, err
@@ -228,7 +250,7 @@ func (preparer *AuthoritativePreparer) Prepare(ctx context.Context, request Requ
 	if _, err := agentruntime.AssemblePrompt(bundle, manifest, declaration.ResponseSchemaRef, declaration.ResponseSchema); err != nil {
 		return PreparedRun{}, ErrInvalidRequest
 	}
-	return PreparedRun{
+	prepared = PreparedRun{
 		Declaration: declaration, Lease: globalAuditAgentLease(lease),
 		ModelCall: agentruntime.ModelCall{
 			RequestID: requestID, Provider: preparer.route.Provider, Model: preparer.route.Model, ReservationID: reservationID,
@@ -239,7 +261,17 @@ func (preparer *AuthoritativePreparer) Prepare(ctx context.Context, request Requ
 		MaxToolRounds: preparer.maxToolRounds, ReleaseCommit: input.ReleaseCommit,
 		RequiredCriteria: criteria, ExecutionPlatform: input.ExecutionPlatform,
 		IsolationLevel: input.IsolationLevel, SandboxImageDigest: input.SandboxImageDigest,
-	}, nil
+		Environment: environment,
+	}
+	acquired = false
+	return prepared, nil
+}
+
+func (preparer *AuthoritativePreparer) Release(ctx context.Context, prepared PreparedRun) error {
+	if preparer == nil || preparer.environment == nil || ctx == nil || ctx.Err() != nil {
+		return ErrInvalidRequest
+	}
+	return preparer.environment.Release(ctx, prepared.Environment)
 }
 
 func validateGlobalAuditInput(project state.Project, input InputSnapshot) ([]byte, []byte, []string, []string, error) {
