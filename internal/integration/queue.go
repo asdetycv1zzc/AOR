@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"path"
 	"reflect"
 	"sort"
@@ -47,6 +47,16 @@ func (q *Queue) Audit(ctx context.Context, request Request) (Audit, error) {
 		return Audit{}, err
 	}
 	return q.auditVerified(verified)
+}
+
+func (q *Queue) Task(ctx context.Context, tenantID, integrationID string) (IntegrationTask, bool, error) {
+	return q.store.GetTask(ctx, tenantID, integrationID)
+}
+
+func (q *Queue) StartAttempt(ctx context.Context, request StartAttemptRequest) (IntegrationTask, bool, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.store.StartAttempt(ctx, request)
 }
 
 func (q *Queue) auditVerified(request VerifiedRequest) (Audit, error) {
@@ -104,19 +114,13 @@ func (q *Queue) Merge(ctx context.Context, request Request) (MergeResult, error)
 		return MergeResult{}, err
 	}
 	if !audit.Passed {
-		conflict := MergeResult{TenantID: verified.TenantID, IntegrationID: verified.IntegrationID, ProjectID: verified.ProjectID, Audit: audit}
-		stored, created, err := q.store.RecordConflict(ctx, conflict)
-		if err != nil {
-			return conflict, err
-		}
-		stored.Duplicate = !created
-		return stored, ErrConflict
+		return q.recordConflict(ctx, verified, audit)
 	}
 	requestDigest, err := requestDigest(request, verified)
 	if err != nil {
 		return MergeResult{}, err
 	}
-	reservation := MergeResult{TenantID: verified.TenantID, IntegrationID: verified.IntegrationID, ProjectID: verified.ProjectID, RequestDigest: requestDigest, Audit: audit, Pending: true}
+	reservation := MergeResult{TenantID: verified.TenantID, IntegrationID: verified.IntegrationID, ProjectID: verified.ProjectID, OwnerTaskID: verified.OwnerTaskID, Attempt: verified.Attempt, RequestDigest: requestDigest, Audit: audit, Pending: true}
 	prior, owner, err := q.store.Reserve(ctx, reservation)
 	if err != nil {
 		return MergeResult{}, err
@@ -147,12 +151,76 @@ func (q *Queue) Merge(ctx context.Context, request Request) (MergeResult, error)
 	sort.Strings(commits)
 	commit, err := q.executor.Merge(ctx, verified.BaseCommit, commits, verified.IntegrationID)
 	if err != nil {
-		return MergeResult{TenantID: verified.TenantID, IntegrationID: verified.IntegrationID, ProjectID: verified.ProjectID, Audit: audit, Pending: true}, fmt.Errorf("%w: %v", ErrMergeConflict, err)
+		if recovered, found, lookupErr := q.executor.Lookup(ctx, verified.IntegrationID); lookupErr != nil {
+			return reservation, errors.Join(ErrMergePending, err, lookupErr)
+		} else if found {
+			if _, verifyErr := q.reverifyReservation(ctx, request, reservation); verifyErr != nil {
+				return reservation, verifyErr
+			}
+			return q.completeRecovered(ctx, reservation, recovered)
+		}
+		if !errors.Is(err, ErrMergeConflict) {
+			return reservation, errors.Join(ErrMergePending, err)
+		}
+		failure, failureErr := q.mergeFailureAudit(verified)
+		if failureErr != nil {
+			return reservation, failureErr
+		}
+		return q.recordConflict(ctx, verified, failure)
 	}
 	if _, err := q.reverifyReservation(ctx, request, reservation); err != nil {
 		return reservation, err
 	}
 	return q.completeRecovered(ctx, reservation, commit)
+}
+
+func (q *Queue) recordConflict(ctx context.Context, request VerifiedRequest, audit Audit) (MergeResult, error) {
+	owner := request.OwnerTaskID
+	if owner == "" {
+		owner = conflictOwner(audit, request.Candidates)
+	}
+	conflict := MergeResult{
+		TenantID: request.TenantID, IntegrationID: request.IntegrationID, ProjectID: request.ProjectID,
+		OwnerTaskID: owner, Attempt: request.Attempt, Audit: audit,
+	}
+	if owner == "" {
+		return conflict, ErrInvalidRequest
+	}
+	stored, changed, err := q.store.RecordConflict(ctx, conflict)
+	if err != nil {
+		return conflict, err
+	}
+	stored.Duplicate = !changed
+	task, found, err := q.store.GetTask(ctx, request.TenantID, request.IntegrationID)
+	if err != nil {
+		return stored, err
+	}
+	if !found {
+		return stored, ErrAttemptState
+	}
+	if task.State == TaskBlockedUserDecision {
+		return stored, errors.Join(ErrConflict, ErrAttemptsExhausted)
+	}
+	return stored, ErrConflict
+}
+
+func (q *Queue) mergeFailureAudit(request VerifiedRequest) (Audit, error) {
+	tasks := make([]string, 0, len(request.Candidates))
+	for _, candidate := range canonicalCandidates(request.Candidates) {
+		tasks = append(tasks, candidate.TaskID)
+	}
+	finding := Finding{
+		ID: "merge-conflict", Severity: "BLOCKING", Category: "MERGE",
+		Summary: "repository merge could not create an integration commit", Tasks: tasks,
+	}
+	digest, err := auditDigest(request, []Finding{finding})
+	if err != nil {
+		return Audit{}, err
+	}
+	return Audit{
+		IntegrationID: request.IntegrationID, ProjectID: request.ProjectID,
+		Findings: []Finding{finding}, EvidenceSHA256: digest, CreatedAt: q.clock().UTC(),
+	}, nil
 }
 
 func (q *Queue) reverifyReservation(ctx context.Context, request Request, reservation MergeResult) (VerifiedRequest, error) {
@@ -195,7 +263,7 @@ func (q *Queue) verify(ctx context.Context, request Request) (VerifiedRequest, e
 }
 
 func validateRequest(request Request) error {
-	if request.TenantID == "" || request.ProjectID == "" || request.IntegrationID == "" || request.IdempotencyKey == "" || strings.ContainsAny(request.IdempotencyKey, "\r\n\x00") || !commitID(request.BaseCommit) || len(request.Candidates) == 0 || !digestPattern(request.PolicyDigest) || request.ExpectedVersion < 1 || request.CreatedAt.IsZero() || request.PrincipalID == "" || request.LeaseID == "" || request.FencingToken < 1 {
+	if request.TenantID == "" || request.ProjectID == "" || request.IntegrationID == "" || request.IdempotencyKey == "" || strings.ContainsAny(request.IdempotencyKey, "\r\n\x00") || !commitID(request.BaseCommit) || len(request.Candidates) == 0 || !digestPattern(request.PolicyDigest) || request.ExpectedVersion < 1 || request.CreatedAt.IsZero() || request.PrincipalID == "" || request.LeaseID == "" || request.FencingToken < 1 || !validAttemptBinding(request.OwnerTaskID, request.Attempt) {
 		return ErrInvalidRequest
 	}
 	seenTasks := make(map[string]bool, len(request.Candidates))
@@ -205,11 +273,14 @@ func validateRequest(request Request) error {
 		}
 		seenTasks[candidate.TaskID] = true
 	}
+	if request.Attempt > 0 && !seenTasks[request.OwnerTaskID] {
+		return ErrInvalidRequest
+	}
 	return nil
 }
 
 func validateVerifiedRequest(request VerifiedRequest) error {
-	if request.TenantID == "" || request.ProjectID == "" || request.IntegrationID == "" || !commitID(request.BaseCommit) || len(request.Candidates) == 0 || !digestPattern(request.PolicyDigest) || request.ExpectedVersion < 1 || request.PrincipalID == "" || request.LeaseID == "" || request.FencingToken < 1 || !digestPattern(request.Authorization) {
+	if request.TenantID == "" || request.ProjectID == "" || request.IntegrationID == "" || !commitID(request.BaseCommit) || len(request.Candidates) == 0 || !digestPattern(request.PolicyDigest) || request.ExpectedVersion < 1 || request.PrincipalID == "" || request.LeaseID == "" || request.FencingToken < 1 || !digestPattern(request.Authorization) || !validAttemptBinding(request.OwnerTaskID, request.Attempt) {
 		return ErrInvalidRequest
 	}
 	seenTasks := make(map[string]bool, len(request.Candidates))
@@ -218,6 +289,9 @@ func validateVerifiedRequest(request VerifiedRequest) error {
 			return ErrInvalidRequest
 		}
 		seenTasks[candidate.TaskID] = true
+	}
+	if request.Attempt > 0 && !seenTasks[request.OwnerTaskID] {
+		return ErrInvalidRequest
 	}
 	return nil
 }
@@ -233,7 +307,9 @@ func auditDigest(request VerifiedRequest, findings []Finding) (string, error) {
 		PolicyDigest  string      `json:"policyDigest"`
 		StateVersion  int64       `json:"stateVersion"`
 		Authorization string      `json:"authorization"`
-	}{request.TenantID, request.IntegrationID, request.ProjectID, request.BaseCommit, request.Candidates, findings, request.PolicyDigest, request.ExpectedVersion, request.Authorization})
+		OwnerTaskID   string      `json:"ownerTaskId,omitempty"`
+		Attempt       int         `json:"attempt"`
+	}{request.TenantID, request.IntegrationID, request.ProjectID, request.BaseCommit, request.Candidates, findings, request.PolicyDigest, request.ExpectedVersion, request.Authorization, request.OwnerTaskID, request.Attempt})
 	if err != nil {
 		return "", err
 	}
@@ -262,7 +338,9 @@ func requestDigest(request Request, verified VerifiedRequest) (string, error) {
 		LeaseID         string      `json:"leaseId"`
 		FencingToken    int64       `json:"fencingToken"`
 		Authorization   string      `json:"authorization"`
-	}{verified.TenantID, verified.ProjectID, verified.IntegrationID, request.IdempotencyKey, verified.BaseCommit, candidates, verified.PolicyDigest, verified.ExpectedVersion, request.CreatedAt.UTC().Format(time.RFC3339Nano), verified.PrincipalID, verified.LeaseID, verified.FencingToken, verified.Authorization})
+		OwnerTaskID     string      `json:"ownerTaskId,omitempty"`
+		Attempt         int         `json:"attempt"`
+	}{verified.TenantID, verified.ProjectID, verified.IntegrationID, request.IdempotencyKey, verified.BaseCommit, candidates, verified.PolicyDigest, verified.ExpectedVersion, request.CreatedAt.UTC().Format(time.RFC3339Nano), verified.PrincipalID, verified.LeaseID, verified.FencingToken, verified.Authorization, verified.OwnerTaskID, verified.Attempt})
 	if err != nil {
 		return "", err
 	}
@@ -270,7 +348,26 @@ func requestDigest(request Request, verified VerifiedRequest) (string, error) {
 }
 
 func requestMatchesVerified(request Request, verified VerifiedRequest) bool {
-	return request.TenantID == verified.TenantID && request.ProjectID == verified.ProjectID && request.IntegrationID == verified.IntegrationID && request.BaseCommit == verified.BaseCommit && request.PolicyDigest == verified.PolicyDigest && request.ExpectedVersion == verified.ExpectedVersion && request.PrincipalID == verified.PrincipalID && request.LeaseID == verified.LeaseID && request.FencingToken == verified.FencingToken && reflect.DeepEqual(canonicalCandidates(request.Candidates), canonicalCandidates(verified.Candidates))
+	return request.TenantID == verified.TenantID && request.ProjectID == verified.ProjectID && request.IntegrationID == verified.IntegrationID && request.BaseCommit == verified.BaseCommit && request.PolicyDigest == verified.PolicyDigest && request.ExpectedVersion == verified.ExpectedVersion && request.PrincipalID == verified.PrincipalID && request.LeaseID == verified.LeaseID && request.FencingToken == verified.FencingToken && request.OwnerTaskID == verified.OwnerTaskID && request.Attempt == verified.Attempt && reflect.DeepEqual(canonicalCandidates(request.Candidates), canonicalCandidates(verified.Candidates))
+}
+
+func validAttemptBinding(ownerTaskID string, attempt int) bool {
+	return attempt == 0 && ownerTaskID == "" || attempt >= 1 && attempt <= 3 && ownerTaskID != ""
+}
+
+func conflictOwner(audit Audit, candidates []Candidate) string {
+	allowed := make(map[string]bool, len(candidates))
+	for _, candidate := range candidates {
+		allowed[candidate.TaskID] = true
+	}
+	for _, finding := range audit.Findings {
+		for index := len(finding.Tasks) - 1; index >= 0; index-- {
+			if allowed[finding.Tasks[index]] {
+				return finding.Tasks[index]
+			}
+		}
+	}
+	return ""
 }
 
 func canonicalCandidates(input []Candidate) []Candidate {

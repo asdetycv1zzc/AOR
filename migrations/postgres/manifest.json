@@ -169,6 +169,13 @@
       "file": "000024_audit_integration_runtime.up.sql",
       "sha256": "sha256:6a869780d8ba7d2d2923c80cdbb73126a681df2941182baa80212057c71d4426",
       "destructive": false
+    },
+    {
+      "version": 25,
+      "mode": "EXPAND",
+      "file": "000025_integration_task_lifecycle.up.sql",
+      "sha256": "sha256:1742f64ed8b356647a37c68e529c9e191003568d12c5c16ec5647a4aec306933",
+      "destructive": false
     }
   ]
 }

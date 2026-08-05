@@ -78,6 +78,8 @@ type AuthorizationRequest struct {
 	ExpectedVersion int64
 	BaseCommit      string
 	Candidates      []Candidate
+	OwnerTaskID     string
+	Attempt         int
 }
 
 type IntegrationAuthorizer interface {
@@ -132,11 +134,11 @@ func (g *AuthoritativeGate) Validate(ctx context.Context, request Request) (Veri
 		candidates = append(candidates, Candidate{TaskID: task.ID, ModuleID: module.ModuleID, SubmissionCommit: submission.Manifest.HeadCommit, ModuleSpecRef: task.ModuleSpecRef, OwnedPaths: append([]string(nil), module.OwnedPaths...), PublicInterfaces: append([]string(nil), module.PublicInterfaces...), EvidenceSHA256: record.SHA256, AuditPassed: true})
 	}
 	candidates = canonicalCandidates(candidates)
-	authorization, err := g.authorizer.Authorize(ctx, AuthorizationRequest{TenantID: request.TenantID, ProjectID: request.ProjectID, IntegrationID: request.IntegrationID, PrincipalID: request.PrincipalID, LeaseID: request.LeaseID, FencingToken: request.FencingToken, PolicyDigest: facts.PolicyDigest, ExpectedVersion: facts.StateVersion, BaseCommit: facts.BaseCommit, Candidates: cloneCandidates(candidates)})
+	authorization, err := g.authorizer.Authorize(ctx, AuthorizationRequest{TenantID: request.TenantID, ProjectID: request.ProjectID, IntegrationID: request.IntegrationID, PrincipalID: request.PrincipalID, LeaseID: request.LeaseID, FencingToken: request.FencingToken, PolicyDigest: facts.PolicyDigest, ExpectedVersion: facts.StateVersion, BaseCommit: facts.BaseCommit, Candidates: cloneCandidates(candidates), OwnerTaskID: request.OwnerTaskID, Attempt: request.Attempt})
 	if err != nil || !digestPattern(authorization) {
 		return VerifiedRequest{}, ErrNotAudited
 	}
-	return VerifiedRequest{TenantID: facts.TenantID, ProjectID: facts.ProjectID, IntegrationID: facts.IntegrationID, BaseCommit: facts.BaseCommit, Candidates: candidates, PolicyDigest: facts.PolicyDigest, ExpectedVersion: facts.StateVersion, PrincipalID: request.PrincipalID, LeaseID: request.LeaseID, FencingToken: request.FencingToken, Authorization: authorization}, nil
+	return VerifiedRequest{TenantID: facts.TenantID, ProjectID: facts.ProjectID, IntegrationID: facts.IntegrationID, BaseCommit: facts.BaseCommit, Candidates: candidates, PolicyDigest: facts.PolicyDigest, ExpectedVersion: facts.StateVersion, PrincipalID: request.PrincipalID, LeaseID: request.LeaseID, FencingToken: request.FencingToken, Authorization: authorization, OwnerTaskID: request.OwnerTaskID, Attempt: request.Attempt}, nil
 }
 
 type EventTaskSource struct {
