@@ -68,7 +68,10 @@ func (store *PostgresSubmissionStore) Put(ctx context.Context, submission Submis
 		}
 	}
 	workspace := submission.Workspace
-	id := uuid.NewSHA1(uuid.NameSpaceOID, []byte(submissionKey(workspace.TenantID, workspace.TaskID, submission.Manifest.AttemptSeriesID, submission.Manifest.Attempt)))
+	id, err := newSubmissionID()
+	if err != nil {
+		return err
+	}
 	tx, err := store.begin(ctx, workspace.TenantID, false)
 	if err != nil {
 		return err
@@ -105,6 +108,10 @@ ON CONFLICT DO NOTHING`, id, workspace.TenantID, workspace.ProjectID, workspace.
 		}
 	}
 	return tx.Commit()
+}
+
+func newSubmissionID() (uuid.UUID, error) {
+	return uuid.NewV7()
 }
 
 func (store *PostgresSubmissionStore) begin(ctx context.Context, tenantID string, readOnly bool) (*sql.Tx, error) {

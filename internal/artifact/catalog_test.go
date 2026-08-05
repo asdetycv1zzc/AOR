@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func TestArtifactURIRequiresCanonicalSHA256(t *testing.T) {
@@ -59,10 +61,18 @@ func TestCatalogCursorIsProjectBoundAndStrict(t *testing.T) {
 	}
 }
 
-func TestDeterministicArtifactIDIsStableUUID(t *testing.T) {
-	first := deterministicArtifactID("tenant", "project", "artifact://sha256/"+strings.Repeat("0", 64))
-	second := deterministicArtifactID("tenant", "project", "artifact://sha256/"+strings.Repeat("0", 64))
-	if first != second || !uuidValuePattern.MatchString(first) {
+func TestNewArtifactIDReturnsDistinctUUIDv7Values(t *testing.T) {
+	first, err := newArtifactID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := newArtifactID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstUUID, firstErr := uuid.Parse(first)
+	secondUUID, secondErr := uuid.Parse(second)
+	if firstErr != nil || secondErr != nil || first == second || firstUUID.Version() != uuid.Version(7) || secondUUID.Version() != uuid.Version(7) {
 		t.Fatalf("artifact IDs first=%q second=%q", first, second)
 	}
 }
@@ -73,8 +83,9 @@ func TestSameContentPublicationReusesProjectArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	left := Record{ProjectID: "11111111-1111-4111-8111-111111111111", URI: uri, SHA256: digest, SizeBytes: 12, ContentType: "application/json", Classification: "INTERNAL", CreatedByPrincipal: "agent-1", Metadata: map[string]any{"requestId": "one"}}
+	left := Record{ID: "11111111-1111-7111-8111-111111111111", ProjectID: "11111111-1111-4111-8111-111111111111", URI: uri, SHA256: digest, SizeBytes: 12, ContentType: "application/json", Classification: "INTERNAL", CreatedByPrincipal: "agent-1", Metadata: map[string]any{"requestId": "one"}}
 	right := left
+	right.ID = "22222222-2222-7222-8222-222222222222"
 	right.CreatedByPrincipal = "agent-2"
 	right.Metadata = map[string]any{"requestId": "two"}
 	if !samePublication(left, right) {

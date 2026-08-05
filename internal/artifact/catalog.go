@@ -270,7 +270,11 @@ func (catalog *PostgresS3Catalog) Publish(ctx context.Context, publication Publi
 	uri, _ := URIFromDigest(digest)
 	artifactID := publication.ArtifactID
 	if artifactID == "" {
-		artifactID = deterministicArtifactID(publication.TenantID, publication.ProjectID, uri)
+		generatedID, generationErr := newArtifactID()
+		if generationErr != nil {
+			return Record{}, generationErr
+		}
+		artifactID = generatedID
 	}
 	if !uuidValuePattern.MatchString(artifactID) {
 		return Record{}, ErrInvalidRequest
@@ -884,13 +888,12 @@ func (catalog *PostgresS3Catalog) removeStaged(name string) {
 	_ = catalog.objects.RemoveObject(ctx, catalog.bucket, name, minio.RemoveObjectOptions{})
 }
 
-func deterministicArtifactID(tenantID, projectID, uri string) string {
-	sum := sha256.Sum256([]byte(tenantID + "\x00" + projectID + "\x00" + uri))
-	bytes := append([]byte(nil), sum[:16]...)
-	bytes[6] = bytes[6]&0x0f | 0x50
-	bytes[8] = bytes[8]&0x3f | 0x80
-	value, _ := uuid.FromBytes(bytes)
-	return value.String()
+func newArtifactID() (string, error) {
+	value, err := uuid.NewV7()
+	if err != nil {
+		return "", err
+	}
+	return value.String(), nil
 }
 
 func cloneMetadataMap(input map[string]any) map[string]any {
