@@ -27,6 +27,19 @@ func TestVerifyRejectsDanglingReferencesBeforeArtifactAccess(t *testing.T) {
 	}
 }
 
+func TestVerifyRejectsDanglingArtifactTaskBeforeArtifactAccess(t *testing.T) {
+	snapshot := validSnapshot()
+	snapshot.Artifacts[0].TaskID = "missing"
+	called := false
+	_, err := Verify(context.Background(), snapshot, artifactVerifier(func(context.Context, ArtifactRecord) error {
+		called = true
+		return nil
+	}))
+	if !errors.Is(err, ErrDanglingReference) || called {
+		t.Fatalf("dangling artifact task result = %v, verifier called=%v", err, called)
+	}
+}
+
 func TestVerifyChecksEveryArtifactAndProducesStableDigest(t *testing.T) {
 	snapshot := validSnapshot()
 	seen := make([]string, 0, len(snapshot.Artifacts))

@@ -191,30 +191,56 @@ ORDER BY task.project_id, task.id`, tenantID)
 func loadAudits(ctx context.Context, tx *sql.Tx, tenantID string, snapshot *Snapshot) error {
 	rows, err := tx.QueryContext(ctx, `
 SELECT audit.id::text, audit.project_id::text,
-       CASE WHEN audit.subject_type = 'SUBMISSION' THEN submission.module_task_id::text ELSE '' END
+       CASE WHEN audit.subject_type = 'SUBMISSION' THEN COALESCE(submission.module_task_id::text, '') ELSE '' END,
+       audit.evidence_bundle_ref, evidence.id::text
 FROM audit_runs AS audit
 LEFT JOIN submissions AS submission
   ON submission.tenant_id = audit.tenant_id AND submission.id = audit.submission_id
+LEFT JOIN artifacts AS evidence
+  ON evidence.tenant_id = audit.tenant_id AND evidence.project_id = audit.project_id
+ AND (
+   (audit.subject_type = 'SUBMISSION'
+    AND evidence.metadata_jsonb->>'kind' = 'evidence-bundle'
+    AND evidence.metadata_jsonb->>'taskId' = submission.module_task_id::text
+    AND evidence.metadata_jsonb->>'manifestSha256' = audit.evidence_bundle_ref)
+   OR
+   (audit.subject_type <> 'SUBMISSION' AND evidence.sha256 = audit.evidence_bundle_ref)
+ )
 WHERE audit.tenant_id = $1::uuid
-ORDER BY audit.project_id, audit.id`, tenantID)
+ORDER BY audit.project_id, audit.id, evidence.id`, tenantID)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
+	auditIndexes := make(map[string]int)
 	for rows.Next() {
 		var record AuditRecord
-		if err := rows.Scan(&record.ID, &record.ProjectID, &record.TaskID); err != nil {
+		var evidenceRef sql.NullString
+		var artifactID sql.NullString
+		if err := rows.Scan(&record.ID, &record.ProjectID, &record.TaskID, &evidenceRef, &artifactID); err != nil {
 			return err
 		}
-		record.TenantID = tenantID
-		snapshot.Audits = append(snapshot.Audits, record)
+		index, found := auditIndexes[record.ID]
+		if !found {
+			record.TenantID = tenantID
+			snapshot.Audits = append(snapshot.Audits, record)
+			index = len(snapshot.Audits) - 1
+			auditIndexes[record.ID] = index
+		}
+		if !evidenceRef.Valid {
+			continue
+		}
+		if !artifactID.Valid || artifactID.String == "" {
+			return ErrDanglingReference
+		}
+		snapshot.Audits[index].ArtifactIDs = append(snapshot.Audits[index].ArtifactIDs, artifactID.String)
 	}
 	return rows.Err()
 }
 
 func loadArtifacts(ctx context.Context, tx *sql.Tx, tenantID string, snapshot *Snapshot) error {
 	rows, err := tx.QueryContext(ctx, `
-SELECT id::text, project_id::text, uri, sha256, size_bytes
+SELECT id::text, project_id::text, COALESCE(metadata_jsonb->>'taskId', ''), uri, sha256, size_bytes
 FROM artifacts
 WHERE tenant_id = $1::uuid
 ORDER BY project_id, id`, tenantID)
@@ -224,7 +250,7 @@ ORDER BY project_id, id`, tenantID)
 	defer rows.Close()
 	for rows.Next() {
 		var record ArtifactRecord
-		if err := rows.Scan(&record.ID, &record.ProjectID, &record.URI, &record.SHA256, &record.Size); err != nil {
+		if err := rows.Scan(&record.ID, &record.ProjectID, &record.TaskID, &record.URI, &record.SHA256, &record.Size); err != nil {
 			return err
 		}
 		record.TenantID = tenantID
