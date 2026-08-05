@@ -50,11 +50,28 @@ func (handler *Handler) negotiateGoal(ctx context.Context, principal authn.Princ
 	goalSpecID := ""
 	var previousRef *contracts.SpecRef
 	supersede := false
+	replay := project.Version == body.ExpectedVersion+1
 	if project.Goal != nil {
 		goalSpecID = project.Goal.ID
-		ref := contracts.SpecRef{Version: project.Goal.Version, SHA256: project.Goal.SHA256}
-		previousRef = &ref
-		supersede = project.Goal.ApprovedBy != ""
+		if replay {
+			previousVersion := project.Goal.Version - project.GoalAgentCount
+			if previousVersion > 0 {
+				previous, found, loadErr := handler.orchestrator.GoalSpec(ctx, principal.TenantID, projectID, previousVersion)
+				if loadErr != nil {
+					return state.Project{}, loadErr
+				}
+				if !found || previous.GoalSpecID != goalSpecID {
+					return state.Project{}, goalplan.ErrArtifactNotFound
+				}
+				ref := contracts.SpecRef{Version: previous.Spec.Content.Version, SHA256: previous.Spec.ContentSHA256}
+				previousRef = &ref
+				supersede = previous.Spec.Status == contracts.GoalApproved
+			}
+		} else {
+			ref := contracts.SpecRef{Version: project.Goal.Version, SHA256: project.Goal.SHA256}
+			previousRef = &ref
+			supersede = project.Goal.ApprovedBy != ""
+		}
 	} else {
 		goalVersion := 1
 		if project.GoalAgentCount == 2 {
@@ -72,7 +89,7 @@ func (handler *Handler) negotiateGoal(ctx context.Context, principal authn.Princ
 		}
 	}
 	messageID := ""
-	if project.Version == body.ExpectedVersion+1 {
+	if replay {
 		messageID, _, err = handler.findGoalPlanArtifactSpecID(ctx, principal.TenantID, projectID, goalplan.ArtifactUserMessage, 1, func(artifact goalplan.SpecArtifact) bool {
 			return artifact.CreatedBy == principal.ID && string(artifact.Content) == body.Message
 		})

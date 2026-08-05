@@ -107,6 +107,34 @@ func TestConfiguredGoalPlanServicesReplaceLegacyMessageOnlyPath(t *testing.T) {
 	}
 }
 
+func TestConfiguredGoalNegotiationRetryUsesOriginalGoalContext(t *testing.T) {
+	negotiator := &recordingGoalNegotiator{}
+	handler, _, _ := newGoalPlanTestHandler(t, negotiator, &recordingGoalPlanner{})
+	project := createTestProject(t, handler)
+	goal := controlGoalSpec(t, project.ID, 1, nil)
+	seedGoalSpec(t, handler, project.ID, 1, state.ProjectCommandProposeGoal, goal)
+	current, found, err := handler.orchestrator.Project(context.Background(), testTenantID, project.ID)
+	if err != nil || !found {
+		t.Fatalf("load project: found=%t error=%v", found, err)
+	}
+	negotiator.negotiationResult = goalplan.NegotiationResult{
+		Goal: goal,
+		Artifact: goalplan.SpecArtifact{
+			TenantID: testTenantID, ProjectID: project.ID, Kind: goalplan.ArtifactGoalDraft,
+			SpecID: current.Goal.ID, Version: 1, ContentSHA256: goal.ContentSHA256,
+		},
+		Project: orchestrator.ProjectOutcome{Project: current},
+	}
+	principal := authn.Principal{ID: "user-1", Type: authn.PrincipalUser, Role: authn.RoleUser, TenantID: testTenantID}
+	if _, err := handler.negotiateGoal(context.Background(), principal, project.ID, goalMessageBody{ExpectedVersion: 1, Message: "build through the goal runtime"}, "goal-runtime-retry"); err != nil {
+		t.Fatal(err)
+	}
+	request := negotiator.negotiationRequest
+	if request.GoalSpecID != current.Goal.ID || request.PreviousRef != nil || request.SupersedeApprovedGoal {
+		t.Fatalf("retry negotiation request = %#v", request)
+	}
+}
+
 func TestConfiguredGoalApprovalSynchronouslyPublishesInitialPlan(t *testing.T) {
 	calls := []string{}
 	negotiator := &recordingGoalNegotiator{calls: &calls}
