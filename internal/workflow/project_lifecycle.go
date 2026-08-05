@@ -232,6 +232,10 @@ func applyProjectLifecycleEvent(snapshot *ProjectLifecycleSnapshot, event Projec
 		if current == contracts.ProjectIntegrating {
 			expected = contracts.ProjectGlobalAudit
 		}
+	case "io.aor.project.global-audit-remediation-started.v1":
+		if current == contracts.ProjectGlobalAudit && (event.State == contracts.ProjectExecuting || event.State == contracts.ProjectIntegrating) {
+			expected = event.State
+		}
 	case "io.aor.approval.committed.v1":
 		if current == contracts.ProjectGlobalAudit {
 			expected = contracts.ProjectGlobalAudit

@@ -7,6 +7,7 @@
     "io.aor.project.changed.v1": "https://schemas.aor.local/events/project-changed.v1.schema.json",
     "io.aor.project.integration-started.v1": "https://schemas.aor.local/events/project-integration-started.v1.schema.json",
     "io.aor.project.global-audit-started.v1": "https://schemas.aor.local/events/project-global-audit-started.v1.schema.json",
+    "io.aor.project.global-audit-remediation-started.v1": "https://schemas.aor.local/events/project-global-audit-remediation-started.v1.schema.json",
     "io.aor.project.paused.v1": "https://schemas.aor.local/events/project-paused.v1.schema.json",
     "io.aor.project.resumed.v1": "https://schemas.aor.local/events/project-resumed.v1.schema.json",
     "io.aor.project.aborted.v1": "https://schemas.aor.local/events/project-aborted.v1.schema.json",

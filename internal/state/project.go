@@ -138,6 +138,8 @@ const (
 	ProjectCommandPublishPlan          ProjectCommandType = "PUBLISH_PLAN"
 	ProjectCommandBeginIntegration     ProjectCommandType = "BEGIN_INTEGRATION"
 	ProjectCommandBeginGlobalAudit     ProjectCommandType = "BEGIN_GLOBAL_AUDIT"
+	ProjectCommandReopenExecution      ProjectCommandType = "REOPEN_EXECUTION"
+	ProjectCommandReopenIntegration    ProjectCommandType = "REOPEN_INTEGRATION"
 	ProjectCommandApproveRelease       ProjectCommandType = "APPROVE_RELEASE"
 	ProjectCommandComplete             ProjectCommandType = "COMPLETE_PROJECT"
 	ProjectCommandPause                ProjectCommandType = "PAUSE_PROJECT"
@@ -361,6 +363,20 @@ func DecideProject(current Project, command ProjectCommand) (ProjectEvent, *aore
 		}
 		next.State = contracts.ProjectGlobalAudit
 		eventType = "io.aor.project.global-audit-started.v1"
+	case ProjectCommandReopenExecution:
+		if current.State != contracts.ProjectGlobalAudit || command.Guard == nil || !validDigest(command.Guard.EvidenceSHA256) {
+			return ProjectEvent{}, transitionProject(command, current.State)
+		}
+		next.State = contracts.ProjectExecuting
+		next.ReleaseApprovalRecordID = ""
+		eventType = "io.aor.project.global-audit-remediation-started.v1"
+	case ProjectCommandReopenIntegration:
+		if current.State != contracts.ProjectGlobalAudit || command.Guard == nil || !validDigest(command.Guard.EvidenceSHA256) {
+			return ProjectEvent{}, transitionProject(command, current.State)
+		}
+		next.State = contracts.ProjectIntegrating
+		next.ReleaseApprovalRecordID = ""
+		eventType = "io.aor.project.global-audit-remediation-started.v1"
 	case ProjectCommandApproveRelease:
 		if current.State != contracts.ProjectGlobalAudit || current.Plan == nil || command.Approval == nil || !command.Approval.validAt(command.At, command.ActorID, "RELEASE_APPROVAL", "PROJECT", current.ID, int(current.Version), current.Plan.SHA256) {
 			return ProjectEvent{}, transitionProject(command, current.State)

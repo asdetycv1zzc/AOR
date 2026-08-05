@@ -24,6 +24,7 @@ import (
 	"github.com/akimisaka/aor/internal/execution"
 	"github.com/akimisaka/aor/internal/globalaudit"
 	"github.com/akimisaka/aor/internal/goalplan"
+	"github.com/akimisaka/aor/internal/integration"
 	"github.com/akimisaka/aor/internal/knowledge"
 	"github.com/akimisaka/aor/internal/leaseauthority"
 	"github.com/akimisaka/aor/internal/modelgateway"
@@ -807,9 +808,21 @@ func configuredGlobalAudit(config runtimeconfig.Config, clients *runtimeclient.C
 	if err != nil {
 		return nil, err
 	}
+	events := eventing.NewPostgresStore(clients.Database())
+	integrationStore, err := integration.NewPostgresStore(clients.Database())
+	if err != nil {
+		return nil, err
+	}
+	followups, err := globalaudit.NewPostgresFollowupCreator(
+		clients.Database(), events, integrationStore,
+		authn.Principal{ID: "aor-global-audit-service", Type: authn.PrincipalService, Role: authn.RoleService}, time.Now,
+	)
+	if err != nil {
+		return nil, err
+	}
 	return globalaudit.New(globalaudit.Config{
 		Projects: services.tasks, Preparer: preparer, Runtime: services.agentRuntime,
-		Store: store, Signer: signer, PipelineVersion: "1.0.0",
+		Store: store, Signer: signer, Followups: followups, PipelineVersion: "1.0.0",
 	})
 }
 

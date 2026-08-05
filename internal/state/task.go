@@ -99,7 +99,8 @@ func DecideTask(current ModuleTask, command TaskCommand) (TaskEvent, *aorerrors.
 		}
 		next = ModuleTask{
 			TenantID: command.TenantID, ProjectID: command.ProjectID, ID: command.TaskID, State: contracts.TaskDefined,
-			ModuleSpecRef: command.ModuleSpecRef, AttemptSeriesID: command.AttemptSeriesID, AttemptSeriesIDs: []string{command.AttemptSeriesID}, DependentTaskIDs: append([]string(nil), command.DependentTaskIDs...),
+			ModuleID: command.ModuleID, ModuleSpecRef: command.ModuleSpecRef, AttemptSeriesID: command.AttemptSeriesID,
+			AttemptSeriesIDs: []string{command.AttemptSeriesID}, DependentTaskIDs: append([]string(nil), command.DependentTaskIDs...),
 		}
 		eventType = "io.aor.module.defined.v1"
 	case TaskCommandQueuePlanning:
@@ -272,7 +273,7 @@ func DecideTask(current ModuleTask, command TaskCommand) (TaskEvent, *aorerrors.
 		next.FrozenDependentIDs = nil
 		eventType = "io.aor.module.attempt-series-authorized.v1"
 	case TaskCommandSupersede:
-		if current.State == contracts.TaskIntegrated || current.State == contracts.TaskCanceled || current.State == contracts.TaskSuperseded {
+		if current.State == contracts.TaskCanceled || current.State == contracts.TaskSuperseded {
 			return TaskEvent{}, transitionTask(command, current.State)
 		}
 		next.State = contracts.TaskSuperseded

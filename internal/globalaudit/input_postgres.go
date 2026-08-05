@@ -273,14 +273,23 @@ func validSpecArtifact(artifact goalplan.SpecArtifact, request Request, kind goa
 
 func loadIntegratedModules(ctx context.Context, tx *sql.Tx, request Request, planID string, plan contracts.PlanSpec) ([]globalAuditModule, error) {
 	rows, err := tx.QueryContext(ctx, `
-SELECT task.id::text, COALESCE(task.module_id, spec.module_id), task.state,
-       task.state_version, task.attempt_count, spec.version, spec.content_sha256,
-       spec.content_jsonb
-FROM module_tasks AS task
-JOIN module_specs AS spec ON spec.tenant_id = task.tenant_id AND spec.id = task.module_spec_id
-WHERE task.tenant_id = $1::uuid AND task.project_id = $2::uuid
-  AND COALESCE(task.planning_spec_id, spec.plan_spec_id) = $3::uuid
-ORDER BY task.id`, request.TenantID, request.ProjectID, planID)
+SELECT current.id, current.module_id, current.state, current.state_version,
+       current.attempt_count, current.spec_version, current.content_sha256,
+       current.content_jsonb
+FROM (
+  SELECT DISTINCT ON (COALESCE(task.module_id, spec.module_id))
+         task.id::text AS id, COALESCE(task.module_id, spec.module_id) AS module_id,
+         task.state, task.state_version, task.attempt_count,
+         spec.version AS spec_version, spec.content_sha256, spec.content_jsonb,
+         task.updated_at
+  FROM module_tasks AS task
+  JOIN module_specs AS spec ON spec.tenant_id = task.tenant_id AND spec.id = task.module_spec_id
+  WHERE task.tenant_id = $1::uuid AND task.project_id = $2::uuid
+    AND COALESCE(task.planning_spec_id, spec.plan_spec_id) = $3::uuid
+    AND task.state = 'INTEGRATED'
+  ORDER BY COALESCE(task.module_id, spec.module_id), task.updated_at DESC, task.id DESC
+) AS current
+ORDER BY current.module_id`, request.TenantID, request.ProjectID, planID)
 	if err != nil {
 		return nil, err
 	}
@@ -323,16 +332,6 @@ ORDER BY task.id`, request.TenantID, request.ProjectID, planID)
 }
 
 func validateReleaseSummary(ctx context.Context, tx *sql.Tx, request Request, modules []globalAuditModule, snapshot *InputSnapshot) error {
-	var total, done int
-	if err := tx.QueryRowContext(ctx, `
-SELECT count(*), count(*) FILTER (WHERE state = 'DONE')
-FROM integration_tasks
-WHERE tenant_id = $1::uuid AND project_id = $2::uuid`, request.TenantID, request.ProjectID).Scan(&total, &done); err != nil {
-		return err
-	}
-	if total != 1 || done != 1 {
-		return ErrProjectNotReady
-	}
 	var integrationID, stateName, requestSHA, auditSHA, commit string
 	var ownerTask sql.NullString
 	var version int64
@@ -348,7 +347,10 @@ FROM integration_tasks AS task
 JOIN aggregate_projections AS summary
   ON summary.tenant_id = task.tenant_id AND summary.project_id = task.project_id
  AND summary.aggregate_type = 'integration_summary' AND summary.aggregate_id = task.id::text
-WHERE task.tenant_id = $1::uuid AND task.project_id = $2::uuid`, request.TenantID, request.ProjectID).Scan(
+WHERE task.tenant_id = $1::uuid AND task.project_id = $2::uuid
+  AND task.state = 'DONE'
+ORDER BY task.updated_at DESC, task.id DESC
+LIMIT 1`, request.TenantID, request.ProjectID).Scan(
 		&integrationID, &stateName, &version, &attempt, &ownerTask, &requestSHA,
 		&auditSHA, &mergeJSON, &commit, &pending, &summaryJSON,
 	)

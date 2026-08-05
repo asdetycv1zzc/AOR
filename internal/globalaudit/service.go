@@ -31,7 +31,12 @@ type Request struct {
 type Result struct {
 	Report         Report
 	EvidenceSHA256 string
+	Followups      FollowupResult
 	Duplicate      bool
+}
+
+type FollowupCreator interface {
+	Create(context.Context, Report, string) (FollowupResult, error)
 }
 
 type ProjectReader interface {
@@ -76,6 +81,7 @@ type Config struct {
 	Runtime         Runtime
 	Store           Store
 	Signer          Signer
+	Followups       FollowupCreator
 	PipelineVersion string
 }
 
@@ -85,16 +91,17 @@ type Service struct {
 	runtime         Runtime
 	store           Store
 	signer          Signer
+	followups       FollowupCreator
 	pipelineVersion string
 }
 
 func New(config Config) (*Service, error) {
-	if config.Projects == nil || config.Preparer == nil || config.Runtime == nil || config.Store == nil || config.Signer == nil || !versionPattern.MatchString(config.PipelineVersion) {
+	if config.Projects == nil || config.Preparer == nil || config.Runtime == nil || config.Store == nil || config.Signer == nil || config.Followups == nil || !versionPattern.MatchString(config.PipelineVersion) {
 		return nil, ErrRuntimeUnavailable
 	}
 	return &Service{
 		projects: config.Projects, preparer: config.Preparer, runtime: config.Runtime,
-		store: config.Store, signer: config.Signer, pipelineVersion: config.PipelineVersion,
+		store: config.Store, signer: config.Signer, followups: config.Followups, pipelineVersion: config.PipelineVersion,
 	}, nil
 }
 
@@ -106,7 +113,7 @@ func (service *Service) Run(ctx context.Context, request Request) (result Result
 	if err != nil {
 		return Result{}, err
 	}
-	if !found || !validProject(project, request) {
+	if !found {
 		return Result{}, ErrProjectNotReady
 	}
 	if report, exists, lookupErr := service.store.Get(ctx, request.TenantID, request.RunID); lookupErr != nil {
@@ -115,7 +122,10 @@ func (service *Service) Run(ctx context.Context, request Request) (result Result
 		if !reportMatchesProject(report, project) {
 			return Result{}, ErrInvalidReport
 		}
-		return resultFor(report, true), nil
+		return service.finish(ctx, report, resultFor(report, true).EvidenceSHA256, true)
+	}
+	if !validProject(project, request) {
+		return Result{}, ErrProjectNotReady
 	}
 
 	prepared, err := service.preparer.Prepare(ctx, request, project)
@@ -184,11 +194,19 @@ func (service *Service) Run(ctx context.Context, request Request) (result Result
 	evidenceSHA256, err := service.store.Put(ctx, report)
 	if err != nil {
 		if recovered, exists, recoveryErr := service.store.Get(ctx, request.TenantID, request.RunID); recoveryErr == nil && exists && sameReport(recovered, report) {
-			return resultFor(recovered, true), nil
+			return service.finish(ctx, recovered, resultFor(recovered, true).EvidenceSHA256, true)
 		}
 		return Result{}, err
 	}
-	return Result{Report: report, EvidenceSHA256: evidenceSHA256}, nil
+	return service.finish(ctx, report, evidenceSHA256, false)
+}
+
+func (service *Service) finish(ctx context.Context, report Report, evidenceSHA256 string, duplicate bool) (Result, error) {
+	followups, err := service.followups.Create(ctx, report, evidenceSHA256)
+	if err != nil {
+		return Result{}, err
+	}
+	return Result{Report: report, EvidenceSHA256: evidenceSHA256, Followups: followups, Duplicate: duplicate}, nil
 }
 
 func (service *Service) execute(ctx context.Context, prepared PreparedRun) (agentruntime.AcceptedResult, error) {
