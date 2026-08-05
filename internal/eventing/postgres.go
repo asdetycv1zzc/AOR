@@ -686,7 +686,7 @@ VALUES ($1::uuid, $2, 'PROJECT', $2, $3, $4, $5, 0, 0, transaction_timestamp(), 
 		if projection.PromptBundleVersion == "" {
 			return nil
 		}
-		roles := []string{"GOAL_PROPOSER", "PLAN_SUPERVISOR"}
+		roles := []string{"GOAL_PROPOSER", "PLAN_SUPERVISOR", "KNOWLEDGE_CURATOR"}
 		if projection.GoalAgentCount == 2 {
 			roles = append(roles, "GOAL_CHALLENGER")
 		}

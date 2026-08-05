@@ -82,9 +82,10 @@ WHERE tenant_id = $1::uuid AND project_id = $2::uuid`, tenantID, projectID)
 		t.Fatal(err)
 	}
 	expected := map[string]string{
-		projectID + ":GOAL_PROPOSER":   "GOAL_PROPOSER",
-		projectID + ":GOAL_CHALLENGER": "GOAL_CHALLENGER",
-		projectID + ":PLAN_SUPERVISOR": "PLAN_SUPERVISOR",
+		projectID + ":GOAL_PROPOSER":     "GOAL_PROPOSER",
+		projectID + ":GOAL_CHALLENGER":   "GOAL_CHALLENGER",
+		projectID + ":KNOWLEDGE_CURATOR": "KNOWLEDGE_CURATOR",
+		projectID + ":PLAN_SUPERVISOR":   "PLAN_SUPERVISOR",
 	}
 	if len(agents) != len(expected) {
 		t.Fatalf("agents=%v", agents)

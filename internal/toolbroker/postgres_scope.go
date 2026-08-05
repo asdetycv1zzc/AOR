@@ -69,7 +69,7 @@ func (resolver *PostgresScopeResolver) ResolveToolAuthorizationScope(ctx context
 	} else {
 		project, taskRecord, err = resolver.loadProjectTask(ctx, tx, query.TenantID, query.ProjectID, query.TaskID)
 	}
-	if err != nil || query.Role == authn.RolePlanSupervisor && !hasPlanSupervisorAuthority(ctx, tx, query) || query.Role == authn.RoleGlobalAuditor && !hasGlobalAuditorAuthority(ctx, tx, query) || query.TaskID != "" && query.Role == authn.RoleModulePlanner && !hasPlanningAgentAuthority(ctx, tx, query) || query.TaskID != "" && !taskRecord.moduleSpecAttached && !allowsDetachedPlanningScope(query) {
+	if err != nil || query.Role == authn.RolePlanSupervisor && !hasPlanSupervisorAuthority(ctx, tx, query) || query.Role == authn.RoleGlobalAuditor && !hasGlobalAuditorAuthority(ctx, tx, query) || query.Role == authn.RoleKnowledgeCurator && !hasKnowledgeCuratorAuthority(ctx, tx, query) || query.TaskID != "" && query.Role == authn.RoleModulePlanner && !hasPlanningAgentAuthority(ctx, tx, query) || query.TaskID != "" && !taskRecord.moduleSpecAttached && !allowsDetachedPlanningScope(query) {
 		return ToolAuthorizationScope{}, ErrPolicyDenied
 	}
 	budget, err := loadToolBudget(ctx, tx, query)
@@ -84,6 +84,20 @@ func (resolver *PostgresScopeResolver) ResolveToolAuthorizationScope(ctx context
 		return ToolAuthorizationScope{}, ErrPolicyDenied
 	}
 	return ToolAuthorizationScope{Project: project, Task: taskRecord.scope, Budget: budget, Approval: approval}, nil
+}
+
+func hasKnowledgeCuratorAuthority(ctx context.Context, tx *sql.Tx, query ToolAuthorizationScopeQuery) bool {
+	if query.TaskID != "" || query.PrincipalID != query.ProjectID+":"+authn.RoleKnowledgeCurator {
+		return false
+	}
+	var exists bool
+	err := tx.QueryRowContext(ctx, `
+SELECT EXISTS (
+  SELECT 1
+  FROM agent_instances
+  WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND id = $3 AND role = 'KNOWLEDGE_CURATOR'
+)`, query.TenantID, query.ProjectID, query.PrincipalID).Scan(&exists)
+	return err == nil && exists
 }
 
 func hasGlobalAuditorAuthority(ctx context.Context, tx *sql.Tx, query ToolAuthorizationScopeQuery) bool {
