@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"testing"
@@ -47,7 +48,7 @@ func TestPostgresStoreValidatesDurableMergeShape(t *testing.T) {
 	}
 }
 
-func TestPostgresStorePersistsAndRecoversMerge(t *testing.T) {
+func TestPostgresStorePersistsMergeAndImmutableConflict(t *testing.T) {
 	adminDSN := os.Getenv("AOR_TEST_POSTGRES_DSN")
 	appDSN := os.Getenv("AOR_TEST_POSTGRES_APP_DSN")
 	if adminDSN == "" || appDSN == "" {
@@ -106,5 +107,55 @@ VALUES ($1::uuid, $2::uuid, $3, 'INTEGRATING', 1, 'INTERNAL', 'MEDIUM', 1, 'inte
 	stored, found, err := store.Get(ctx, tenantID, integrationID)
 	if err != nil || !found || stored.Pending || stored.Commit != result.Commit {
 		t.Fatalf("stored result = (%#v, %t, %v)", stored, found, err)
+	}
+
+	conflictID := uuid.Must(uuid.NewV7()).String()
+	conflict := MergeResult{
+		TenantID: tenantID, ProjectID: projectID, IntegrationID: conflictID,
+		Audit: Audit{
+			IntegrationID: conflictID, ProjectID: projectID, EvidenceSHA256: digest("conflict-audit"), CreatedAt: time.Now().UTC(),
+			Findings: []Finding{{ID: "interface-conflict-task-1-task-2", Severity: "BLOCKING", Category: "INTERFACE", Summary: "public interface is owned by multiple modules", Tasks: []string{"task-1", "task-2"}}},
+		},
+	}
+	recorded, created, err := store.RecordConflict(ctx, conflict)
+	if err != nil || !created || !sameConflictResult(recorded, conflict) {
+		t.Fatalf("record conflict = (%#v, %t, %v)", recorded, created, err)
+	}
+	replayedConflict := cloneResult(conflict)
+	replayedConflict.Audit.CreatedAt = replayedConflict.Audit.CreatedAt.Add(time.Hour)
+	replayed, created, err := store.RecordConflict(ctx, replayedConflict)
+	if err != nil || created || !sameConflictResult(replayed, conflict) || !replayed.Audit.CreatedAt.Equal(conflict.Audit.CreatedAt) {
+		t.Fatalf("record conflict replay = (%#v, %t, %v)", replayed, created, err)
+	}
+	changedConflict := cloneResult(conflict)
+	changedConflict.Audit.Findings[0].Summary = "changed conflict"
+	if _, _, err := store.RecordConflict(ctx, changedConflict); !errors.Is(err, ErrImmutable) {
+		t.Fatalf("changed conflict error = %v", err)
+	}
+	storedConflict, found, err := store.Get(ctx, tenantID, conflictID)
+	if err != nil || !found || !sameConflictResult(storedConflict, conflict) {
+		t.Fatalf("stored conflict = (%#v, %t, %v)", storedConflict, found, err)
+	}
+	otherTenantID := uuid.Must(uuid.NewV7()).String()
+	if _, found, err := store.Get(ctx, otherTenantID, conflictID); err != nil || found {
+		t.Fatalf("cross-tenant conflict lookup found=%t error=%v", found, err)
+	}
+	var state string
+	var encodedAudit []byte
+	var mergeFieldsNull bool
+	if err := admin.QueryRowContext(ctx, `
+SELECT state, conflict_jsonb,
+       merge_request_sha256 IS NULL AND merge_audit_sha256 IS NULL
+       AND merge_result_jsonb IS NULL AND merge_commit IS NULL AND merge_pending IS NULL
+FROM integration_tasks
+WHERE tenant_id = $1::uuid AND id = $2::uuid`, tenantID, conflictID).Scan(&state, &encodedAudit, &mergeFieldsNull); err != nil {
+		t.Fatal(err)
+	}
+	var persistedAudit Audit
+	if err := json.Unmarshal(encodedAudit, &persistedAudit); err != nil {
+		t.Fatal(err)
+	}
+	if state != "REWORK_REQUIRED" || !mergeFieldsNull || persistedAudit.EvidenceSHA256 != conflict.Audit.EvidenceSHA256 || persistedAudit.Findings[0].Summary != conflict.Audit.Findings[0].Summary {
+		t.Fatalf("durable conflict state=%q mergeFieldsNull=%t audit=%#v", state, mergeFieldsNull, persistedAudit)
 	}
 }

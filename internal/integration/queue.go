@@ -104,7 +104,13 @@ func (q *Queue) Merge(ctx context.Context, request Request) (MergeResult, error)
 		return MergeResult{}, err
 	}
 	if !audit.Passed {
-		return MergeResult{TenantID: verified.TenantID, IntegrationID: verified.IntegrationID, ProjectID: verified.ProjectID, Audit: audit}, ErrConflict
+		conflict := MergeResult{TenantID: verified.TenantID, IntegrationID: verified.IntegrationID, ProjectID: verified.ProjectID, Audit: audit}
+		stored, created, err := q.store.RecordConflict(ctx, conflict)
+		if err != nil {
+			return conflict, err
+		}
+		stored.Duplicate = !created
+		return stored, ErrConflict
 	}
 	requestDigest, err := requestDigest(request, verified)
 	if err != nil {

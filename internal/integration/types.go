@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"time"
 
@@ -97,6 +98,7 @@ type MergeExecutor interface {
 
 type Store interface {
 	Get(context.Context, string, string) (MergeResult, bool, error)
+	RecordConflict(context.Context, MergeResult) (MergeResult, bool, error)
 	Reserve(context.Context, MergeResult) (MergeResult, bool, error)
 	Complete(context.Context, MergeResult) error
 }
@@ -113,6 +115,23 @@ func (s *MemoryStore) Get(_ context.Context, tenantID, id string) (MergeResult, 
 	result, ok := s.items[tenantID+"\x00"+id]
 	s.mu.RUnlock()
 	return cloneResult(result), ok, nil
+}
+
+func (s *MemoryStore) RecordConflict(_ context.Context, result MergeResult) (MergeResult, bool, error) {
+	if !validConflictResult(result) {
+		return MergeResult{}, false, ErrInvalidRequest
+	}
+	key := result.TenantID + "\x00" + result.IntegrationID
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if prior, ok := s.items[key]; ok {
+		if sameConflictResult(prior, result) {
+			return cloneResult(prior), false, nil
+		}
+		return MergeResult{}, false, ErrImmutable
+	}
+	s.items[key] = cloneResult(result)
+	return cloneResult(result), true, nil
 }
 
 func (s *MemoryStore) Reserve(_ context.Context, result MergeResult) (MergeResult, bool, error) {
@@ -155,4 +174,18 @@ func cloneResult(result MergeResult) MergeResult {
 		result.Audit.Findings[index].Tasks = append([]string(nil), result.Audit.Findings[index].Tasks...)
 	}
 	return result
+}
+
+func validConflictResult(result MergeResult) bool {
+	return result.TenantID != "" && result.ProjectID != "" && result.IntegrationID != "" &&
+		result.Commit == "" && result.RequestDigest == "" && !result.Duplicate && !result.Pending &&
+		result.Audit.IntegrationID == result.IntegrationID && result.Audit.ProjectID == result.ProjectID &&
+		!result.Audit.Passed && len(result.Audit.Findings) > 0 && digestPattern(result.Audit.EvidenceSHA256) &&
+		!result.Audit.CreatedAt.IsZero()
+}
+
+func sameConflictResult(left, right MergeResult) bool {
+	return validConflictResult(left) && validConflictResult(right) &&
+		left.TenantID == right.TenantID && left.ProjectID == right.ProjectID && left.IntegrationID == right.IntegrationID &&
+		left.Audit.EvidenceSHA256 == right.Audit.EvidenceSHA256 && reflect.DeepEqual(left.Audit.Findings, right.Audit.Findings)
 }

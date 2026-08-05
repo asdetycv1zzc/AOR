@@ -33,6 +33,12 @@ func (store *PostgresStore) Get(ctx context.Context, tenantID, integrationID str
 	}
 	defer func() { _ = tx.Rollback() }()
 	result, found, err := loadMergeResult(ctx, tx, tenantID, integrationID, false)
+	if err != nil {
+		return result, false, err
+	}
+	if !found {
+		result, found, err = loadConflictResult(ctx, tx, tenantID, integrationID, false)
+	}
 	if err != nil || !found {
 		return result, found, err
 	}
@@ -40,6 +46,47 @@ func (store *PostgresStore) Get(ctx context.Context, tenantID, integrationID str
 		return MergeResult{}, false, err
 	}
 	return result, true, nil
+}
+
+func (store *PostgresStore) RecordConflict(ctx context.Context, result MergeResult) (MergeResult, bool, error) {
+	if store == nil || store.database == nil || ctx == nil || !canonicalUUID(result.TenantID) || !canonicalUUID(result.ProjectID) || !canonicalUUID(result.IntegrationID) || !validConflictResult(result) {
+		return MergeResult{}, false, ErrInvalidRequest
+	}
+	encoded, err := json.Marshal(result.Audit)
+	if err != nil {
+		return MergeResult{}, false, ErrInvalidRequest
+	}
+	tx, err := store.begin(ctx, result.TenantID, false)
+	if err != nil {
+		return MergeResult{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	operation, err := tx.ExecContext(ctx, `
+INSERT INTO integration_tasks
+  (id, tenant_id, project_id, state, state_version, attempt_count,
+   conflict_jsonb, created_at, updated_at)
+VALUES
+  ($1::uuid, $2::uuid, $3::uuid, 'REWORK_REQUIRED', 1, 0,
+   $4::jsonb, transaction_timestamp(), transaction_timestamp())
+ON CONFLICT (id) DO NOTHING`, result.IntegrationID, result.TenantID, result.ProjectID, encoded)
+	if err != nil {
+		return MergeResult{}, false, err
+	}
+	rows, err := operation.RowsAffected()
+	if err != nil {
+		return MergeResult{}, false, err
+	}
+	stored, found, err := loadConflictResult(ctx, tx, result.TenantID, result.IntegrationID, true)
+	if err != nil {
+		return MergeResult{}, false, err
+	}
+	if !found || !sameConflictResult(stored, result) {
+		return MergeResult{}, false, ErrImmutable
+	}
+	if err := tx.Commit(); err != nil {
+		return MergeResult{}, false, err
+	}
+	return stored, rows == 1, nil
 }
 
 func (store *PostgresStore) Reserve(ctx context.Context, result MergeResult) (MergeResult, bool, error) {
@@ -171,6 +218,35 @@ WHERE tenant_id = $1::uuid AND id = $2::uuid
 	return result, true, nil
 }
 
+func loadConflictResult(ctx context.Context, tx *sql.Tx, tenantID, integrationID string, lock bool) (MergeResult, bool, error) {
+	query := `
+SELECT project_id::text, conflict_jsonb
+FROM integration_tasks
+WHERE tenant_id = $1::uuid AND id = $2::uuid
+  AND state = 'REWORK_REQUIRED' AND state_version = 1 AND attempt_count = 0
+  AND owner_module_task_id IS NULL
+  AND merge_request_sha256 IS NULL AND merge_audit_sha256 IS NULL
+  AND merge_result_jsonb IS NULL AND merge_commit IS NULL AND merge_pending IS NULL`
+	if lock {
+		query += " FOR UPDATE"
+	}
+	var projectID string
+	var encoded []byte
+	err := tx.QueryRowContext(ctx, query, tenantID, integrationID).Scan(&projectID, &encoded)
+	if errors.Is(err, sql.ErrNoRows) {
+		return MergeResult{}, false, nil
+	}
+	if err != nil {
+		return MergeResult{}, false, err
+	}
+	audit, err := decodeConflictAudit(encoded)
+	result := MergeResult{TenantID: tenantID, ProjectID: projectID, IntegrationID: integrationID, Audit: audit}
+	if err != nil || !validConflictResult(result) {
+		return MergeResult{}, false, ErrImmutable
+	}
+	return result, true, nil
+}
+
 func decodeMergeResult(encoded []byte) (MergeResult, error) {
 	var result MergeResult
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
@@ -183,6 +259,20 @@ func decodeMergeResult(encoded []byte) (MergeResult, error) {
 		return MergeResult{}, ErrImmutable
 	}
 	return result, nil
+}
+
+func decodeConflictAudit(encoded []byte) (Audit, error) {
+	var audit Audit
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&audit); err != nil {
+		return Audit{}, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return Audit{}, ErrImmutable
+	}
+	return audit, nil
 }
 
 func validMergeResult(result MergeResult, pending bool) bool {

@@ -101,6 +101,14 @@ type flakyCompleteStore struct {
 	failures int
 }
 
+type failingConflictStore struct {
+	*MemoryStore
+}
+
+func (s *failingConflictStore) RecordConflict(context.Context, MergeResult) (MergeResult, bool, error) {
+	return MergeResult{}, false, errors.New("durable conflict unavailable")
+}
+
 func (s *flakyCompleteStore) Complete(ctx context.Context, result MergeResult) error {
 	s.mu.Lock()
 	if s.failures > 0 {
@@ -119,23 +127,49 @@ func TestQueueRequiresTrustedGate(t *testing.T) {
 }
 
 func TestQueueRejectsPathAndInterfaceConflictsBeforeMerge(t *testing.T) {
+	store := NewMemoryStore()
 	merger := &fakeMerger{commit: commit(9)}
-	queue, err := NewVerifiedQueue(NewMemoryStore(), merger, echoGate{}, nil)
+	now := time.Now().UTC()
+	clock := now
+	queue, err := NewVerifiedQueue(store, merger, echoGate{}, func() time.Time { return clock })
 	if err != nil {
 		t.Fatal(err)
 	}
 	request := validRequest()
+	request.CreatedAt = now
 	request.Candidates[1].OwnedPaths = []string{"owned/api"}
 	request.Candidates[1].PublicInterfaces = []string{"HTTP /v1"}
-	audit, err := queue.Audit(context.Background(), request)
-	if err != nil {
-		t.Fatal(err)
+	first, err := queue.Merge(context.Background(), request)
+	if !errors.Is(err, ErrConflict) || first.Audit.Passed || len(first.Audit.Findings) != 2 || first.Duplicate || merger.callCount() != 0 {
+		t.Fatalf("conflict merge = %#v error=%v calls=%d", first, err, merger.callCount())
 	}
-	if audit.Passed || len(audit.Findings) != 2 || merger.callCount() != 0 {
-		t.Fatalf("conflict audit did not fail closed: %#v calls=%d", audit, merger.callCount())
+	stored, found, storeErr := store.Get(context.Background(), request.TenantID, request.IntegrationID)
+	if storeErr != nil || !found || !sameConflictResult(stored, first) {
+		t.Fatalf("stored conflict = %#v found=%t error=%v", stored, found, storeErr)
 	}
-	if _, err := queue.Merge(context.Background(), request); !errors.Is(err, ErrConflict) {
-		t.Fatalf("merge conflict error = %v", err)
+	if _, found, err := store.Get(context.Background(), "other-tenant", request.IntegrationID); err != nil || found {
+		t.Fatalf("cross-tenant conflict lookup found=%t error=%v", found, err)
+	}
+	clock = clock.Add(time.Minute)
+	replay, err := queue.Merge(context.Background(), request)
+	if !errors.Is(err, ErrConflict) || !replay.Duplicate || !replay.Audit.CreatedAt.Equal(first.Audit.CreatedAt) {
+		t.Fatalf("conflict replay = %#v error=%v", replay, err)
+	}
+	changed := request
+	changed.Candidates = cloneCandidates(request.Candidates)
+	changed.Candidates[1].OwnedPaths = []string{"owned/worker"}
+	if _, err := queue.Merge(context.Background(), changed); !errors.Is(err, ErrImmutable) {
+		t.Fatalf("changed conflict error = %v", err)
+	}
+}
+
+func TestQueueDoesNotReturnConflictBeforePersistence(t *testing.T) {
+	store := &failingConflictStore{MemoryStore: NewMemoryStore()}
+	queue, _ := NewVerifiedQueue(store, &fakeMerger{commit: commit(9)}, echoGate{}, nil)
+	request := validRequest()
+	request.Candidates[1].PublicInterfaces = []string{"HTTP /v1"}
+	if _, err := queue.Merge(context.Background(), request); err == nil || errors.Is(err, ErrConflict) {
+		t.Fatalf("conflict persistence error = %v", err)
 	}
 }
 
