@@ -67,15 +67,36 @@ AS $$
   ) AS durable ON true
   WHERE requested_limit BETWEEN 1 AND 64
     AND (
-      (project.state = 'EXECUTING'
-       AND EXISTS (
-        SELECT 1
-        FROM public.module_tasks AS task
-        WHERE task.tenant_id = project.tenant_id
-          AND task.project_id = project.id
-          AND task.state = 'PASSED'
-       )
-       AND NOT EXISTS (
+	      (project.state = 'EXECUTING'
+	       AND project.active_plan_spec_id IS NOT NULL
+	       AND EXISTS (
+	        SELECT 1
+	        FROM public.module_specs AS module
+	        JOIN public.module_tasks AS task
+	          ON task.tenant_id = module.tenant_id
+	         AND task.project_id = module.project_id
+	         AND task.module_spec_id = module.id
+	        WHERE task.tenant_id = project.tenant_id
+	          AND task.project_id = project.id
+	          AND module.plan_spec_id = project.active_plan_spec_id
+	          AND task.state = 'PASSED'
+	       )
+	       AND NOT EXISTS (
+	         SELECT 1
+	         FROM public.module_specs AS module
+	         WHERE module.tenant_id = project.tenant_id
+	           AND module.project_id = project.id
+	           AND module.plan_spec_id = project.active_plan_spec_id
+	           AND NOT EXISTS (
+	             SELECT 1
+	             FROM public.module_tasks AS task
+	             WHERE task.tenant_id = module.tenant_id
+	               AND task.project_id = module.project_id
+	               AND task.module_spec_id = module.id
+	               AND task.state = 'PASSED'
+	           )
+	       )
+	       AND NOT EXISTS (
          SELECT 1
          FROM public.module_tasks AS task
          WHERE task.tenant_id = project.tenant_id
