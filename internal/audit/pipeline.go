@@ -25,14 +25,21 @@ var (
 )
 
 func NewPipeline(checks []Check, auditors AuditorFactory, signer Signer, store EvidenceStore, version string, clock func() time.Time) (*Pipeline, error) {
-	return newPipeline(checks, auditors, signer, store, nil, version, clock)
+	return newPipeline(checks, auditors, signer, store, nil, nil, version, clock)
 }
 
 func NewPipelineWithArtifactStore(checks []Check, auditors AuditorFactory, signer Signer, store EvidenceStore, artifacts ArtifactPublisher, version string, clock func() time.Time) (*Pipeline, error) {
-	return newPipeline(checks, auditors, signer, store, artifacts, version, clock)
+	return newPipeline(checks, auditors, signer, store, artifacts, nil, version, clock)
 }
 
-func newPipeline(checks []Check, auditors AuditorFactory, signer Signer, store EvidenceStore, artifacts ArtifactPublisher, version string, clock func() time.Time) (*Pipeline, error) {
+func NewPersistentPipeline(checks []Check, auditors AuditorFactory, signer Signer, store EvidenceStore, artifacts ArtifactPublisher, runStore AuditRunStore, version string, clock func() time.Time) (*Pipeline, error) {
+	if runStore == nil {
+		return nil, ErrInvalidInput
+	}
+	return newPipeline(checks, auditors, signer, store, artifacts, runStore, version, clock)
+}
+
+func newPipeline(checks []Check, auditors AuditorFactory, signer Signer, store EvidenceStore, artifacts ArtifactPublisher, runStore AuditRunStore, version string, clock func() time.Time) (*Pipeline, error) {
 	if signer == nil || store == nil || !pipelineVersionPattern.MatchString(version) {
 		return nil, ErrInvalidInput
 	}
@@ -49,7 +56,7 @@ func newPipeline(checks []Check, auditors AuditorFactory, signer Signer, store E
 		}
 		seen[check.ID()] = true
 	}
-	return &Pipeline{checks: append([]Check(nil), checks...), auditors: auditors, signer: signer, store: store, artifacts: artifacts, clock: clock, version: version}, nil
+	return &Pipeline{checks: append([]Check(nil), checks...), auditors: auditors, signer: signer, store: store, runStore: runStore, artifacts: artifacts, clock: clock, version: version}, nil
 }
 
 func (p *Pipeline) Run(ctx context.Context, input DeterministicInput) (AuditResult, error) {
@@ -61,6 +68,13 @@ func (p *Pipeline) Run(ctx context.Context, input DeterministicInput) (AuditResu
 	}
 	if p.artifacts != nil && strings.TrimSpace(input.TenantID) == "" {
 		return AuditResult{}, ErrInvalidInput
+	}
+	var runStarted time.Time
+	if p.runStore != nil {
+		if strings.TrimSpace(input.SubmissionID) == "" {
+			return AuditResult{}, ErrInvalidInput
+		}
+		runStarted = p.clock().UTC()
 	}
 	checks := make([]contracts.EvidenceCheck, 0, len(p.checks))
 	findings := []contracts.AuditFinding{}
@@ -136,10 +150,7 @@ func (p *Pipeline) Run(ctx context.Context, input DeterministicInput) (AuditResu
 			verdict = "FAIL"
 		}
 		result := AuditResult{Bundle: bundle, Deterministic: checks, LLM: &llm, Verdict: verdict}
-		if err := p.finalize(ctx, &result.Bundle); err != nil {
-			return AuditResult{}, err
-		}
-		if err := p.store.Put(ctx, input.TenantID, result.Bundle); err != nil {
+		if err := p.persistResult(ctx, input, runStarted, &result); err != nil {
 			return AuditResult{}, err
 		}
 		if !result.Bundle.PassesAuditGate() {
@@ -148,13 +159,40 @@ func (p *Pipeline) Run(ctx context.Context, input DeterministicInput) (AuditResu
 		return result, nil
 	}
 	result := AuditResult{Bundle: bundle, Deterministic: checks, Verdict: "FAIL"}
-	if err := p.finalize(ctx, &result.Bundle); err != nil {
-		return AuditResult{}, err
-	}
-	if err := p.store.Put(ctx, input.TenantID, result.Bundle); err != nil {
+	if err := p.persistResult(ctx, input, runStarted, &result); err != nil {
 		return AuditResult{}, err
 	}
 	return result, ErrDeterministicGate
+}
+
+func (p *Pipeline) persistResult(ctx context.Context, input DeterministicInput, startedAt time.Time, result *AuditResult) error {
+	if err := p.finalize(ctx, &result.Bundle); err != nil {
+		return err
+	}
+	if err := p.store.Put(ctx, input.TenantID, result.Bundle); err != nil {
+		return err
+	}
+	if p.runStore == nil {
+		return nil
+	}
+	phase := "DETERMINISTIC"
+	if result.LLM != nil {
+		phase = "LLM"
+	}
+	return p.runStore.Put(ctx, AuditRun{
+		TenantID:          input.TenantID,
+		ProjectID:         input.Manifest.ProjectID,
+		SubmissionID:      input.SubmissionID,
+		Phase:             phase,
+		PipelineVersion:   p.version,
+		Platform:          input.Platform,
+		Isolation:         input.Isolation,
+		StartedAt:         startedAt,
+		CompletedAt:       p.clock().UTC(),
+		Verdict:           result.Verdict,
+		EvidenceBundleRef: result.Bundle.ManifestSHA256,
+		Findings:          cloneFindings(result.Bundle.Findings),
+	})
 }
 
 func (p *Pipeline) finalize(ctx context.Context, bundle *contracts.EvidenceBundle) error {

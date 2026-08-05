@@ -15,6 +15,7 @@ import (
 var (
 	ErrInvalidInput       = errors.New("invalid audit input")
 	ErrEvidenceConflict   = errors.New("audit evidence is immutable")
+	ErrAuditRunConflict   = errors.New("audit run is immutable")
 	ErrDeterministicGate  = errors.New("deterministic audit gate failed")
 	ErrBlindContext       = errors.New("auditor context is not blind")
 	ErrAuditorUnavailable = errors.New("fresh auditor is unavailable")
@@ -58,6 +59,7 @@ type Check interface {
 
 type DeterministicInput struct {
 	TenantID           string
+	SubmissionID       string
 	Manifest           contracts.SubmissionManifest
 	ModuleSpecRef      contracts.SpecRef
 	AllowedPaths       []string
@@ -110,6 +112,25 @@ type Signer interface {
 type EvidenceStore interface {
 	Put(context.Context, string, contracts.EvidenceBundle) error
 	Get(context.Context, string, string, string, string, int) (contracts.EvidenceBundle, bool, error)
+}
+
+type AuditRun struct {
+	TenantID          string
+	ProjectID         string
+	SubmissionID      string
+	Phase             string
+	PipelineVersion   string
+	Platform          contracts.ExecutionPlatform
+	Isolation         contracts.IsolationLevel
+	StartedAt         time.Time
+	CompletedAt       time.Time
+	Verdict           string
+	EvidenceBundleRef string
+	Findings          []contracts.AuditFinding
+}
+
+type AuditRunStore interface {
+	Put(context.Context, AuditRun) error
 }
 
 type MemoryEvidenceStore struct {
@@ -204,6 +225,7 @@ type Pipeline struct {
 	auditors  AuditorFactory
 	signer    Signer
 	store     EvidenceStore
+	runStore  AuditRunStore
 	artifacts ArtifactPublisher
 	clock     func() time.Time
 	version   string
