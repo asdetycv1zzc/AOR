@@ -1,9 +1,11 @@
 package contracts
 
 import (
+	"bytes"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"io"
 
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 )
@@ -106,8 +108,14 @@ func ValidateEvidenceJSON(input []byte) error {
 		return err
 	}
 	var bundle EvidenceBundle
-	if err := json.Unmarshal(canonical, &bundle); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(canonical))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&bundle); err != nil {
 		return fmt.Errorf("decode Evidence Bundle: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return fmt.Errorf("decode Evidence Bundle: trailing JSON")
 	}
 	if err := bundle.Validate(); err != nil {
 		return err

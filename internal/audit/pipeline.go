@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"math"
 	"path"
 	"regexp"
 	"sort"
@@ -18,7 +19,10 @@ import (
 	"github.com/akimisaka/aor/pkg/contracts"
 )
 
-var digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+var (
+	digestPattern          = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	pipelineVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+)
 
 func NewPipeline(checks []Check, auditors AuditorFactory, signer Signer, store EvidenceStore, version string, clock func() time.Time) (*Pipeline, error) {
 	return newPipeline(checks, auditors, signer, store, nil, version, clock)
@@ -29,7 +33,7 @@ func NewPipelineWithArtifactStore(checks []Check, auditors AuditorFactory, signe
 }
 
 func newPipeline(checks []Check, auditors AuditorFactory, signer Signer, store EvidenceStore, artifacts ArtifactPublisher, version string, clock func() time.Time) (*Pipeline, error) {
-	if signer == nil || store == nil || strings.TrimSpace(version) == "" {
+	if signer == nil || store == nil || !pipelineVersionPattern.MatchString(version) {
 		return nil, ErrInvalidInput
 	}
 	if clock == nil {
@@ -59,7 +63,7 @@ func (p *Pipeline) Run(ctx context.Context, input DeterministicInput) (AuditResu
 		return AuditResult{}, ErrInvalidInput
 	}
 	checks := make([]contracts.EvidenceCheck, 0, len(p.checks))
-	findings := []string{}
+	findings := []contracts.AuditFinding{}
 	artifactRefs := []string{}
 	deterministicPassed := true
 	for ordinal, check := range p.checks {
@@ -73,11 +77,12 @@ func (p *Pipeline) Run(ctx context.Context, input DeterministicInput) (AuditResu
 				status = StatusError
 			}
 			if len(result.Findings) == 0 {
-				findings = append(findings, "check "+check.ID()+" returned "+string(status))
+				result.Findings = []contracts.AuditFinding{deterministicFinding(contracts.FindingHigh, "DETERMINISTIC", check.ID(), "", check.ID(), "check-"+strings.ToLower(string(status)), "required deterministic check passes", "required deterministic check returned "+string(status), "fix the reported check failure without weakening the check")}
 			} else {
-				findings = append(findings, result.Findings...)
+				result.Findings = cloneFindings(result.Findings)
 			}
 		}
+		findings = append(findings, result.Findings...)
 		outputs, err := p.persistCheckOutputs(ctx, input, check.ID(), result)
 		if err != nil {
 			return AuditResult{}, err
@@ -85,9 +90,14 @@ func (p *Pipeline) Run(ctx context.Context, input DeterministicInput) (AuditResu
 		artifactRefs = appendUnique(artifactRefs, outputs.refs...)
 		checks = append(checks, contracts.EvidenceCheck{CheckID: check.ID(), Ordinal: ordinal + 1, Type: "DETERMINISTIC", Status: string(status), Tool: contracts.CheckTool{Name: "aor-audit", Version: p.version, Digest: digestBytes([]byte(p.version))}, StartedAt: started.Format(time.RFC3339), CompletedAt: ended.Format(time.RFC3339), StdoutURI: outputs.stdout, StderrURI: outputs.stderr, ResultURI: outputs.result, ResultSHA256: outputs.resultDigest})
 	}
-	bundle := contracts.EvidenceBundle{EvidenceBundleVersion: 1, ProjectID: input.Manifest.ProjectID, TaskID: input.Manifest.ModuleTaskID, AttemptSeriesID: input.Manifest.AttemptSeriesID, Attempt: input.Manifest.Attempt, SpecVersion: input.ModuleSpecRef.Version, BaseCommit: input.Manifest.BaseCommit, SubmissionCommit: input.Manifest.HeadCommit, PipelineVersion: p.version, PolicyBundleDigest: input.PolicyDigest, ExecutionPlatform: input.Platform, IsolationLevel: input.Isolation, SandboxAttestation: input.SandboxAttestation, Checks: checks, Findings: append([]string(nil), findings...), Artifacts: artifactRefs, LLMAudit: contracts.LLMAudit{Verdict: "NOT_RUN"}}
+	var err error
+	findings, err = canonicalFindings(findings)
+	if err != nil {
+		return AuditResult{}, ErrInvalidInput
+	}
+	bundle := contracts.EvidenceBundle{EvidenceBundleVersion: 1, ProjectID: input.Manifest.ProjectID, TaskID: input.Manifest.ModuleTaskID, AttemptSeriesID: input.Manifest.AttemptSeriesID, Attempt: input.Manifest.Attempt, SpecVersion: input.ModuleSpecRef.Version, BaseCommit: input.Manifest.BaseCommit, SubmissionCommit: input.Manifest.HeadCommit, PipelineVersion: p.version, PolicyBundleDigest: input.PolicyDigest, ExecutionPlatform: input.Platform, IsolationLevel: input.Isolation, SandboxAttestation: input.SandboxAttestation, Checks: checks, Findings: cloneFindings(findings), CriteriaResults: []contracts.CriterionResult{}, ResidualRisks: []string{}, Confidence: 0, Artifacts: artifactRefs, LLMAudit: contracts.LLMAudit{Verdict: "NOT_RUN"}}
 	if deterministicPassed {
-		blind := BlindAuditInput{ProjectID: input.Manifest.ProjectID, TaskID: input.Manifest.ModuleTaskID, Attempt: input.Manifest.Attempt, ModuleSpecRef: input.ModuleSpecRef, BaseCommit: input.Manifest.BaseCommit, SubmissionCommit: input.Manifest.HeadCommit, ChangedFiles: append([]string(nil), input.Manifest.ChangedFiles...), DeterministicChecks: append([]contracts.EvidenceCheck(nil), checks...)}
+		blind := BlindAuditInput{ProjectID: input.Manifest.ProjectID, TaskID: input.Manifest.ModuleTaskID, Attempt: input.Manifest.Attempt, ModuleSpecRef: input.ModuleSpecRef, BaseCommit: input.Manifest.BaseCommit, SubmissionCommit: input.Manifest.HeadCommit, ChangedFiles: append([]string(nil), input.Manifest.ChangedFiles...), RequiredCriteria: append([]string(nil), input.RequiredCriteria...), DeterministicChecks: append([]contracts.EvidenceCheck(nil), checks...)}
 		if p.auditors == nil {
 			return AuditResult{Bundle: bundle, Deterministic: checks, Verdict: "INCONCLUSIVE"}, ErrAuditorUnavailable
 		}
@@ -104,20 +114,35 @@ func (p *Pipeline) Run(ctx context.Context, input DeterministicInput) (AuditResu
 		if err != nil {
 			return AuditResult{Bundle: bundle, Deterministic: checks, Verdict: "INCONCLUSIVE"}, err
 		}
-		if err := validateLLMResult(llm, input.Manifest.Attempt); err != nil {
+		llm, err = canonicalLLMResult(llm, input.RequiredCriteria)
+		if err != nil {
+			return AuditResult{}, err
+		}
+		if err := validateLLMResult(llm, input.RequiredCriteria, input.Manifest.Attempt); err != nil {
 			return AuditResult{}, err
 		}
 		bundle.LLMAudit = contracts.LLMAudit{AuditorRunID: llm.AuditorRunID, ModelIdentity: llm.ModelIdentity, PromptDigest: llm.PromptDigest, ContextManifestDigest: llm.ContextDigest, Verdict: llm.Verdict}
 		findings = append(findings, llm.Findings...)
-		bundle.Findings = append([]string(nil), findings...)
-		result := AuditResult{Bundle: bundle, Deterministic: checks, LLM: &llm, Verdict: llm.Verdict}
+		findings, err = canonicalFindings(findings)
+		if err != nil {
+			return AuditResult{}, ErrInvalidInput
+		}
+		bundle.Findings = cloneFindings(findings)
+		bundle.CriteriaResults = cloneCriteriaResults(llm.CriteriaResults)
+		bundle.ResidualRisks = cloneStrings(llm.ResidualRisks)
+		bundle.Confidence = llm.Confidence
+		verdict := llm.Verdict
+		if !bundle.PassesAuditGate() && verdict == "PASS" {
+			verdict = "FAIL"
+		}
+		result := AuditResult{Bundle: bundle, Deterministic: checks, LLM: &llm, Verdict: verdict}
 		if err := p.finalize(ctx, &result.Bundle); err != nil {
 			return AuditResult{}, err
 		}
 		if err := p.store.Put(ctx, input.TenantID, result.Bundle); err != nil {
 			return AuditResult{}, err
 		}
-		if llm.Verdict != "PASS" {
+		if !result.Bundle.PassesAuditGate() {
 			return result, ErrDeterministicGate
 		}
 		return result, nil
@@ -163,7 +188,7 @@ type schemaCheck struct{}
 func (schemaCheck) ID() string { return "submission-schema" }
 func (schemaCheck) Run(_ context.Context, input DeterministicInput) CheckResult {
 	if input.Manifest.Validate() != nil || input.Manifest.ModuleSpecRef != input.ModuleSpecRef {
-		return CheckResult{Status: StatusFail, Findings: []string{"submission manifest or immutable ModuleSpec reference is invalid"}}
+		return CheckResult{Status: StatusFail, Findings: []contracts.AuditFinding{deterministicFinding(contracts.FindingHigh, "INTEGRITY", "submission-schema", "", "submission-manifest", "invalid-manifest-or-spec-reference", "submission manifest and immutable ModuleSpec reference are valid", "submission manifest or immutable ModuleSpec reference is invalid", "correct the manifest without changing the approved ModuleSpec")}}
 	}
 	return CheckResult{Status: StatusPass, Result: []byte("schema-pass")}
 }
@@ -173,7 +198,7 @@ type commitCheck struct{}
 func (commitCheck) ID() string { return "commit-integrity" }
 func (commitCheck) Run(_ context.Context, input DeterministicInput) CheckResult {
 	if input.Manifest.BaseCommit == input.Manifest.HeadCommit || !commitID(input.Manifest.BaseCommit) || !commitID(input.Manifest.HeadCommit) {
-		return CheckResult{Status: StatusFail, Findings: []string{"submission commit is not immutable"}}
+		return CheckResult{Status: StatusFail, Findings: []contracts.AuditFinding{deterministicFinding(contracts.FindingHigh, "INTEGRITY", "commit-integrity", "", "submission-commit", "invalid-or-unchanged-commit", "submission is bound to distinct immutable base and head commits", "submission commit is not immutable", "create a valid commit without rewriting the approved base")}}
 	}
 	return CheckResult{Status: StatusPass, Result: []byte(input.Manifest.BaseCommit + ".." + input.Manifest.HeadCommit)}
 }
@@ -183,11 +208,15 @@ type pathCheck struct{}
 func (pathCheck) ID() string { return "path-ownership" }
 func (pathCheck) Run(_ context.Context, input DeterministicInput) CheckResult {
 	if len(input.AllowedPaths) == 0 {
-		return CheckResult{Status: StatusFail, Findings: []string{"ModuleSpec has no owned paths"}}
+		return CheckResult{Status: StatusFail, Findings: []contracts.AuditFinding{deterministicFinding(contracts.FindingHigh, "OWNERSHIP", "path-ownership", "", "module-owned-paths", "missing-owned-paths", "ModuleSpec grants at least one owned path", "ModuleSpec has no owned paths", "revise the ModuleSpec through the authorized planning flow")}}
 	}
 	for _, name := range append(append([]string(nil), input.Manifest.ChangedFiles...), input.Manifest.DeletedFiles...) {
 		if !owned(input.AllowedPaths, input.ForbiddenPaths, name) {
-			return CheckResult{Status: StatusFail, Findings: []string{"unowned changed path: " + name}}
+			file := ""
+			if safePath(name) {
+				file = name
+			}
+			return CheckResult{Status: StatusFail, Findings: []contracts.AuditFinding{deterministicFinding(contracts.FindingHigh, "OWNERSHIP", "path-ownership", file, "module-owned-path-boundary", "unowned-path", "all changed paths are owned and not forbidden", "submission changes a path outside its ownership", "move the change into an owned module or revise ownership through the approved plan")}}
 		}
 	}
 	return CheckResult{Status: StatusPass, Result: []byte("ownership-pass")}
@@ -198,20 +227,20 @@ type outputCheck struct{}
 func (outputCheck) ID() string { return "evidence-bounds" }
 func (outputCheck) Run(_ context.Context, input DeterministicInput) CheckResult {
 	if len(input.Manifest.ChangedFiles) > 4096 || len(input.Manifest.LocalTestEvidenceRefs) > 256 {
-		return CheckResult{Status: StatusFail, Findings: []string{"evidence cardinality exceeds bounds"}}
+		return CheckResult{Status: StatusFail, Findings: []contracts.AuditFinding{deterministicFinding(contracts.FindingMedium, "EVIDENCE", "evidence-bounds", "", "submission-evidence-cardinality", "cardinality-limit-exceeded", "submission evidence remains within configured cardinality limits", "evidence cardinality exceeds bounds", "split the submission or reduce redundant evidence without removing required evidence")}}
 	}
 	return CheckResult{Status: StatusPass, Result: []byte("bounds-pass")}
 }
 
 func validateInput(input DeterministicInput) error {
-	if strings.TrimSpace(input.TenantID) == "" || input.Manifest.Validate() != nil || input.ModuleSpecRef.Validate() != nil || input.Manifest.ModuleSpecRef != input.ModuleSpecRef || !digestPattern.MatchString(input.PolicyDigest) || !contractsPlatformIsolation(input.Platform, input.Isolation) || input.SandboxAttestation == "" {
+	if strings.TrimSpace(input.TenantID) == "" || input.Manifest.Validate() != nil || input.ModuleSpecRef.Validate() != nil || input.Manifest.ModuleSpecRef != input.ModuleSpecRef || !digestPattern.MatchString(input.PolicyDigest) || !contractsPlatformIsolation(input.Platform, input.Isolation) || input.SandboxAttestation == "" || !validRequiredCriteria(input.RequiredCriteria) {
 		return ErrInvalidInput
 	}
 	return nil
 }
 
 func validateBlindInput(input BlindAuditInput) error {
-	if input.ProjectID == "" || input.TaskID == "" || input.Attempt < 1 || input.Attempt > 3 || input.ModuleSpecRef.Validate() != nil || !commitID(input.BaseCommit) || !commitID(input.SubmissionCommit) || input.BaseCommit == input.SubmissionCommit || len(input.ChangedFiles) > 4096 {
+	if input.ProjectID == "" || input.TaskID == "" || input.Attempt < 1 || input.Attempt > 3 || input.ModuleSpecRef.Validate() != nil || !commitID(input.BaseCommit) || !commitID(input.SubmissionCommit) || input.BaseCommit == input.SubmissionCommit || len(input.ChangedFiles) > 4096 || !validRequiredCriteria(input.RequiredCriteria) {
 		return ErrBlindContext
 	}
 	for _, name := range input.ChangedFiles {
@@ -222,8 +251,11 @@ func validateBlindInput(input BlindAuditInput) error {
 	return nil
 }
 
-func validateLLMResult(result LLMAuditResult, attempt int) error {
-	if result.AuditorRunID == "" || result.ModelIdentity == "" || !digestPattern.MatchString(result.PromptDigest) || !digestPattern.MatchString(result.ContextDigest) || (result.Verdict != "PASS" && result.Verdict != "FAIL" && result.Verdict != "INCONCLUSIVE") || attempt < 1 {
+func validateLLMResult(result LLMAuditResult, requiredCriteria []string, attempt int) error {
+	if result.AuditorRunID == "" || result.ModelIdentity == "" || !digestPattern.MatchString(result.PromptDigest) || !digestPattern.MatchString(result.ContextDigest) || (result.Verdict != "PASS" && result.Verdict != "FAIL" && result.Verdict != "INCONCLUSIVE") || attempt < 1 || result.Findings == nil || result.CriteriaResults == nil || result.ResidualRisks == nil || math.IsNaN(result.Confidence) || math.IsInf(result.Confidence, 0) || result.Confidence < 0 || result.Confidence > 1 {
+		return ErrInvalidInput
+	}
+	if !criteriaMatch(requiredCriteria, result.CriteriaResults) {
 		return ErrInvalidInput
 	}
 	return nil
@@ -418,6 +450,7 @@ func cloneDeterministicInput(input DeterministicInput) DeterministicInput {
 	input.Manifest.DeletedFiles = append([]string(nil), input.Manifest.DeletedFiles...)
 	input.AllowedPaths = append([]string(nil), input.AllowedPaths...)
 	input.ForbiddenPaths = append([]string(nil), input.ForbiddenPaths...)
+	input.RequiredCriteria = append([]string(nil), input.RequiredCriteria...)
 	return input
 }
 
@@ -429,8 +462,93 @@ func CheckOrder(checks []Check) []string {
 	return result
 }
 
-func SortedFindings(findings []string) []string {
-	result := append([]string(nil), findings...)
-	sort.Strings(result)
+func SortedFindings(findings []contracts.AuditFinding) []contracts.AuditFinding {
+	result := cloneFindings(findings)
+	sort.Slice(result, func(left, right int) bool {
+		return result[left].StableFingerprint < result[right].StableFingerprint
+	})
 	return result
+}
+
+func deterministicFinding(severity contracts.FindingSeverity, category, ruleID, file, semanticLocation, evidencePattern, expected, observed, remediation string) contracts.AuditFinding {
+	return contracts.AuditFinding{Severity: severity, Category: category, RuleID: ruleID, File: file, Status: contracts.FindingOpen, SemanticLocation: semanticLocation, EvidencePattern: evidencePattern, EvidenceRefs: []string{}, ExpectedBehavior: expected, ObservedBehavior: observed, RemediationConstraint: remediation}
+}
+
+func canonicalFindings(findings []contracts.AuditFinding) ([]contracts.AuditFinding, error) {
+	result := make([]contracts.AuditFinding, len(findings))
+	seen := make(map[string]struct{}, len(findings))
+	for index, finding := range findings {
+		canonical, err := contracts.CanonicalAuditFinding(finding)
+		if err != nil {
+			return nil, err
+		}
+		if _, exists := seen[canonical.StableFingerprint]; exists {
+			return nil, ErrInvalidInput
+		}
+		seen[canonical.StableFingerprint] = struct{}{}
+		result[index] = canonical
+	}
+	return SortedFindings(result), nil
+}
+
+func canonicalLLMResult(result LLMAuditResult, requiredCriteria []string) (LLMAuditResult, error) {
+	var err error
+	result.Findings, err = canonicalFindings(result.Findings)
+	if err != nil {
+		return LLMAuditResult{}, ErrInvalidInput
+	}
+	result.CriteriaResults = cloneCriteriaResults(result.CriteriaResults)
+	sort.Slice(result.CriteriaResults, func(left, right int) bool {
+		return result.CriteriaResults[left].CriterionID < result.CriteriaResults[right].CriterionID
+	})
+	result.ResidualRisks = cloneStrings(result.ResidualRisks)
+	sort.Strings(result.ResidualRisks)
+	if !criteriaMatch(requiredCriteria, result.CriteriaResults) {
+		return LLMAuditResult{}, ErrInvalidInput
+	}
+	for _, criterion := range result.CriteriaResults {
+		if criterion.Validate() != nil {
+			return LLMAuditResult{}, ErrInvalidInput
+		}
+	}
+	for _, risk := range result.ResidualRisks {
+		if strings.TrimSpace(risk) == "" || strings.TrimSpace(risk) != risk || strings.ContainsRune(risk, '\x00') {
+			return LLMAuditResult{}, ErrInvalidInput
+		}
+	}
+	return result, nil
+}
+
+func validRequiredCriteria(criteria []string) bool {
+	if len(criteria) == 0 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(criteria))
+	for _, criterion := range criteria {
+		if strings.TrimSpace(criterion) == "" || strings.TrimSpace(criterion) != criterion || strings.ContainsAny(criterion, "\x00\r\n") {
+			return false
+		}
+		if _, exists := seen[criterion]; exists {
+			return false
+		}
+		seen[criterion] = struct{}{}
+	}
+	return true
+}
+
+func criteriaMatch(required []string, results []contracts.CriterionResult) bool {
+	if len(required) != len(results) {
+		return false
+	}
+	wanted := make(map[string]struct{}, len(required))
+	for _, criterion := range required {
+		wanted[criterion] = struct{}{}
+	}
+	for _, result := range results {
+		if _, exists := wanted[result.CriterionID]; !exists {
+			return false
+		}
+		delete(wanted, result.CriterionID)
+	}
+	return len(wanted) == 0
 }

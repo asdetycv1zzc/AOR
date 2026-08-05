@@ -31,7 +31,7 @@ const (
 
 type CheckResult struct {
 	Status       CheckStatus
-	Findings     []string
+	Findings     []contracts.AuditFinding
 	Stdout       []byte
 	Stderr       []byte
 	Result       []byte
@@ -62,6 +62,7 @@ type DeterministicInput struct {
 	ModuleSpecRef      contracts.SpecRef
 	AllowedPaths       []string
 	ForbiddenPaths     []string
+	RequiredCriteria   []string
 	PolicyDigest       string
 	Platform           contracts.ExecutionPlatform
 	Isolation          contracts.IsolationLevel
@@ -76,17 +77,21 @@ type BlindAuditInput struct {
 	BaseCommit          string
 	SubmissionCommit    string
 	ChangedFiles        []string
+	RequiredCriteria    []string
 	DeterministicChecks []contracts.EvidenceCheck
 	EvidenceBundle      contracts.EvidenceBundle
 }
 
 type LLMAuditResult struct {
-	AuditorRunID  string
-	ModelIdentity string
-	PromptDigest  string
-	ContextDigest string
-	Verdict       string
-	Findings      []string
+	AuditorRunID    string
+	ModelIdentity   string
+	PromptDigest    string
+	ContextDigest   string
+	Verdict         string
+	Findings        []contracts.AuditFinding
+	CriteriaResults []contracts.CriterionResult
+	ResidualRisks   []string
+	Confidence      float64
 }
 
 type Auditor interface {
@@ -143,13 +148,48 @@ func evidenceKey(tenantID, projectID, taskID, attemptSeriesID string, attempt in
 
 func cloneBundle(bundle contracts.EvidenceBundle) contracts.EvidenceBundle {
 	bundle.Checks = append([]contracts.EvidenceCheck(nil), bundle.Checks...)
-	bundle.Findings = append([]string(nil), bundle.Findings...)
-	bundle.Artifacts = append([]string(nil), bundle.Artifacts...)
+	bundle.Findings = cloneFindings(bundle.Findings)
+	bundle.CriteriaResults = cloneCriteriaResults(bundle.CriteriaResults)
+	bundle.ResidualRisks = cloneStrings(bundle.ResidualRisks)
+	bundle.Artifacts = cloneStrings(bundle.Artifacts)
 	if bundle.Signature != nil {
 		signature := *bundle.Signature
 		bundle.Signature = &signature
 	}
 	return bundle
+}
+
+func cloneFindings(findings []contracts.AuditFinding) []contracts.AuditFinding {
+	if findings == nil {
+		return nil
+	}
+	result := make([]contracts.AuditFinding, len(findings))
+	copy(result, findings)
+	for index := range result {
+		result[index].EvidenceRefs = cloneStrings(findings[index].EvidenceRefs)
+	}
+	return result
+}
+
+func cloneCriteriaResults(criteria []contracts.CriterionResult) []contracts.CriterionResult {
+	if criteria == nil {
+		return nil
+	}
+	result := make([]contracts.CriterionResult, len(criteria))
+	copy(result, criteria)
+	for index := range result {
+		result[index].EvidenceRefs = cloneStrings(criteria[index].EvidenceRefs)
+	}
+	return result
+}
+
+func cloneStrings(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	result := make([]string, len(values))
+	copy(result, values)
+	return result
 }
 
 type AuditResult struct {

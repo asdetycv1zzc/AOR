@@ -200,12 +200,7 @@ func (s SignedEvidenceSource) Verified(ctx context.Context, task state.ModuleTas
 	if err != nil || digestErr != nil || computed != digest {
 		return EvidenceRecord{}, ErrNotAudited
 	}
-	passed := bundle.LLMAudit.Verdict == "PASS" && len(bundle.Findings) == 0 && len(bundle.Checks) > 0
-	for _, check := range bundle.Checks {
-		if check.Status != "PASS" {
-			passed = false
-		}
-	}
+	passed := bundle.PassesAuditGate()
 	return EvidenceRecord{SHA256: digest, ProjectID: bundle.ProjectID, TaskID: bundle.TaskID, AttemptSeriesID: bundle.AttemptSeriesID, Attempt: bundle.Attempt, ModuleSpecRef: submission.Manifest.ModuleSpecRef, BaseCommit: bundle.BaseCommit, SubmissionCommit: bundle.SubmissionCommit, PolicyDigest: bundle.PolicyBundleDigest, Passed: passed}, nil
 }
 

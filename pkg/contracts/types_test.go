@@ -1,6 +1,9 @@
 package contracts
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestModuleTaskDoneIsComputedFromIntegratedEvidence(t *testing.T) {
 	evidence := CompletionEvidence{SubmissionImmutable: true, AuditPassed: true, MergeQueued: true, NoBlockingFindings: true, RequiredEvidence: true}
@@ -52,5 +55,91 @@ func TestLinuxModuleRejectsUnrestrictedNetwork(t *testing.T) {
 	spec := ModuleSpec{ModuleSpecVersion: 1, ModuleID: "mod_1", ProjectID: "prj_1", PlanVersion: 1, Name: "module", Purpose: "purpose", ExecutionPlatform: PlatformLinux, SandboxLevel: IsolationContainer, NetworkPolicy: NetworkPolicy{Mode: NetworkUnrestricted}, SHA256: "sha256:0000000000000000000000000000000000000000000000000000000000000000"}
 	if err := spec.Validate(); err == nil {
 		t.Fatal("Linux module accepted unrestricted network")
+	}
+}
+
+func TestAuditFindingFingerprintSurvivesLineMovement(t *testing.T) {
+	base := AuditFinding{
+		Severity: FindingHigh, Category: "CORRECTNESS", RuleID: "rule.concurrent-write",
+		File: "internal\\worker\\run.go", Status: FindingOpen,
+		SemanticLocation: "worker.Run/commit", EvidencePattern: "lost-update",
+		EvidenceRefs:     []string{"artifact://sha256/evidence"},
+		ExpectedBehavior: "each accepted write is committed", ObservedBehavior: "one accepted write is lost",
+		RemediationConstraint: "preserve optimistic concurrency",
+	}
+	first := base
+	first.LineStart, first.LineEnd = 12, 14
+	second := base
+	second.LineStart, second.LineEnd = 91, 93
+
+	first, err := CanonicalAuditFinding(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err = CanonicalAuditFinding(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.File != "internal/worker/run.go" || first.StableFingerprint != second.StableFingerprint || first.FindingID != second.FindingID {
+		t.Fatalf("line movement changed stable identity: first=%#v second=%#v", first, second)
+	}
+
+	second.StableFingerprint = "sha256:" + strings.Repeat("0", 64)
+	if second.Validate() == nil {
+		t.Fatal("tampered stable fingerprint was accepted")
+	}
+}
+
+func TestEvidenceAuditGateUsesBlockingFindingsAndCriteria(t *testing.T) {
+	finding, err := CanonicalAuditFinding(AuditFinding{
+		Severity: FindingLow, Category: "STYLE", RuleID: "style.naming", File: "pkg/name.go",
+		Status: FindingOpen, SemanticLocation: "Name", EvidencePattern: "non-idiomatic-name",
+		EvidenceRefs: []string{}, ExpectedBehavior: "name follows conventions", ObservedBehavior: "name is unconventional",
+		RemediationConstraint: "preserve the public API",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle := EvidenceBundle{
+		Checks: []EvidenceCheck{{
+			CheckID: "required", Ordinal: 1, Type: "DETERMINISTIC", Status: "PASS",
+			Tool:      CheckTool{Name: "audit", Version: "1", Digest: "sha256:" + strings.Repeat("1", 64)},
+			StartedAt: "2030-01-01T00:00:00Z", CompletedAt: "2030-01-01T00:00:01Z",
+			StdoutURI: "artifact://empty", StderrURI: "artifact://empty", ResultURI: "artifact://empty", ResultSHA256: "sha256:" + strings.Repeat("2", 64),
+		}},
+		Findings:        []AuditFinding{finding},
+		CriteriaResults: []CriterionResult{{CriterionID: "criterion-1", Status: CriterionPass, EvidenceRefs: []string{}}},
+		ResidualRisks:   []string{},
+		Confidence:      0.8,
+		Artifacts:       []string{},
+		LLMAudit: LLMAudit{
+			AuditorRunID: "auditor-run", ModelIdentity: "model", PromptDigest: "sha256:" + strings.Repeat("3", 64),
+			ContextManifestDigest: "sha256:" + strings.Repeat("4", 64), Verdict: "PASS",
+		},
+	}
+	if !bundle.PassesAuditGate() {
+		t.Fatal("an OPEN LOW finding incorrectly blocked the audit")
+	}
+
+	bundle.Findings[0].Severity = FindingHigh
+	bundle.Findings[0], err = CanonicalAuditFinding(AuditFinding{
+		Severity: FindingHigh, Category: "STYLE", RuleID: "style.naming", File: "pkg/name.go",
+		Status: FindingOpen, SemanticLocation: "Name", EvidencePattern: "non-idiomatic-name",
+		EvidenceRefs: []string{}, ExpectedBehavior: "name follows conventions", ObservedBehavior: "name is unconventional",
+		RemediationConstraint: "preserve the public API",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bundle.PassesAuditGate() {
+		t.Fatal("an OPEN HIGH finding did not block the audit")
+	}
+	bundle.Findings[0].Status = FindingFixed
+	if !bundle.PassesAuditGate() {
+		t.Fatal("a resolved HIGH finding incorrectly blocked the audit")
+	}
+	bundle.CriteriaResults[0].Status = CriterionNotTested
+	if bundle.PassesAuditGate() {
+		t.Fatal("a required NOT_TESTED criterion did not block the audit")
 	}
 }

@@ -2,13 +2,16 @@ package audit
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/akimisaka/aor/internal/artifact"
 	"github.com/akimisaka/aor/pkg/contracts"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 type testAuditorFactory struct {
@@ -23,10 +26,22 @@ func (f *testAuditorFactory) New(context.Context) (Auditor, error) {
 type testAuditor struct{ run string }
 
 func (a testAuditor) Audit(_ context.Context, input BlindAuditInput) (LLMAuditResult, error) {
-	if input.ProjectID == "" || len(input.ChangedFiles) != 1 {
+	if input.ProjectID == "" || len(input.ChangedFiles) != 1 || len(input.RequiredCriteria) != 1 {
 		return LLMAuditResult{}, ErrBlindContext
 	}
-	return LLMAuditResult{AuditorRunID: a.run, ModelIdentity: "model/auditor", PromptDigest: digestBytes([]byte("prompt")), ContextDigest: digestBytes([]byte("context")), Verdict: "PASS"}, nil
+	return LLMAuditResult{AuditorRunID: a.run, ModelIdentity: "model/auditor", PromptDigest: digestBytes([]byte("prompt")), ContextDigest: digestBytes([]byte("context")), Verdict: "PASS", Findings: []contracts.AuditFinding{}, CriteriaResults: []contracts.CriterionResult{{CriterionID: input.RequiredCriteria[0], Status: contracts.CriterionPass, EvidenceRefs: []string{}}}, ResidualRisks: []string{}, Confidence: 0.9}, nil
+}
+
+type fixedAuditorFactory struct{ result LLMAuditResult }
+
+func (factory fixedAuditorFactory) New(context.Context) (Auditor, error) {
+	return fixedAuditor{result: factory.result}, nil
+}
+
+type fixedAuditor struct{ result LLMAuditResult }
+
+func (auditor fixedAuditor) Audit(context.Context, BlindAuditInput) (LLMAuditResult, error) {
+	return auditor.result, nil
 }
 
 func TestPipelineRunsFixedOrderAndCreatesSignedEvidence(t *testing.T) {
@@ -36,12 +51,12 @@ func TestPipelineRunsFixedOrderAndCreatesSignedEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := NewMemoryEvidenceStore()
-	pipeline, err := NewPipeline(nil, factory, signer, store, "pipeline-1", func() time.Time { return time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC) })
+	pipeline, err := NewPipeline(nil, factory, signer, store, "1.0.0", func() time.Time { return time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC) })
 	if err != nil {
 		t.Fatal(err)
 	}
 	manifest := testManifest()
-	input := DeterministicInput{TenantID: "tenant-1", Manifest: manifest, ModuleSpecRef: manifest.ModuleSpecRef, AllowedPaths: []string{"owned/..."}, PolicyDigest: digestBytes([]byte("policy")), Platform: contracts.PlatformLinux, Isolation: contracts.IsolationContainer, SandboxAttestation: "oci:sha256:container"}
+	input := DeterministicInput{TenantID: "tenant-1", Manifest: manifest, ModuleSpecRef: manifest.ModuleSpecRef, AllowedPaths: []string{"owned/..."}, RequiredCriteria: []string{"criterion-1"}, PolicyDigest: digestBytes([]byte("policy")), Platform: contracts.PlatformLinux, Isolation: contracts.IsolationContainer, SandboxAttestation: "oci:sha256:container"}
 	result, err := pipeline.Run(context.Background(), input)
 	if err != nil {
 		t.Fatal(err)
@@ -52,6 +67,7 @@ func TestPipelineRunsFixedOrderAndCreatesSignedEvidence(t *testing.T) {
 	if CheckOrder(pipeline.checks)[0] != "submission-schema" || result.Bundle.Checks[0].Ordinal != 1 {
 		t.Fatalf("fixed order not preserved: %#v", result.Bundle.Checks)
 	}
+	assertEvidenceSchema(t, result.Bundle)
 	stored, found, err := store.Get(context.Background(), input.TenantID, manifest.ProjectID, manifest.ModuleTaskID, manifest.AttemptSeriesID, manifest.Attempt)
 	if err != nil || !found || stored.ManifestSHA256 != result.Bundle.ManifestSHA256 {
 		t.Fatalf("evidence storage failed: %v %#v", err, stored)
@@ -61,10 +77,10 @@ func TestPipelineRunsFixedOrderAndCreatesSignedEvidence(t *testing.T) {
 func TestPipelineFailsBeforeAuditorOnUnownedPath(t *testing.T) {
 	factory := &testAuditorFactory{}
 	signer, _ := NewHMACSigner([]byte("0123456789abcdef0123456789abcdef"))
-	pipeline, _ := NewPipeline(nil, factory, signer, NewMemoryEvidenceStore(), "pipeline-1", nil)
+	pipeline, _ := NewPipeline(nil, factory, signer, NewMemoryEvidenceStore(), "1.0.0", nil)
 	manifest := testManifest()
 	manifest.ChangedFiles = []string{"secret.txt"}
-	result, err := pipeline.Run(context.Background(), DeterministicInput{TenantID: "tenant-1", Manifest: manifest, ModuleSpecRef: manifest.ModuleSpecRef, AllowedPaths: []string{"owned/..."}, PolicyDigest: digestBytes([]byte("policy")), Platform: contracts.PlatformLinux, Isolation: contracts.IsolationContainer, SandboxAttestation: "oci:sha256:container"})
+	result, err := pipeline.Run(context.Background(), DeterministicInput{TenantID: "tenant-1", Manifest: manifest, ModuleSpecRef: manifest.ModuleSpecRef, AllowedPaths: []string{"owned/..."}, RequiredCriteria: []string{"criterion-1"}, PolicyDigest: digestBytes([]byte("policy")), Platform: contracts.PlatformLinux, Isolation: contracts.IsolationContainer, SandboxAttestation: "oci:sha256:container"})
 	if !errors.Is(err, ErrDeterministicGate) || result.Verdict != "FAIL" || factory.calls != 0 {
 		t.Fatalf("deterministic gate bypassed: %v %#v calls=%d", err, result, factory.calls)
 	}
@@ -73,11 +89,40 @@ func TestPipelineFailsBeforeAuditorOnUnownedPath(t *testing.T) {
 func TestPipelineFailsClosedWhenCheckOmitsFindings(t *testing.T) {
 	factory := &testAuditorFactory{}
 	signer, _ := NewHMACSigner([]byte("0123456789abcdef0123456789abcdef"))
-	pipeline, _ := NewPipeline([]Check{emptyFindingFailureCheck{}}, factory, signer, NewMemoryEvidenceStore(), "pipeline-1", nil)
+	pipeline, _ := NewPipeline([]Check{emptyFindingFailureCheck{}}, factory, signer, NewMemoryEvidenceStore(), "1.0.0", nil)
 	manifest := testManifest()
-	result, err := pipeline.Run(context.Background(), DeterministicInput{TenantID: "tenant-1", Manifest: manifest, ModuleSpecRef: manifest.ModuleSpecRef, AllowedPaths: []string{"owned/..."}, PolicyDigest: digestBytes([]byte("policy")), Platform: contracts.PlatformLinux, Isolation: contracts.IsolationContainer, SandboxAttestation: "oci:sha256:container"})
+	result, err := pipeline.Run(context.Background(), DeterministicInput{TenantID: "tenant-1", Manifest: manifest, ModuleSpecRef: manifest.ModuleSpecRef, AllowedPaths: []string{"owned/..."}, RequiredCriteria: []string{"criterion-1"}, PolicyDigest: digestBytes([]byte("policy")), Platform: contracts.PlatformLinux, Isolation: contracts.IsolationContainer, SandboxAttestation: "oci:sha256:container"})
 	if !errors.Is(err, ErrDeterministicGate) || result.Verdict != "FAIL" || factory.calls != 0 || len(result.Bundle.Findings) != 1 || result.Bundle.Checks[0].Status != "FAIL" {
 		t.Fatalf("empty finding bypassed deterministic gate: %v %#v calls=%d", err, result, factory.calls)
+	}
+}
+
+func TestPipelineEnforcesBlockingFindingAndCriterionGate(t *testing.T) {
+	base := LLMAuditResult{
+		AuditorRunID: "auditor-run", ModelIdentity: "model/auditor",
+		PromptDigest: digestBytes([]byte("prompt")), ContextDigest: digestBytes([]byte("context")), Verdict: "PASS",
+		Findings:        []contracts.AuditFinding{},
+		CriteriaResults: []contracts.CriterionResult{{CriterionID: "criterion-1", Status: contracts.CriterionPass, EvidenceRefs: []string{}}},
+		ResidualRisks:   []string{}, Confidence: 0.9,
+	}
+	blocking := base
+	blocking.Findings = []contracts.AuditFinding{deterministicFinding(contracts.FindingCritical, "SECURITY", "security.boundary", "owned/file.go", "handler/authorize", "missing-authorization", "authorization is checked", "authorization can be bypassed", "restore authorization without broadening access")}
+	notTested := base
+	notTested.CriteriaResults = []contracts.CriterionResult{{CriterionID: "criterion-1", Status: contracts.CriterionNotTested, EvidenceRefs: []string{}}}
+
+	for name, llm := range map[string]LLMAuditResult{"open-critical": blocking, "criterion-not-tested": notTested} {
+		t.Run(name, func(t *testing.T) {
+			signer, _ := NewHMACSigner([]byte("0123456789abcdef0123456789abcdef"))
+			pipeline, err := NewPipeline(nil, fixedAuditorFactory{result: llm}, signer, NewMemoryEvidenceStore(), "1.0.0", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			manifest := testManifest()
+			result, err := pipeline.Run(context.Background(), DeterministicInput{TenantID: "tenant-1", Manifest: manifest, ModuleSpecRef: manifest.ModuleSpecRef, AllowedPaths: []string{"owned/..."}, RequiredCriteria: []string{"criterion-1"}, PolicyDigest: digestBytes([]byte("policy")), Platform: contracts.PlatformLinux, Isolation: contracts.IsolationContainer, SandboxAttestation: "oci:sha256:container"})
+			if !errors.Is(err, ErrDeterministicGate) || result.Verdict != "FAIL" || result.Bundle.PassesAuditGate() {
+				t.Fatalf("structured pass gate was bypassed: result=%#v error=%v", result, err)
+			}
+		})
 	}
 }
 
@@ -91,7 +136,7 @@ func (emptyFindingFailureCheck) Run(context.Context, DeterministicInput) CheckRe
 
 func TestBlindInputRejectsExecutorContent(t *testing.T) {
 	manifest := testManifest()
-	input := BlindAuditInput{ProjectID: manifest.ProjectID, TaskID: manifest.ModuleTaskID, Attempt: 1, ModuleSpecRef: manifest.ModuleSpecRef, BaseCommit: manifest.BaseCommit, SubmissionCommit: manifest.HeadCommit, ChangedFiles: []string{"../executor-statement"}}
+	input := BlindAuditInput{ProjectID: manifest.ProjectID, TaskID: manifest.ModuleTaskID, Attempt: 1, ModuleSpecRef: manifest.ModuleSpecRef, BaseCommit: manifest.BaseCommit, SubmissionCommit: manifest.HeadCommit, ChangedFiles: []string{"../executor-statement"}, RequiredCriteria: []string{"criterion-1"}}
 	if validateBlindInput(input) == nil {
 		t.Fatal("untrusted path accepted as blind context")
 	}
@@ -104,14 +149,14 @@ func TestPipelineStreamsOneGiBArtifactWithoutWholeOutputBuffer(t *testing.T) {
 		t.Fatal(err)
 	}
 	publisher := &boundedArtifactPublisher{}
-	pipeline, err := NewPipelineWithArtifactStore([]Check{largeStreamCheck{}}, factory, signer, NewMemoryEvidenceStore(), publisher, "pipeline-1", func() time.Time {
+	pipeline, err := NewPipelineWithArtifactStore([]Check{largeStreamCheck{}}, factory, signer, NewMemoryEvidenceStore(), publisher, "1.0.0", func() time.Time {
 		return time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	manifest := testManifest()
-	result, err := pipeline.Run(context.Background(), DeterministicInput{TenantID: "tenant-1", Manifest: manifest, ModuleSpecRef: manifest.ModuleSpecRef, AllowedPaths: []string{"owned/..."}, PolicyDigest: digestBytes([]byte("policy")), Platform: contracts.PlatformLinux, Isolation: contracts.IsolationContainer, SandboxAttestation: "oci:sha256:container"})
+	result, err := pipeline.Run(context.Background(), DeterministicInput{TenantID: "tenant-1", Manifest: manifest, ModuleSpecRef: manifest.ModuleSpecRef, AllowedPaths: []string{"owned/..."}, RequiredCriteria: []string{"criterion-1"}, PolicyDigest: digestBytes([]byte("policy")), Platform: contracts.PlatformLinux, Isolation: contracts.IsolationContainer, SandboxAttestation: "oci:sha256:container"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,4 +227,41 @@ func (writer *boundedWriter) Write(value []byte) (int, error) {
 
 func testManifest() contracts.SubmissionManifest {
 	return contracts.SubmissionManifest{SubmissionVersion: 1, ProjectID: "project-1", ModuleTaskID: "task-1", AttemptSeriesID: "series-1", Attempt: 1, ModuleSpecRef: contracts.SpecRef{Version: 1, SHA256: digestBytes([]byte("module"))}, BaseCommit: "0000000000000000000000000000000000000001", HeadCommit: "0000000000000000000000000000000000000002", ChangedFiles: []string{"owned/file.go"}, AgentIdentity: contracts.AgentIdentity{AgentInstanceID: "agent-1", Role: "EXECUTOR", LeaseID: "lease-1"}, CreatedAt: "2030-01-01T00:00:00Z", SHA256: digestBytes([]byte("manifest"))}
+}
+
+func assertEvidenceSchema(t *testing.T, bundle contracts.EvidenceBundle) {
+	t.Helper()
+	compiler := jsonschema.NewCompiler()
+	compiler.DefaultDraft(jsonschema.Draft2020)
+	for _, name := range []string{"common.v1.schema.json", "evidence-bundle.v1.schema.json"} {
+		encoded, err := os.ReadFile("../../api/json-schema/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var document any
+		if err := json.Unmarshal(encoded, &document); err != nil {
+			t.Fatal(err)
+		}
+		if err := compiler.AddResource("https://schemas.aor.local/"+name, document); err != nil {
+			t.Fatal(err)
+		}
+	}
+	schema, err := compiler.Compile("https://schemas.aor.local/evidence-bundle.v1.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := contracts.ValidateEvidenceJSON(encoded); err != nil {
+		t.Fatalf("signed evidence failed raw validation: %v", err)
+	}
+	var instance any
+	if err := json.Unmarshal(encoded, &instance); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.Validate(instance); err != nil {
+		t.Fatalf("signed evidence does not match schema: %v", err)
+	}
 }

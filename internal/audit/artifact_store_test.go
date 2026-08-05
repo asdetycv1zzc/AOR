@@ -23,7 +23,7 @@ func TestArtifactEvidenceStoreRoundTripImmutabilityAndTenantIsolation(t *testing
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	bundle := testEvidenceBundle(t, "pipeline-v1")
+	bundle := testEvidenceBundle(t, "1.0.0")
 	unsigned := bundle
 	unsigned.Signature = nil
 	if err := store.Put(ctx, "11111111-1111-4111-8111-111111111111", unsigned); !errors.Is(err, ErrInvalidInput) {
@@ -45,7 +45,7 @@ func TestArtifactEvidenceStoreRoundTripImmutabilityAndTenantIsolation(t *testing
 		t.Fatalf("Get = (%+v, %t, %v)", got, found, err)
 	}
 
-	changed := testEvidenceBundle(t, "pipeline-v2")
+	changed := testEvidenceBundle(t, "1.0.1")
 	if err := store.Put(ctx, "11111111-1111-4111-8111-111111111111", changed); !errors.Is(err, ErrEvidenceConflict) {
 		t.Fatalf("conflicting Put error = %v", err)
 	}
@@ -66,7 +66,7 @@ func TestArtifactEvidenceStoreRejectsTamperedBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bundle := testEvidenceBundle(t, "pipeline-v1")
+	bundle := testEvidenceBundle(t, "1.0.0")
 	tenantID := "11111111-1111-4111-8111-111111111111"
 	if err := store.Put(context.Background(), tenantID, bundle); err != nil {
 		t.Fatal(err)
@@ -87,6 +87,21 @@ func TestArtifactEvidenceStoreRejectsTamperedBytes(t *testing.T) {
 
 func testEvidenceBundle(t *testing.T, pipelineVersion string) contracts.EvidenceBundle {
 	t.Helper()
+	finding, err := contracts.CanonicalAuditFinding(contracts.AuditFinding{
+		Severity:              contracts.FindingHigh,
+		Category:              "DETERMINISTIC",
+		RuleID:                "test-check",
+		Status:                contracts.FindingOpen,
+		SemanticLocation:      "test-check",
+		EvidencePattern:       "failed-check",
+		EvidenceRefs:          []string{},
+		ExpectedBehavior:      "test check passes",
+		ObservedBehavior:      "test check failed",
+		RemediationConstraint: "fix the test check",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	bundle := contracts.EvidenceBundle{
 		EvidenceBundleVersion: 1,
 		ProjectID:             "33333333-3333-4333-8333-333333333333",
@@ -101,10 +116,19 @@ func testEvidenceBundle(t *testing.T, pipelineVersion string) contracts.Evidence
 		ExecutionPlatform:     contracts.PlatformLinux,
 		IsolationLevel:        contracts.IsolationContainer,
 		SandboxAttestation:    "oci:test",
-		Checks:                []contracts.EvidenceCheck{},
-		Findings:              []string{},
-		Artifacts:             []string{},
-		Signature:             &contracts.Signature{Type: "TEST", KID: "audit-test", JWS: "test-signature"},
+		Checks: []contracts.EvidenceCheck{{
+			CheckID: "test-check", Ordinal: 1, Type: "DETERMINISTIC", Status: "FAIL",
+			Tool:      contracts.CheckTool{Name: "aor-audit", Version: pipelineVersion, Digest: "sha256:" + strings.Repeat("4", 64)},
+			StartedAt: "2030-01-01T00:00:00Z", CompletedAt: "2030-01-01T00:00:01Z",
+			StdoutURI: "artifact://empty", StderrURI: "artifact://empty", ResultURI: "artifact://empty", ResultSHA256: "sha256:" + strings.Repeat("5", 64),
+		}},
+		Findings:        []contracts.AuditFinding{finding},
+		CriteriaResults: []contracts.CriterionResult{},
+		ResidualRisks:   []string{},
+		Confidence:      0,
+		Artifacts:       []string{},
+		LLMAudit:        contracts.LLMAudit{Verdict: "NOT_RUN"},
+		Signature:       &contracts.Signature{Type: "HMAC-SHA256", KID: "audit-test", JWS: "hmac-sha256:" + strings.Repeat("0", 64)},
 	}
 	encoded, err := json.Marshal(bundle)
 	if err != nil {

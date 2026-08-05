@@ -8,8 +8,9 @@ import (
 )
 
 var (
-	digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	commitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	digestPattern          = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	commitPattern          = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	pipelineVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
 )
 
 // ProjectState is the persisted project aggregate state. DONE is intentionally absent.
@@ -349,7 +350,10 @@ type EvidenceBundle struct {
 	IsolationLevel        IsolationLevel    `json:"isolationLevel"`
 	SandboxAttestation    string            `json:"sandboxAttestation"`
 	Checks                []EvidenceCheck   `json:"checks"`
-	Findings              []string          `json:"findings"`
+	Findings              []AuditFinding    `json:"findings"`
+	CriteriaResults       []CriterionResult `json:"criteriaResults"`
+	ResidualRisks         []string          `json:"residualRisks"`
+	Confidence            float64           `json:"confidence"`
 	Artifacts             []string          `json:"artifacts"`
 	LLMAudit              LLMAudit          `json:"llmAudit"`
 	ManifestSHA256        string            `json:"manifestSha256"`
@@ -493,7 +497,7 @@ func (s SubmissionManifest) Validate() error {
 }
 
 func (e EvidenceBundle) Validate() error {
-	if e.EvidenceBundleVersion < 1 || e.ProjectID == "" || e.TaskID == "" || e.Attempt < 1 || e.Attempt > 3 {
+	if e.EvidenceBundleVersion != 1 || e.ProjectID == "" || e.TaskID == "" || e.AttemptSeriesID == "" || e.Attempt < 1 || e.Attempt > 3 || e.SpecVersion < 1 || !pipelineVersionPattern.MatchString(e.PipelineVersion) {
 		return fmt.Errorf("evidence identity or attempt is invalid")
 	}
 	if !validPlatformIsolation(e.ExecutionPlatform, e.IsolationLevel) {
@@ -505,13 +509,28 @@ func (e EvidenceBundle) Validate() error {
 	if err := validateCommit(e.SubmissionCommit); err != nil {
 		return fmt.Errorf("submission commit: %w", err)
 	}
+	if e.BaseCommit == e.SubmissionCommit {
+		return fmt.Errorf("evidence submission must change the head commit")
+	}
+	if err := validateDigest(e.PolicyBundleDigest); err != nil {
+		return fmt.Errorf("policy bundle digest: %w", err)
+	}
 	if e.ExecutionPlatform == PlatformLinux && !strings.HasPrefix(e.SandboxAttestation, "oci:") {
 		return fmt.Errorf("linux evidence requires an OCI-bound sandbox attestation")
 	}
 	if e.ExecutionPlatform == PlatformWindows && e.SandboxAttestation != "windows:none" {
 		return fmt.Errorf("windows evidence must disclose NONE")
 	}
-	return validateDigest(e.ManifestSHA256)
+	if err := validateAuditResults(e); err != nil {
+		return err
+	}
+	if err := validateDigest(e.ManifestSHA256); err != nil {
+		return err
+	}
+	if e.Signature == nil || strings.TrimSpace(e.Signature.Type) == "" || strings.TrimSpace(e.Signature.KID) == "" || strings.TrimSpace(e.Signature.JWS) == "" {
+		return fmt.Errorf("evidence signature is required")
+	}
+	return nil
 }
 
 func (g GoalSpec) Validate() error {
