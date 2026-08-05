@@ -163,7 +163,8 @@ func (e Envelope) Validate(now time.Time) *aorerrors.Error {
 	if e.ExpectedAggregateVersion < 0 || e.Sender.AgentInstanceID == "" || e.Sender.Role == "" || e.Sender.LeaseID == "" {
 		return invalid("sender or aggregate version")
 	}
-	if requirements.goal && e.GoalSpec == nil || e.GoalSpec != nil && e.GoalSpec.Validate() != nil {
+	curatorKnowledgeDraft := e.Sender.Role == "KNOWLEDGE_CURATOR" && e.Intent == IntentReturnKnowledgeRefs && e.Scope == ScopeProject
+	if requirements.goal && !curatorKnowledgeDraft && e.GoalSpec == nil || e.GoalSpec != nil && e.GoalSpec.Validate() != nil {
 		return invalid("goalSpec")
 	}
 	if e.CreatedAt.IsZero() || e.ExpiresAt.IsZero() || !e.CreatedAt.Before(e.ExpiresAt) || !now.Before(e.ExpiresAt) {

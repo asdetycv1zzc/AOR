@@ -17,6 +17,7 @@ func TestConfiguredGoalPlanRoutesBindEveryRequiredRole(t *testing.T) {
 	routes, err := configuredGoalPlanRoutes(runtimeconfig.GoalPlanConfig{Routes: map[string]runtimeconfig.GoalPlanRouteConfig{
 		"GOAL_PROPOSER": configured, "GOAL_CHALLENGER": configured,
 		"PLAN_SUPERVISOR": configured, "MODULE_PLANNER": configured,
+		"KNOWLEDGE_CURATOR": configured,
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -24,6 +25,7 @@ func TestConfiguredGoalPlanRoutesBindEveryRequiredRole(t *testing.T) {
 	for _, role := range []agentruntime.Role{
 		agentruntime.RoleGoalProposer, agentruntime.RoleGoalChallenger,
 		agentruntime.RolePlanSupervisor, agentruntime.RoleModulePlanner,
+		agentruntime.RoleKnowledgeCurator,
 	} {
 		route, found := routes[role]
 		if !found || route.Provider != configured.Provider || route.Model != configured.Model || route.Seed == nil || *route.Seed != seed || route.MaxAttempts != 3 {

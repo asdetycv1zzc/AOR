@@ -10,7 +10,7 @@ func TestLoadServerConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load server config: %v", err)
 	}
-	if config.Database.Address() != "postgres:5432" || config.Temporal.Namespace != "aor" || config.NATS.Stream != "AOR_EVENTS" || !config.S3.UsePathStyle || config.KnowledgeRoot != "/var/lib/aor/knowledge" || config.ModelGatewayClient.ClientID != "aor-server" || len(config.GoalPlan.Routes) != 4 {
+	if config.Database.Address() != "postgres:5432" || config.Temporal.Namespace != "aor" || config.NATS.Stream != "AOR_EVENTS" || !config.S3.UsePathStyle || config.KnowledgeRoot != "/var/lib/aor/knowledge" || config.ModelGatewayClient.ClientID != "aor-server" || len(config.GoalPlan.Routes) != 5 {
 		t.Fatalf("unexpected defaults: %+v", config)
 	}
 }
@@ -422,7 +422,8 @@ func validGoalPlanRoutesJSON() string {
 		"GOAL_PROPOSER":{"provider":"primary","model":"model-a","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3},
 		"GOAL_CHALLENGER":{"provider":"primary","model":"model-a","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3},
 		"PLAN_SUPERVISOR":{"provider":"primary","model":"model-a","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3},
-		"MODULE_PLANNER":{"provider":"primary","model":"model-a","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3}
+		"MODULE_PLANNER":{"provider":"primary","model":"model-a","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3},
+		"KNOWLEDGE_CURATOR":{"provider":"primary","model":"model-a","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3}
 	}`
 }
 

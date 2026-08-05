@@ -111,6 +111,9 @@ func validAgentInvocation(request AgentInvocation) bool {
 	if request.InvocationID == "" || request.TenantID == "" || request.ProjectID == "" || !request.Role.Valid() || request.Stage == "" || expectedRuntimeIntent(request) == "" {
 		return false
 	}
+	if request.Role == agentruntime.RoleKnowledgeCurator {
+		return request.TaskID == ""
+	}
 	return (request.Role == agentruntime.RoleModulePlanner) == (request.TaskID != "")
 }
 
@@ -139,6 +142,10 @@ func expectedRuntimeIntent(request AgentInvocation) aop.Intent {
 	case "MODULE_SPEC":
 		if request.Role == agentruntime.RoleModulePlanner {
 			return aop.IntentDefineModule
+		}
+	case "KNOWLEDGE_UPDATE_DRAFT":
+		if request.Role == agentruntime.RoleKnowledgeCurator {
+			return aop.IntentReturnKnowledgeRefs
 		}
 	}
 	return ""

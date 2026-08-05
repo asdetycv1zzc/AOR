@@ -780,7 +780,8 @@ func contextMatchesEnvelope(declaration Declaration) bool {
 		return false
 	}
 	if declaration.Envelope.GoalSpec == nil {
-		if declaration.Role != RoleGoalProposer || declaration.Envelope.Intent != aop.IntentProposeGoal {
+		curatorDraft := declaration.Role == RoleKnowledgeCurator && declaration.Envelope.Intent == aop.IntentReturnKnowledgeRefs
+		if !curatorDraft && (declaration.Role != RoleGoalProposer || declaration.Envelope.Intent != aop.IntentProposeGoal) {
 			return false
 		}
 		hasUserInput := false

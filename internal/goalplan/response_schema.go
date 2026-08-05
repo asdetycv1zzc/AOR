@@ -18,6 +18,8 @@ func responseSchemaFor(stage string) (agentResponseSchema, error) {
 		schema = agentResponseSchema{Reference: "urn:aor:goalplan:plan-draft:v1", Document: json.RawMessage(planDraftSchema)}
 	case "MODULE_SPEC":
 		schema = agentResponseSchema{Reference: "urn:aor:goalplan:module-draft:v1", Document: json.RawMessage(moduleDraftSchema)}
+	case "KNOWLEDGE_UPDATE_DRAFT":
+		schema = agentResponseSchema{Reference: "urn:aor:knowledge:update-draft:v1", Document: json.RawMessage(knowledgeUpdateDraftSchema)}
 	default:
 		return agentResponseSchema{}, ErrInvalidRequest
 	}
@@ -225,5 +227,54 @@ const moduleDraftSchema = `{
   },
   "$defs": {
     "strings": {"type": "array", "maxItems": 1000, "items": {"type": "string", "minLength": 1, "maxLength": 4096}}
+  }
+}`
+
+const knowledgeUpdateDraftSchema = `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["baseRevision", "parentOrderExplicit", "parents", "overrides", "documents", "deletePaths", "changeSummary"],
+  "properties": {
+    "baseRevision": {"type": "string", "pattern": "^(?:|sha256:[0-9a-f]{64})$"},
+    "parentOrderExplicit": {"type": "boolean"},
+    "parents": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["projectId", "revision", "order"],
+        "properties": {
+          "projectId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "revision": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+          "order": {"type": "integer", "minimum": 0, "maximum": 31}
+        }
+      }
+    },
+    "overrides": {"$ref": "#/$defs/paths"},
+    "documents": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "title", "tags", "trustLevel", "contentType", "content"],
+        "properties": {
+          "path": {"$ref": "#/$defs/path"},
+          "title": {"type": "string", "minLength": 1, "maxLength": 512},
+          "tags": {"type": "array", "maxItems": 128, "items": {"type": "string", "minLength": 1, "maxLength": 128}},
+          "trustLevel": {"enum": ["CURATED", "PROJECT_APPROVED", "GENERATED_UNREVIEWED", "EXTERNAL_UNTRUSTED"]},
+          "contentType": {"type": "string", "minLength": 1, "maxLength": 256},
+          "content": {"type": "string", "minLength": 1, "maxLength": 262144}
+        }
+      }
+    },
+    "deletePaths": {"$ref": "#/$defs/paths"},
+    "changeSummary": {"type": "string", "minLength": 1, "maxLength": 8192}
+  },
+  "$defs": {
+    "path": {"type": "string", "pattern": "^(?:inherited|requirements|architecture|modules|interfaces|decisions|prompts|workflows|tools|security|operations|lessons)/.+$", "maxLength": 4096},
+    "paths": {"type": "array", "maxItems": 4096, "items": {"$ref": "#/$defs/path"}}
   }
 }`

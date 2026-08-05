@@ -80,10 +80,11 @@ func NewAuthoritativeRuntimePreparer(config RuntimePreparerConfig) (*Authoritati
 	if config.LeaseTTL < time.Duration(agentruntime.DefaultHeartbeatSeconds*agentruntime.MissedHeartbeatLimit)*time.Second || config.LeaseTTL > 15*time.Minute {
 		return nil, ErrInvalidRequest
 	}
-	routes := make(map[agentruntime.Role]ModelRoute, 4)
+	routes := make(map[agentruntime.Role]ModelRoute, 5)
 	for _, role := range []agentruntime.Role{
 		agentruntime.RoleGoalProposer, agentruntime.RoleGoalChallenger,
 		agentruntime.RolePlanSupervisor, agentruntime.RoleModulePlanner,
+		agentruntime.RoleKnowledgeCurator,
 	} {
 		route, found := config.Routes[role]
 		if !found || !validModelRoute(route) {
@@ -359,6 +360,10 @@ func (preparer *AuthoritativeRuntimePreparer) stageContext(ctx context.Context, 
 		stage.goalRef, stage.planRef = &goalRef, &planRef
 		stage.scope, stage.expectedVersion = aop.ScopeTask, task.Version
 		stage.taskVersion, stage.specDigest = task.Version, task.PlanningSpecRef.SHA256
+	case "KNOWLEDGE_UPDATE_DRAFT":
+		if err := appendArtifact(ArtifactKnowledgeUpdateRequest, agentruntime.ContextUserInput, agentruntime.TrustExternalUntrusted); err != nil {
+			return preparedStageContext{}, err
+		}
 	default:
 		return preparedStageContext{}, ErrInvalidRequest
 	}
@@ -421,6 +426,8 @@ func validRuntimeInputKinds(request AgentInvocation) bool {
 		return exact(ArtifactGoalApproved)
 	case "MODULE_SPEC":
 		return exact(ArtifactGoalApproved, ArtifactPlanSpec)
+	case "KNOWLEDGE_UPDATE_DRAFT":
+		return exact(ArtifactKnowledgeUpdateRequest)
 	default:
 		return false
 	}

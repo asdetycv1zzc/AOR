@@ -536,7 +536,7 @@ func validateProviders(providers []ProviderConfig) error {
 }
 
 func validateGoalPlanRoutes(routes map[string]GoalPlanRouteConfig) error {
-	required := []string{"GOAL_PROPOSER", "GOAL_CHALLENGER", "PLAN_SUPERVISOR", "MODULE_PLANNER"}
+	required := []string{"GOAL_PROPOSER", "GOAL_CHALLENGER", "PLAN_SUPERVISOR", "MODULE_PLANNER", "KNOWLEDGE_CURATOR"}
 	if len(routes) != len(required) {
 		return ErrInvalidConfiguration
 	}

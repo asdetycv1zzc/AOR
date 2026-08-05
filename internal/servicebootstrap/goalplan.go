@@ -81,6 +81,7 @@ func configuredGoalPlanRoutes(config runtimeconfig.GoalPlanConfig) (map[agentrun
 		agentruntime.RoleGoalChallenger,
 		agentruntime.RolePlanSupervisor,
 		agentruntime.RoleModulePlanner,
+		agentruntime.RoleKnowledgeCurator,
 	}
 	if len(config.Routes) != len(roles) {
 		return nil, runtimeconfig.ErrInvalidConfiguration

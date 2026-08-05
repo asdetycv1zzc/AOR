@@ -20,14 +20,16 @@ import (
 type ArtifactKind string
 
 const (
-	ArtifactUserMessage   ArtifactKind = "USER_MESSAGE"
-	ArtifactGoalDraft     ArtifactKind = "GOAL_DRAFT"
-	ArtifactGoalChallenge ArtifactKind = "GOAL_CHALLENGE"
-	ArtifactGoalApproved  ArtifactKind = "GOAL_APPROVED"
-	ArtifactPlanSpec      ArtifactKind = "PLAN_SPEC"
-	ArtifactModuleSpec    ArtifactKind = "MODULE_SPEC"
-	ArtifactPlanAnalysis  ArtifactKind = "PLAN_ANALYSIS"
-	MaximumArtifactBytes               = 4 << 20
+	ArtifactUserMessage            ArtifactKind = "USER_MESSAGE"
+	ArtifactGoalDraft              ArtifactKind = "GOAL_DRAFT"
+	ArtifactGoalChallenge          ArtifactKind = "GOAL_CHALLENGE"
+	ArtifactGoalApproved           ArtifactKind = "GOAL_APPROVED"
+	ArtifactPlanSpec               ArtifactKind = "PLAN_SPEC"
+	ArtifactModuleSpec             ArtifactKind = "MODULE_SPEC"
+	ArtifactPlanAnalysis           ArtifactKind = "PLAN_ANALYSIS"
+	ArtifactKnowledgeUpdateRequest ArtifactKind = "KNOWLEDGE_UPDATE_REQUEST"
+	ArtifactKnowledgeUpdateDraft   ArtifactKind = "KNOWLEDGE_UPDATE_DRAFT"
+	MaximumArtifactBytes                        = 4 << 20
 )
 
 var ErrArtifactConflict = errors.New("immutable artifact conflict")
@@ -152,7 +154,7 @@ func (s *EventArtifactStore) Get(ctx context.Context, tenantID, projectID string
 
 func (kind ArtifactKind) Valid() bool {
 	switch kind {
-	case ArtifactUserMessage, ArtifactGoalDraft, ArtifactGoalChallenge, ArtifactGoalApproved, ArtifactPlanSpec, ArtifactModuleSpec, ArtifactPlanAnalysis:
+	case ArtifactUserMessage, ArtifactGoalDraft, ArtifactGoalChallenge, ArtifactGoalApproved, ArtifactPlanSpec, ArtifactModuleSpec, ArtifactPlanAnalysis, ArtifactKnowledgeUpdateRequest, ArtifactKnowledgeUpdateDraft:
 		return true
 	default:
 		return false

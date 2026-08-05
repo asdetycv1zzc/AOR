@@ -66,6 +66,44 @@ func TestAuthoritativeRuntimePreparerBuildsInitialGoalInvocation(t *testing.T) {
 	}
 }
 
+func TestAuthoritativeRuntimePreparerBuildsProjectCuratorDraft(t *testing.T) {
+	now := time.Date(2035, 4, 5, 6, 7, 8, 0, time.UTC)
+	project := state.Project{
+		TenantID: "tenant_1", ID: "project_1", Version: 7, State: contracts.ProjectExecuting,
+		PromptBundleVersion: prompts.BaselineVersion, DataClassification: "INTERNAL",
+	}
+	requestArtifact := runtimePreparerArtifact(t, now, ArtifactKnowledgeUpdateRequest, "update_1", 1, []byte(`{"instruction":"Update the authentication architecture","baseRevision":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`), "")
+	issuer := &runtimePreparerIssuer{now: now, project: project}
+	preparer := newRuntimePreparer(t, now, project, state.ModuleTask{}, issuer, requestArtifact)
+	request := AgentInvocation{
+		InvocationID: "run_curator_1", TenantID: project.TenantID, ProjectID: project.ID,
+		Role: agentruntime.RoleKnowledgeCurator, Stage: "KNOWLEDGE_UPDATE_DRAFT",
+		Inputs: []ArtifactPointer{artifactPointer(requestArtifact)},
+	}
+
+	prepared, err := preparer.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Declaration.AgentInstanceID != "project_1:KNOWLEDGE_CURATOR" || prepared.Intent != aop.IntentReturnKnowledgeRefs || prepared.Declaration.TaskID != "" {
+		t.Fatalf("curator identity = %#v", prepared)
+	}
+	if prepared.Declaration.Envelope.GoalSpec != nil || prepared.Declaration.Envelope.PlanSpec != nil || prepared.Declaration.Envelope.Scope != aop.ScopeProject || prepared.Declaration.Envelope.ExpectedAggregateVersion != project.Version {
+		t.Fatalf("curator envelope = %#v", prepared.Declaration.Envelope)
+	}
+	items := prepared.Declaration.ContextManifest.Items
+	if len(items) != 1 || items[0].Kind != agentruntime.ContextUserInput || items[0].Trust != agentruntime.TrustExternalUntrusted || items[0].Content != string(requestArtifact.Content) {
+		t.Fatalf("curator context = %#v", items)
+	}
+	if issuer.principal.Type != authn.PrincipalAgentInstance || issuer.principal.Role != authn.RoleKnowledgeCurator || issuer.request.TaskID != "" || issuer.request.Action != authz.ActionModelGenerate {
+		t.Fatalf("curator lease request = %#v principal=%#v", issuer.request, issuer.principal)
+	}
+	runtime := newGoalPlanRuntime(t, now, &runtimeInvokerGateway{}, &runtimeInvokerAuthority{})
+	if err := runtime.Declare(prepared.Declaration); err != nil {
+		t.Fatalf("declare prepared curator invocation: %v", err)
+	}
+}
+
 func TestAuthoritativeRuntimePreparerBindsModuleToDurablePlanningTask(t *testing.T) {
 	now := time.Date(2035, 4, 5, 6, 7, 8, 0, time.UTC)
 	goalContent := validGoalContent("approved goal")
@@ -224,6 +262,7 @@ func newRuntimePreparer(t *testing.T, now time.Time, project state.Project, task
 	routes := map[agentruntime.Role]ModelRoute{
 		agentruntime.RoleGoalProposer: route, agentruntime.RoleGoalChallenger: route,
 		agentruntime.RolePlanSupervisor: route, agentruntime.RoleModulePlanner: route,
+		agentruntime.RoleKnowledgeCurator: route,
 	}
 	preparer, err := NewAuthoritativeRuntimePreparer(RuntimePreparerConfig{
 		Artifacts: runtimePreparerArtifacts{values: artifacts}, Projects: reader, Tasks: reader,

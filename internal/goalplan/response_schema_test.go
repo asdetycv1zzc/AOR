@@ -8,7 +8,7 @@ import (
 )
 
 func TestAgentResponseSchemasCompileWithoutExternalResources(t *testing.T) {
-	for _, stage := range []string{"GOAL_DRAFT", "GOAL_REVISION", "GOAL_CHALLENGE", "PLAN_DRAFT", "MODULE_SPEC"} {
+	for _, stage := range []string{"GOAL_DRAFT", "GOAL_REVISION", "GOAL_CHALLENGE", "PLAN_DRAFT", "MODULE_SPEC", "KNOWLEDGE_UPDATE_DRAFT"} {
 		t.Run(stage, func(t *testing.T) {
 			response, err := responseSchemaFor(stage)
 			if err != nil || response.Reference == "" || len(response.Document) == 0 {
