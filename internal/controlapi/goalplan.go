@@ -65,7 +65,7 @@ func (handler *Handler) negotiateGoal(ctx context.Context, principal authn.Princ
 				}
 				ref := contracts.SpecRef{Version: previous.Spec.Content.Version, SHA256: previous.Spec.ContentSHA256}
 				previousRef = &ref
-				supersede = previous.Spec.Status == contracts.GoalApproved
+				supersede = handler.replayedGoalSupersede(ctx, principal.TenantID, projectID, body.ExpectedVersion+1, previous.Spec.Status == contracts.GoalApproved)
 			}
 		} else {
 			ref := contracts.SpecRef{Version: project.Goal.Version, SHA256: project.Goal.SHA256}
@@ -193,6 +193,24 @@ func (handler *Handler) approveGoalAndPlan(ctx context.Context, principal authn.
 		return state.Project{}, goalplan.ErrAgentOutput
 	}
 	return outcome, nil
+}
+
+func (handler *Handler) replayedGoalSupersede(ctx context.Context, tenantID, projectID string, version int64, fallback bool) bool {
+	log, ok := handler.events.(eventing.EventLog)
+	if !ok {
+		return fallback
+	}
+	events, err := log.ListEvents(ctx, tenantID)
+	if err != nil {
+		return fallback
+	}
+	for _, event := range events {
+		if event.AggregateType != "project" || event.AggregateID != projectID || event.AggregateVersion != version {
+			continue
+		}
+		return event.Type == "io.aor.goal.superseded.v1"
+	}
+	return fallback
 }
 
 func (handler *Handler) findGoalPlanArtifactSpecID(ctx context.Context, tenantID, projectID string, kind goalplan.ArtifactKind, version int, matches func(goalplan.SpecArtifact) bool) (string, bool, error) {
