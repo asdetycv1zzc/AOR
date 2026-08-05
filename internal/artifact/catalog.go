@@ -26,6 +26,8 @@ const (
 	defaultCatalogPage = 100
 	maxCatalogPage     = 100
 	maxMetadataBytes   = 64 << 10
+	defaultPurgeLimit  = 100
+	maxPurgeLimit      = 1000
 )
 
 var uuidValuePattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
@@ -84,6 +86,11 @@ type ErasureReport struct {
 	Records      int64
 	Objects      int64
 	CacheEntries int64
+}
+
+type RetentionReport struct {
+	Records int64
+	Objects int64
 }
 
 type PostgresS3Catalog struct {
@@ -492,6 +499,240 @@ WHERE k.tenant_id = $1::uuid AND k.project_id = $2::uuid AND k.idempotency_key =
 	return record, nil
 }
 
+// PurgeExpired removes expired artifacts only after their project is terminal
+// and its authoritative projection has no active legal hold. Each object is
+// removed while the artifact and project rows are locked; a retry safely
+// completes the row deletion when an object was already removed.
+func (catalog *PostgresS3Catalog) PurgeExpired(ctx context.Context, limit int) (RetentionReport, error) {
+	if catalog == nil || catalog.database == nil || catalog.objects == nil || ctx == nil {
+		return RetentionReport{}, ErrInvalidRequest
+	}
+	if limit == 0 {
+		limit = defaultPurgeLimit
+	}
+	if limit < 1 || limit > maxPurgeLimit {
+		return RetentionReport{}, ErrInvalidRequest
+	}
+	now := catalog.clock().UTC()
+	rows, err := catalog.database.QueryContext(ctx, `
+SELECT tenant_id::text
+FROM aor_expired_artifact_tenants($1, $2)`, now, limit)
+	if err != nil {
+		return RetentionReport{}, err
+	}
+	tenants := make([]string, 0, limit)
+	for rows.Next() {
+		var tenantID string
+		if err := rows.Scan(&tenantID); err != nil {
+			_ = rows.Close()
+			return RetentionReport{}, err
+		}
+		if !uuidValuePattern.MatchString(tenantID) {
+			_ = rows.Close()
+			return RetentionReport{}, ErrIntegrity
+		}
+		tenants = append(tenants, tenantID)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return RetentionReport{}, err
+	}
+	_ = rows.Close()
+
+	var report RetentionReport
+	for _, tenantID := range tenants {
+		remaining := limit - int(report.Records)
+		if remaining <= 0 {
+			break
+		}
+		tenantCtx, err := retentionTenantContext(ctx, tenantID)
+		if err != nil {
+			return report, err
+		}
+		artifactIDs, err := catalog.expiredArtifactIDs(tenantCtx, tenantID, now, remaining)
+		if err != nil {
+			return report, err
+		}
+		for _, artifactID := range artifactIDs {
+			objects, removed, err := catalog.purgeExpiredArtifact(tenantCtx, tenantID, artifactID, now)
+			if err != nil {
+				return report, err
+			}
+			if removed {
+				report.Records++
+				report.Objects += objects
+			}
+		}
+	}
+	return report, nil
+}
+
+func retentionTenantContext(ctx context.Context, tenantID string) (context.Context, error) {
+	principal := authn.Principal{
+		ID: "service:artifact-retention", Type: authn.PrincipalService,
+		Role: authn.RoleService, TenantID: tenantID,
+	}
+	return authn.ContextWithPrincipal(ctx, principal)
+}
+
+func (catalog *PostgresS3Catalog) expiredArtifactIDs(ctx context.Context, tenantID string, now time.Time, limit int) ([]string, error) {
+	tx, err := beginCatalogTx(ctx, catalog.database, tenantID, true)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.QueryContext(ctx, `
+SELECT artifacts.id::text
+FROM artifacts
+JOIN projects
+  ON projects.tenant_id = artifacts.tenant_id
+ AND projects.id = artifacts.project_id
+JOIN aggregate_projections AS projection
+  ON projection.tenant_id = projects.tenant_id
+ AND projection.project_id = projects.id
+ AND projection.aggregate_type = 'project'
+ AND projection.aggregate_id = projects.id::text
+WHERE artifacts.tenant_id = $1::uuid
+  AND artifacts.retention_until IS NOT NULL
+  AND artifacts.retention_until <= $2
+  AND projects.state IN ('COMPLETED', 'ABORTED', 'ARCHIVED')
+  AND projects.deletion_status IS NULL
+  AND NOT EXISTS (
+    SELECT 1
+    FROM jsonb_array_elements(
+      CASE
+        WHEN jsonb_typeof(projection.state_jsonb -> 'legalHolds') = 'array'
+          THEN projection.state_jsonb -> 'legalHolds'
+        ELSE '[]'::jsonb
+      END
+    ) AS legal_hold
+    WHERE COALESCE(legal_hold ->> 'releasedAt', '') = ''
+  )
+ORDER BY artifacts.retention_until, artifacts.id
+LIMIT $3`, tenantID, now, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	artifactIDs := make([]string, 0, limit)
+	for rows.Next() {
+		var artifactID string
+		if err := rows.Scan(&artifactID); err != nil {
+			return nil, err
+		}
+		if !uuidValuePattern.MatchString(artifactID) {
+			return nil, ErrIntegrity
+		}
+		artifactIDs = append(artifactIDs, artifactID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return artifactIDs, nil
+}
+
+func (catalog *PostgresS3Catalog) purgeExpiredArtifact(ctx context.Context, tenantID, artifactID string, now time.Time) (int64, bool, error) {
+	tx, err := beginCatalogTx(ctx, catalog.database, tenantID, false)
+	if err != nil {
+		return 0, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	record, projectState, projectVersion, deletionStatus, projectionState, err := scanRetentionRecord(tx.QueryRowContext(ctx, `
+SELECT artifacts.id::text, artifacts.tenant_id::text, artifacts.project_id::text,
+       artifacts.uri, artifacts.sha256, artifacts.size_bytes, artifacts.content_type,
+       artifacts.classification, artifacts.created_by_principal, artifacts.metadata_jsonb,
+       artifacts.created_at, artifacts.retention_until,
+       projects.state, projects.state_version, COALESCE(projects.deletion_status, ''),
+       projection.state_jsonb
+FROM artifacts
+JOIN projects
+  ON projects.tenant_id = artifacts.tenant_id
+ AND projects.id = artifacts.project_id
+JOIN aggregate_projections AS projection
+  ON projection.tenant_id = projects.tenant_id
+ AND projection.project_id = projects.id
+ AND projection.aggregate_type = 'project'
+ AND projection.aggregate_id = projects.id::text
+WHERE artifacts.tenant_id = $1::uuid AND artifacts.id = $2::uuid
+FOR UPDATE OF artifacts, projects, projection`, tenantID, artifactID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	if record.RetentionUntil == nil || record.RetentionUntil.After(now) || !retentionProjectEligible(projectionState, tenantID, record.ProjectID, projectState, projectVersion, deletionStatus) {
+		if err := tx.Commit(); err != nil {
+			return 0, false, err
+		}
+		return 0, false, nil
+	}
+
+	_, legacyName, err := ParseURI(record.URI)
+	if err != nil {
+		return 0, false, ErrIntegrity
+	}
+	objects, err := catalog.removeObject(ctx, projectObjectName(tenantID, record.ProjectID, record.SHA256))
+	if err != nil {
+		return 0, false, err
+	}
+	var references int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM artifacts WHERE tenant_id = $1::uuid AND sha256 = $2`, tenantID, record.SHA256).Scan(&references); err != nil {
+		return 0, false, err
+	}
+	if references == 1 {
+		legacyObjects, removeErr := catalog.removeObject(ctx, legacyName)
+		if removeErr != nil {
+			return 0, false, removeErr
+		}
+		objects += legacyObjects
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM artifact_publication_keys WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND artifact_id = $3::uuid`, tenantID, record.ProjectID, record.ID); err != nil {
+		return 0, false, err
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM artifacts WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND id = $3::uuid`, tenantID, record.ProjectID, record.ID)
+	if err != nil {
+		return 0, false, err
+	}
+	removed, err := result.RowsAffected()
+	if err != nil || removed != 1 {
+		return 0, false, ErrIntegrity
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, false, err
+	}
+	return objects, true, nil
+}
+
+type retentionProjectProjection struct {
+	TenantID   string `json:"tenantId"`
+	ID         string `json:"id"`
+	State      string `json:"state"`
+	Version    int64  `json:"version"`
+	LegalHolds []struct {
+		ReleasedAt *time.Time `json:"releasedAt,omitempty"`
+	} `json:"legalHolds,omitempty"`
+}
+
+func retentionProjectEligible(content []byte, tenantID, projectID, state string, version int64, deletionStatus string) bool {
+	if deletionStatus != "" || state != "COMPLETED" && state != "ABORTED" && state != "ARCHIVED" {
+		return false
+	}
+	var projection retentionProjectProjection
+	if json.Unmarshal(content, &projection) != nil || projection.TenantID != tenantID || projection.ID != projectID || projection.State != state || projection.Version != version {
+		return false
+	}
+	for _, hold := range projection.LegalHolds {
+		if hold.ReleasedAt == nil {
+			return false
+		}
+	}
+	return true
+}
+
 // EraseProject performs the durable, resumable portion of project deletion.
 // The relational journal is committed before any object is removed, so a
 // process or object-store failure can safely retry the same deletion ID.
@@ -797,6 +1038,34 @@ func erasureScopes() []string {
 
 type rowScanner interface {
 	Scan(...any) error
+}
+
+func scanRetentionRecord(scanner rowScanner) (Record, string, int64, string, []byte, error) {
+	var record Record
+	var metadataBytes, projectionState []byte
+	var retention sql.NullTime
+	var projectState, deletionStatus string
+	var projectVersion int64
+	if err := scanner.Scan(
+		&record.ID, &record.TenantID, &record.ProjectID, &record.URI, &record.SHA256,
+		&record.SizeBytes, &record.ContentType, &record.Classification,
+		&record.CreatedByPrincipal, &metadataBytes, &record.CreatedAt, &retention,
+		&projectState, &projectVersion, &deletionStatus, &projectionState,
+	); err != nil {
+		return Record{}, "", 0, "", nil, err
+	}
+	if len(metadataBytes) > maxMetadataBytes || json.Unmarshal(metadataBytes, &record.Metadata) != nil || record.Metadata == nil {
+		return Record{}, "", 0, "", nil, ErrIntegrity
+	}
+	record.CreatedAt = record.CreatedAt.UTC()
+	if retention.Valid {
+		value := retention.Time.UTC()
+		record.RetentionUntil = &value
+	}
+	if err := validateRecord(record); err != nil {
+		return Record{}, "", 0, "", nil, err
+	}
+	return record, projectState, projectVersion, deletionStatus, projectionState, nil
 }
 
 func scanRecord(scanner rowScanner) (Record, error) {

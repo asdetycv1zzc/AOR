@@ -274,6 +274,13 @@
       "file": "000039_user_decision_grants.up.sql",
       "sha256": "sha256:ab1f3856a6b99a1ce296e2d55fc0eb45ca4bd3beb55bb256bcf3b615ea2586c2",
       "destructive": false
+    },
+    {
+      "version": 40,
+      "mode": "EXPAND",
+      "file": "000040_artifact_retention.up.sql",
+      "sha256": "sha256:c00706fb3265acfcc5b085050d36c4dfeb95ce275c0a5bc89e5418bb994b8c8a",
+      "destructive": false
     }
   ]
 }

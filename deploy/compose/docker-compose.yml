@@ -287,6 +287,10 @@ services:
         if [ "$$user_decision_grants_installed" != "t" ]; then
           psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000039_user_decision_grants.up.sql
         fi
+        artifact_retention_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT to_regprocedure('public.aor_expired_artifact_tenants(timestamp with time zone,integer)') IS NOT NULL")"
+        if [ "$$artifact_retention_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000040_artifact_retention.up.sql
+        fi
         unset AOR_APP_PASSWORD
     secrets: [postgres_password, postgres_app_password]
     volumes:
@@ -329,6 +333,7 @@ services:
       - ../../migrations/postgres/000037_lease_idempotency_keys.up.sql:/migrations/000037_lease_idempotency_keys.up.sql:ro
       - ../../migrations/postgres/000038_budget_reservation_ids.up.sql:/migrations/000038_budget_reservation_ids.up.sql:ro
       - ../../migrations/postgres/000039_user_decision_grants.up.sql:/migrations/000039_user_decision_grants.up.sql:ro
+      - ../../migrations/postgres/000040_artifact_retention.up.sql:/migrations/000040_artifact_retention.up.sql:ro
       - ./postgres-app-password.sql:/migrations/postgres-app-password.sql:ro
     read_only: true
     tmpfs: [/tmp]

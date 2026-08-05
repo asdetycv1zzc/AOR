@@ -27,12 +27,14 @@ import (
 type controlHandler struct {
 	http.Handler
 	dispatcher           *eventing.OutboxDispatcher
+	retention            *artifact.RetentionWorker
 	scheduler            *aorworkflow.ReadyExecutionScheduler
 	moduleAuditScheduler *aorworkflow.ModuleAuditScheduler
 	integrationScheduler *aorworkflow.IntegrationScheduler
 	globalAuditScheduler *aorworkflow.GlobalAuditScheduler
 	cancel               context.CancelFunc
 	dispatchDone         <-chan error
+	retentionDone        <-chan error
 	schedulerDone        <-chan error
 	moduleAuditDone      <-chan error
 	integrationDone      <-chan error
@@ -57,10 +59,13 @@ func (eraser artifactProjectEraser) EraseProject(ctx context.Context, tenantID, 
 }
 
 func (handler *controlHandler) Ready() error {
-	if handler == nil || handler.dispatcher == nil || handler.scheduler == nil || handler.moduleAuditScheduler == nil || handler.integrationScheduler == nil || handler.globalAuditScheduler == nil {
+	if handler == nil || handler.dispatcher == nil || handler.retention == nil || handler.scheduler == nil || handler.moduleAuditScheduler == nil || handler.integrationScheduler == nil || handler.globalAuditScheduler == nil {
 		return runtimeclient.ErrDependencyUnavailable
 	}
 	if err := handler.dispatcher.Ready(); err != nil {
+		return err
+	}
+	if err := handler.retention.Ready(); err != nil {
 		return err
 	}
 	if err := handler.scheduler.Ready(); err != nil {
@@ -87,6 +92,12 @@ func (handler *controlHandler) Close() error {
 			err := <-handler.dispatchDone
 			if err != nil && !errors.Is(err, context.Canceled) {
 				handler.closeErr = err
+			}
+		}
+		if handler.retentionDone != nil {
+			err := <-handler.retentionDone
+			if err != nil && !errors.Is(err, context.Canceled) {
+				handler.closeErr = errors.Join(handler.closeErr, err)
 			}
 		}
 		if handler.schedulerDone != nil {
@@ -135,6 +146,10 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 		return nil, err
 	}
 	artifactCatalog, err := artifact.NewPostgresS3Catalog(clients.Database(), clients.S3(), config.S3.Bucket, time.Now)
+	if err != nil {
+		return nil, err
+	}
+	retentionWorker, err := artifact.NewRetentionWorker(artifactCatalog, artifact.RetentionWorkerConfig{})
 	if err != nil {
 		return nil, err
 	}
@@ -247,20 +262,22 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	}
 	dispatchContext, cancel := context.WithCancel(context.Background())
 	dispatchDone := make(chan error, 1)
+	retentionDone := make(chan error, 1)
 	schedulerDone := make(chan error, 1)
 	moduleAuditDone := make(chan error, 1)
 	integrationDone := make(chan error, 1)
 	globalAuditDone := make(chan error, 1)
 	go func() { dispatchDone <- dispatcher.Run(dispatchContext) }()
+	go func() { retentionDone <- retentionWorker.Run(dispatchContext) }()
 	go func() { schedulerDone <- scheduler.Run(dispatchContext) }()
 	go func() { moduleAuditDone <- moduleAuditScheduler.Run(dispatchContext) }()
 	go func() { integrationDone <- integrationScheduler.Run(dispatchContext) }()
 	go func() { globalAuditDone <- globalAuditScheduler.Run(dispatchContext) }()
 	return &controlHandler{
-		Handler: withRequestTrace(domain), dispatcher: dispatcher, scheduler: scheduler,
+		Handler: withRequestTrace(domain), dispatcher: dispatcher, retention: retentionWorker, scheduler: scheduler,
 		moduleAuditScheduler: moduleAuditScheduler, integrationScheduler: integrationScheduler,
 		globalAuditScheduler: globalAuditScheduler, cancel: cancel,
-		dispatchDone: dispatchDone, schedulerDone: schedulerDone, moduleAuditDone: moduleAuditDone,
+		dispatchDone: dispatchDone, retentionDone: retentionDone, schedulerDone: schedulerDone, moduleAuditDone: moduleAuditDone,
 		integrationDone: integrationDone, globalAuditDone: globalAuditDone,
 	}, nil
 }

@@ -1,6 +1,7 @@
 package artifact
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -123,5 +124,47 @@ func TestPublicationRejectsUnsafeContentType(t *testing.T) {
 	publication.IdempotencyKey = strings.Repeat("k", 257)
 	if validPublication(publication) {
 		t.Fatal("oversized idempotency key was accepted")
+	}
+}
+
+func TestRetentionRequiresTerminalProjectWithoutActiveLegalHold(t *testing.T) {
+	tenantID := "11111111-1111-4111-8111-111111111111"
+	projectID := "22222222-2222-4222-8222-222222222222"
+	projection := retentionProjectProjection{
+		TenantID: tenantID, ID: projectID, State: "COMPLETED", Version: 7,
+	}
+	content, err := json.Marshal(projection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !retentionProjectEligible(content, tenantID, projectID, "COMPLETED", 7, "") {
+		t.Fatal("eligible terminal project was rejected")
+	}
+	if retentionProjectEligible(content, tenantID, projectID, "EXECUTING", 7, "") {
+		t.Fatal("active project was eligible for retention purge")
+	}
+	if retentionProjectEligible(content, tenantID, projectID, "COMPLETED", 7, "READY") {
+		t.Fatal("project deletion workflow was eligible for retention purge")
+	}
+
+	projection.LegalHolds = append(projection.LegalHolds, struct {
+		ReleasedAt *time.Time `json:"releasedAt,omitempty"`
+	}{})
+	content, err = json.Marshal(projection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retentionProjectEligible(content, tenantID, projectID, "COMPLETED", 7, "") {
+		t.Fatal("active legal hold was eligible for retention purge")
+	}
+
+	releasedAt := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	projection.LegalHolds[0].ReleasedAt = &releasedAt
+	content, err = json.Marshal(projection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !retentionProjectEligible(content, tenantID, projectID, "COMPLETED", 7, "") {
+		t.Fatal("released legal hold still blocked retention purge")
 	}
 }
