@@ -54,7 +54,7 @@ func TestThirdAttemptBlocksTaskAndDependantsAtomically(t *testing.T) {
 	}
 	outcome, err := service.HandleTask(ctx, orchestrator.TaskRequest{
 		TenantID: "tenant_1", ProjectID: "prj_1", TaskID: main.ID, PrincipalID: "usr_1", IdempotencyKey: "authorize_new_series", ExpectedVersion: main.Version,
-		Command: state.TaskCommand{Type: state.TaskCommandAuthorizeNewSeries, Decision: contracts.DecisionAuthorizeNewAttemptSeries, NewAttemptSeriesID: "series_task_1_reset", ModuleSpecRef: ref, Approval: approval},
+		Command: state.TaskCommand{Type: state.TaskCommandAuthorizeNewSeries, Decision: contracts.DecisionAuthorizeNewAttemptSeries, DecisionRecordID: "decision_attempt_reset", DecisionReportSHA256: replayDigest(), NewAttemptSeriesID: "series_task_1_reset", ModuleSpecRef: ref, Approval: approval},
 	})
 	if err != nil {
 		t.Fatal(err)

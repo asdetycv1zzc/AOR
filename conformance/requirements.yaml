@@ -420,12 +420,15 @@ requirements:
     implementation:
       - internal/state/task.go
       - internal/orchestrator/service.go
+      - internal/controlapi/task_decision.go
+      - internal/controlapi/task_decision_report.go
       - api/json-schema/user-decision-report.v1.schema.json
     tests:
       - internal/state/task_test.go
       - tests/integration/third_attempt_test.go
+      - internal/controlapi/task_decision_test.go
       - internal/contracts/validator_test.go
-    evidenceType: go-test+schema+event-log
+    evidenceType: go-test+http+signed-report+event-log
     owner: control-plane
     status: implemented
   - id: AOR-ACC-012

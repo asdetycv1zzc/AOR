@@ -385,6 +385,17 @@ VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, $8, $9, $10, '{}'::jsonb, 
 			return TransactionResult{}, err
 		}
 	}
+	for _, decision := range request.UserDecisions {
+		_, err = tx.ExecContext(ctx, `
+INSERT INTO user_decisions
+  (id, tenant_id, project_id, module_task_id, attempt_series_id, decision, report_sha256, principal_id, approval_id, created_at)
+VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::uuid, $6, $7, $8, $9::uuid, $10)`,
+			decision.ID, decision.TenantID, decision.ProjectID, decision.ModuleTaskID, decision.AttemptSeriesID, decision.Decision,
+			decision.ReportSHA256, decision.PrincipalID, decision.ApprovalID, decision.CreatedAt)
+		if err != nil {
+			return TransactionResult{}, err
+		}
+	}
 	for _, task := range taskUpdates {
 		if len(task.AttemptSeriesIDs) == 0 {
 			continue

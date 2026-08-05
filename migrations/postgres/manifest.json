@@ -267,6 +267,13 @@
       "file": "000038_budget_reservation_ids.up.sql",
       "sha256": "sha256:5561b444adbab349a28444f83a8f7c480dd04dfe9abd93b7373e5344982ce7ff",
       "destructive": false
+    },
+    {
+      "version": 39,
+      "mode": "EXPAND",
+      "file": "000039_user_decision_grants.up.sql",
+      "sha256": "sha256:ab1f3856a6b99a1ce296e2d55fc0eb45ca4bd3beb55bb256bcf3b615ea2586c2",
+      "destructive": false
     }
   ]
 }

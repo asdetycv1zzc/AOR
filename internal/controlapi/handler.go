@@ -39,18 +39,20 @@ const maximumRequestBytes = 1 << 20
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 type Config struct {
-	Store         eventing.Store
-	Authenticator authn.Authenticator
-	Authorizer    authz.PolicyEvaluator
-	Database      *sql.DB
-	Budgets       modelgateway.BudgetAdministration
-	Artifacts     artifact.Catalog
-	Knowledge     KnowledgeReader
-	TaskHistory   TaskHistoryReader
-	Eraser        ProjectEraser
-	Leases        LeaseAuthority
-	GoalPlan      GoalPlanServices
-	Clock         func() time.Time
+	Store                eventing.Store
+	Authenticator        authn.Authenticator
+	Authorizer           authz.PolicyEvaluator
+	Database             *sql.DB
+	Budgets              modelgateway.BudgetAdministration
+	Artifacts            artifact.Catalog
+	Knowledge            KnowledgeReader
+	TaskHistory          TaskHistoryReader
+	DecisionReports      TaskDecisionReportReader
+	DecisionReportSigner TaskDecisionReportSigner
+	Eraser               ProjectEraser
+	Leases               LeaseAuthority
+	GoalPlan             GoalPlanServices
+	Clock                func() time.Time
 }
 
 type ErasureReport struct {
@@ -75,22 +77,23 @@ type KnowledgeInitializer interface {
 }
 
 type Handler struct {
-	orchestrator  *orchestrator.Service
-	store         eventing.Store
-	events        eventing.EventLog
-	authenticator authn.Authenticator
-	authorizer    authz.PolicyEvaluator
-	database      *sql.DB
-	budgets       modelgateway.BudgetAdministration
-	artifacts     artifact.Catalog
-	publisher     artifact.Publisher
-	knowledge     KnowledgeReader
-	taskHistory   TaskHistoryReader
-	eraser        ProjectEraser
-	leases        LeaseAuthority
-	goalPlan      GoalPlanServices
-	autoBudget    bool
-	clock         func() time.Time
+	orchestrator    *orchestrator.Service
+	store           eventing.Store
+	events          eventing.EventLog
+	authenticator   authn.Authenticator
+	authorizer      authz.PolicyEvaluator
+	database        *sql.DB
+	budgets         modelgateway.BudgetAdministration
+	artifacts       artifact.Catalog
+	publisher       artifact.Publisher
+	knowledge       KnowledgeReader
+	taskHistory     TaskHistoryReader
+	decisionReports TaskDecisionReportReader
+	eraser          ProjectEraser
+	leases          LeaseAuthority
+	goalPlan        GoalPlanServices
+	autoBudget      bool
+	clock           func() time.Time
 }
 
 type projectCreate struct {
@@ -260,25 +263,33 @@ func New(config Config) (*Handler, error) {
 		}
 		config.TaskHistory = reader
 	}
+	if config.DecisionReports == nil && config.Database != nil && config.DecisionReportSigner != nil {
+		reader, err := NewPostgresTaskDecisionReportReader(config.Database, config.DecisionReportSigner)
+		if err != nil {
+			return nil, err
+		}
+		config.DecisionReports = reader
+	}
 	boundary, err := NewPolicyCommitBoundary(config.Authorizer)
 	if err != nil {
 		return nil, err
 	}
 	handler := &Handler{
-		orchestrator:  orchestrator.NewWithBoundary(config.Store, config.Clock, boundary),
-		store:         config.Store,
-		authenticator: config.Authenticator,
-		authorizer:    config.Authorizer,
-		database:      config.Database,
-		budgets:       config.Budgets,
-		artifacts:     config.Artifacts,
-		knowledge:     config.Knowledge,
-		taskHistory:   config.TaskHistory,
-		eraser:        config.Eraser,
-		leases:        config.Leases,
-		goalPlan:      config.GoalPlan,
-		autoBudget:    autoBudget,
-		clock:         config.Clock,
+		orchestrator:    orchestrator.NewWithBoundary(config.Store, config.Clock, boundary),
+		store:           config.Store,
+		authenticator:   config.Authenticator,
+		authorizer:      config.Authorizer,
+		database:        config.Database,
+		budgets:         config.Budgets,
+		artifacts:       config.Artifacts,
+		knowledge:       config.Knowledge,
+		taskHistory:     config.TaskHistory,
+		decisionReports: config.DecisionReports,
+		eraser:          config.Eraser,
+		leases:          config.Leases,
+		goalPlan:        config.GoalPlan,
+		autoBudget:      autoBudget,
+		clock:           config.Clock,
 	}
 	handler.publisher, _ = config.Artifacts.(artifact.Publisher)
 	handler.events, _ = config.Store.(eventing.EventLog)
@@ -636,6 +647,22 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 			} else {
 				handler.listTaskAudits(response, request, principal, projectID, parts[2])
 			}
+			return
+		}
+		writeMethodNotAllowed(response, request)
+		return
+	}
+	if len(parts) == 4 && parts[1] == "tasks" && (parts[3] == "decisions" || parts[3] == "decision-report") {
+		if !validProjectID(projectID) || !validAPIIdentifier(parts[2]) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		if parts[3] == "decision-report" && request.Method == http.MethodGet {
+			handler.getTaskDecisionReport(response, request, principal, projectID, parts[2])
+			return
+		}
+		if parts[3] == "decisions" && request.Method == http.MethodPost {
+			handler.decideTask(response, request, principal, projectID, parts[2])
 			return
 		}
 		writeMethodNotAllowed(response, request)

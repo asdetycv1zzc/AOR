@@ -372,20 +372,32 @@ const (
 )
 
 type UserDecisionReport struct {
-	ReportVersion      string            `json:"reportVersion"`
-	ProjectID          string            `json:"projectId"`
-	GoalSpec           SpecRef           `json:"goalSpec"`
-	ModuleTaskID       string            `json:"moduleTaskId"`
-	ModuleName         string            `json:"moduleName"`
-	State              ModuleTaskState   `json:"state"`
-	AttemptLimit       int               `json:"attemptLimit"`
-	Attempts           []AttemptSummary  `json:"attempts"`
-	BlockingFindings   []BlockingFinding `json:"blockingFindings"`
-	FrozenTaskIDs      []string          `json:"frozenTaskIds"`
-	CriticalPathImpact bool              `json:"criticalPathImpact"`
-	AllowedDecisions   []Decision        `json:"allowedDecisions"`
-	GeneratedAt        string            `json:"generatedAt"`
-	Signature          *Signature        `json:"signature,omitempty"`
+	ReportVersion    string                   `json:"reportVersion"`
+	ProjectID        string                   `json:"projectId"`
+	GoalSpec         SpecRef                  `json:"goalSpec"`
+	ModuleTaskID     string                   `json:"moduleTaskId"`
+	ModuleName       string                   `json:"moduleName"`
+	State            ModuleTaskState          `json:"state"`
+	AttemptLimit     int                      `json:"attemptLimit"`
+	Attempts         []AttemptSummary         `json:"attempts"`
+	BlockingFindings []BlockingFinding        `json:"blockingFindings"`
+	DependencyImpact DecisionDependencyImpact `json:"dependencyImpact"`
+	CostSummary      DecisionCostSummary      `json:"costSummary"`
+	AllowedDecisions []Decision               `json:"allowedDecisions"`
+	GeneratedAt      string                   `json:"generatedAt"`
+	Signature        *Signature               `json:"signature,omitempty"`
+}
+
+type DecisionDependencyImpact struct {
+	FrozenTaskIDs      []string `json:"frozenTaskIds"`
+	CriticalPathImpact bool     `json:"criticalPathImpact"`
+}
+
+type DecisionCostSummary struct {
+	InputTokens   int64  `json:"inputTokens"`
+	OutputTokens  int64  `json:"outputTokens"`
+	EstimatedCost string `json:"estimatedCost"`
+	Currency      string `json:"currency"`
 }
 
 type AttemptSummary struct {

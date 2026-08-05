@@ -2,6 +2,7 @@ package state
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/akimisaka/aor/pkg/contracts"
@@ -37,7 +38,7 @@ func TestThirdAuditFailureBlocksUserDecisionAndFreezesDependants(t *testing.T) {
 	if err == nil || err.Code != aorerrors.CodeApprovalRequired {
 		t.Fatalf("unsigned attempt reset = %#v", err)
 	}
-	task = applyTask(t, task, TaskCommand{Type: TaskCommandAuthorizeNewSeries, Decision: contracts.DecisionAuthorizeNewAttemptSeries, NewAttemptSeriesID: "series_2", Approval: attemptApproval(task, "usr_1"), ActorID: "usr_1", ModuleSpecRef: task.ModuleSpecRef, At: testTime()})
+	task = applyTask(t, task, TaskCommand{Type: TaskCommandAuthorizeNewSeries, Decision: contracts.DecisionAuthorizeNewAttemptSeries, DecisionRecordID: "decision_1", DecisionReportSHA256: "sha256:" + strings.Repeat("d", 64), NewAttemptSeriesID: "series_2", Approval: attemptApproval(task, "usr_1"), ActorID: "usr_1", ModuleSpecRef: task.ModuleSpecRef, At: testTime()})
 	if task.AttemptSeriesID != "series_2" || task.Attempt != 0 || task.State != contracts.TaskReadyExecution {
 		t.Fatalf("authorized series = %#v", task)
 	}
@@ -94,7 +95,7 @@ func TestTaskDefinitionRejectsInvalidDependantsAndAttemptSeriesReuse(t *testing.
 		t.Fatalf("duplicate dependants = %#v", err)
 	}
 	blocked := ModuleTask{TenantID: "tenant_1", ProjectID: "prj_1", ID: "task_1", State: contracts.TaskBlockedUserDecision, Version: 12, ModuleSpecRef: ref, AttemptSeriesID: "series_2", AttemptSeriesIDs: []string{"series_1", "series_2"}, Attempt: 3}
-	_, err = DecideTask(blocked, TaskCommand{Type: TaskCommandAuthorizeNewSeries, Decision: contracts.DecisionAuthorizeNewAttemptSeries, NewAttemptSeriesID: "series_1", Approval: attemptApproval(blocked, "usr_1"), ActorID: "usr_1", ModuleSpecRef: ref, At: testTime()})
+	_, err = DecideTask(blocked, TaskCommand{Type: TaskCommandAuthorizeNewSeries, Decision: contracts.DecisionAuthorizeNewAttemptSeries, DecisionRecordID: "decision_1", DecisionReportSHA256: "sha256:" + strings.Repeat("d", 64), NewAttemptSeriesID: "series_1", Approval: attemptApproval(blocked, "usr_1"), ActorID: "usr_1", ModuleSpecRef: ref, At: testTime()})
 	if err == nil {
 		t.Fatal("previous attempt series ID was reused")
 	}

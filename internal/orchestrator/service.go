@@ -252,8 +252,15 @@ func (s *Service) HandleTask(ctx context.Context, request TaskRequest) (TaskOutc
 	updates := []eventing.ProjectionUpdate{update}
 	events := []eventing.DomainEvent{domainEvent}
 	var approvals []eventing.ApprovalRecord
+	var decisions []eventing.UserDecisionRecord
 	if command.Type == state.TaskCommandAuthorizeNewSeries {
 		approvals = approvalRecords(request.TenantID, request.ProjectID, command.Approval)
+		decisions = []eventing.UserDecisionRecord{{
+			ID: command.DecisionRecordID, TenantID: request.TenantID, ProjectID: request.ProjectID,
+			ModuleTaskID: request.TaskID, AttemptSeriesID: current.AttemptSeriesID,
+			Decision: string(command.Decision), ReportSHA256: command.DecisionReportSHA256,
+			PrincipalID: request.PrincipalID, ApprovalID: command.Approval.RecordID, CreatedAt: command.At,
+		}}
 	}
 	if taskEvent.Projection.State == "BLOCKED_USER_DECISION" {
 		for _, dependentID := range taskEvent.Projection.FrozenDependentIDs {
@@ -328,7 +335,7 @@ func (s *Service) HandleTask(ctx context.Context, request TaskRequest) (TaskOutc
 	}
 	transactionResult, err := s.store.Execute(ctx, eventing.TransactionRequest{
 		TenantID: request.TenantID, PrincipalID: request.PrincipalID, IdempotencyKey: request.IdempotencyKey, RequestSHA256: digest,
-		Updates: updates, Events: events, Approvals: approvals, Result: result, ResultSHA256: mustDigest(result),
+		Updates: updates, Events: events, Approvals: approvals, UserDecisions: decisions, Result: result, ResultSHA256: mustDigest(result),
 	})
 	if err != nil {
 		return TaskOutcome{}, err
@@ -340,7 +347,17 @@ func (s *Service) HandleTask(ctx context.Context, request TaskRequest) (TaskOutc
 // TaskParameterDigest returns the exact digest enforced by HandleTask. Trusted
 // commit-authority adapters use it when binding a signed capability.
 func TaskParameterDigest(request TaskRequest) (string, error) {
-	return commandDigest(request.ExpectedVersion, normalizedTaskCommand(request))
+	return commandDigest(request.ExpectedVersion, taskDigestCommand(normalizedTaskCommand(request)))
+}
+
+func taskDigestCommand(command state.TaskCommand) state.TaskCommand {
+	if command.Type != state.TaskCommandAuthorizeNewSeries {
+		return command
+	}
+	return state.TaskCommand{
+		Type: command.Type, TenantID: command.TenantID, ProjectID: command.ProjectID,
+		TaskID: command.TaskID, ActorID: command.ActorID, Decision: command.Decision,
+	}
 }
 
 func normalizedTaskCommand(request TaskRequest) state.TaskCommand {

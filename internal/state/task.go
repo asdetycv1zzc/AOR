@@ -74,6 +74,8 @@ type TaskCommand struct {
 	BlockingTaskID         string
 	ActorID                string
 	Decision               contracts.Decision
+	DecisionRecordID       string
+	DecisionReportSHA256   string
 	NewAttemptSeriesID     string
 	Approval               *ApprovalBinding
 	SubmissionValidated    bool
@@ -262,7 +264,7 @@ func DecideTask(current ModuleTask, command TaskCommand) (TaskEvent, *aorerrors.
 		}
 		eventType = "io.aor.module.unblocked-dependency.v1"
 	case TaskCommandAuthorizeNewSeries:
-		if current.State != contracts.TaskBlockedUserDecision || command.Decision != contracts.DecisionAuthorizeNewAttemptSeries || command.ActorID == "" || command.Approval == nil || command.NewAttemptSeriesID == "" || containsString(current.AttemptSeriesIDs, command.NewAttemptSeriesID) {
+		if current.State != contracts.TaskBlockedUserDecision || command.Decision != contracts.DecisionAuthorizeNewAttemptSeries || command.ActorID == "" || command.Approval == nil || command.DecisionRecordID == "" || !validDigest(command.DecisionReportSHA256) || command.NewAttemptSeriesID == "" || containsString(current.AttemptSeriesIDs, command.NewAttemptSeriesID) {
 			if command.Approval == nil {
 				return TaskEvent{}, aorerrors.New(aorerrors.CodeApprovalRequired, "", nil)
 			}

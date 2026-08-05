@@ -154,6 +154,10 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	if err != nil {
 		return nil, err
 	}
+	decisionReportSigner, err := controlDecisionReportSigner(config)
+	if err != nil {
+		return nil, err
+	}
 	goalPlanServices, err := configuredGoalPlanServices(config, lifecycleStore, leaseService, authorizer)
 	if err != nil {
 		return nil, err
@@ -161,7 +165,8 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	domain, err := controlapi.New(controlapi.Config{
 		Store: lifecycleStore, Authenticator: authenticator, Authorizer: authorizer,
 		Database: clients.Database(), Artifacts: artifactCatalog, Knowledge: knowledgeService,
-		Eraser: artifactProjectEraser{catalog: artifactCatalog}, Leases: leaseService,
+		DecisionReportSigner: decisionReportSigner,
+		Eraser:               artifactProjectEraser{catalog: artifactCatalog}, Leases: leaseService,
 		GoalPlan: goalPlanServices, Clock: time.Now,
 	})
 	if err != nil {
@@ -247,6 +252,23 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 		dispatchDone: dispatchDone, schedulerDone: schedulerDone, moduleAuditDone: moduleAuditDone,
 		integrationDone: integrationDone, globalAuditDone: globalAuditDone,
 	}, nil
+}
+
+func controlDecisionReportSigner(config runtimeconfig.Config) (controlapi.TaskDecisionReportSigner, error) {
+	resolveContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	leaseKey, err := credentials.NewSecretResolver(os.Getenv("AOR_SECRET_ROOT")).Resolve(resolveContext, config.LeaseSigningKeyRef)
+	cancel()
+	if err != nil {
+		return nil, runtimeconfig.ErrInvalidConfiguration
+	}
+	derived := deriveDecisionReportSigningKey(leaseKey)
+	clearBytes(leaseKey)
+	signer, err := controlapi.NewHMACTaskDecisionReportSigner(derived)
+	clearBytes(derived)
+	if err != nil {
+		return nil, runtimeconfig.ErrInvalidConfiguration
+	}
+	return signer, nil
 }
 
 func controlLeaseAuthority(config runtimeconfig.Config, database *sql.DB, authorizer authz.LeaseGrantEvaluator) (*leaseauthority.Service, error) {

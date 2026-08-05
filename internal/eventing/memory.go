@@ -26,6 +26,7 @@ type StoreStats struct {
 	Outbox         int
 	CommandResults int
 	Approvals      int
+	UserDecisions  int
 }
 
 type commandRecord struct {
@@ -41,12 +42,13 @@ type MemoryStore struct {
 	outbox      map[string]OutboxRecord
 	commands    map[string]commandRecord
 	approvals   map[string]ApprovalRecord
+	decisions   map[string]UserDecisionRecord
 	failure     FailurePoint
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		projections: make(map[string]Projection), events: make(map[string]DomainEvent), versions: make(map[string]string), outbox: make(map[string]OutboxRecord), commands: make(map[string]commandRecord), approvals: make(map[string]ApprovalRecord),
+		projections: make(map[string]Projection), events: make(map[string]DomainEvent), versions: make(map[string]string), outbox: make(map[string]OutboxRecord), commands: make(map[string]commandRecord), approvals: make(map[string]ApprovalRecord), decisions: make(map[string]UserDecisionRecord),
 	}
 }
 
@@ -179,6 +181,11 @@ func (s *MemoryStore) Execute(_ context.Context, request TransactionRequest) (Tr
 			return TransactionResult{}, aorerrors.New(aorerrors.CodeConflict, "", map[string]any{"scope": "approvalId"})
 		}
 	}
+	for _, decision := range request.UserDecisions {
+		if _, exists := s.decisions[decision.ID]; exists {
+			return TransactionResult{}, aorerrors.New(aorerrors.CodeConflict, "", map[string]any{"scope": "userDecisionId"})
+		}
+	}
 	if s.consumeFailure(FailureBeforeCommit) {
 		return TransactionResult{}, ErrInjectedFailure
 	}
@@ -199,6 +206,9 @@ func (s *MemoryStore) Execute(_ context.Context, request TransactionRequest) (Tr
 	for _, approval := range request.Approvals {
 		s.approvals[approval.ID] = cloneApproval(approval)
 	}
+	for _, decision := range request.UserDecisions {
+		s.decisions[decision.ID] = decision
+	}
 	result := TransactionResult{Result: cloneJSON(request.Result), Events: events}
 	s.commands[commandKey(request.TenantID, request.PrincipalID, request.IdempotencyKey)] = commandRecord{RequestSHA256: request.RequestSHA256, Result: result}
 	if s.consumeFailure(FailureAfterCommit) {
@@ -216,7 +226,7 @@ func (s *MemoryStore) FailNext(point FailurePoint) {
 func (s *MemoryStore) Stats() StoreStats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return StoreStats{Projections: len(s.projections), Events: len(s.events), Outbox: len(s.outbox), CommandResults: len(s.commands), Approvals: len(s.approvals)}
+	return StoreStats{Projections: len(s.projections), Events: len(s.events), Outbox: len(s.outbox), CommandResults: len(s.commands), Approvals: len(s.approvals), UserDecisions: len(s.decisions)}
 }
 
 func (s *MemoryStore) ListEvents(ctx context.Context, tenantID string) ([]DomainEvent, error) {
@@ -405,6 +415,16 @@ func validateTransaction(request TransactionRequest) error {
 			return aorerrors.New(aorerrors.CodeApprovalRequired, "", map[string]any{"scope": "revoked approval"})
 		}
 		seenApprovals[approval.ID] = true
+	}
+	seenDecisions := make(map[string]bool, len(request.UserDecisions))
+	for _, decision := range request.UserDecisions {
+		if decision.ID == "" || seenDecisions[decision.ID] || decision.TenantID != request.TenantID || decision.ProjectID == "" || decision.ModuleTaskID == "" || decision.AttemptSeriesID == "" || decision.Decision == "" || decision.ReportSHA256 == "" || decision.PrincipalID != request.PrincipalID || decision.ApprovalID == "" || decision.CreatedAt.IsZero() {
+			return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "user decision record"})
+		}
+		if !seenApprovals[decision.ApprovalID] {
+			return aorerrors.New(aorerrors.CodeApprovalRequired, "", map[string]any{"scope": "user decision approval"})
+		}
+		seenDecisions[decision.ID] = true
 	}
 	return nil
 }

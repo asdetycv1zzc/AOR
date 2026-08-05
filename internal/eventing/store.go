@@ -82,6 +82,19 @@ type ApprovalRecord struct {
 	Signature      string
 }
 
+type UserDecisionRecord struct {
+	ID              string
+	TenantID        string
+	ProjectID       string
+	ModuleTaskID    string
+	AttemptSeriesID string
+	Decision        string
+	ReportSHA256    string
+	PrincipalID     string
+	ApprovalID      string
+	CreatedAt       time.Time
+}
+
 type TransactionRequest struct {
 	TenantID       string
 	PrincipalID    string
@@ -90,6 +103,7 @@ type TransactionRequest struct {
 	Updates        []ProjectionUpdate
 	Events         []DomainEvent
 	Approvals      []ApprovalRecord
+	UserDecisions  []UserDecisionRecord
 	Result         json.RawMessage
 	ResultSHA256   string
 }
