@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/akimisaka/aor/internal/authn"
+	"github.com/akimisaka/aor/internal/integration"
 	"github.com/akimisaka/aor/internal/repository"
 	"github.com/akimisaka/aor/internal/toolbroker"
 	"github.com/akimisaka/aor/pkg/contracts"
@@ -56,6 +58,12 @@ type repositoryWriteArguments struct {
 
 type repositoryPathArguments struct {
 	WorkspaceID string `json:"workspaceId"`
+	Path        string `json:"path"`
+}
+
+type repositoryReadArguments struct {
+	WorkspaceID string `json:"workspaceId"`
+	Commit      string `json:"commit"`
 	Path        string `json:"path"`
 }
 
@@ -181,31 +189,52 @@ func (client *repositoryMCPClient) CallTool(ctx context.Context, name string, ar
 		}
 		return repositoryToolResult(map[string]any{"ok": true}), nil
 	case repositoryReadTool:
-		var input repositoryPathArguments
+		var input repositoryReadArguments
 		if err := decodeRepositoryArguments(arguments, &input); err != nil {
 			return mcp.ToolCallResult{}, err
 		}
-		workspace, found, err := client.service.WorkspaceContext(ctx, input.WorkspaceID)
+		claim, _, err := client.authority.readClaim(ctx)
 		if err != nil {
 			return mcp.ToolCallResult{}, err
 		}
-		if !found {
-			return mcp.ToolCallResult{}, repository.ErrWorkspaceNotFound
+		result := map[string]any{"path": input.Path}
+		var content []byte
+		switch claim.Principal.Role {
+		case authn.RoleExecutor:
+			if input.WorkspaceID == "" || input.Commit != "" {
+				return mcp.ToolCallResult{}, repository.ErrInvalidRequest
+			}
+			workspace, found, loadErr := client.service.WorkspaceContext(ctx, input.WorkspaceID)
+			if loadErr != nil {
+				return mcp.ToolCallResult{}, loadErr
+			}
+			if !found {
+				return mcp.ToolCallResult{}, repository.ErrWorkspaceNotFound
+			}
+			if err := client.authority.validateWorkspaceRead(ctx, claim, workspace); err != nil {
+				return mcp.ToolCallResult{}, err
+			}
+			content, err = client.service.ReadFile(ctx, input.WorkspaceID, input.Path)
+			result["workspaceId"] = input.WorkspaceID
+		case authn.RoleGlobalAuditor:
+			if input.WorkspaceID != "" || !repositoryCommitID(input.Commit) {
+				return mcp.ToolCallResult{}, repository.ErrInvalidRequest
+			}
+			if err := client.authority.validateReleaseRead(ctx, claim, input.Commit); err != nil {
+				return mcp.ToolCallResult{}, err
+			}
+			content, err = client.service.ReadCommitFile(ctx, claim.TenantID, claim.ProjectID, input.Commit, input.Path)
+			result["commit"] = input.Commit
+		default:
+			return mcp.ToolCallResult{}, repository.ErrLeaseStale
 		}
-		if err := client.authority.validateRead(ctx, workspace); err != nil {
-			return mcp.ToolCallResult{}, err
-		}
-		content, err := client.service.ReadFile(ctx, input.WorkspaceID, input.Path)
 		if err != nil {
 			return mcp.ToolCallResult{}, err
 		}
-		return repositoryToolResult(map[string]any{
-			"workspaceId":   input.WorkspaceID,
-			"path":          input.Path,
-			"contentBase64": base64.StdEncoding.EncodeToString(content),
-			"sha256":        repository.DigestBytes(content),
-			"size":          len(content),
-		}), nil
+		result["contentBase64"] = base64.StdEncoding.EncodeToString(content)
+		result["sha256"] = repository.DigestBytes(content)
+		result["size"] = len(content)
+		return repositoryToolResult(result), nil
 	case string(repository.LeaseActionSubmit):
 		var input repositorySubmitArguments
 		if err := decodeRepositoryArguments(arguments, &input); err != nil {
@@ -285,11 +314,19 @@ func (authority *repositoryExecutionAuthority) proof(ctx context.Context, toolID
 }
 
 func (authority *repositoryExecutionAuthority) claim(ctx context.Context, toolID string) (toolbroker.LeaseValidation, repository.LeaseProof, error) {
+	return authority.claimForRoles(ctx, toolID, authn.RoleExecutor)
+}
+
+func (authority *repositoryExecutionAuthority) readClaim(ctx context.Context) (toolbroker.LeaseValidation, repository.LeaseProof, error) {
+	return authority.claimForRoles(ctx, repositoryReadTool, authn.RoleExecutor, authn.RoleGlobalAuditor)
+}
+
+func (authority *repositoryExecutionAuthority) claimForRoles(ctx context.Context, toolID string, roles ...string) (toolbroker.LeaseValidation, repository.LeaseProof, error) {
 	if authority == nil || authority.database == nil || authority.leases == nil || authority.clock == nil || ctx == nil {
 		return toolbroker.LeaseValidation{}, repository.LeaseProof{}, repository.ErrLeaseStale
 	}
 	claim, ok := toolbroker.ExecutionAuthorizationFromContext(ctx)
-	if !ok || claim.MCPServerID != repositoryMCPServerID || claim.ToolVersion != repositoryMCPVersion || claim.ToolID != toolID || claim.Principal.Type != "AGENT_INSTANCE" || claim.Principal.Role != "EXECUTOR" || claim.Principal.ID == "" || claim.ExecutionLeaseID == "" {
+	if !ok || claim.MCPServerID != repositoryMCPServerID || claim.ToolVersion != repositoryMCPVersion || claim.ToolID != toolID || claim.Principal.Type != "AGENT_INSTANCE" || !repositoryRoleAllowed(roles, claim.Principal.Role) || claim.Principal.ID == "" || claim.ExecutionLeaseID == "" {
 		return toolbroker.LeaseValidation{}, repository.LeaseProof{}, repository.ErrLeaseStale
 	}
 	expiresAt, err := time.Parse(time.RFC3339, claim.Lease.ExpiresAt)
@@ -319,10 +356,9 @@ func (authority *repositoryExecutionAuthority) Validate(ctx context.Context, val
 	return nil
 }
 
-func (authority *repositoryExecutionAuthority) validateRead(ctx context.Context, workspace repository.Workspace) error {
-	claim, _, err := authority.claim(ctx, repositoryReadTool)
-	if err != nil {
-		return err
+func (authority *repositoryExecutionAuthority) validateWorkspaceRead(ctx context.Context, claim toolbroker.LeaseValidation, workspace repository.Workspace) error {
+	if claim.Principal.Role != authn.RoleExecutor || claim.TaskID == "" {
+		return repository.ErrLeaseStale
 	}
 	if workspace.TenantID != claim.TenantID || workspace.ProjectID != claim.ProjectID || workspace.TaskID != claim.TaskID || workspace.AgentIdentity.AgentInstanceID != claim.Principal.ID || workspace.AgentIdentity.LeaseID != claim.ExecutionLeaseID {
 		return repository.ErrLeaseStale
@@ -330,6 +366,71 @@ func (authority *repositoryExecutionAuthority) validateRead(ctx context.Context,
 	scope, err := authority.loadScope(ctx, claim, workspace.AttemptSeriesID, workspace.Attempt)
 	if err != nil || scope.module.ModuleSpecVersion != workspace.ModuleSpecRef.Version || scope.module.SHA256 != workspace.ModuleSpecRef.SHA256 {
 		return repository.ErrLeaseStale
+	}
+	return nil
+}
+
+func (authority *repositoryExecutionAuthority) validateReleaseRead(ctx context.Context, claim toolbroker.LeaseValidation, commit string) error {
+	if claim.Principal.Role != authn.RoleGlobalAuditor || claim.TaskID != "" || !repositoryCommitID(commit) {
+		return repository.ErrLeaseStale
+	}
+	tx, err := authority.database.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable, ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var superuser, bypassRLS bool
+	if err := tx.QueryRowContext(ctx, `SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`).Scan(&superuser, &bypassRLS); err != nil || superuser || bypassRLS {
+		return repository.ErrLeaseStale
+	}
+	if _, err := tx.ExecContext(ctx, `SELECT set_config('aor.tenant_id', $1, true)`, claim.TenantID); err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, `
+SELECT integration.id::text, summary.state_jsonb
+FROM projects project
+JOIN integration_tasks integration
+  ON integration.tenant_id = project.tenant_id AND integration.project_id = project.id
+JOIN aggregate_projections summary
+  ON summary.tenant_id = integration.tenant_id
+ AND summary.project_id = integration.project_id
+ AND summary.aggregate_type = 'integration_summary'
+ AND summary.aggregate_id = integration.id::text
+WHERE project.tenant_id = $1::uuid AND project.id = $2::uuid
+  AND project.state = 'GLOBAL_AUDIT'
+  AND integration.state = 'DONE' AND integration.merge_pending = false
+  AND integration.merge_commit = $3
+  AND NOT EXISTS (
+    SELECT 1 FROM integration_tasks pending
+    WHERE pending.tenant_id = project.tenant_id AND pending.project_id = project.id
+      AND pending.state <> 'DONE'
+  )`, claim.TenantID, claim.ProjectID, commit)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	matchCount := 0
+	for rows.Next() {
+		var integrationID string
+		var encoded []byte
+		if rows.Scan(&integrationID, &encoded) != nil {
+			return repository.ErrLeaseStale
+		}
+		decoder := json.NewDecoder(bytes.NewReader(encoded))
+		decoder.DisallowUnknownFields()
+		var summary integration.PlanSupervisorSummary
+		if decoder.Decode(&summary) != nil || decoder.Decode(&struct{}{}) != io.EOF || summary.Validate() != nil ||
+			summary.TenantID != claim.TenantID || summary.ProjectID != claim.ProjectID || summary.IntegrationID != integrationID ||
+			summary.State != integration.SummaryReleaseCandidate || summary.IntegrationCommit != commit {
+			return repository.ErrLeaseStale
+		}
+		matchCount++
+	}
+	if rows.Err() != nil || matchCount != 1 {
+		return repository.ErrLeaseStale
+	}
+	if err := tx.Commit(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -427,24 +528,61 @@ func repositoryMCPTools() []mcp.Tool {
 	objectSchema := func(required []any, properties map[string]any) map[string]any {
 		return map[string]any{"type": "object", "required": required, "properties": properties, "additionalProperties": false}
 	}
+	readInput := map[string]any{
+		"type": "object", "additionalProperties": false,
+		"properties": map[string]any{
+			"workspaceId": stringProperty(512), "commit": map[string]any{"type": "string", "pattern": "^[0-9a-f]{40}$"}, "path": stringProperty(4096),
+		},
+		"oneOf": []any{
+			map[string]any{"required": []any{"workspaceId", "path"}},
+			map[string]any{"required": []any{"commit", "path"}},
+		},
+	}
+	readOutput := objectSchema([]any{"path", "contentBase64", "sha256", "size"}, map[string]any{
+		"workspaceId": stringProperty(512), "commit": map[string]any{"type": "string", "pattern": "^[0-9a-f]{40}$"},
+		"path": stringProperty(4096), "contentBase64": map[string]any{"type": "string"},
+		"sha256": stringProperty(71), "size": map[string]any{"type": "integer", "minimum": 0},
+	})
 	return []mcp.Tool{
 		{Name: string(repository.LeaseActionCreateWorkspace), Description: "Create a lease-bound repository workspace", InputSchema: objectSchema([]any{"attemptSeriesId", "attempt"}, map[string]any{"attemptSeriesId": stringProperty(128), "attempt": integerProperty}), OutputSchema: objectSchema([]any{"workspaceId", "branch", "baseCommit", "moduleSpecRef"}, map[string]any{"workspaceId": stringProperty(512), "branch": stringProperty(512), "baseCommit": stringProperty(40), "moduleSpecRef": map[string]any{"type": "object"}})},
 		{Name: string(repository.LeaseActionWriteFile), Description: "Write one module-owned file", InputSchema: objectSchema([]any{"workspaceId", "path", "contentBase64"}, map[string]any{"workspaceId": stringProperty(512), "path": stringProperty(4096), "contentBase64": stringProperty(6 << 20)}), OutputSchema: objectSchema([]any{"ok"}, map[string]any{"ok": map[string]any{"type": "boolean"}})},
 		{Name: string(repository.LeaseActionDeleteFile), Description: "Delete one module-owned file", InputSchema: objectSchema([]any{"workspaceId", "path"}, map[string]any{"workspaceId": stringProperty(512), "path": stringProperty(4096)}), OutputSchema: objectSchema([]any{"ok"}, map[string]any{"ok": map[string]any{"type": "boolean"}})},
-		{Name: repositoryReadTool, Description: "Read one module-owned file", InputSchema: objectSchema([]any{"workspaceId", "path"}, map[string]any{"workspaceId": stringProperty(512), "path": stringProperty(4096)}), OutputSchema: objectSchema([]any{"workspaceId", "path", "contentBase64", "sha256", "size"}, map[string]any{"workspaceId": stringProperty(512), "path": stringProperty(4096), "contentBase64": map[string]any{"type": "string"}, "sha256": stringProperty(71), "size": map[string]any{"type": "integer", "minimum": 0}})},
+		{Name: repositoryReadTool, Description: "Read one lease-authorized file", InputSchema: readInput, OutputSchema: readOutput},
 		{Name: string(repository.LeaseActionSubmit), Description: "Create an immutable signed submission commit", InputSchema: objectSchema([]any{"workspaceId", "attempt", "claimedCriteria", "localTestEvidenceRefs"}, map[string]any{"workspaceId": stringProperty(512), "attempt": integerProperty, "claimedCriteria": arrayProperty, "localTestEvidenceRefs": arrayProperty}), OutputSchema: objectSchema([]any{"manifest"}, map[string]any{"manifest": map[string]any{"type": "object"}})},
 	}
 }
 
 func repositoryMCPPolicies() map[string]toolbroker.MCPToolPolicy {
 	executor := []string{"EXECUTOR"}
+	readers := []string{"EXECUTOR", "GLOBAL_AUDITOR"}
 	return map[string]toolbroker.MCPToolPolicy{
 		string(repository.LeaseActionCreateWorkspace): {Risk: toolbroker.RiskMedium, SideEffect: toolbroker.SideEffectReversible, NetworkAccess: toolbroker.NetworkNone, FilesystemAccess: toolbroker.FilesystemScopedWrite, RequiresApproval: toolbroker.ApprovalNever, AllowedRoles: executor, RateLimit: "5/s", TimeoutSeconds: 60, MaxOutputBytes: 64 << 10},
 		string(repository.LeaseActionWriteFile):       {Risk: toolbroker.RiskMedium, SideEffect: toolbroker.SideEffectReversible, NetworkAccess: toolbroker.NetworkNone, FilesystemAccess: toolbroker.FilesystemScopedWrite, RequiresApproval: toolbroker.ApprovalNever, AllowedRoles: executor, RateLimit: "20/s", TimeoutSeconds: 30, MaxOutputBytes: 64 << 10},
 		string(repository.LeaseActionDeleteFile):      {Risk: toolbroker.RiskMedium, SideEffect: toolbroker.SideEffectReversible, NetworkAccess: toolbroker.NetworkNone, FilesystemAccess: toolbroker.FilesystemScopedWrite, RequiresApproval: toolbroker.ApprovalNever, AllowedRoles: executor, RateLimit: "20/s", TimeoutSeconds: 30, MaxOutputBytes: 64 << 10},
-		repositoryReadTool:                            {Risk: toolbroker.RiskLow, SideEffect: toolbroker.SideEffectNone, NetworkAccess: toolbroker.NetworkNone, FilesystemAccess: toolbroker.FilesystemRead, RequiresApproval: toolbroker.ApprovalNever, AllowedRoles: executor, RateLimit: "20/s", TimeoutSeconds: 30, MaxOutputBytes: 1 << 20},
+		repositoryReadTool:                            {Risk: toolbroker.RiskLow, SideEffect: toolbroker.SideEffectNone, NetworkAccess: toolbroker.NetworkNone, FilesystemAccess: toolbroker.FilesystemRead, RequiresApproval: toolbroker.ApprovalNever, AllowedRoles: readers, RateLimit: "20/s", TimeoutSeconds: 30, MaxOutputBytes: 1 << 20},
 		string(repository.LeaseActionSubmit):          {Risk: toolbroker.RiskHigh, SideEffect: toolbroker.SideEffectIrreversible, NetworkAccess: toolbroker.NetworkNone, FilesystemAccess: toolbroker.FilesystemScopedWrite, RequiresApproval: toolbroker.ApprovalPolicy, AllowedRoles: executor, RateLimit: "2/s", TimeoutSeconds: 60, MaxOutputBytes: 256 << 10},
 	}
+}
+
+func repositoryRoleAllowed(roles []string, role string) bool {
+	for _, allowed := range roles {
+		if role == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+func repositoryCommitID(value string) bool {
+	if len(value) != 40 {
+		return false
+	}
+	for _, character := range value {
+		if !(character >= '0' && character <= '9' || character >= 'a' && character <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 var _ repository.LeaseValidator = (*repositoryExecutionAuthority)(nil)

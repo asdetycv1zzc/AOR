@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strings"
 
 	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/authz"
@@ -68,7 +69,7 @@ func (resolver *PostgresScopeResolver) ResolveToolAuthorizationScope(ctx context
 	} else {
 		project, taskRecord, err = resolver.loadProjectTask(ctx, tx, query.TenantID, query.ProjectID, query.TaskID)
 	}
-	if err != nil || query.Role == authn.RolePlanSupervisor && !hasPlanSupervisorAuthority(ctx, tx, query) || query.TaskID != "" && query.Role == authn.RoleModulePlanner && !hasPlanningAgentAuthority(ctx, tx, query) || query.TaskID != "" && !taskRecord.moduleSpecAttached && !allowsDetachedPlanningScope(query) {
+	if err != nil || query.Role == authn.RolePlanSupervisor && !hasPlanSupervisorAuthority(ctx, tx, query) || query.Role == authn.RoleGlobalAuditor && !hasGlobalAuditorAuthority(ctx, tx, query) || query.TaskID != "" && query.Role == authn.RoleModulePlanner && !hasPlanningAgentAuthority(ctx, tx, query) || query.TaskID != "" && !taskRecord.moduleSpecAttached && !allowsDetachedPlanningScope(query) {
 		return ToolAuthorizationScope{}, ErrPolicyDenied
 	}
 	budget, err := loadToolBudget(ctx, tx, query)
@@ -83,6 +84,20 @@ func (resolver *PostgresScopeResolver) ResolveToolAuthorizationScope(ctx context
 		return ToolAuthorizationScope{}, ErrPolicyDenied
 	}
 	return ToolAuthorizationScope{Project: project, Task: taskRecord.scope, Budget: budget, Approval: approval}, nil
+}
+
+func hasGlobalAuditorAuthority(ctx context.Context, tx *sql.Tx, query ToolAuthorizationScopeQuery) bool {
+	if query.TaskID != "" || query.PrincipalID == "" || !strings.HasPrefix(query.PrincipalID, query.ProjectID+":"+authn.RoleGlobalAuditor+":") {
+		return false
+	}
+	var exists bool
+	err := tx.QueryRowContext(ctx, `
+SELECT EXISTS (
+  SELECT 1
+  FROM agent_instances
+  WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND id = $3 AND role = 'GLOBAL_AUDITOR'
+)`, query.TenantID, query.ProjectID, query.PrincipalID).Scan(&exists)
+	return err == nil && exists
 }
 
 func allowsDetachedPlanningScope(query ToolAuthorizationScopeQuery) bool {

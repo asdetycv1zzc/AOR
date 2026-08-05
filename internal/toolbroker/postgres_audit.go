@@ -23,7 +23,8 @@ func NewPostgresInvocationRecorder(database *sql.DB) (*PostgresInvocationRecorde
 }
 
 func (recorder *PostgresInvocationRecorder) Record(ctx context.Context, invocation Invocation) error {
-	if recorder == nil || recorder.database == nil || ctx == nil || invocation.Status != "SUCCEEDED" || invocation.Decision != "ALLOW" || !validRisk(invocation.Risk) || !validDigest(invocation.InputSHA256) || !validDigest(invocation.OutputSHA256) || invocation.RequestID == "" || invocation.TenantID == "" || invocation.ProjectID == "" || invocation.TaskID == "" || invocation.PrincipalID == "" || invocation.ToolID == "" || invocation.ToolVersion == "" || invocation.PolicyVersion == "" || invocation.StartedAt.IsZero() || invocation.OccurredAt.IsZero() || invocation.OccurredAt.Before(invocation.StartedAt) {
+	projectScopedGlobalAudit := invocation.TaskID == "" && invocation.PrincipalRole == authn.RoleGlobalAuditor
+	if recorder == nil || recorder.database == nil || ctx == nil || invocation.Status != "SUCCEEDED" || invocation.Decision != "ALLOW" || !validRisk(invocation.Risk) || !validDigest(invocation.InputSHA256) || !validDigest(invocation.OutputSHA256) || invocation.RequestID == "" || invocation.TenantID == "" || invocation.ProjectID == "" || invocation.TaskID == "" && !projectScopedGlobalAudit || invocation.PrincipalID == "" || invocation.ToolID == "" || invocation.ToolVersion == "" || invocation.PolicyVersion == "" || invocation.StartedAt.IsZero() || invocation.OccurredAt.IsZero() || invocation.OccurredAt.Before(invocation.StartedAt) {
 		return ErrInvocationRecord
 	}
 	if principal, ok := authn.PrincipalFromContext(ctx); !ok || principal.TenantID != invocation.TenantID {
@@ -34,6 +35,17 @@ func (recorder *PostgresInvocationRecorder) Record(ctx context.Context, invocati
 		return ErrInvocationRecord
 	}
 	defer func() { _ = tx.Rollback() }()
+	if projectScopedGlobalAudit {
+		var authoritative bool
+		if err := tx.QueryRowContext(ctx, `
+SELECT EXISTS (
+  SELECT 1
+  FROM agent_instances
+  WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND id = $3 AND role = 'GLOBAL_AUDITOR'
+)`, invocation.TenantID, invocation.ProjectID, invocation.PrincipalID).Scan(&authoritative); err != nil || !authoritative {
+			return ErrInvocationRecord
+		}
+	}
 	id := invocationUUID(invocation)
 	var inserted string
 	err = tx.QueryRowContext(ctx, `
@@ -42,7 +54,7 @@ INSERT INTO tool_invocations
    tool_id, tool_version, risk_level, policy_version, decision,
    input_sha256, output_sha256, sandbox_id, status, started_at, completed_at)
 VALUES
-  ($1::uuid, $2::uuid, $3, $4::uuid, $5::uuid, $6, $7, $8, $9, $10, $11,
+  ($1::uuid, $2::uuid, $3, $4::uuid, NULLIF($5, '')::uuid, $6, $7, $8, $9, $10, $11,
    $12, $13, NULL, $14, $15, $16)
 ON CONFLICT (tenant_id, request_id) DO NOTHING
 RETURNING id::text`, id, invocation.TenantID, invocation.RequestID,

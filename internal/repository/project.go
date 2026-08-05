@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -125,6 +126,70 @@ func (s *Service) ProjectRepository(ctx context.Context, tenantID, projectID str
 		return ProjectRepository{}, false, err
 	}
 	return repository, true, nil
+}
+
+// ReadCommitFile reads one blob from an immutable project commit without
+// creating a writable worktree or applying repository-local Git filters.
+func (s *Service) ReadCommitFile(ctx context.Context, tenantID, projectID, commit, name string) ([]byte, error) {
+	if s == nil || contextErr(ctx) != nil || !safeIDPattern.MatchString(tenantID) || !safeIDPattern.MatchString(projectID) || validateCommit(commit) != nil || len(name) > 4096 {
+		return nil, ErrInvalidRequest
+	}
+	relative, ok := cleanRelative(name)
+	if !ok || strings.EqualFold(relative, ".git") || strings.HasPrefix(strings.ToLower(relative), ".git/") {
+		return nil, ErrPathDenied
+	}
+	repository, found, err := s.ProjectRepository(ctx, tenantID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, ErrRepositoryNotFound
+	}
+	resolved, err := resolveProjectCommit(ctx, repository, commit, ErrRepositoryConflict)
+	if err != nil || resolved != commit {
+		return nil, ErrRepositoryConflict
+	}
+	command := exec.CommandContext(ctx, "git", "--no-pager", "--no-replace-objects", "--git-dir", repository.Path, "cat-file", "blob", commit+":"+relative)
+	command.Dir = repository.Path
+	command.Env = []string{"LC_ALL=C", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_SYSTEM=/dev/null", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0", "GIT_NO_LAZY_FETCH=1", "GIT_PROTOCOL_FROM_USER=0"}
+	if pathValue := os.Getenv("PATH"); pathValue != "" {
+		command.Env = append(command.Env, "PATH="+pathValue)
+	}
+	stdout := newBoundedRepositoryOutput((512 << 10) + 1)
+	stderr := newBoundedRepositoryOutput(64 << 10)
+	command.Stdout, command.Stderr = stdout, stderr
+	if err := command.Run(); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, ErrPathDenied
+	}
+	if stdout.overflow || len(stdout.data) > 512<<10 {
+		return nil, ErrInvalidRequest
+	}
+	return append([]byte(nil), stdout.data...), nil
+}
+
+type boundedRepositoryOutput struct {
+	data     []byte
+	limit    int
+	overflow bool
+}
+
+func newBoundedRepositoryOutput(limit int) *boundedRepositoryOutput {
+	return &boundedRepositoryOutput{data: make([]byte, 0, limit), limit: limit}
+}
+
+func (output *boundedRepositoryOutput) Write(value []byte) (int, error) {
+	remaining := output.limit - len(output.data)
+	if remaining > len(value) {
+		remaining = len(value)
+	}
+	if remaining > 0 {
+		output.data = append(output.data, value[:remaining]...)
+	}
+	output.overflow = output.overflow || remaining < len(value)
+	return len(value), nil
 }
 
 func (s *Service) provisionProjectRepository(ctx context.Context, request ProjectRepositoryImportRequest, initialization string) (ProjectRepository, error) {

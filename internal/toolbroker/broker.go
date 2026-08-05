@@ -155,7 +155,8 @@ func (b *Broker) List() []ToolDescriptor {
 }
 
 func (b *Broker) Invoke(ctx context.Context, request ToolRequest) (result ToolResult, err error) {
-	if ctx == nil || !safeBrokerOpaque(request.RequestID, 512) || !safeBrokerID(request.TenantID) || !safeBrokerID(request.ProjectID) || !safeBrokerID(request.TaskID) || !safeBrokerOpaque(request.Principal.ID, 512) || !safeBrokerOpaque(request.Principal.Type, 128) || !safeBrokerOpaque(request.Principal.Role, 128) || !safeBrokerOpaque(request.ToolID, 128) || !safeBrokerOpaque(request.Version, 64) || !safeBrokerOpaque(request.PolicyVersion, 256) || !safeBrokerID(request.BudgetAccountID) || request.ExecutionLeaseID != "" && !safeBrokerOpaque(request.ExecutionLeaseID, 512) || len(request.Parameters) > maxInputBytes || !json.Valid(request.Parameters) {
+	projectScopedGlobalAudit := request.TaskID == "" && request.Principal.Role == "GLOBAL_AUDITOR"
+	if ctx == nil || !safeBrokerOpaque(request.RequestID, 512) || !safeBrokerID(request.TenantID) || !safeBrokerID(request.ProjectID) || !safeBrokerID(request.TaskID) && !projectScopedGlobalAudit || !safeBrokerOpaque(request.Principal.ID, 512) || !safeBrokerOpaque(request.Principal.Type, 128) || !safeBrokerOpaque(request.Principal.Role, 128) || !safeBrokerOpaque(request.ToolID, 128) || !safeBrokerOpaque(request.Version, 64) || !safeBrokerOpaque(request.PolicyVersion, 256) || !safeBrokerID(request.BudgetAccountID) || request.ExecutionLeaseID != "" && !safeBrokerOpaque(request.ExecutionLeaseID, 512) || len(request.Parameters) > maxInputBytes || !json.Valid(request.Parameters) {
 		return ToolResult{}, ErrInvalidRequest
 	}
 	if err := ctx.Err(); err != nil {
@@ -467,7 +468,7 @@ func (b *Broker) record(ctx context.Context, request ToolRequest, descriptor Too
 		return ErrInvocationRecord
 	}
 	occurredAt := b.clock().UTC()
-	if err := b.recorder.Record(ctx, Invocation{InvocationID: result.InvocationID, RequestID: request.RequestID, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, PrincipalID: request.Principal.ID, ToolID: descriptor.ToolID, ToolVersion: descriptor.Version, Risk: descriptor.Risk, InputSHA256: inputDigest, Decision: "ALLOW", PolicyVersion: decision.PolicyVersion, OutputSHA256: result.OutputSHA256, TrustLevel: result.TrustLevel, Redacted: result.Redacted, Status: "SUCCEEDED", StartedAt: occurredAt, OccurredAt: occurredAt}); err != nil {
+	if err := b.recorder.Record(ctx, Invocation{InvocationID: result.InvocationID, RequestID: request.RequestID, TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID, PrincipalID: request.Principal.ID, PrincipalRole: request.Principal.Role, ToolID: descriptor.ToolID, ToolVersion: descriptor.Version, Risk: descriptor.Risk, InputSHA256: inputDigest, Decision: "ALLOW", PolicyVersion: decision.PolicyVersion, OutputSHA256: result.OutputSHA256, TrustLevel: result.TrustLevel, Redacted: result.Redacted, Status: "SUCCEEDED", StartedAt: occurredAt, OccurredAt: occurredAt}); err != nil {
 		return ErrInvocationRecord
 	}
 	return nil

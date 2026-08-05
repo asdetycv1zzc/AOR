@@ -87,6 +87,13 @@ type WorkflowResult struct {
 	Summary PlanSupervisorSummary
 }
 
+func (summary PlanSupervisorSummary) Validate() error {
+	if !validPlanSupervisorSummary(summary) {
+		return ErrSummaryUnavailable
+	}
+	return nil
+}
+
 func NewWorkflow(config WorkflowConfig) (*Workflow, error) {
 	if config.Queue == nil || config.Tasks == nil || config.Checks == nil || config.Summaries == nil {
 		return nil, ErrWorkflowUnavailable

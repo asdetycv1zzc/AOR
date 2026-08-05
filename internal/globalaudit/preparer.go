@@ -39,7 +39,6 @@ type InputSnapshot struct {
 	IntegrationEvidenceURI    string
 	IntegrationEvidenceSHA256 string
 	ReleaseCommit             string
-	RepositoryWorkspaceID     string
 	ArtifactRefs              []string
 	ExecutionPlatform         contracts.ExecutionPlatform
 	IsolationLevel            contracts.IsolationLevel
@@ -228,7 +227,7 @@ func validateGlobalAuditInput(project state.Project, input InputSnapshot) ([]byt
 		input.GoalSpec.Content.ProjectID != project.ID || input.GoalSpec.Content.Version != goalRef.Version || input.GoalSpec.ContentSHA256 != goalRef.SHA256 ||
 		input.PlanSpec.ProjectID != project.ID || input.PlanSpec.GoalSpecRef != goalRef || input.PlanSpec.SHA256 != project.Plan.SHA256 ||
 		!safeText(input.GoalArtifactURI, 2048) || !safeText(input.PlanArtifactURI, 2048) || !safeText(input.IntegrationEvidenceURI, 2048) ||
-		!safeText(input.RepositoryWorkspaceID, 512) || !commitPattern.MatchString(input.ReleaseCommit) ||
+		!commitPattern.MatchString(input.ReleaseCommit) ||
 		input.ExecutionPlatform != contracts.PlatformLinux || input.IsolationLevel != contracts.IsolationContainer || !digestPattern.MatchString(input.SandboxImageDigest) ||
 		len(input.IntegrationEvidence) == 0 || len(input.IntegrationEvidence) > agentruntime.MaximumContextBytes || !json.Valid(input.IntegrationEvidence) ||
 		!digestPattern.MatchString(input.IntegrationEvidenceSHA256) || agentruntime.DigestContextContent(string(input.IntegrationEvidence)) != input.IntegrationEvidenceSHA256 {
@@ -270,10 +269,9 @@ func globalAuditContextItems(request Request, project state.Project, input Input
 	items = appendGlobalAuditChunks(items, "plan", agentruntime.ContextPlanReference, input.PlanArtifactURI, strconv.Itoa(project.Plan.Version), project.Plan.SHA256, agentruntime.TrustProjectApproved, string(planJSON))
 	items = appendGlobalAuditChunks(items, "integration", agentruntime.ContextDeterministicResult, input.IntegrationEvidenceURI, "1", input.IntegrationEvidenceSHA256, agentruntime.TrustCurated, string(input.IntegrationEvidence))
 	releaseJSON, err := json.Marshal(struct {
-		ReleaseCommit         string   `json:"releaseCommit"`
-		RepositoryWorkspaceID string   `json:"repositoryWorkspaceId"`
-		ArtifactRefs          []string `json:"artifactRefs"`
-	}{input.ReleaseCommit, input.RepositoryWorkspaceID, append([]string(nil), input.ArtifactRefs...)})
+		ReleaseCommit string   `json:"releaseCommit"`
+		ArtifactRefs  []string `json:"artifactRefs"`
+	}{input.ReleaseCommit, append([]string(nil), input.ArtifactRefs...)})
 	if err != nil || len(releaseJSON) > agentruntime.MaximumContextItemBytes {
 		return nil, ErrInvalidRequest
 	}
@@ -373,7 +371,6 @@ func globalAuditParameterDigest(request Request, project state.Project, input In
 		GoalSpecRef               contracts.SpecRef             `json:"goalSpecRef"`
 		PlanSpecRef               contracts.SpecRef             `json:"planSpecRef"`
 		ReleaseCommit             string                        `json:"releaseCommit"`
-		RepositoryWorkspaceID     string                        `json:"repositoryWorkspaceId"`
 		IntegrationEvidenceSHA256 string                        `json:"integrationEvidenceSha256"`
 		PromptDigest              string                        `json:"promptDigest"`
 		ContextDigest             string                        `json:"contextDigest"`
@@ -382,7 +379,7 @@ func globalAuditParameterDigest(request Request, project state.Project, input In
 		Tools                     []modelgateway.ToolDefinition `json:"tools"`
 	}{
 		request.RunID, request.TenantID, request.ProjectID, project.Version, projectGoalRef(project), *project.Plan,
-		input.ReleaseCommit, input.RepositoryWorkspaceID, input.IntegrationEvidenceSHA256,
+		input.ReleaseCommit, input.IntegrationEvidenceSHA256,
 		promptDigest, contextDigest, responseDigest, route, tools,
 	})
 	if err != nil {

@@ -191,6 +191,7 @@ type Invocation struct {
 	ProjectID     string
 	TaskID        string
 	PrincipalID   string
+	PrincipalRole string
 	ToolID        string
 	ToolVersion   string
 	Risk          Risk
