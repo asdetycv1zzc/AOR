@@ -8,12 +8,8 @@ var moduleAuditDecisionSchema = json.RawMessage(`{
   "$schema":"https://json-schema.org/draft/2020-12/schema",
   "$id":"https://schemas.aor.local/module-audit-decision.v1.schema.json",
   "type":"object","additionalProperties":false,
-  "required":["auditorRunId","modelIdentity","promptDigest","contextDigest","verdict","findings","criteriaResults","residualRisks","confidence"],
+  "required":["verdict","findings","criteriaResults","residualRisks","confidence"],
   "properties":{
-    "auditorRunId":{"type":"string","minLength":1,"maxLength":256},
-    "modelIdentity":{"type":"string","minLength":1,"maxLength":512},
-    "promptDigest":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},
-    "contextDigest":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},
     "verdict":{"enum":["PASS","FAIL","INCONCLUSIVE"]},
     "findings":{"type":"array","items":{"$ref":"#/$defs/finding"}},
     "criteriaResults":{"type":"array","items":{"$ref":"#/$defs/criterion"}},

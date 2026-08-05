@@ -2,12 +2,15 @@ package servicebootstrap
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"os"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,6 +26,7 @@ import (
 	"github.com/akimisaka/aor/internal/goalplan"
 	"github.com/akimisaka/aor/internal/knowledge"
 	"github.com/akimisaka/aor/internal/leaseauthority"
+	"github.com/akimisaka/aor/internal/modelgateway"
 	"github.com/akimisaka/aor/internal/policy"
 	"github.com/akimisaka/aor/internal/repository"
 	"github.com/akimisaka/aor/internal/runtimeclient"
@@ -30,6 +34,7 @@ import (
 	"github.com/akimisaka/aor/internal/sandbox"
 	"github.com/akimisaka/aor/internal/toolbroker"
 	aorworkflow "github.com/akimisaka/aor/internal/workflow"
+	"github.com/google/uuid"
 )
 
 var (
@@ -70,9 +75,22 @@ type globalAuditActivityInput struct {
 	RunID  string `json:"runId"`
 }
 
+type moduleAuditActivityInput struct {
+	Action string `json:"action"`
+	RunID  string `json:"runId"`
+}
+
+type moduleAuditActivity struct {
+	service     *audit.ModuleAuditService
+	provider    sandbox.SandboxProvider
+	imageDigest string
+	profile     sandbox.DeploymentProfile
+}
+
 type workerActivityEffect struct {
 	sandbox       sandboxActivityEffect
 	execution     *execution.Service
+	moduleAuditor *moduleAuditActivity
 	globalAuditor *globalaudit.Service
 }
 
@@ -85,6 +103,37 @@ func (effect workerActivityEffect) Execute(ctx context.Context, key string, payl
 	}
 	if route.Action == authz.ActionSandboxExec {
 		return effect.sandbox.Execute(ctx, key, payload)
+	}
+	if route.Action == aorworkflow.ModuleAuditActivityAction {
+		if effect.moduleAuditor == nil {
+			return nil, aorworkflow.ErrInvalidExecution
+		}
+		var input moduleAuditActivityInput
+		decoder := json.NewDecoder(strings.NewReader(string(payload)))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&input) != nil {
+			return nil, aorworkflow.ErrInvalidExecution
+		}
+		var trailing struct{}
+		if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) || input.Action != aorworkflow.ModuleAuditActivityAction || strings.TrimSpace(input.RunID) != input.RunID || input.RunID == "" || len(input.RunID) > 256 {
+			return nil, aorworkflow.ErrInvalidExecution
+		}
+		executionInput, found := aorworkflow.ExecutionInputFromContext(ctx)
+		if !found {
+			return nil, aorworkflow.ErrInvalidExecution
+		}
+		principalContext, err := authn.ContextWithPrincipal(ctx, authn.Principal{
+			ID: "aor-module-audit-service", Type: authn.PrincipalService, Role: authn.RoleService,
+			TenantID: executionInput.TenantID, ProjectID: executionInput.ProjectID,
+		})
+		if err != nil {
+			return nil, err
+		}
+		result, err := effect.moduleAuditor.Run(principalContext, executionInput, input.RunID)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(result)
 	}
 	if route.Action == aorworkflow.GlobalAuditActivityAction {
 		if effect.globalAuditor == nil {
@@ -144,6 +193,77 @@ func (effect workerActivityEffect) Execute(ctx context.Context, key string, payl
 		return nil, err
 	}
 	return json.Marshal(result)
+}
+
+func (activity *moduleAuditActivity) Run(ctx context.Context, input aorworkflow.ExecutionInput, runID string) (result audit.ModuleAuditResult, resultErr error) {
+	parsedRunID, parseErr := uuid.Parse(runID)
+	if activity == nil || activity.service == nil || activity.provider == nil || ctx == nil || ctx.Err() != nil || parseErr != nil || parsedRunID.Version() != 7 || parsedRunID.String() != runID {
+		return audit.ModuleAuditResult{}, ErrWorkerUnavailable
+	}
+	spec, err := activity.sandboxSpec(input, runID)
+	if err != nil {
+		return audit.ModuleAuditResult{}, err
+	}
+	handle, err := activity.provider.Create(ctx, spec)
+	if err != nil {
+		return audit.ModuleAuditResult{}, err
+	}
+	defer func() {
+		cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		cleanupErr := activity.provider.Destroy(cleanupContext, handle.ID)
+		cancel()
+		if cleanupErr != nil {
+			result = audit.ModuleAuditResult{}
+			resultErr = errors.Join(resultErr, sandbox.ErrCleanupFailed, cleanupErr)
+		}
+	}()
+	if handle.ID != spec.SandboxID || handle.Platform != spec.Platform || handle.IsolationLevel != spec.IsolationLevel ||
+		spec.Platform == sandbox.PlatformLinux && handle.Attestation.ImageDigest != spec.ImageDigest ||
+		spec.Platform == sandbox.PlatformWindows && handle.Attestation.Runtime != "native-process" {
+		return audit.ModuleAuditResult{}, ErrWorkerUnavailable
+	}
+	return activity.service.Run(ctx, audit.ModuleAuditRequest{
+		AuditRunID: runID, TenantID: input.TenantID, ProjectID: input.ProjectID, TaskID: input.TaskID, SandboxID: handle.ID,
+	})
+}
+
+func (activity *moduleAuditActivity) sandboxSpec(input aorworkflow.ExecutionInput, runID string) (sandbox.SandboxSpec, error) {
+	base := sandbox.SandboxSpec{
+		SandboxID: stableModuleAuditSandboxID(input, runID), TenantID: input.TenantID,
+		ProjectID: input.ProjectID, TaskID: input.TaskID, Role: sandbox.RoleAuditor,
+		WallTimeSeconds: 1800, AllowedExecutables: []string{}, EnvironmentAllowlist: []string{},
+		DeploymentProfile: activity.profile,
+	}
+	switch runtime.GOOS {
+	case "linux":
+		base.Platform = sandbox.PlatformLinux
+		base.IsolationLevel = sandbox.IsolationContainer
+		base.ImageDigest = activity.imageDigest
+		base.CPULimit = "1"
+		base.MemoryBytes = 512 * 1024 * 1024
+		base.PIDsLimit = 128
+		base.DiskBytes = 1024 * 1024 * 1024
+		base.NetworkPolicy = sandbox.NetworkPolicy{Mode: "DENY_ALL"}
+		base.WorkloadTrust = sandbox.TrustUntrusted
+		base.RequiresHiddenTests = true
+		base.RequiresNetworkIsolation = true
+	case "windows":
+		base.Platform = sandbox.PlatformWindows
+		base.IsolationLevel = sandbox.IsolationNone
+		base.WorkloadTrust = sandbox.TrustTrusted
+		base.TrustedSingleTenant = true
+	default:
+		return sandbox.SandboxSpec{}, ErrWorkerUnavailable
+	}
+	if err := base.Validate(); err != nil {
+		return sandbox.SandboxSpec{}, errors.Join(ErrWorkerConfiguration, err)
+	}
+	return base, nil
+}
+
+func stableModuleAuditSandboxID(input aorworkflow.ExecutionInput, runID string) string {
+	digest := sha256.Sum256([]byte(input.TenantID + "\x00" + input.ProjectID + "\x00" + input.TaskID + "\x00" + runID))
+	return "module-audit-sandbox-" + hex.EncodeToString(digest[:])
 }
 
 type workerExecutionServices struct {
@@ -290,9 +410,11 @@ func Worker(config runtimeconfig.Config, clients *runtimeclient.Clients) (http.H
 		return nil, ErrWorkerConfiguration
 	}
 	repositoryKey := deriveRepositorySigningKey(leaseKey)
+	moduleAuditKey := deriveModuleAuditSigningKey(leaseKey)
 	globalAuditKey := deriveGlobalAuditSigningKey(leaseKey)
 	leaseSigner, err := authz.NewHMACSigner(leaseKey)
 	repositorySigner, repositorySignerErr := repository.NewHMACSigner(repositoryKey)
+	moduleAuditSigner, moduleAuditSignerErr := audit.NewHMACSigner(moduleAuditKey)
 	globalAuditSigner, globalAuditSignerErr := audit.NewHMACSigner(globalAuditKey)
 	for index := range leaseKey {
 		leaseKey[index] = 0
@@ -300,10 +422,13 @@ func Worker(config runtimeconfig.Config, clients *runtimeclient.Clients) (http.H
 	for index := range repositoryKey {
 		repositoryKey[index] = 0
 	}
+	for index := range moduleAuditKey {
+		moduleAuditKey[index] = 0
+	}
 	for index := range globalAuditKey {
 		globalAuditKey[index] = 0
 	}
-	if err != nil || repositorySignerErr != nil || globalAuditSignerErr != nil {
+	if err != nil || repositorySignerErr != nil || moduleAuditSignerErr != nil || globalAuditSignerErr != nil {
 		return nil, ErrWorkerConfiguration
 	}
 	leaseStore, err := authz.NewPostgresLeaseStore(clients.Database())
@@ -330,13 +455,19 @@ func Worker(config runtimeconfig.Config, clients *runtimeclient.Clients) (http.H
 	if err != nil {
 		return nil, err
 	}
+	moduleAuditor, err := configuredModuleAudit(config, clients, provider, services, repositorySigner, moduleAuditSigner)
+	if err != nil {
+		_ = services.host.Close()
+		return nil, err
+	}
 	globalAuditor, err := configuredGlobalAudit(config, clients, provider, services, globalAuditSigner, secretResolver)
 	if err != nil {
 		_ = services.host.Close()
 		return nil, err
 	}
 	activities, err := aorworkflow.NewActivitiesWithStore(workerActivityEffect{
-		sandbox: sandboxActivityEffect{provider: provider, authorizer: authorizer}, execution: services.execution, globalAuditor: globalAuditor,
+		sandbox: sandboxActivityEffect{provider: provider, authorizer: authorizer}, execution: services.execution,
+		moduleAuditor: moduleAuditor, globalAuditor: globalAuditor,
 	}, activityResults)
 	if err != nil {
 		_ = services.host.Close()
@@ -352,6 +483,118 @@ func Worker(config runtimeconfig.Config, clients *runtimeclient.Clients) (http.H
 		return nil, err
 	}
 	return &workerHandler{runtime: runtimeWorker, closer: services.host}, nil
+}
+
+func configuredModuleAudit(config runtimeconfig.Config, clients *runtimeclient.Clients, provider sandbox.SandboxProvider, services *workerExecutionServices, repositorySigner repository.Signer, signer *audit.HMACSigner) (*moduleAuditActivity, error) {
+	if clients == nil || provider == nil || services == nil || services.agentRuntime == nil || services.leaseService == nil || services.artifactCatalog == nil || repositorySigner == nil || signer == nil {
+		return nil, ErrWorkerConfiguration
+	}
+	policyClient, err := policy.NewOPAClient(config.OPA.URL)
+	if err != nil {
+		return nil, err
+	}
+	principal := authn.Principal{ID: "aor-module-audit-service", Type: authn.PrincipalService, Role: authn.RoleService}
+	store := eventing.NewPostgresStore(clients.Database())
+	tasks, err := audit.NewOrchestratorTaskAuthority(store, policyClient, principal, time.Now)
+	if err != nil {
+		return nil, err
+	}
+	references, err := audit.NewStateModuleAuditReferenceSource(tasks)
+	if err != nil {
+		return nil, err
+	}
+	submissions, err := repository.NewPostgresSubmissionStore(clients.Database())
+	if err != nil {
+		return nil, err
+	}
+	artifacts, err := goalplan.NewEventArtifactStore(store, time.Now)
+	if err != nil {
+		return nil, err
+	}
+	inputs, err := audit.NewSnapshotAuthoritativeInputSource(submissions, repositorySigner, artifacts, policyClient, principal, provider)
+	if err != nil {
+		return nil, err
+	}
+	evidence, err := audit.NewArtifactEvidenceStore(services.artifactCatalog, services.artifactCatalog)
+	if err != nil {
+		return nil, err
+	}
+	pipelineArtifacts, err := audit.NewCatalogArtifactPublisher(services.artifactCatalog)
+	if err != nil {
+		return nil, err
+	}
+	runs, err := audit.NewPostgresAuditRunStore(clients.Database())
+	if err != nil {
+		return nil, err
+	}
+	checkpoints, err := audit.NewPostgresCoordinationStore(clients.Database())
+	if err != nil {
+		return nil, err
+	}
+	tools, err := moduleAuditToolDefinitions(services.host.Broker().List())
+	if err != nil {
+		return nil, err
+	}
+	routeConfig := config.ModuleAuditRoute
+	if routeConfig.Provider == "" {
+		var found bool
+		routeConfig, found = config.GoalPlan.Routes[string(agentruntime.RoleModuleAuditor)]
+		if !found {
+			routeConfig = config.Execution.Route
+		}
+	}
+	route := goalplan.ModelRoute{
+		Provider: routeConfig.Provider, Model: routeConfig.Model, MaxOutputTokens: routeConfig.MaxOutputTokens,
+		Temperature: routeConfig.Temperature, Seed: routeConfig.Seed, ProviderPolicy: routeConfig.ProviderPolicy,
+		CachePolicy: routeConfig.CachePolicy, WorstCaseCostMicros: routeConfig.WorstCaseCostMicros, MaxAttempts: routeConfig.MaxAttempts,
+	}
+	auditors, err := audit.NewRuntimeAuditorFactory(audit.RuntimeAuditorFactoryConfig{
+		Runtime: services.agentRuntime, References: references, Leases: services.leaseService,
+		Routes: route, Tools: tools, LeaseTTL: 5 * time.Minute, MaxToolRounds: config.Execution.MaxToolRounds, Clock: time.Now,
+	})
+	if err != nil {
+		return nil, err
+	}
+	pipeline, err := audit.NewPersistentPipeline(nil, auditors, signer, evidence, pipelineArtifacts, runs, "1.0.0", time.Now)
+	if err != nil {
+		return nil, err
+	}
+	service, err := audit.NewModuleAuditService(audit.ModuleAuditServiceConfig{
+		Tasks: tasks, Inputs: inputs, Pipeline: pipeline, Evidence: evidence, Signer: signer, Checkpoints: checkpoints,
+	})
+	if err != nil {
+		return nil, err
+	}
+	profile := sandbox.ProfileLocal
+	if config.DeploymentProfile == "PREPRODUCTION" || config.DeploymentProfile == "PRODUCTION" {
+		profile = sandbox.ProfileProduction
+	}
+	return &moduleAuditActivity{service: service, provider: provider, imageDigest: configuredImageDigest(config.Sandbox.ImageReference), profile: profile}, nil
+}
+
+func moduleAuditToolDefinitions(descriptors []toolbroker.ToolDescriptor) ([]modelgateway.ToolDefinition, error) {
+	allowed := map[string]struct{}{
+		"artifact.read": {}, "knowledge.read_range": {}, "knowledge.search": {}, repositoryReadTool: {},
+	}
+	tools := make([]modelgateway.ToolDefinition, 0, len(allowed))
+	seen := make(map[string]struct{}, len(allowed))
+	for _, descriptor := range descriptors {
+		if _, ok := allowed[descriptor.ToolID]; !ok {
+			continue
+		}
+		if _, duplicate := seen[descriptor.ToolID]; duplicate || descriptor.Validate() != nil || descriptor.SideEffect != toolbroker.SideEffectNone ||
+			descriptor.FilesystemAccess != toolbroker.FilesystemNone && descriptor.FilesystemAccess != toolbroker.FilesystemRead ||
+			!repositoryRoleAllowed(descriptor.AllowedRoles, string(agentruntime.RoleModuleAuditor)) {
+			return nil, ErrWorkerConfiguration
+		}
+		seen[descriptor.ToolID] = struct{}{}
+		tools = append(tools, modelgateway.ToolDefinition{Name: descriptor.ToolID, Version: descriptor.Version, Schema: append(json.RawMessage(nil), descriptor.InputSchema...)})
+	}
+	if _, found := seen[repositoryReadTool]; !found {
+		return nil, ErrWorkerConfiguration
+	}
+	sort.Slice(tools, func(left, right int) bool { return tools[left].Name < tools[right].Name })
+	return tools, nil
 }
 
 func configuredWorkerExecution(config runtimeconfig.Config, clients *runtimeclient.Clients, leaseManager *authz.LeaseManager, leaseSigner authz.Signer, repositorySigner repository.Signer, secretResolver *credentials.SecretResolver) (*workerExecutionServices, error) {

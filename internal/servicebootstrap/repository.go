@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/akimisaka/aor/internal/agentruntime"
 	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/integration"
 	"github.com/akimisaka/aor/internal/repository"
@@ -83,6 +84,12 @@ func deriveRepositorySigningKey(leaseKey []byte) []byte {
 func deriveGlobalAuditSigningKey(leaseKey []byte) []byte {
 	mac := hmac.New(sha256.New, leaseKey)
 	_, _ = mac.Write([]byte("aor/global-audit/report-signing/v1"))
+	return mac.Sum(nil)
+}
+
+func deriveModuleAuditSigningKey(leaseKey []byte) []byte {
+	mac := hmac.New(sha256.New, leaseKey)
+	_, _ = mac.Write([]byte("aor/module-audit/evidence-signing/v1"))
 	return mac.Sum(nil)
 }
 
@@ -231,6 +238,15 @@ func (client *repositoryMCPClient) CallTool(ctx context.Context, name string, ar
 			}
 			content, err = client.service.ReadCommitFile(ctx, claim.TenantID, claim.ProjectID, input.Commit, input.Path)
 			result["commit"] = input.Commit
+		case string(agentruntime.RoleModuleAuditor):
+			if input.WorkspaceID != "" || !repositoryCommitID(input.Commit) {
+				return mcp.ToolCallResult{}, repository.ErrInvalidRequest
+			}
+			if err := client.authority.validateSubmissionRead(ctx, claim, input.Commit); err != nil {
+				return mcp.ToolCallResult{}, err
+			}
+			content, err = client.service.ReadCommitFile(ctx, claim.TenantID, claim.ProjectID, input.Commit, input.Path)
+			result["commit"] = input.Commit
 		default:
 			return mcp.ToolCallResult{}, repository.ErrLeaseStale
 		}
@@ -324,7 +340,7 @@ func (authority *repositoryExecutionAuthority) claim(ctx context.Context, toolID
 }
 
 func (authority *repositoryExecutionAuthority) readClaim(ctx context.Context) (toolbroker.LeaseValidation, repository.LeaseProof, error) {
-	return authority.claimForRoles(ctx, repositoryReadTool, authn.RoleExecutor, authn.RoleGlobalAuditor)
+	return authority.claimForRoles(ctx, repositoryReadTool, authn.RoleExecutor, authn.RoleGlobalAuditor, string(agentruntime.RoleModuleAuditor))
 }
 
 func (authority *repositoryExecutionAuthority) claimForRoles(ctx context.Context, toolID string, roles ...string) (toolbroker.LeaseValidation, repository.LeaseProof, error) {
@@ -439,6 +455,42 @@ WHERE project.tenant_id = $1::uuid AND project.id = $2::uuid
 		return err
 	}
 	return nil
+}
+
+func (authority *repositoryExecutionAuthority) validateSubmissionRead(ctx context.Context, claim toolbroker.LeaseValidation, commit string) error {
+	if claim.Principal.Role != string(agentruntime.RoleModuleAuditor) || claim.TaskID == "" || !repositoryCommitID(commit) {
+		return repository.ErrLeaseStale
+	}
+	tx, err := authority.database.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable, ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var superuser, bypassRLS bool
+	if err := tx.QueryRowContext(ctx, `SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`).Scan(&superuser, &bypassRLS); err != nil || superuser || bypassRLS {
+		return repository.ErrLeaseStale
+	}
+	if _, err := tx.ExecContext(ctx, `SELECT set_config('aor.tenant_id', $1, true)`, claim.TenantID); err != nil {
+		return err
+	}
+	var allowed bool
+	err = tx.QueryRowContext(ctx, `
+SELECT EXISTS (
+  SELECT 1
+  FROM module_tasks task
+  JOIN submissions submission
+    ON submission.tenant_id = task.tenant_id
+   AND submission.project_id = task.project_id
+   AND submission.module_task_id = task.id
+   AND submission.attempt_series_id = task.active_attempt_series_id
+   AND submission.attempt = task.attempt_count
+  WHERE task.tenant_id = $1::uuid AND task.project_id = $2::uuid AND task.id = $3::uuid
+    AND task.state = 'LLM_AUDIT' AND submission.head_commit = $4
+)`, claim.TenantID, claim.ProjectID, claim.TaskID, commit).Scan(&allowed)
+	if err != nil || !allowed {
+		return repository.ErrLeaseStale
+	}
+	return tx.Commit()
 }
 
 func (authority *repositoryExecutionAuthority) loadScope(ctx context.Context, claim toolbroker.LeaseValidation, attemptSeriesID string, attempt int) (repositoryExecutionScope, error) {
@@ -560,7 +612,7 @@ func repositoryMCPTools() []mcp.Tool {
 
 func repositoryMCPPolicies() map[string]toolbroker.MCPToolPolicy {
 	executor := []string{"EXECUTOR"}
-	readers := []string{"EXECUTOR", "GLOBAL_AUDITOR"}
+	readers := []string{"EXECUTOR", "GLOBAL_AUDITOR", string(agentruntime.RoleModuleAuditor)}
 	return map[string]toolbroker.MCPToolPolicy{
 		string(repository.LeaseActionCreateWorkspace): {Risk: toolbroker.RiskMedium, SideEffect: toolbroker.SideEffectReversible, NetworkAccess: toolbroker.NetworkNone, FilesystemAccess: toolbroker.FilesystemScopedWrite, RequiresApproval: toolbroker.ApprovalNever, AllowedRoles: executor, RateLimit: "5/s", TimeoutSeconds: 60, MaxOutputBytes: 64 << 10},
 		string(repository.LeaseActionWriteFile):       {Risk: toolbroker.RiskMedium, SideEffect: toolbroker.SideEffectReversible, NetworkAccess: toolbroker.NetworkNone, FilesystemAccess: toolbroker.FilesystemScopedWrite, RequiresApproval: toolbroker.ApprovalNever, AllowedRoles: executor, RateLimit: "20/s", TimeoutSeconds: 30, MaxOutputBytes: 64 << 10},

@@ -28,10 +28,12 @@ type controlHandler struct {
 	http.Handler
 	dispatcher           *eventing.OutboxDispatcher
 	scheduler            *aorworkflow.ReadyExecutionScheduler
+	moduleAuditScheduler *aorworkflow.ModuleAuditScheduler
 	globalAuditScheduler *aorworkflow.GlobalAuditScheduler
 	cancel               context.CancelFunc
 	dispatchDone         <-chan error
 	schedulerDone        <-chan error
+	moduleAuditDone      <-chan error
 	globalAuditDone      <-chan error
 	close                sync.Once
 	closeErr             error
@@ -53,13 +55,16 @@ func (eraser artifactProjectEraser) EraseProject(ctx context.Context, tenantID, 
 }
 
 func (handler *controlHandler) Ready() error {
-	if handler == nil || handler.dispatcher == nil || handler.scheduler == nil || handler.globalAuditScheduler == nil {
+	if handler == nil || handler.dispatcher == nil || handler.scheduler == nil || handler.moduleAuditScheduler == nil || handler.globalAuditScheduler == nil {
 		return runtimeclient.ErrDependencyUnavailable
 	}
 	if err := handler.dispatcher.Ready(); err != nil {
 		return err
 	}
 	if err := handler.scheduler.Ready(); err != nil {
+		return err
+	}
+	if err := handler.moduleAuditScheduler.Ready(); err != nil {
 		return err
 	}
 	return handler.globalAuditScheduler.Ready()
@@ -81,6 +86,12 @@ func (handler *controlHandler) Close() error {
 		}
 		if handler.schedulerDone != nil {
 			err := <-handler.schedulerDone
+			if err != nil && !errors.Is(err, context.Canceled) {
+				handler.closeErr = errors.Join(handler.closeErr, err)
+			}
+		}
+		if handler.moduleAuditDone != nil {
+			err := <-handler.moduleAuditDone
 			if err != nil && !errors.Is(err, context.Canceled) {
 				handler.closeErr = errors.Join(handler.closeErr, err)
 			}
@@ -171,6 +182,18 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	if err != nil {
 		return nil, err
 	}
+	moduleAuditRequests, err := aorworkflow.NewPostgresModuleAuditRequests(clients.Database())
+	if err != nil {
+		return nil, err
+	}
+	moduleAuditStarter, err := aorworkflow.NewModuleAuditStarter(clients.Temporal(), moduleAuditRequests, config.Temporal.TaskQueue)
+	if err != nil {
+		return nil, err
+	}
+	moduleAuditScheduler, err := aorworkflow.NewModuleAuditScheduler(moduleAuditRequests, moduleAuditStarter)
+	if err != nil {
+		return nil, err
+	}
 	globalAuditRequests, err := aorworkflow.NewPostgresGlobalAuditRequests(clients.Database())
 	if err != nil {
 		return nil, err
@@ -186,13 +209,16 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	dispatchContext, cancel := context.WithCancel(context.Background())
 	dispatchDone := make(chan error, 1)
 	schedulerDone := make(chan error, 1)
+	moduleAuditDone := make(chan error, 1)
 	globalAuditDone := make(chan error, 1)
 	go func() { dispatchDone <- dispatcher.Run(dispatchContext) }()
 	go func() { schedulerDone <- scheduler.Run(dispatchContext) }()
+	go func() { moduleAuditDone <- moduleAuditScheduler.Run(dispatchContext) }()
 	go func() { globalAuditDone <- globalAuditScheduler.Run(dispatchContext) }()
 	return &controlHandler{
-		Handler: withRequestTrace(domain), dispatcher: dispatcher, scheduler: scheduler, globalAuditScheduler: globalAuditScheduler, cancel: cancel,
-		dispatchDone: dispatchDone, schedulerDone: schedulerDone, globalAuditDone: globalAuditDone,
+		Handler: withRequestTrace(domain), dispatcher: dispatcher, scheduler: scheduler,
+		moduleAuditScheduler: moduleAuditScheduler, globalAuditScheduler: globalAuditScheduler, cancel: cancel,
+		dispatchDone: dispatchDone, schedulerDone: schedulerDone, moduleAuditDone: moduleAuditDone, globalAuditDone: globalAuditDone,
 	}, nil
 }
 

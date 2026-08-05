@@ -120,10 +120,6 @@ func (factory *RuntimeAuditorFactory) New(ctx context.Context) (Auditor, error) 
 type runtimeAuditor struct{ factory *RuntimeAuditorFactory }
 
 type moduleAuditResponse struct {
-	AuditorRunID    string                      `json:"auditorRunId"`
-	ModelIdentity   string                      `json:"modelIdentity"`
-	PromptDigest    string                      `json:"promptDigest"`
-	ContextDigest   string                      `json:"contextDigest"`
 	Verdict         string                      `json:"verdict"`
 	Findings        []contracts.AuditFinding    `json:"findings"`
 	CriteriaResults []contracts.CriterionResult `json:"criteriaResults"`
@@ -157,7 +153,7 @@ func (auditor *runtimeAuditor) Audit(ctx context.Context, input BlindAuditInput)
 	if err := decodeStrictAudit(accepted.Payload, &response); err != nil {
 		return LLMAuditResult{}, ErrRuntimeAuditorOutput
 	}
-	if response.AuditorRunID != input.AuditRunID || response.ModelIdentity != prepared.modelCall.Provider+"/"+prepared.modelCall.Model || response.PromptDigest != accepted.PromptDigest || response.ContextDigest != accepted.ContextDigest || response.Findings == nil || response.CriteriaResults == nil || response.ResidualRisks == nil || math.IsNaN(response.Confidence) || math.IsInf(response.Confidence, 0) || response.Confidence < 0 || response.Confidence > 1 || !criteriaMatch(input.RequiredCriteria, response.CriteriaResults) {
+	if response.Findings == nil || response.CriteriaResults == nil || response.ResidualRisks == nil || math.IsNaN(response.Confidence) || math.IsInf(response.Confidence, 0) || response.Confidence < 0 || response.Confidence > 1 || !criteriaMatch(input.RequiredCriteria, response.CriteriaResults) {
 		return LLMAuditResult{}, ErrRuntimeAuditorOutput
 	}
 	for _, finding := range response.Findings {
@@ -175,7 +171,7 @@ func (auditor *runtimeAuditor) Audit(ctx context.Context, input BlindAuditInput)
 			return LLMAuditResult{}, ErrRuntimeAuditorOutput
 		}
 	}
-	return LLMAuditResult{AuditorRunID: response.AuditorRunID, ModelIdentity: response.ModelIdentity, PromptDigest: response.PromptDigest, ContextDigest: response.ContextDigest, Verdict: response.Verdict, Findings: response.Findings, CriteriaResults: response.CriteriaResults, ResidualRisks: response.ResidualRisks, Confidence: response.Confidence}, nil
+	return LLMAuditResult{AuditorRunID: input.AuditRunID, ModelIdentity: prepared.modelCall.Provider + "/" + prepared.modelCall.Model, PromptDigest: accepted.PromptDigest, ContextDigest: accepted.ContextDigest, Verdict: response.Verdict, Findings: response.Findings, CriteriaResults: response.CriteriaResults, ResidualRisks: response.ResidualRisks, Confidence: response.Confidence}, nil
 }
 
 type preparedModuleAudit struct {

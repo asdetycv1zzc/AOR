@@ -40,6 +40,7 @@ type Config struct {
 	ModelGateway       ModelGatewayConfig
 	ModelGatewayClient ModelGatewayClientConfig
 	GoalPlan           GoalPlanConfig
+	ModuleAuditRoute   GoalPlanRouteConfig
 	GlobalAuditRoute   GoalPlanRouteConfig
 	Execution          ExecutionConfig
 	Services           ServiceEndpoints
@@ -343,6 +344,16 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 			return Config{}, configurationError("AOR_GLOBAL_AUDITOR_ROUTE_JSON")
 		}
 	}
+	if raw, found := lookup("AOR_MODULE_AUDITOR_ROUTE_JSON"); found && strings.TrimSpace(raw) != "" {
+		decoder := json.NewDecoder(strings.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&config.ModuleAuditRoute); err != nil {
+			return Config{}, configurationError("AOR_MODULE_AUDITOR_ROUTE_JSON")
+		}
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			return Config{}, configurationError("AOR_MODULE_AUDITOR_ROUTE_JSON")
+		}
+	}
 	applyProviderCapabilityDefaults(config.ModelGateway.Providers)
 	if err := config.Validate(); err != nil {
 		return Config{}, err
@@ -421,6 +432,9 @@ func (config Config) Validate() error {
 			return ErrInvalidConfiguration
 		}
 		if globalAuditRouteConfigured(config.GlobalAuditRoute) && !validGoalPlanRoute(config.GlobalAuditRoute) {
+			return ErrInvalidConfiguration
+		}
+		if globalAuditRouteConfigured(config.ModuleAuditRoute) && !validGoalPlanRoute(config.ModuleAuditRoute) {
 			return ErrInvalidConfiguration
 		}
 		if config.Sandbox.LinuxLevel != "CONTAINER" || config.Sandbox.WindowsLevel != "NONE" || config.Sandbox.AllowWindowsUntrusted || config.Sandbox.LinuxDefaultNetworkMode != "DENY_ALL" || config.Sandbox.WindowsNetworkIsolationLevel != "NONE" {

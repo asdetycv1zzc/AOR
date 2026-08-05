@@ -238,6 +238,18 @@ tool_invoke_allowed if {
 	active_lease
 }
 
+tool_invoke_allowed if {
+	valid_task_scope
+	input.action == "tool.invoke"
+	input.principal.type == "AGENT_INSTANCE"
+	input.principal.role == "MODULE_AUDITOR"
+	input.project.state == "EXECUTING"
+	input.task.state == "LLM_AUDIT"
+	global_auditor_read_tool_resource
+	input.budget.available
+	active_lease
+}
+
 lease_grant_input_valid if {
 	valid_task_scope
 	input.action in side_effect_actions
@@ -339,6 +351,16 @@ tool_invoke_grant_allowed if {
 	input.principal.type == "AGENT_INSTANCE"
 	input.principal.role == "GLOBAL_AUDITOR"
 	input.project.state == "GLOBAL_AUDIT"
+	global_auditor_read_tool_resource
+}
+
+tool_invoke_grant_allowed if {
+	lease_grant_input_valid
+	input.action == "tool.invoke"
+	input.principal.type == "AGENT_INSTANCE"
+	input.principal.role == "MODULE_AUDITOR"
+	input.project.state == "EXECUTING"
+	input.task.state == "LLM_AUDIT"
 	global_auditor_read_tool_resource
 }
 
