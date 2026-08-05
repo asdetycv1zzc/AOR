@@ -416,7 +416,10 @@ func encodeProjectTransition(request ProjectRequest, transition state.ProjectEve
 	if err != nil {
 		return eventing.ProjectionUpdate{}, eventing.DomainEvent{}, nil, err
 	}
-	event := newEvent(request.TenantID, request.ProjectID, "project", request.ProjectID, transition.Type, transition.AggregateVersion, transition.OccurredAt, payload, requestDigest)
+	event, err := newEvent(request.TenantID, request.ProjectID, "project", request.ProjectID, transition.Type, transition.AggregateVersion, transition.OccurredAt, payload, requestDigest)
+	if err != nil {
+		return eventing.ProjectionUpdate{}, eventing.DomainEvent{}, nil, err
+	}
 	update := eventing.ProjectionUpdate{TenantID: request.TenantID, ProjectID: request.ProjectID, AggregateType: "project", AggregateID: request.ProjectID, ExpectedVersion: request.ExpectedVersion, NextVersion: transition.AggregateVersion, State: result}
 	return update, event, result, nil
 }
@@ -430,7 +433,10 @@ func encodeTaskTransition(tenantID, projectID, taskID string, expectedVersion in
 	if err != nil {
 		return eventing.ProjectionUpdate{}, eventing.DomainEvent{}, nil, err
 	}
-	event := newEvent(tenantID, projectID, "task", taskID, transition.Type, transition.AggregateVersion, transition.OccurredAt, payload, requestDigest)
+	event, err := newEvent(tenantID, projectID, "task", taskID, transition.Type, transition.AggregateVersion, transition.OccurredAt, payload, requestDigest)
+	if err != nil {
+		return eventing.ProjectionUpdate{}, eventing.DomainEvent{}, nil, err
+	}
 	update := eventing.ProjectionUpdate{TenantID: tenantID, ProjectID: projectID, AggregateType: "task", AggregateID: taskID, ExpectedVersion: expectedVersion, NextVersion: transition.AggregateVersion, State: result}
 	return update, event, result, nil
 }
@@ -444,12 +450,16 @@ func transitionPayload(tenantID, projectID string, version int64, projection jso
 	}{TenantID: tenantID, ProjectID: projectID, AggregateVersion: version, Projection: projection})
 }
 
-func newEvent(tenantID, projectID, aggregateType, aggregateID, eventType string, version int64, at time.Time, payload json.RawMessage, requestDigest string) eventing.DomainEvent {
+func newEvent(tenantID, projectID, aggregateType, aggregateID, eventType string, version int64, at time.Time, payload json.RawMessage, requestDigest string) (eventing.DomainEvent, error) {
+	eventID, err := newRecordUUIDv7()
+	if err != nil {
+		return eventing.DomainEvent{}, err
+	}
 	return eventing.DomainEvent{
-		EventID: stableUUIDv7(at, aggregateType+"\x00"+aggregateID+"\x00"+fmt.Sprint(version)+"\x00"+requestDigest), TenantID: tenantID, ProjectID: projectID,
+		EventID: eventID, TenantID: tenantID, ProjectID: projectID,
 		AggregateType: aggregateType, AggregateID: aggregateID, AggregateVersion: version, Type: eventType, Payload: payload, PayloadSHA256: mustDigest(payload), OccurredAt: at,
 		CorrelationID: stableID("corr", requestDigest), Traceparent: fallbackTraceParent(requestDigest),
-	}
+	}, nil
 }
 
 func commandDigest(expectedVersion int64, command any) (string, error) {
@@ -502,23 +512,6 @@ func newRecordUUIDv7() (string, error) {
 		return "", err
 	}
 	return value.String(), nil
-}
-
-func stableUUIDv7(at time.Time, input string) string {
-	var value [16]byte
-	milliseconds := uint64(at.UnixMilli())
-	value[0] = byte(milliseconds >> 40)
-	value[1] = byte(milliseconds >> 32)
-	value[2] = byte(milliseconds >> 24)
-	value[3] = byte(milliseconds >> 16)
-	value[4] = byte(milliseconds >> 8)
-	value[5] = byte(milliseconds)
-	digest := sha256.Sum256([]byte(input))
-	copy(value[6:], digest[:10])
-	value[6] = value[6]&0x0f | 0x70
-	value[8] = value[8]&0x3f | 0x80
-	hexValue := hex.EncodeToString(value[:])
-	return hexValue[0:8] + "-" + hexValue[8:12] + "-" + hexValue[12:16] + "-" + hexValue[16:20] + "-" + hexValue[20:32]
 }
 
 func decodeProject(value []byte) (state.Project, error) {

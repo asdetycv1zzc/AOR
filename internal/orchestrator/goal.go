@@ -224,7 +224,10 @@ func (s *Service) goalRelatedTransitions(ctx context.Context, request ProjectReq
 			return nil, nil, aorerrors.New(aorerrors.CodeConflict, "", map[string]any{"scope": "goal message"})
 		}
 		update := eventing.ProjectionUpdate{TenantID: request.TenantID, ProjectID: request.ProjectID, AggregateType: "goal_message", AggregateID: command.GoalMessage.ID, ExpectedVersion: 0, NextVersion: 1, State: content}
-		event := newEvent(request.TenantID, request.ProjectID, "goal_message", command.GoalMessage.ID, "io.aor.goal.message-stored.v1", 1, command.At, content, requestDigest)
+		event, err := newEvent(request.TenantID, request.ProjectID, "goal_message", command.GoalMessage.ID, "io.aor.goal.message-stored.v1", 1, command.At, content, requestDigest)
+		if err != nil {
+			return nil, nil, err
+		}
 		appendTransition(update, event)
 	}
 
@@ -260,7 +263,10 @@ func (s *Service) goalRelatedTransitions(ctx context.Context, request ProjectReq
 			return nil, nil, aorerrors.New(aorerrors.CodeSpecSuperseded, "", nil)
 		}
 		update := eventing.ProjectionUpdate{TenantID: request.TenantID, ProjectID: request.ProjectID, AggregateType: "goal_spec", AggregateID: aggregateID, ExpectedVersion: 0, NextVersion: 1, State: content}
-		event := newEvent(request.TenantID, request.ProjectID, "goal_spec", aggregateID, "io.aor.goal.spec-stored.v1", 1, command.At, content, requestDigest)
+		event, err := newEvent(request.TenantID, request.ProjectID, "goal_spec", aggregateID, "io.aor.goal.spec-stored.v1", 1, command.At, content, requestDigest)
+		if err != nil {
+			return nil, nil, err
+		}
 		appendTransition(update, event)
 	}
 
@@ -321,7 +327,10 @@ func (s *Service) goalSpecStatusTransition(ctx context.Context, request ProjectR
 	}
 	eventType := "io.aor.goal.spec-" + strings.ToLower(string(status)) + ".v1"
 	update := eventing.ProjectionUpdate{TenantID: request.TenantID, ProjectID: request.ProjectID, AggregateType: "goal_spec", AggregateID: aggregateID, ExpectedVersion: stored.Version, NextVersion: stored.Version + 1, State: content}
-	event := newEvent(request.TenantID, request.ProjectID, "goal_spec", aggregateID, eventType, stored.Version+1, at, content, requestDigest)
+	event, err := newEvent(request.TenantID, request.ProjectID, "goal_spec", aggregateID, eventType, stored.Version+1, at, content, requestDigest)
+	if err != nil {
+		return eventing.ProjectionUpdate{}, eventing.DomainEvent{}, false, err
+	}
 	return update, event, true, nil
 }
 
