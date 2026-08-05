@@ -60,6 +60,19 @@ func newPipeline(checks []Check, auditors AuditorFactory, signer Signer, store E
 }
 
 func (p *Pipeline) Run(ctx context.Context, input DeterministicInput) (AuditResult, error) {
+	return p.run(ctx, input, nil)
+}
+
+// RunWithDeterministicGate commits the authoritative DETERMINISTIC_SUCCESS
+// transition before a fresh LLM Auditor can be created.
+func (p *Pipeline) RunWithDeterministicGate(ctx context.Context, input DeterministicInput, gate func(context.Context, string) error) (AuditResult, error) {
+	if gate == nil {
+		return AuditResult{}, ErrInvalidInput
+	}
+	return p.run(ctx, input, gate)
+}
+
+func (p *Pipeline) run(ctx context.Context, input DeterministicInput, gate func(context.Context, string) error) (AuditResult, error) {
 	if err := contextErr(ctx); err != nil {
 		return AuditResult{}, err
 	}
@@ -111,6 +124,15 @@ func (p *Pipeline) Run(ctx context.Context, input DeterministicInput) (AuditResu
 	}
 	bundle := contracts.EvidenceBundle{EvidenceBundleVersion: 1, ProjectID: input.Manifest.ProjectID, TaskID: input.Manifest.ModuleTaskID, AttemptSeriesID: input.Manifest.AttemptSeriesID, Attempt: input.Manifest.Attempt, SpecVersion: input.ModuleSpecRef.Version, BaseCommit: input.Manifest.BaseCommit, SubmissionCommit: input.Manifest.HeadCommit, PipelineVersion: p.version, PolicyBundleDigest: input.PolicyDigest, ExecutionPlatform: input.Platform, IsolationLevel: input.Isolation, SandboxAttestation: input.SandboxAttestation, Checks: checks, Findings: cloneFindings(findings), CriteriaResults: []contracts.CriterionResult{}, ResidualRisks: []string{}, Confidence: 0, Artifacts: artifactRefs, LLMAudit: contracts.LLMAudit{Verdict: "NOT_RUN"}}
 	if deterministicPassed {
+		if gate != nil {
+			digest, err := deterministicGateDigest(input, checks, findings)
+			if err != nil {
+				return AuditResult{}, err
+			}
+			if err := gate(ctx, digest); err != nil {
+				return AuditResult{Bundle: bundle, Deterministic: checks, Verdict: "INCONCLUSIVE"}, err
+			}
+		}
 		blind := BlindAuditInput{ProjectID: input.Manifest.ProjectID, TaskID: input.Manifest.ModuleTaskID, Attempt: input.Manifest.Attempt, ModuleSpecRef: input.ModuleSpecRef, BaseCommit: input.Manifest.BaseCommit, SubmissionCommit: input.Manifest.HeadCommit, ChangedFiles: append([]string(nil), input.Manifest.ChangedFiles...), RequiredCriteria: append([]string(nil), input.RequiredCriteria...), DeterministicChecks: append([]contracts.EvidenceCheck(nil), checks...)}
 		if p.auditors == nil {
 			return AuditResult{Bundle: bundle, Deterministic: checks, Verdict: "INCONCLUSIVE"}, ErrAuditorUnavailable
@@ -163,6 +185,46 @@ func (p *Pipeline) Run(ctx context.Context, input DeterministicInput) (AuditResu
 		return AuditResult{}, err
 	}
 	return result, ErrDeterministicGate
+}
+
+func deterministicGateDigest(input DeterministicInput, checks []contracts.EvidenceCheck, findings []contracts.AuditFinding) (string, error) {
+	type gateCheck struct {
+		CheckID      string              `json:"checkId"`
+		Ordinal      int                 `json:"ordinal"`
+		Type         string              `json:"type"`
+		Status       string              `json:"status"`
+		Tool         contracts.CheckTool `json:"tool"`
+		ResultSHA256 string              `json:"resultSha256"`
+	}
+	stableChecks := make([]gateCheck, len(checks))
+	for index, check := range checks {
+		stableChecks[index] = gateCheck{
+			CheckID: check.CheckID, Ordinal: check.Ordinal, Type: check.Type,
+			Status: check.Status, Tool: check.Tool, ResultSHA256: check.ResultSHA256,
+		}
+	}
+	payload, err := json.Marshal(struct {
+		SubmissionID     string                      `json:"submissionId"`
+		ManifestSHA256   string                      `json:"manifestSha256"`
+		ModuleSpecRef    contracts.SpecRef           `json:"moduleSpecRef"`
+		PolicyDigest     string                      `json:"policyDigest"`
+		Platform         contracts.ExecutionPlatform `json:"platform"`
+		Isolation        contracts.IsolationLevel    `json:"isolation"`
+		Sandbox          string                      `json:"sandboxAttestation"`
+		RequiredCriteria []string                    `json:"requiredCriteria"`
+		Checks           []gateCheck                 `json:"checks"`
+		Findings         []contracts.AuditFinding    `json:"findings"`
+	}{
+		SubmissionID: input.SubmissionID, ManifestSHA256: input.Manifest.SHA256,
+		ModuleSpecRef: input.ModuleSpecRef, PolicyDigest: input.PolicyDigest,
+		Platform: input.Platform, Isolation: input.Isolation, Sandbox: input.SandboxAttestation,
+		RequiredCriteria: append([]string(nil), input.RequiredCriteria...), Checks: stableChecks,
+		Findings: cloneFindings(findings),
+	})
+	if err != nil {
+		return "", err
+	}
+	return canonicaljson.Digest(payload)
 }
 
 func (p *Pipeline) persistResult(ctx context.Context, input DeterministicInput, startedAt time.Time, result *AuditResult) error {
