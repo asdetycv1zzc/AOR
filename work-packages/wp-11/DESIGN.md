@@ -8,6 +8,8 @@ Each tenant/project has a `HEAD` pointer and immutable revision directories. A r
 
 Every public operation resolves trusted project/task state through `ScopeResolver` and evaluates an `authz.PolicyInput`. Reads use `knowledge.read`. Writes use `knowledge.write` and additionally require the exact proposal digest, Curator principal type and role, approval, lease, task scope, and budget account. Authorization is repeated immediately before commit.
 
+After a successful immutable snapshot commit, the service rebuilds the effective index and persists an HMAC-signed `io.aor.knowledge.updated.v1` event through the transactional outbox. If event persistence fails after the filesystem commit, an exact retry identifies the committed revision from the proposal, rebuilds the index, and resumes event publication without creating another snapshot.
+
 ## Retrieval
 
 An indexed view is keyed by tenant, project, and exact scope revision. It contains exact path, title, and tag lookups plus a Unicode-aware full-text n-gram index. Search caps results at 20 and defaults to 8. A reference records both the child's scope revision and the immutable source project/revision so inherited references remain verifiable.

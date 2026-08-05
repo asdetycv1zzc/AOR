@@ -99,6 +99,12 @@ func deriveDecisionReportSigningKey(leaseKey []byte) []byte {
 	return mac.Sum(nil)
 }
 
+func deriveKnowledgeUpdatedSigningKey(leaseKey []byte) []byte {
+	mac := hmac.New(sha256.New, leaseKey)
+	_, _ = mac.Write([]byte("aor/knowledge/updated-event-signing/v1"))
+	return mac.Sum(nil)
+}
+
 func newRepositoryMCPClient(root string, database *sql.DB, leases toolbroker.LeaseChecker, signer repository.Signer, clock func() time.Time) (*repositoryMCPClient, error) {
 	if database == nil || leases == nil || signer == nil || root == "" {
 		return nil, repository.ErrInvalidRequest

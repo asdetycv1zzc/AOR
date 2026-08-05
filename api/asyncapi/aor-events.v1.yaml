@@ -20,6 +20,8 @@ channels:
     messages:
       domainEvent:
         $ref: '#/components/messages/DomainEvent'
+      knowledgeUpdated:
+        $ref: '#/components/messages/KnowledgeUpdated'
   projectDeadLetters:
     address: aor.projects.{projectId}.dead-letter.v1
     parameters:
@@ -35,6 +37,7 @@ operations:
       $ref: '#/channels/projectEvents'
     messages:
       - $ref: '#/channels/projectEvents/messages/domainEvent'
+      - $ref: '#/channels/projectEvents/messages/knowledgeUpdated'
     bindings:
       nats:
         bindingVersion: 0.1.0
@@ -44,6 +47,7 @@ operations:
       $ref: '#/channels/projectEvents'
     messages:
       - $ref: '#/channels/projectEvents/messages/domainEvent'
+      - $ref: '#/channels/projectEvents/messages/knowledgeUpdated'
     description: Consumers deduplicate event ID and order by aggregateVersion.
   consumeDeadLetter:
     action: receive
@@ -60,6 +64,21 @@ components:
       contentType: application/cloudevents+json
       payload:
         $ref: '../json-schema/cloud-event.v1.schema.json'
+      correlationId:
+        location: '$message.payload#/traceparent'
+    KnowledgeUpdated:
+      name: KnowledgeUpdated
+      title: Signed knowledge snapshot update
+      contentType: application/cloudevents+json
+      payload:
+        allOf:
+          - $ref: '../json-schema/cloud-event.v1.schema.json'
+          - type: object
+            properties:
+              type:
+                const: io.aor.knowledge.updated.v1
+              data:
+                $ref: '../json-schema/knowledge-updated.v1.schema.json'
       correlationId:
         location: '$message.payload#/traceparent'
   securitySchemes:

@@ -49,6 +49,7 @@
     "io.aor.artifact.spec-stored.v1": "https://schemas.aor.local/events/artifact-spec-stored.v1.schema.json",
     "io.aor.approval.committed.v1": "https://schemas.aor.local/events/approval-committed.v1.schema.json",
     "io.aor.budget.adjusted.v1": "https://schemas.aor.local/events/budget-adjusted.v1.schema.json",
+    "io.aor.knowledge.updated.v1": "https://schemas.aor.local/events/knowledge-updated.v1.schema.json",
     "io.aor.project.completed.v1": "https://schemas.aor.local/events/project-completed.v1.schema.json"
   }
 }

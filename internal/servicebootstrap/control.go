@@ -146,7 +146,11 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	if err != nil {
 		return nil, err
 	}
-	knowledgeService, err := knowledge.NewService(knowledge.ServiceConfig{Repository: knowledgeRepository, Authorizer: authorizer, Scopes: knowledgeScopes, Clock: time.Now})
+	knowledgeEvents, err := controlKnowledgeUpdatedPublisher(config, store)
+	if err != nil {
+		return nil, err
+	}
+	knowledgeService, err := knowledge.NewService(knowledge.ServiceConfig{Repository: knowledgeRepository, Authorizer: authorizer, Scopes: knowledgeScopes, Events: knowledgeEvents, Clock: time.Now})
 	if err != nil {
 		return nil, err
 	}
@@ -269,6 +273,30 @@ func controlDecisionReportSigner(config runtimeconfig.Config) (controlapi.TaskDe
 		return nil, runtimeconfig.ErrInvalidConfiguration
 	}
 	return signer, nil
+}
+
+func controlKnowledgeUpdatedPublisher(config runtimeconfig.Config, store eventing.Store) (*knowledge.EventKnowledgeUpdatedPublisher, error) {
+	if store == nil {
+		return nil, runtimeclient.ErrInvalidClientConfig
+	}
+	resolveContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	leaseKey, err := credentials.NewSecretResolver(os.Getenv("AOR_SECRET_ROOT")).Resolve(resolveContext, config.LeaseSigningKeyRef)
+	cancel()
+	if err != nil {
+		return nil, runtimeconfig.ErrInvalidConfiguration
+	}
+	derived := deriveKnowledgeUpdatedSigningKey(leaseKey)
+	clearBytes(leaseKey)
+	signer, err := knowledge.NewHMACKnowledgeUpdatedSigner(derived)
+	clearBytes(derived)
+	if err != nil {
+		return nil, runtimeconfig.ErrInvalidConfiguration
+	}
+	publisher, err := knowledge.NewEventKnowledgeUpdatedPublisher(store, signer, time.Now)
+	if err != nil {
+		return nil, runtimeconfig.ErrInvalidConfiguration
+	}
+	return publisher, nil
 }
 
 func controlLeaseAuthority(config runtimeconfig.Config, database *sql.DB, authorizer authz.LeaseGrantEvaluator) (*leaseauthority.Service, error) {

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.aor.local/events/knowledge-updated.v1.schema.json",
+  "title": "KnowledgeUpdated Event Data v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "knowledgeUpdateVersion",
+    "tenantId",
+    "projectId",
+    "aggregateVersion",
+    "revision",
+    "proposalDigest",
+    "indexedRevision",
+    "indexedDocuments",
+    "indexBuiltAt",
+    "curatorPrincipalId",
+    "taskId",
+    "approvalId",
+    "leaseId",
+    "occurredAt",
+    "signature"
+  ],
+  "properties": {
+    "knowledgeUpdateVersion": {"const": 1},
+    "tenantId": {"type": "string", "minLength": 1, "maxLength": 256},
+    "projectId": {"$ref": "https://schemas.aor.local/common.v1.schema.json#/$defs/opaqueId"},
+    "aggregateVersion": {"type": "integer", "minimum": 1},
+    "previousRevision": {"$ref": "https://schemas.aor.local/common.v1.schema.json#/$defs/sha256"},
+    "revision": {"$ref": "https://schemas.aor.local/common.v1.schema.json#/$defs/sha256"},
+    "proposalDigest": {"$ref": "https://schemas.aor.local/common.v1.schema.json#/$defs/sha256"},
+    "indexedRevision": {"$ref": "https://schemas.aor.local/common.v1.schema.json#/$defs/sha256"},
+    "indexedDocuments": {"type": "integer", "minimum": 0},
+    "indexBuiltAt": {"type": "string", "format": "date-time"},
+    "curatorPrincipalId": {"type": "string", "minLength": 1, "maxLength": 256},
+    "taskId": {"$ref": "https://schemas.aor.local/common.v1.schema.json#/$defs/opaqueId"},
+    "approvalId": {"type": "string", "minLength": 1, "maxLength": 256},
+    "leaseId": {"type": "string", "minLength": 1, "maxLength": 256},
+    "occurredAt": {"type": "string", "format": "date-time"},
+    "signature": {"$ref": "https://schemas.aor.local/common.v1.schema.json#/$defs/signature"}
+  }
+}

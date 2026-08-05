@@ -13,6 +13,7 @@ import (
 
 	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/authz"
+	"github.com/akimisaka/aor/internal/eventing"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
 )
 
@@ -28,6 +29,19 @@ type testAuthorizer struct {
 type acceptingApprovalVerifier struct{}
 
 func (acceptingApprovalVerifier) Verify(context.Context, authz.Approval) error { return nil }
+
+type failOnceKnowledgePublisher struct {
+	next   KnowledgeUpdatedPublisher
+	failed bool
+}
+
+func (publisher *failOnceKnowledgePublisher) Publish(ctx context.Context, access Access, previousRevision string, result UpdateResult, index IndexSnapshot) error {
+	if !publisher.failed {
+		publisher.failed = true
+		return errors.New("event store unavailable")
+	}
+	return publisher.next.Publish(ctx, access, previousRevision, result, index)
+}
 
 func (authorizer *testAuthorizer) Evaluate(_ context.Context, input authz.PolicyInput) (authz.PolicyDecision, error) {
 	authorizer.mu.Lock()
@@ -91,11 +105,25 @@ func newKnowledgeFixture(t *testing.T, projects ...string) knowledgeFixture {
 		}
 	}
 	authorizer := &testAuthorizer{}
-	service, err := NewService(ServiceConfig{Repository: repository, Authorizer: authorizer, Scopes: scopes, Clock: func() time.Time { return knowledgeTestNow }})
+	events := testKnowledgeEventPublisher(t)
+	service, err := NewService(ServiceConfig{Repository: repository, Authorizer: authorizer, Scopes: scopes, Events: events, Clock: func() time.Time { return knowledgeTestNow }})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return knowledgeFixture{service: service, repository: repository, authorizer: authorizer, scopes: scopes}
+}
+
+func testKnowledgeEventPublisher(t *testing.T) KnowledgeUpdatedPublisher {
+	t.Helper()
+	signer, err := NewHMACKnowledgeUpdatedSigner([]byte(strings.Repeat("e", 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisher, err := NewEventKnowledgeUpdatedPublisher(eventing.NewMemoryStore(), signer, func() time.Time { return knowledgeTestNow })
+	if err != nil {
+		t.Fatal(err)
+	}
+	return publisher
 }
 
 func readAccess(projectID string) Access {
@@ -445,6 +473,37 @@ func TestIndexRebuildFromImmutableSource(t *testing.T) {
 	}
 }
 
+func TestUpdateRetryResumesEventPublicationAfterSnapshotCommit(t *testing.T) {
+	fixture := newKnowledgeFixture(t, "project-a")
+	store := eventing.NewMemoryStore()
+	signer, err := NewHMACKnowledgeUpdatedSigner([]byte(strings.Repeat("r", 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := NewEventKnowledgeUpdatedPublisher(store, signer, func() time.Time { return knowledgeTestNow })
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewService(ServiceConfig{
+		Repository: fixture.repository, Authorizer: fixture.authorizer, Scopes: fixture.scopes,
+		Events: &failOnceKnowledgePublisher{next: events}, Clock: func() time.Time { return knowledgeTestNow },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal := UpdateProposal{Documents: []DocumentInput{{Path: "retry.md", Title: "Retry", TrustLevel: TrustCurated, Content: []byte("retry\n")}}}
+	if _, err := service.Update(context.Background(), curatorAccess("project-a", proposal), proposal); err == nil {
+		t.Fatal("update unexpectedly succeeded without event persistence")
+	}
+	result, err := service.Update(context.Background(), curatorAccess("project-a", proposal), proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Manifest.Revision == "" || store.Stats().Events != 1 {
+		t.Fatalf("result=%#v stats=%#v", result, store.Stats())
+	}
+}
+
 func TestServiceUsesWP03LeaseAndApprovalBindings(t *testing.T) {
 	repository, err := NewFileRepository(filepath.Join(t.TempDir(), "knowledge"))
 	if err != nil {
@@ -473,7 +532,7 @@ func TestServiceUsesWP03LeaseAndApprovalBindings(t *testing.T) {
 		Bundle:       authz.PolicyBundle{Version: "policy-v1", Digest: "policy-v1", Available: true},
 		LeaseManager: manager, ApprovalVerifier: acceptingApprovalVerifier{}, Clock: func() time.Time { return knowledgeTestNow },
 	})
-	service, err := NewService(ServiceConfig{Repository: repository, Authorizer: engine, Scopes: scopes, Clock: func() time.Time { return knowledgeTestNow }})
+	service, err := NewService(ServiceConfig{Repository: repository, Authorizer: engine, Scopes: scopes, Events: testKnowledgeEventPublisher(t), Clock: func() time.Time { return knowledgeTestNow }})
 	if err != nil {
 		t.Fatal(err)
 	}

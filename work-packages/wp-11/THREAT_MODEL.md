@@ -24,4 +24,4 @@
 - Filesystem compare-and-swap is process-local; horizontally scaled Curator writers require an external single-writer/lock service.
 - Windows junction/reparse behavior needs adversarial tests on supported Windows hosts.
 - OS ownership, mount flags, backup immutability, retention, and restore correctness are deployment controls.
-- Signed `KnowledgeUpdated` event publication is not implemented in this package.
+- The immutable filesystem commit and PostgreSQL outbox transaction cannot share one storage transaction. A failed publication makes the update call fail; retry recognizes the exact committed snapshot, rebuilds its index, and publishes the event idempotently before reporting success.

@@ -92,7 +92,8 @@ func TestRepositoryCreateToolDoesNotAcceptAgentSelectedBaseCommit(t *testing.T) 
 func TestRepositorySigningKeyUsesDomainSeparation(t *testing.T) {
 	leaseKey := []byte("01234567890123456789012345678901")
 	derived := deriveRepositorySigningKey(leaseKey)
-	if len(derived) != 32 || string(derived) == string(leaseKey) {
+	knowledgeDerived := deriveKnowledgeUpdatedSigningKey(leaseKey)
+	if len(derived) != 32 || len(knowledgeDerived) != 32 || string(derived) == string(leaseKey) || string(knowledgeDerived) == string(leaseKey) || string(derived) == string(knowledgeDerived) {
 		t.Fatalf("derived key length=%d equals source=%t", len(derived), string(derived) == string(leaseKey))
 	}
 }

@@ -13,7 +13,6 @@
   "productionEvidencePending": [
     "native Windows reparse adversarial suite",
     "multi-process writer coordination",
-    "signed KnowledgeUpdated event",
     "backup, restore, retention, and deployed permission drills",
     "large-corpus performance qualification"
   ]

@@ -2,6 +2,7 @@ package knowledge
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"sort"
 	"strings"
@@ -19,6 +20,7 @@ type ServiceConfig struct {
 	Repository Repository
 	Authorizer authz.PolicyEvaluator
 	Scopes     ScopeResolver
+	Events     KnowledgeUpdatedPublisher
 	Clock      func() time.Time
 }
 
@@ -26,6 +28,7 @@ type Service struct {
 	repository Repository
 	authorizer authz.PolicyEvaluator
 	scopes     ScopeResolver
+	events     KnowledgeUpdatedPublisher
 	clock      func() time.Time
 	indexMu    sync.RWMutex
 	indexes    map[string]indexedView
@@ -54,7 +57,7 @@ func NewService(config ServiceConfig) (*Service, error) {
 	}
 	return &Service{
 		repository: config.Repository, authorizer: config.Authorizer, scopes: config.Scopes,
-		clock: config.Clock, indexes: make(map[string]indexedView),
+		events: config.Events, clock: config.Clock, indexes: make(map[string]indexedView),
 	}, nil
 }
 
@@ -248,28 +251,26 @@ func (service *Service) Update(ctx context.Context, access Access, proposal Upda
 	if access.Principal.Type != authn.PrincipalKnowledgeCurator || access.Principal.Role != authn.RoleKnowledgeCurator || access.Approval == nil || access.Lease == nil {
 		return UpdateResult{}, aorerrors.New(aorerrors.CodeKnowledgeWriteForbidden, "", nil)
 	}
+	if service == nil || service.events == nil {
+		return UpdateResult{}, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "knowledge event publisher"})
+	}
 	if err := service.authorize(ctx, access, true); err != nil {
 		return UpdateResult{}, err
 	}
 	snapshot, err := service.prepareUpdate(ctx, access, proposal)
 	if err != nil {
+		var typed *aorerrors.Error
+		if errors.As(err, &typed) && typed.Code == aorerrors.CodeStateVersionConflict {
+			return service.resumeCommittedUpdate(ctx, access, proposal, digest)
+		}
 		return UpdateResult{}, err
 	}
 	updatedDocuments, err := service.resolveEffective(ctx, access.TenantID, access.ProjectID, "", &snapshot, make(map[string]bool))
 	if err != nil {
 		return UpdateResult{}, err
 	}
-	if proposal.BaseRevision != "" {
-		priorDocuments, err := service.resolveEffective(ctx, access.TenantID, access.ProjectID, proposal.BaseRevision, nil, make(map[string]bool))
-		if err != nil {
-			return UpdateResult{}, err
-		}
-		for documentPath, prior := range priorDocuments {
-			updated, stillExists := updatedDocuments[documentPath]
-			if stillExists && trustRank(updated.Document.Metadata.TrustLevel) < trustRank(prior.Document.Metadata.TrustLevel) {
-				return UpdateResult{}, aorerrors.New(aorerrors.CodeConflict, "", map[string]any{"scope": "trust downgrade"})
-			}
-		}
+	if err := service.validateTrustChange(ctx, access, proposal.BaseRevision, updatedDocuments); err != nil {
+		return UpdateResult{}, err
 	}
 	// Revalidate immediately before the immutable snapshot and HEAD update.
 	if err := service.authorize(ctx, access, true); err != nil {
@@ -284,8 +285,74 @@ func (service *Service) Update(ctx context.Context, access Access, proposal Upda
 	}
 	service.invalidate(access.TenantID, access.ProjectID)
 	result := UpdateResult{Manifest: manifest, Digest: digest}
-	service.storeView(buildIndexedView(access.TenantID, access.ProjectID, manifest.Revision, updatedDocuments, service.now()))
+	view := buildIndexedView(access.TenantID, access.ProjectID, manifest.Revision, updatedDocuments, service.now())
+	service.storeView(view)
+	index := IndexSnapshot{TenantID: access.TenantID, ProjectID: access.ProjectID, Revision: manifest.Revision, BuiltAt: view.BuiltAt, Documents: len(updatedDocuments)}
+	if err := service.events.Publish(ctx, access, proposal.BaseRevision, result, index); err != nil {
+		return UpdateResult{}, err
+	}
 	return result, nil
+}
+
+func (service *Service) resumeCommittedUpdate(ctx context.Context, access Access, proposal UpdateProposal, digest string) (UpdateResult, error) {
+	current, err := service.repository.Head(ctx, access.TenantID, access.ProjectID)
+	if err != nil {
+		return UpdateResult{}, err
+	}
+	if current == "" || current == proposal.BaseRevision {
+		return UpdateResult{}, aorerrors.New(aorerrors.CodeStateVersionConflict, "", nil)
+	}
+	committed, err := service.repository.Load(ctx, access.TenantID, access.ProjectID, current)
+	if err != nil {
+		return UpdateResult{}, err
+	}
+	candidate, err := service.prepareSnapshot(ctx, access, proposal, committed.Manifest.CreatedAt)
+	if err != nil {
+		return UpdateResult{}, err
+	}
+	candidateRevision, err := snapshotDigest(candidate)
+	if err != nil {
+		return UpdateResult{}, err
+	}
+	if candidateRevision != current {
+		return UpdateResult{}, aorerrors.New(aorerrors.CodeStateVersionConflict, "", nil)
+	}
+	updatedDocuments, err := service.resolveEffective(ctx, access.TenantID, access.ProjectID, current, nil, make(map[string]bool))
+	if err != nil {
+		return UpdateResult{}, err
+	}
+	if err := service.validateTrustChange(ctx, access, proposal.BaseRevision, updatedDocuments); err != nil {
+		return UpdateResult{}, err
+	}
+	if err := service.authorize(ctx, access, true); err != nil {
+		return UpdateResult{}, err
+	}
+	service.invalidate(access.TenantID, access.ProjectID)
+	view := buildIndexedView(access.TenantID, access.ProjectID, current, updatedDocuments, service.now())
+	service.storeView(view)
+	result := UpdateResult{Manifest: committed.Manifest, Digest: digest}
+	index := IndexSnapshot{TenantID: access.TenantID, ProjectID: access.ProjectID, Revision: current, BuiltAt: view.BuiltAt, Documents: len(updatedDocuments)}
+	if err := service.events.Publish(ctx, access, proposal.BaseRevision, result, index); err != nil {
+		return UpdateResult{}, err
+	}
+	return result, nil
+}
+
+func (service *Service) validateTrustChange(ctx context.Context, access Access, baseRevision string, updatedDocuments map[string]visibleDocument) error {
+	if baseRevision == "" {
+		return nil
+	}
+	priorDocuments, err := service.resolveEffective(ctx, access.TenantID, access.ProjectID, baseRevision, nil, make(map[string]bool))
+	if err != nil {
+		return err
+	}
+	for documentPath, prior := range priorDocuments {
+		updated, stillExists := updatedDocuments[documentPath]
+		if stillExists && trustRank(updated.Document.Metadata.TrustLevel) < trustRank(prior.Document.Metadata.TrustLevel) {
+			return aorerrors.New(aorerrors.CodeConflict, "", map[string]any{"scope": "trust downgrade"})
+		}
+	}
+	return nil
 }
 
 func cloneProposal(input UpdateProposal) UpdateProposal {
@@ -337,6 +404,10 @@ func (service *Service) prepareUpdate(ctx context.Context, access Access, propos
 	if current != proposal.BaseRevision {
 		return Snapshot{}, aorerrors.New(aorerrors.CodeStateVersionConflict, "", nil)
 	}
+	return service.prepareSnapshot(ctx, access, proposal, service.now())
+}
+
+func (service *Service) prepareSnapshot(ctx context.Context, access Access, proposal UpdateProposal, createdAt time.Time) (Snapshot, error) {
 	snapshot := Snapshot{Manifest: Manifest{Version: 1, TenantID: access.TenantID, ProjectID: access.ProjectID}, Documents: make(map[string]StoredDocument)}
 	if proposal.BaseRevision != "" {
 		base, err := service.repository.Load(ctx, access.TenantID, access.ProjectID, proposal.BaseRevision)
@@ -392,7 +463,7 @@ func (service *Service) prepareUpdate(ctx context.Context, access Access, propos
 		changed[document.Metadata.Path] = struct{}{}
 		snapshot.Documents[document.Metadata.Path] = document
 	}
-	snapshot.Manifest.CreatedAt = service.now()
+	snapshot.Manifest.CreatedAt = createdAt.UTC()
 	return snapshot, nil
 }
 
