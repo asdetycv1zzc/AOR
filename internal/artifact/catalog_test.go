@@ -115,4 +115,13 @@ func TestPublicationRejectsUnsafeContentType(t *testing.T) {
 	if validPublication(publication) {
 		t.Fatal("oversized content type was accepted")
 	}
+	publication.ContentType = "application/json"
+	publication.IdempotencyKey = " key"
+	if validPublication(publication) {
+		t.Fatal("whitespace-padded idempotency key was accepted")
+	}
+	publication.IdempotencyKey = strings.Repeat("k", 257)
+	if validPublication(publication) {
+		t.Fatal("oversized idempotency key was accepted")
+	}
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/akimisaka/aor/internal/artifact"
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 	"github.com/akimisaka/aor/pkg/contracts"
+	"github.com/google/uuid"
 )
 
 func TestArtifactEvidenceStoreRoundTripImmutabilityAndTenantIsolation(t *testing.T) {
@@ -40,7 +41,11 @@ func TestArtifactEvidenceStoreRoundTripImmutabilityAndTenantIsolation(t *testing
 		t.Fatalf("publish count = %d, want 1", catalog.publishCount)
 	}
 
-	got, found, err := store.Get(ctx, "11111111-1111-4111-8111-111111111111", bundle.ProjectID, bundle.TaskID, bundle.AttemptSeriesID, bundle.Attempt)
+	restarted, err := NewArtifactEvidenceStore(catalog, catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := restarted.Get(ctx, "11111111-1111-4111-8111-111111111111", bundle.ProjectID, bundle.TaskID, bundle.AttemptSeriesID, bundle.Attempt)
 	if err != nil || !found || got.ManifestSHA256 != bundle.ManifestSHA256 {
 		t.Fatalf("Get = (%+v, %t, %v)", got, found, err)
 	}
@@ -55,7 +60,15 @@ func TestArtifactEvidenceStoreRoundTripImmutabilityAndTenantIsolation(t *testing
 	if err := store.Put(ctx, "22222222-2222-4222-8222-222222222222", bundle); err != nil {
 		t.Fatal(err)
 	}
-	if catalog.publications[0].ArtifactID == catalog.publications[1].ArtifactID {
+	firstID, firstErr := uuid.Parse(catalog.artifactIDs[0])
+	secondID, secondErr := uuid.Parse(catalog.artifactIDs[1])
+	if firstErr != nil || secondErr != nil || firstID.Version() != uuid.Version(7) || secondID.Version() != uuid.Version(7) || firstID == secondID {
+		t.Fatalf("artifact IDs = %q and %q", catalog.artifactIDs[0], catalog.artifactIDs[1])
+	}
+	if catalog.publications[0].ArtifactID != "" || catalog.publications[1].ArtifactID != "" {
+		t.Fatal("evidence store supplied a predictable artifact primary key")
+	}
+	if catalog.publications[0].IdempotencyKey == "" || catalog.publications[0].IdempotencyKey != catalog.publications[1].IdempotencyKey {
 		t.Fatal("artifact ID is not tenant-scoped")
 	}
 }
@@ -72,7 +85,7 @@ func TestArtifactEvidenceStoreRejectsTamperedBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	key := catalogKey(tenantID, bundle.ProjectID, catalog.publications[0].ArtifactID)
+	key := catalogKey(tenantID, bundle.ProjectID, catalog.artifactIDs[0])
 	catalog.mu.Lock()
 	item := catalog.items[key]
 	item.data = append([]byte(nil), item.data...)
@@ -152,12 +165,14 @@ type evidenceCatalogItem struct {
 type evidenceCatalogFake struct {
 	mu           sync.Mutex
 	items        map[string]evidenceCatalogItem
+	keys         map[string]string
 	publications []artifact.Publication
+	artifactIDs  []string
 	publishCount int
 }
 
 func newEvidenceCatalogFake() *evidenceCatalogFake {
-	return &evidenceCatalogFake{items: make(map[string]evidenceCatalogItem)}
+	return &evidenceCatalogFake{items: make(map[string]evidenceCatalogItem), keys: make(map[string]string)}
 }
 
 func (catalog *evidenceCatalogFake) Publish(_ context.Context, publication artifact.Publication) (artifact.Record, error) {
@@ -165,13 +180,24 @@ func (catalog *evidenceCatalogFake) Publish(_ context.Context, publication artif
 	defer catalog.mu.Unlock()
 	catalog.publishCount++
 	catalog.publications = append(catalog.publications, publication)
-	key := catalogKey(publication.TenantID, publication.ProjectID, publication.ArtifactID)
-	if existing, ok := catalog.items[key]; ok {
+	bindingKey := catalogKey(publication.TenantID, publication.ProjectID, publication.IdempotencyKey)
+	if artifactID, ok := catalog.keys[bindingKey]; ok {
+		existing := catalog.items[catalogKey(publication.TenantID, publication.ProjectID, artifactID)]
 		if bytes.Equal(existing.data, publication.Data) {
 			return existing.record, nil
 		}
 		return artifact.Record{}, artifact.ErrConflict
 	}
+	artifactID := publication.ArtifactID
+	if artifactID == "" {
+		generated, err := uuid.NewV7()
+		if err != nil {
+			return artifact.Record{}, err
+		}
+		artifactID = generated.String()
+	}
+	catalog.artifactIDs = append(catalog.artifactIDs, artifactID)
+	key := catalogKey(publication.TenantID, publication.ProjectID, artifactID)
 	digest := evidenceBytesDigest(publication.Data)
 	uri, _ := artifact.URIFromDigest(digest)
 	metadata := make(map[string]any, len(publication.Metadata)+1)
@@ -180,7 +206,7 @@ func (catalog *evidenceCatalogFake) Publish(_ context.Context, publication artif
 	}
 	metadata["taskId"] = publication.TaskID
 	record := artifact.Record{
-		ID:                 publication.ArtifactID,
+		ID:                 artifactID,
 		TenantID:           publication.TenantID,
 		ProjectID:          publication.ProjectID,
 		URI:                uri,
@@ -193,12 +219,27 @@ func (catalog *evidenceCatalogFake) Publish(_ context.Context, publication artif
 		CreatedAt:          time.Now().UTC(),
 	}
 	catalog.items[key] = evidenceCatalogItem{record: record, data: append([]byte(nil), publication.Data...)}
+	catalog.keys[bindingKey] = artifactID
 	return record, nil
 }
 
 func (catalog *evidenceCatalogFake) Open(_ context.Context, tenantID, projectID, artifactID string) (artifact.Record, io.ReadCloser, error) {
 	catalog.mu.Lock()
 	defer catalog.mu.Unlock()
+	item, ok := catalog.items[catalogKey(tenantID, projectID, artifactID)]
+	if !ok {
+		return artifact.Record{}, nil, artifact.ErrNotFound
+	}
+	return item.record, io.NopCloser(bytes.NewReader(append([]byte(nil), item.data...))), nil
+}
+
+func (catalog *evidenceCatalogFake) OpenByIdempotencyKey(_ context.Context, tenantID, projectID, key string) (artifact.Record, io.ReadCloser, error) {
+	catalog.mu.Lock()
+	defer catalog.mu.Unlock()
+	artifactID, ok := catalog.keys[catalogKey(tenantID, projectID, key)]
+	if !ok {
+		return artifact.Record{}, nil, artifact.ErrNotFound
+	}
 	item, ok := catalog.items[catalogKey(tenantID, projectID, artifactID)]
 	if !ok {
 		return artifact.Record{}, nil, artifact.ErrNotFound

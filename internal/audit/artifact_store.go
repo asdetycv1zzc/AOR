@@ -7,14 +7,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/akimisaka/aor/internal/artifact"
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 	"github.com/akimisaka/aor/pkg/contracts"
-	"github.com/google/uuid"
 )
 
 const (
@@ -24,7 +23,7 @@ const (
 )
 
 type evidenceCatalog interface {
-	Open(context.Context, string, string, string) (artifact.Record, io.ReadCloser, error)
+	OpenByIdempotencyKey(context.Context, string, string, string) (artifact.Record, io.ReadCloser, error)
 }
 
 type ArtifactEvidenceStore struct {
@@ -62,7 +61,7 @@ func (s *ArtifactEvidenceStore) Put(ctx context.Context, tenantID string, bundle
 	record, err := s.publisher.Publish(ctx, artifact.Publication{
 		TenantID:           tenantID,
 		ProjectID:          bundle.ProjectID,
-		ArtifactID:         evidenceArtifactID(tenantID, bundle.ProjectID, bundle.TaskID, bundle.AttemptSeriesID, bundle.Attempt),
+		IdempotencyKey:     evidencePublicationKey(bundle.TaskID, bundle.AttemptSeriesID, bundle.Attempt),
 		TaskID:             bundle.TaskID,
 		CreatedByPrincipal: evidencePrincipal,
 		ContentType:        evidenceContentType,
@@ -97,8 +96,7 @@ func (s *ArtifactEvidenceStore) Get(ctx context.Context, tenantID, projectID, ta
 	if ctx == nil || ctx.Err() != nil || tenantID == "" || projectID == "" || taskID == "" || attemptSeriesID == "" || attempt < 1 || attempt > 3 {
 		return contracts.EvidenceBundle{}, false, ErrInvalidInput
 	}
-	artifactID := evidenceArtifactID(tenantID, projectID, taskID, attemptSeriesID, attempt)
-	record, reader, err := s.catalog.Open(ctx, tenantID, projectID, artifactID)
+	record, reader, err := s.catalog.OpenByIdempotencyKey(ctx, tenantID, projectID, evidencePublicationKey(taskID, attemptSeriesID, attempt))
 	if errors.Is(err, artifact.ErrNotFound) {
 		return contracts.EvidenceBundle{}, false, nil
 	}
@@ -142,9 +140,8 @@ func (s *ArtifactEvidenceStore) Get(ctx context.Context, tenantID, projectID, ta
 	return bundle, true, nil
 }
 
-func evidenceArtifactID(tenantID, projectID, taskID, attemptSeriesID string, attempt int) string {
-	name := fmt.Sprintf("evidence-bundle\x00%s\x00%s\x00%s\x00%s\x00%d", tenantID, projectID, taskID, attemptSeriesID, attempt)
-	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(name)).String()
+func evidencePublicationKey(taskID, attemptSeriesID string, attempt int) string {
+	return auditPublicationKey("evidence-bundle", taskID, attemptSeriesID, strconv.Itoa(attempt))
 }
 
 func validateEvidenceBytes(encoded []byte, bundle contracts.EvidenceBundle) error {
@@ -167,7 +164,7 @@ func validateEvidenceBytes(encoded []byte, bundle contracts.EvidenceBundle) erro
 func validateEvidenceRecord(record artifact.Record, tenantID string, bundle contracts.EvidenceBundle, encoded []byte) error {
 	digest := evidenceBytesDigest(encoded)
 	uri, err := artifact.URIFromDigest(digest)
-	if err != nil || record.ID != evidenceArtifactID(tenantID, bundle.ProjectID, bundle.TaskID, bundle.AttemptSeriesID, bundle.Attempt) || record.TenantID != tenantID || record.ProjectID != bundle.ProjectID || record.URI != uri || record.SHA256 != digest || record.SizeBytes != int64(len(encoded)) || record.ContentType != evidenceContentType || record.CreatedByPrincipal != evidencePrincipal {
+	if err != nil || record.ID == "" || record.TenantID != tenantID || record.ProjectID != bundle.ProjectID || record.URI != uri || record.SHA256 != digest || record.SizeBytes != int64(len(encoded)) || record.ContentType != evidenceContentType || record.CreatedByPrincipal != evidencePrincipal {
 		return artifact.ErrIntegrity
 	}
 	if record.Metadata["kind"] != "evidence-bundle" || record.Metadata["taskId"] != bundle.TaskID || record.Metadata["attemptSeriesId"] != bundle.AttemptSeriesID || record.Metadata["manifestSha256"] != bundle.ManifestSHA256 || !metadataAttemptEquals(record.Metadata["attempt"], bundle.Attempt) {

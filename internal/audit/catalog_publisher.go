@@ -7,7 +7,6 @@ import (
 	"io"
 
 	"github.com/akimisaka/aor/internal/artifact"
-	"github.com/google/uuid"
 )
 
 const maximumAuditOutputBytes = 64 << 20
@@ -33,7 +32,7 @@ func (publisher *catalogArtifactPublisher) Put(ctx context.Context, request arti
 	}
 	record, err := publisher.publisher.Publish(ctx, artifact.Publication{
 		TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID,
-		ArtifactID:         uuid.NewSHA1(uuid.NameSpaceOID, []byte(request.TenantID+"\x00"+request.ProjectID+"\x00"+request.TaskID+"\x00"+request.ArtifactID)).String(),
+		IdempotencyKey:     auditPublicationKey("audit-check-output", request.TaskID, request.ArtifactID),
 		CreatedByPrincipal: request.CreatedBy, ContentType: request.MediaType,
 		Metadata: map[string]any{"kind": "audit-check-output", "sourceArtifactId": request.ArtifactID, "retentionPolicy": request.RetentionPolicy, "encrypted": request.Encrypted},
 		Data:     output.Bytes(),

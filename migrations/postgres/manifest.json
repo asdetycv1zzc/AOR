@@ -246,6 +246,13 @@
       "file": "000035_integration_scheduler.up.sql",
       "sha256": "sha256:3adf0acb60ff9b1d818b23ae69f6750a692e497bf91e1acba57535d463600896",
       "destructive": false
+    },
+    {
+      "version": 36,
+      "mode": "EXPAND",
+      "file": "000036_artifact_publication_keys.up.sql",
+      "sha256": "sha256:7b3495a5836f688665fc69c47d1c321f7e22dfb4792cff39239bcdabdc677833",
+      "destructive": false
     }
   ]
 }

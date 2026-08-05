@@ -51,9 +51,13 @@ type Page struct {
 }
 
 type Publication struct {
-	TenantID           string
-	ProjectID          string
-	ArtifactID         string
+	TenantID   string
+	ProjectID  string
+	ArtifactID string
+	// IdempotencyKey binds a logical publication to its generated artifact.
+	// It is deliberately separate from the artifact primary key so retries do
+	// not require a predictable identifier.
+	IdempotencyKey     string
 	TaskID             string
 	CreatedByPrincipal string
 	ContentType        string
@@ -222,6 +226,54 @@ func (catalog *PostgresS3Catalog) Open(ctx context.Context, tenantID, projectID,
 	if err != nil {
 		return Record{}, nil, err
 	}
+	return catalog.openRecord(ctx, record)
+}
+
+// GetByIdempotencyKey resolves the durable logical publication binding. The
+// lookup is tenant and project scoped by both the query and the RLS context.
+func (catalog *PostgresS3Catalog) GetByIdempotencyKey(ctx context.Context, tenantID, projectID, key string) (Record, error) {
+	if catalog == nil || catalog.database == nil || !trustedTenant(ctx, tenantID) || !uuidValuePattern.MatchString(projectID) || !safeText(key, 256) {
+		return Record{}, ErrInvalidRequest
+	}
+	tx, err := beginCatalogTx(ctx, catalog.database, tenantID, true)
+	if err != nil {
+		return Record{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	record, err := scanRecord(tx.QueryRowContext(ctx, `
+SELECT a.id::text, a.tenant_id::text, a.project_id::text, a.uri, a.sha256, a.size_bytes,
+       a.content_type, a.classification, a.created_by_principal, a.metadata_jsonb,
+       a.created_at, a.retention_until
+FROM artifact_publication_keys k
+JOIN artifacts a ON a.tenant_id = k.tenant_id AND a.project_id = k.project_id AND a.id = k.artifact_id
+WHERE k.tenant_id = $1::uuid AND k.project_id = $2::uuid AND k.idempotency_key = $3`, tenantID, projectID, key))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Record{}, ErrNotFound
+	}
+	if err != nil {
+		return Record{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Record{}, err
+	}
+	return record, nil
+}
+
+// OpenByIdempotencyKey resolves and verifies a logically identified artifact.
+// This method is intentionally outside Catalog: only workflows that need
+// durable idempotency should depend on the additional lookup contract.
+func (catalog *PostgresS3Catalog) OpenByIdempotencyKey(ctx context.Context, tenantID, projectID, key string) (Record, io.ReadCloser, error) {
+	if catalog == nil || catalog.objects == nil {
+		return Record{}, nil, ErrInvalidRequest
+	}
+	record, err := catalog.GetByIdempotencyKey(ctx, tenantID, projectID, key)
+	if err != nil {
+		return Record{}, nil, err
+	}
+	return catalog.openRecord(ctx, record)
+}
+
+func (catalog *PostgresS3Catalog) openRecord(ctx context.Context, record Record) (Record, io.ReadCloser, error) {
 	digest, _, err := ParseURI(record.URI)
 	if err != nil || digest != record.SHA256 {
 		return Record{}, nil, ErrIntegrity
@@ -278,6 +330,14 @@ func (catalog *PostgresS3Catalog) Publish(ctx context.Context, publication Publi
 	}
 	if !uuidValuePattern.MatchString(artifactID) {
 		return Record{}, ErrInvalidRequest
+	}
+	publicationKeyID := ""
+	if publication.IdempotencyKey != "" {
+		generatedKeyID, generationErr := newArtifactID()
+		if generationErr != nil {
+			return Record{}, generationErr
+		}
+		publicationKeyID = generatedKeyID
 	}
 	metadata := cloneMetadataMap(publication.Metadata)
 	if metadata == nil {
@@ -398,6 +458,32 @@ WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND uri = $3`, publication.
 		record = existing
 	} else if err != nil {
 		return Record{}, err
+	}
+	if publication.IdempotencyKey != "" {
+		var boundArtifactID string
+		bindErr := tx.QueryRowContext(ctx, `
+INSERT INTO artifact_publication_keys
+  (id, tenant_id, project_id, idempotency_key, artifact_id, created_at)
+VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5::uuid, $6)
+ON CONFLICT (tenant_id, project_id, idempotency_key) DO NOTHING
+RETURNING artifact_id::text`, publicationKeyID, publication.TenantID, publication.ProjectID, publication.IdempotencyKey, record.ID, record.CreatedAt).Scan(&boundArtifactID)
+		if errors.Is(bindErr, sql.ErrNoRows) {
+			mapped, lookupErr := scanRecord(tx.QueryRowContext(ctx, `
+SELECT a.id::text, a.tenant_id::text, a.project_id::text, a.uri, a.sha256, a.size_bytes,
+       a.content_type, a.classification, a.created_by_principal, a.metadata_jsonb,
+       a.created_at, a.retention_until
+FROM artifact_publication_keys k
+JOIN artifacts a ON a.tenant_id = k.tenant_id AND a.project_id = k.project_id AND a.id = k.artifact_id
+WHERE k.tenant_id = $1::uuid AND k.project_id = $2::uuid AND k.idempotency_key = $3`, publication.TenantID, publication.ProjectID, publication.IdempotencyKey))
+			if lookupErr != nil || !samePublication(mapped, record) {
+				return Record{}, ErrConflict
+			}
+			record = mapped
+		} else if bindErr != nil {
+			return Record{}, bindErr
+		} else if boundArtifactID != record.ID {
+			return Record{}, ErrConflict
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return Record{}, err
@@ -680,6 +766,7 @@ WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND deletion_id = $3 AND re
 		`DELETE FROM agent_instances WHERE tenant_id = $1::uuid AND project_id = $2::uuid`,
 		`DELETE FROM budget_reservations WHERE tenant_id = $1::uuid AND account_id IN (SELECT id FROM budget_accounts WHERE tenant_id = $1::uuid AND scope_type = 'PROJECT' AND scope_id = $2)`,
 		`DELETE FROM budget_accounts WHERE tenant_id = $1::uuid AND scope_type = 'PROJECT' AND scope_id = $2`,
+		`DELETE FROM artifact_publication_keys WHERE tenant_id = $1::uuid AND project_id = $2::uuid`,
 		`DELETE FROM artifacts WHERE tenant_id = $1::uuid AND project_id = $2::uuid`,
 		`DELETE FROM aggregate_projections WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND aggregate_type <> 'project'`,
 	} {
@@ -754,7 +841,7 @@ func validateRecord(record Record) error {
 }
 
 func validPublication(publication Publication) bool {
-	if !uuidValuePattern.MatchString(publication.TenantID) || !uuidValuePattern.MatchString(publication.ProjectID) || publication.TaskID != "" && !uuidValuePattern.MatchString(publication.TaskID) || !safeText(publication.CreatedByPrincipal, 256) || !safeText(publication.ContentType, 256) || len(publication.Data) > 1<<30 {
+	if !uuidValuePattern.MatchString(publication.TenantID) || !uuidValuePattern.MatchString(publication.ProjectID) || publication.TaskID != "" && !uuidValuePattern.MatchString(publication.TaskID) || publication.IdempotencyKey != "" && !safeText(publication.IdempotencyKey, 256) || !safeText(publication.CreatedByPrincipal, 256) || !safeText(publication.ContentType, 256) || len(publication.Data) > 1<<30 {
 		return false
 	}
 	_, _, err := mime.ParseMediaType(publication.ContentType)
