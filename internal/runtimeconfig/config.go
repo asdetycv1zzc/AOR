@@ -131,7 +131,6 @@ type IntegrationConfig struct {
 type IntegrationCheckConfig struct {
 	Kind           string   `json:"kind"`
 	Argv           []string `json:"argv"`
-	Environment    []string `json:"environment,omitempty"`
 	TimeoutSeconds int      `json:"timeoutSeconds"`
 }
 
@@ -827,7 +826,7 @@ func validIntegrationConfig(config IntegrationConfig, allowedMountRoots []string
 	totalTimeout := 0
 	for _, check := range config.Checks {
 		seen, found := requiredKinds[check.Kind]
-		if !found || seen || len(check.Argv) == 0 || len(check.Argv) > 64 || check.TimeoutSeconds < 1 || check.TimeoutSeconds > 300 || !validIntegrationExecutable(check.Argv[0]) || !validIntegrationEnvironment(check.Environment) {
+		if !found || seen || len(check.Argv) == 0 || len(check.Argv) > 64 || check.TimeoutSeconds < 1 || check.TimeoutSeconds > 300 || !validIntegrationExecutable(check.Argv[0]) {
 			return false
 		}
 		for _, argument := range check.Argv[1:] {
@@ -864,38 +863,6 @@ func pathWithinAllowedRoot(candidate string, allowedMountRoots []string) bool {
 
 func validIntegrationExecutable(value string) bool {
 	return len(value) <= 4096 && filepath.IsAbs(value) && filepath.Clean(value) == value && value != string(filepath.Separator) && !strings.ContainsAny(value, "\r\n\x00")
-}
-
-func validIntegrationEnvironment(values []string) bool {
-	if len(values) > 32 {
-		return false
-	}
-	seen := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		separator := strings.IndexByte(value, '=')
-		if separator < 1 || len(value) > 4096 || strings.ContainsAny(value, "\r\n\x00") {
-			return false
-		}
-		key := value[:separator]
-		if !validEnvironmentName(key) {
-			return false
-		}
-		if _, duplicate := seen[key]; duplicate {
-			return false
-		}
-		seen[key] = struct{}{}
-	}
-	return true
-}
-
-func validEnvironmentName(value string) bool {
-	for index, character := range value {
-		if character == '_' || character >= 'A' && character <= 'Z' || character >= 'a' && character <= 'z' || index > 0 && character >= '0' && character <= '9' {
-			continue
-		}
-		return false
-	}
-	return value != ""
 }
 
 func validSandboxEngineEndpoint(value string) bool {

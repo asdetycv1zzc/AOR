@@ -362,7 +362,7 @@ func (b *DockerBackend) createArgs(spec SandboxSpec) ([]string, error) {
 	if err != nil || cpus <= 0 {
 		return nil, ErrInvalidSpec
 	}
-	args := []string{"create", "--name", spec.SandboxID, "--pull", "never", "--read-only", "--user", "65532:65532", "--init", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--security-opt", "seccomp=" + b.seccomp, "--security-opt", b.mandatoryPolicy, "--pids-limit", strconv.Itoa(spec.PIDsLimit), "--memory", strconv.FormatInt(spec.MemoryBytes, 10), "--cpus", spec.CPULimit, "--network", "none", "--tmpfs", "/tmp:rw,noexec,nosuid,nodev", "--tmpfs", "/workspace:rw,nosuid,nodev,size=" + strconv.FormatInt(spec.DiskBytes, 10), "--workdir", "/workspace"}
+	args := []string{"create", "--name", spec.SandboxID, "--pull", "never", "--read-only", "--user", "65532:65532", "--env", "HOME=/tmp", "--init", "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true", "--security-opt", "seccomp=" + b.seccomp, "--security-opt", b.mandatoryPolicy, "--pids-limit", strconv.Itoa(spec.PIDsLimit), "--memory", strconv.FormatInt(spec.MemoryBytes, 10), "--cpus", spec.CPULimit, "--network", "none", "--tmpfs", "/tmp:rw,noexec,nosuid,nodev", "--tmpfs", "/workspace:rw,nosuid,nodev,size=" + strconv.FormatInt(spec.DiskBytes, 10), "--workdir", "/workspace"}
 	for _, mount := range spec.Mounts {
 		if strings.ContainsAny(mount.Source+mount.Target, ",\r\n") || mount.Mode != "RO" {
 			return nil, ErrUnsafeWorkload
