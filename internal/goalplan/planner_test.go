@@ -115,10 +115,12 @@ func TestPlannerAutomaticallyAllocatesStableProductionTaskIdentities(t *testing.
 	}
 	firstIDs := make(map[string]string, len(result.Publication.Tasks))
 	for _, task := range result.Publication.Tasks {
-		if _, err := uuid.Parse(task.ID); err != nil {
+		parsedTaskID, err := uuid.Parse(task.ID)
+		if err != nil || parsedTaskID.Version() != 7 {
 			t.Fatalf("task ID %q is not a UUID: %v", task.ID, err)
 		}
-		if _, err := uuid.Parse(task.AttemptSeriesID); err != nil {
+		parsedSeriesID, err := uuid.Parse(task.AttemptSeriesID)
+		if err != nil || parsedSeriesID.Version() != 7 {
 			t.Fatalf("attempt series ID %q is not a UUID: %v", task.AttemptSeriesID, err)
 		}
 		if !invocationTasks[task.ID] {

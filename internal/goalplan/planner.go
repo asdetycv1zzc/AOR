@@ -3,6 +3,7 @@ package goalplan
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"slices"
 	"sort"
@@ -196,15 +197,58 @@ func (p *Planner) BuildAndPublishAutomatic(ctx context.Context, request Planning
 	if err != nil {
 		return PlanningResult{}, err
 	}
-	request.ModuleTaskIDs = make(map[string]string, len(plan.Modules))
-	request.AttemptSeriesIDs = make(map[string]string, len(plan.Modules))
+	request.ModuleTaskIDs, request.AttemptSeriesIDs, err = p.allocateAutomaticAssignments(ctx, request, plan)
+	if err != nil {
+		return PlanningResult{}, err
+	}
 	request.ModuleSpecVersions = make(map[string]int, len(plan.Modules))
 	for _, module := range plan.Modules {
-		request.ModuleTaskIDs[module.ModuleID] = planningUUID(request.TenantID, request.ProjectID, request.PlanSpecID, "task", module.ModuleID)
-		request.AttemptSeriesIDs[module.ModuleID] = planningUUID(request.TenantID, request.ProjectID, request.PlanSpecID, "series", module.ModuleID)
 		request.ModuleSpecVersions[module.ModuleID] = 1
 	}
 	return p.BuildAndPublish(ctx, request)
+}
+
+type automaticTaskReader interface {
+	Tasks(context.Context, string, string) ([]state.ModuleTask, error)
+}
+
+func (p *Planner) allocateAutomaticAssignments(ctx context.Context, request PlanningRequest, plan contracts.PlanSpec) (map[string]string, map[string]string, error) {
+	taskIDs := make(map[string]string, len(plan.Modules))
+	seriesIDs := make(map[string]string, len(plan.Modules))
+	planRef := contracts.SpecRef{Version: plan.PlanSpecVersion, SHA256: plan.SHA256}
+	if reader, ok := p.projects.(automaticTaskReader); ok {
+		tasks, err := reader.Tasks(ctx, request.TenantID, request.ProjectID)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, task := range tasks {
+			if task.ModuleID == "" || task.PlanningSpecRef != planRef || task.ID == "" || task.AttemptSeriesID == "" || task.State == contracts.TaskCanceled || task.State == contracts.TaskSuperseded {
+				continue
+			}
+			if _, exists := taskIDs[task.ModuleID]; exists {
+				return nil, nil, ErrInvalidRequest
+			}
+			taskIDs[task.ModuleID] = task.ID
+			seriesIDs[task.ModuleID] = task.AttemptSeriesID
+		}
+	} else if request.ExpectedProjectVersion < 1 {
+		return nil, nil, ErrInvalidRequest
+	}
+	for _, module := range plan.Modules {
+		if taskIDs[module.ModuleID] == "" {
+			taskID, err := uuid.NewV7()
+			if err != nil {
+				return nil, nil, err
+			}
+			seriesID, err := uuid.NewV7()
+			if err != nil {
+				return nil, nil, err
+			}
+			taskIDs[module.ModuleID] = taskID.String()
+			seriesIDs[module.ModuleID] = seriesID.String()
+		}
+	}
+	return taskIDs, seriesIDs, nil
 }
 
 func (p *Planner) loadOrGeneratePlan(ctx context.Context, request PlanningRequest, goal SpecArtifact) (contracts.PlanSpec, SpecArtifact, error) {
@@ -472,7 +516,7 @@ func validateAutomaticPlanningRequest(request PlanningRequest, project state.Pro
 	return nil
 }
 
-func planningUUID(parts ...string) string {
+func planningIdempotencyToken(parts ...string) string {
 	input := make([]byte, 0)
 	for index, part := range parts {
 		if index != 0 {
@@ -481,14 +525,11 @@ func planningUUID(parts ...string) string {
 		input = append(input, part...)
 	}
 	digest := sha256.Sum256(input)
-	digest[6] = digest[6]&0x0f | 0x50
-	digest[8] = digest[8]&0x3f | 0x80
-	id, _ := uuid.FromBytes(digest[:16])
-	return id.String()
+	return hex.EncodeToString(digest[:])
 }
 
 func planningStageKey(parts ...string) string {
-	return "plan-stage-" + planningUUID(parts...)
+	return "plan-stage-" + planningIdempotencyToken(parts...)
 }
 
 func validatePlanningAssignments(plan contracts.PlanSpec, request PlanningRequest) error {
