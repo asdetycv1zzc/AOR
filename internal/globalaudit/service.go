@@ -296,12 +296,19 @@ func readOnlyTools(tools []modelgateway.ToolDefinition) bool {
 	allowed := map[string]struct{}{
 		"artifact.read": {}, "knowledge.read_range": {}, "knowledge.search": {}, "repository.file.read": {},
 	}
+	seen := make(map[string]struct{}, len(tools))
+	hasRepositoryRead := false
 	for _, tool := range tools {
-		if _, found := allowed[tool.Name]; !found {
+		if _, found := allowed[tool.Name]; !found || tool.Version == "" || tool.Validate() != nil {
 			return false
 		}
+		if _, duplicate := seen[tool.Name]; duplicate {
+			return false
+		}
+		seen[tool.Name] = struct{}{}
+		hasRepositoryRead = hasRepositoryRead || tool.Name == requiredGlobalAuditRepositoryTool
 	}
-	return true
+	return hasRepositoryRead
 }
 
 func resultFor(report Report, duplicate bool) Result {
