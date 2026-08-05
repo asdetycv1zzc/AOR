@@ -40,6 +40,7 @@ type Config struct {
 	ModelGateway       ModelGatewayConfig
 	ModelGatewayClient ModelGatewayClientConfig
 	GoalPlan           GoalPlanConfig
+	GlobalAuditRoute   GoalPlanRouteConfig
 	Execution          ExecutionConfig
 	Services           ServiceEndpoints
 	Sandbox            SandboxConfig
@@ -332,6 +333,16 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 			return Config{}, configurationError("AOR_EXECUTOR_ROUTE_JSON")
 		}
 	}
+	if raw, found := lookup("AOR_GLOBAL_AUDITOR_ROUTE_JSON"); found && strings.TrimSpace(raw) != "" {
+		decoder := json.NewDecoder(strings.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&config.GlobalAuditRoute); err != nil {
+			return Config{}, configurationError("AOR_GLOBAL_AUDITOR_ROUTE_JSON")
+		}
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			return Config{}, configurationError("AOR_GLOBAL_AUDITOR_ROUTE_JSON")
+		}
+	}
 	applyProviderCapabilityDefaults(config.ModelGateway.Providers)
 	if err := config.Validate(); err != nil {
 		return Config{}, err
@@ -409,6 +420,9 @@ func (config Config) Validate() error {
 		if !validSecretReference(config.LeaseSigningKeyRef) || !validDeploymentProfile(config.DeploymentProfile) || !validKnowledgeRoot(config.KnowledgeRoot) || !validKnowledgeRoot(config.RepositoryRoot) || !validURL(config.Services.API, "http", "https") || !validURL(config.Services.ModelGateway, "http", "https") || !validURL(config.Services.ToolBroker, "http", "https") || !validGoalPlanRoute(config.Execution.Route) || config.Execution.MaxToolRounds < 2 || config.Execution.MaxToolRounds > 8 {
 			return ErrInvalidConfiguration
 		}
+		if globalAuditRouteConfigured(config.GlobalAuditRoute) && !validGoalPlanRoute(config.GlobalAuditRoute) {
+			return ErrInvalidConfiguration
+		}
 		if config.Sandbox.LinuxLevel != "CONTAINER" || config.Sandbox.WindowsLevel != "NONE" || config.Sandbox.AllowWindowsUntrusted || config.Sandbox.LinuxDefaultNetworkMode != "DENY_ALL" || config.Sandbox.WindowsNetworkIsolationLevel != "NONE" {
 			return ErrInvalidConfiguration
 		}
@@ -418,6 +432,10 @@ func (config Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+func globalAuditRouteConfigured(route GoalPlanRouteConfig) bool {
+	return route.Provider != "" || route.Model != "" || route.MaxOutputTokens != 0 || route.Temperature != 0 || route.Seed != nil || route.ProviderPolicy != "" || route.CachePolicy != "" || route.WorstCaseCostMicros != 0 || route.MaxAttempts != 0
 }
 
 func validateProviders(providers []ProviderConfig) error {

@@ -518,8 +518,15 @@ func configuredGlobalAudit(config runtimeconfig.Config, clients *runtimeclient.C
 	if clients == nil || provider == nil || services == nil || services.agentRuntime == nil || services.tasks == nil || services.leaseService == nil || services.artifactCatalog == nil || signer == nil || secretResolver == nil || runtime.GOOS != "linux" {
 		return nil, ErrWorkerConfiguration
 	}
-	routeConfig, found := config.GoalPlan.Routes[string(agentruntime.RoleGlobalAuditor)]
-	if !found {
+	routeConfig := config.GlobalAuditRoute
+	if routeConfig.Provider == "" {
+		var found bool
+		routeConfig, found = config.GoalPlan.Routes[string(agentruntime.RoleGlobalAuditor)]
+		if !found {
+			routeConfig = config.Execution.Route
+		}
+	}
+	if routeConfig.Provider == "" {
 		routeConfig = config.Execution.Route
 	}
 	route := goalplan.ModelRoute{

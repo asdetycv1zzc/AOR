@@ -216,6 +216,10 @@ services:
         if [ "$$lease_fencing_equality_installed" != "t" ]; then
           psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000032_lease_fencing_equality.up.sql
         fi
+        global_audit_scheduler_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT to_regclass('public.global_audit_requests') IS NOT NULL AND to_regprocedure('public.aor_global_audit_candidates(integer)') IS NOT NULL AND to_regprocedure('public.aor_ensure_global_audit_request(uuid,uuid,bigint,uuid,text)') IS NOT NULL")"
+        if [ "$$global_audit_scheduler_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000033_global_audit_scheduler.up.sql
+        fi
         unset AOR_APP_PASSWORD
     secrets: [postgres_password, postgres_app_password]
     volumes:
@@ -251,6 +255,7 @@ services:
       - ../../migrations/postgres/000030_scheduler_aging_capacity.up.sql:/migrations/000030_scheduler_aging_capacity.up.sql:ro
       - ../../migrations/postgres/000031_scheduler_lease_recovery.up.sql:/migrations/000031_scheduler_lease_recovery.up.sql:ro
       - ../../migrations/postgres/000032_lease_fencing_equality.up.sql:/migrations/000032_lease_fencing_equality.up.sql:ro
+      - ../../migrations/postgres/000033_global_audit_scheduler.up.sql:/migrations/000033_global_audit_scheduler.up.sql:ro
       - ./postgres-app-password.sql:/migrations/postgres-app-password.sql:ro
     read_only: true
     tmpfs: [/tmp]
@@ -651,6 +656,8 @@ services:
       AOR_MODEL_GATEWAY_OAUTH_AUDIENCE: aor-control-plane
       AOR_EXECUTOR_ROUTE_JSON: >-
         {"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-4o-mini}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3}
+      AOR_GLOBAL_AUDITOR_ROUTE_JSON: >-
+        {"provider":"deepseek-audit","model":"${AOR_DEEPSEEK_MODEL:-deepseek-chat}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3}
       AOR_EXECUTOR_MAX_TOOL_ROUNDS: "8"
       AOR_SANDBOX_LINUX_LEVEL: CONTAINER
       AOR_SANDBOX_LINUX_NETWORK_MODE: DENY_ALL

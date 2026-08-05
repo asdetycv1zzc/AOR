@@ -225,6 +225,13 @@
       "file": "000032_lease_fencing_equality.up.sql",
       "sha256": "sha256:2dec68cb9e6f8c1c66c7cbaef614768e40f2b5269e393d8f30d10a5e0f6780ab",
       "destructive": false
+    },
+    {
+      "version": 33,
+      "mode": "EXPAND",
+      "file": "000033_global_audit_scheduler.up.sql",
+      "sha256": "sha256:fac82038ab4d7c86d8fea3d6c68e54b2f4a84948fb25e50f8f8d94c6409403cf",
+      "destructive": false
     }
   ]
 }
