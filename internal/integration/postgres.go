@@ -8,9 +8,18 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
+
+type DurableRequest struct {
+	TenantID       string
+	ProjectID      string
+	IntegrationID  string
+	ProjectVersion int64
+	CreatedAt      time.Time
+}
 
 type PostgresStore struct {
 	database *sql.DB
@@ -21,6 +30,37 @@ func NewPostgresStore(database *sql.DB) (*PostgresStore, error) {
 		return nil, ErrInvalidRequest
 	}
 	return &PostgresStore{database: database}, nil
+}
+
+func (store *PostgresStore) Request(ctx context.Context, tenantID, integrationID string) (DurableRequest, bool, error) {
+	if store == nil || store.database == nil || ctx == nil || !canonicalUUID(tenantID) || !canonicalUUID(integrationID) {
+		return DurableRequest{}, false, ErrInvalidRequest
+	}
+	tx, err := store.begin(ctx, tenantID, true)
+	if err != nil {
+		return DurableRequest{}, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var request DurableRequest
+	err = tx.QueryRowContext(ctx, `
+SELECT tenant_id::text, project_id::text, integration_id::text, project_version, created_at
+FROM integration_requests
+WHERE tenant_id = $1::uuid AND integration_id = $2::uuid`, tenantID, integrationID).Scan(
+		&request.TenantID, &request.ProjectID, &request.IntegrationID, &request.ProjectVersion, &request.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return DurableRequest{}, false, nil
+	}
+	if err != nil {
+		return DurableRequest{}, false, err
+	}
+	request.CreatedAt = request.CreatedAt.UTC()
+	if request.TenantID != tenantID || request.IntegrationID != integrationID || !canonicalUUID(request.ProjectID) || request.ProjectVersion < 1 || request.CreatedAt.IsZero() {
+		return DurableRequest{}, false, ErrInvalidRequest
+	}
+	if err := tx.Commit(); err != nil {
+		return DurableRequest{}, false, err
+	}
+	return request, true, nil
 }
 
 func (store *PostgresStore) Get(ctx context.Context, tenantID, integrationID string) (MergeResult, bool, error) {
@@ -253,10 +293,16 @@ func (store *PostgresStore) Reserve(ctx context.Context, result MergeResult) (Me
 			return MergeResult{}, false, err
 		}
 		if storedMerge && stored.ProjectID == result.ProjectID && stored.RequestDigest == result.RequestDigest && stored.Audit.EvidenceSHA256 == result.Audit.EvidenceSHA256 && stored.OwnerTaskID == result.OwnerTaskID && stored.Attempt == result.Attempt {
+			if task.State == TaskDone && (stored.LeaseID != result.LeaseID || stored.FencingToken != result.FencingToken) {
+				return MergeResult{}, false, ErrImmutable
+			}
 			if err := tx.Commit(); err != nil {
 				return MergeResult{}, false, err
 			}
 			return stored, false, nil
+		}
+		if storedMerge {
+			return MergeResult{}, false, ErrImmutable
 		}
 		if result.Attempt == 0 || task.ProjectID != result.ProjectID || task.State != TaskExecuting || task.OwnerTaskID != result.OwnerTaskID || task.Attempt != result.Attempt {
 			return MergeResult{}, false, ErrAttemptState
@@ -353,6 +399,9 @@ func (store *PostgresStore) Complete(ctx context.Context, result MergeResult) er
 		return ErrImmutable
 	}
 	if !stored.Pending {
+		if stored.LeaseID != result.LeaseID || stored.FencingToken != result.FencingToken {
+			return ErrImmutable
+		}
 		if stored.Commit != result.Commit {
 			return ErrImmutable
 		}

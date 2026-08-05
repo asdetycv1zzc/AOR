@@ -140,7 +140,7 @@ func (q *Queue) merge(ctx context.Context, request Request, verifier MergeVerifi
 	if err != nil {
 		return MergeResult{}, err
 	}
-	reservation := MergeResult{TenantID: verified.TenantID, IntegrationID: verified.IntegrationID, ProjectID: verified.ProjectID, OwnerTaskID: verified.OwnerTaskID, Attempt: verified.Attempt, RequestDigest: requestDigest, Audit: audit, Candidates: cloneCandidates(verified.Candidates), Pending: true}
+	reservation := MergeResult{TenantID: verified.TenantID, IntegrationID: verified.IntegrationID, ProjectID: verified.ProjectID, OwnerTaskID: verified.OwnerTaskID, Attempt: verified.Attempt, RequestDigest: requestDigest, Audit: audit, Candidates: cloneCandidates(verified.Candidates), Pending: true, LeaseID: verified.LeaseID, FencingToken: verified.FencingToken}
 	executionID := mergeExecutionID(verified.IntegrationID, verified.Attempt)
 	prior, owner, err := q.store.Reserve(ctx, reservation)
 	if err != nil {
@@ -580,12 +580,10 @@ func requestDigest(request Request, verified VerifiedRequest) (string, error) {
 		ExpectedVersion int64       `json:"expectedVersion"`
 		CreatedAt       string      `json:"createdAt"`
 		PrincipalID     string      `json:"principalId"`
-		LeaseID         string      `json:"leaseId"`
-		FencingToken    int64       `json:"fencingToken"`
 		Authorization   string      `json:"authorization"`
 		OwnerTaskID     string      `json:"ownerTaskId,omitempty"`
 		Attempt         int         `json:"attempt"`
-	}{verified.TenantID, verified.ProjectID, verified.IntegrationID, request.IdempotencyKey, verified.BaseCommit, candidates, verified.PolicyDigest, verified.ExpectedVersion, request.CreatedAt.UTC().Format(time.RFC3339Nano), verified.PrincipalID, verified.LeaseID, verified.FencingToken, verified.Authorization, verified.OwnerTaskID, verified.Attempt})
+	}{verified.TenantID, verified.ProjectID, verified.IntegrationID, request.IdempotencyKey, verified.BaseCommit, candidates, verified.PolicyDigest, verified.ExpectedVersion, request.CreatedAt.UTC().Format(time.RFC3339Nano), verified.PrincipalID, verified.Authorization, verified.OwnerTaskID, verified.Attempt})
 	if err != nil {
 		return "", err
 	}

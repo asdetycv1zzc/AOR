@@ -172,6 +172,8 @@ type MergeResult struct {
 	Checks        []CheckResult `json:"checks,omitempty"`
 	Duplicate     bool          `json:"duplicate"`
 	Pending       bool          `json:"pending"`
+	LeaseID       string        `json:"leaseId,omitempty"`
+	FencingToken  int64         `json:"fencingToken,omitempty"`
 }
 
 type IntegrationTask struct {
@@ -318,6 +320,9 @@ func (s *MemoryStore) Reserve(_ context.Context, result MergeResult) (MergeResul
 	defer s.mu.Unlock()
 	if prior, ok := s.items[key]; ok {
 		if prior.result.RequestDigest == result.RequestDigest && prior.result.Audit.EvidenceSHA256 == result.Audit.EvidenceSHA256 {
+			if prior.task.State == TaskDone && (prior.result.LeaseID != result.LeaseID || prior.result.FencingToken != result.FencingToken) {
+				return MergeResult{}, false, ErrImmutable
+			}
 			return cloneResult(prior.result), false, nil
 		}
 		// A persisted merge request is immutable. A different request may only
@@ -358,6 +363,9 @@ func (s *MemoryStore) Complete(_ context.Context, result MergeResult) error {
 		return ErrImmutable
 	}
 	if !prior.result.Pending {
+		if prior.task.State == TaskDone && (prior.result.LeaseID != result.LeaseID || prior.result.FencingToken != result.FencingToken) {
+			return ErrImmutable
+		}
 		if prior.result.Commit == result.Commit && prior.task.State == TaskDone {
 			return nil
 		}
