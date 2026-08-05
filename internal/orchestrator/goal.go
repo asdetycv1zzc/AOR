@@ -39,7 +39,7 @@ func prepareGoalCommand(request ProjectRequest, command state.ProjectCommand) (s
 	}
 	if command.GoalMessage != nil {
 		message := *command.GoalMessage
-		message.ID = stableID("msg", request.TenantID+"\x00"+request.ProjectID+"\x00"+request.PrincipalID+"\x00"+request.IdempotencyKey)
+		message.ID = ""
 		message.TenantID = request.TenantID
 		message.ProjectID = request.ProjectID
 		message.CreatedBy = request.PrincipalID
@@ -112,6 +112,7 @@ func goalDigestCommand(command state.ProjectCommand) state.ProjectCommand {
 	}
 	if command.Approval != nil {
 		approval := *command.Approval
+		approval.RecordID = ""
 		approval.IssuedAt = time.Time{}
 		digestCommand.Approval = &approval
 	}
@@ -127,7 +128,7 @@ func goalDigestCommand(command state.ProjectCommand) state.ProjectCommand {
 	return digestCommand
 }
 
-func finalizeGoalCommand(command state.ProjectCommand) state.ProjectCommand {
+func finalizeGoalCommand(command state.ProjectCommand) (state.ProjectCommand, error) {
 	if command.Type == state.ProjectCommandRequestDeletion && command.Deletion != nil {
 		deletion := *command.Deletion
 		deletion.RequestedAt = command.At
@@ -143,10 +144,24 @@ func finalizeGoalCommand(command state.ProjectCommand) state.ProjectCommand {
 	}
 	if command.GoalMessage != nil {
 		message := *command.GoalMessage
+		id, err := newRecordUUIDv7()
+		if err != nil {
+			return state.ProjectCommand{}, err
+		}
+		message.ID = id
 		message.CreatedAt = command.At
 		command.GoalMessage = &message
 	}
-	return command
+	if command.Approval != nil {
+		approval := *command.Approval
+		id, err := newRecordUUIDv7()
+		if err != nil {
+			return state.ProjectCommand{}, err
+		}
+		approval.RecordID = id
+		command.Approval = &approval
+	}
+	return command, nil
 }
 
 func prepareProjectLifecycleCommand(request ProjectRequest, command state.ProjectCommand) (state.ProjectCommand, error) {
@@ -226,9 +241,13 @@ func (s *Service) goalRelatedTransitions(ctx context.Context, request ProjectReq
 				appendTransition(oldUpdate, oldEvent)
 			}
 		}
+		recordID, err := newRecordUUIDv7()
+		if err != nil {
+			return nil, nil, err
+		}
 		projection := GoalSpecProjection{
 			TenantID: request.TenantID, ProjectID: request.ProjectID, GoalSpecID: command.Goal.ID,
-			RecordID: goalSpecRecordID(request.TenantID, request.ProjectID, command.Goal.ID, command.Goal.Version), Spec: cloneGoalSpec(*command.GoalSpec),
+			RecordID: recordID, Spec: cloneGoalSpec(*command.GoalSpec),
 		}
 		content, err := json.Marshal(projection)
 		if err != nil {
@@ -423,14 +442,6 @@ func cloneGoalSpec(spec contracts.GoalSpec) contracts.GoalSpec {
 
 func goalSpecAggregateID(projectID, goalSpecID string, version int) string {
 	return stableID("goal", projectID+"\x00"+goalSpecID+"\x00"+fmt.Sprint(version))
-}
-
-func goalSpecRecordID(tenantID, projectID, goalSpecID string, version int) string {
-	value := sha256.Sum256([]byte(tenantID + "\x00" + projectID + "\x00" + goalSpecID + "\x00" + fmt.Sprint(version)))
-	value[6] = value[6]&0x0f | 0x50
-	value[8] = value[8]&0x3f | 0x80
-	hexValue := hex.EncodeToString(value[:16])
-	return hexValue[0:8] + "-" + hexValue[8:12] + "-" + hexValue[12:16] + "-" + hexValue[16:20] + "-" + hexValue[20:32]
 }
 
 func invalidGoalCommand(scope string) error {

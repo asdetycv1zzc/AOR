@@ -11,6 +11,7 @@ import (
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 	"github.com/akimisaka/aor/pkg/contracts"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
+	"github.com/google/uuid"
 )
 
 func TestGoalMessageIsImmutableAuditedAndIdempotent(t *testing.T) {
@@ -32,6 +33,7 @@ func TestGoalMessageIsImmutableAuditedAndIdempotent(t *testing.T) {
 	if err != nil || len(messages) != 1 || messages[0].Message != "build the service" || messages[0].CreatedBy != "usr_1" || messages[0].Kind != state.GoalMessageUser {
 		t.Fatalf("messages = %#v error=%v", messages, err)
 	}
+	requireRecordUUIDv7(t, messages[0].ID)
 	second, err := service.HandleProject(context.Background(), request)
 	if err != nil || !second.Duplicate || second.Project.Version != 2 {
 		t.Fatalf("duplicate outcome = %#v error=%v", second, err)
@@ -65,16 +67,26 @@ func TestGoalSpecLifecyclePersistsStatusApprovalAndChangeMessageAtomically(t *te
 	if err != nil || !found || stored.Spec.Status != contracts.GoalDraft || stored.Revision != 1 {
 		t.Fatalf("stored draft = %#v found=%t error=%v", stored, found, err)
 	}
+	requireRecordUUIDv7(t, stored.RecordID)
 	approval := &state.ApprovalBinding{
 		RecordID: "approval_1", ApprovalType: "GOAL_APPROVAL", SubjectType: "GOAL_SPEC", SubjectID: goal.ID,
 		SubjectVersion: goal.Version, SubjectSHA256: goal.SHA256, PrincipalID: "usr_1", Reason: "explicit approval", IssuedAt: fixedClock(), Signature: "authenticated",
 	}
-	approved, err := service.HandleProject(context.Background(), ProjectRequest{
+	approvalRequest := ProjectRequest{
 		TenantID: "tenant_1", ProjectID: "prj_goal", PrincipalID: "usr_1", IdempotencyKey: "approve-goal", ExpectedVersion: 3,
 		Command: state.ProjectCommand{Type: state.ProjectCommandApproveGoal, Goal: &goal, Approval: approval},
-	})
+	}
+	approved, err := service.HandleProject(context.Background(), approvalRequest)
 	if err != nil || approved.Project.Version != 4 || approved.Project.Goal.Status != contracts.GoalApproved {
 		t.Fatalf("approved = %#v error=%v", approved, err)
+	}
+	requireRecordUUIDv7(t, approved.Project.Goal.ApprovalRecordID)
+	if approved.Project.Goal.ApprovalRecordID == approval.RecordID {
+		t.Fatal("orchestrator trusted a caller-derived approval primary key")
+	}
+	replayedApproval, err := service.HandleProject(context.Background(), approvalRequest)
+	if err != nil || !replayedApproval.Duplicate || replayedApproval.Project.Goal.ApprovalRecordID != approved.Project.Goal.ApprovalRecordID {
+		t.Fatalf("replayed approval = %#v error=%v", replayedApproval, err)
 	}
 	stored, found, err = service.GoalSpec(context.Background(), "tenant_1", "prj_goal", 1)
 	if err != nil || !found || stored.Spec.Status != contracts.GoalApproved || stored.Spec.ApprovedBy == nil || stored.Spec.ApprovedBy.ActorID != "usr_1" || stored.Revision != 2 {
@@ -133,4 +145,12 @@ func testGoalSpec(t *testing.T, projectID string, version int, unresolved []stri
 		t.Fatal(err)
 	}
 	return contracts.GoalSpec{Content: content, Status: contracts.GoalDraft, ContentSHA256: digest}
+}
+
+func requireRecordUUIDv7(t *testing.T, value string) {
+	t.Helper()
+	parsed, err := uuid.Parse(value)
+	if err != nil || parsed.Version() != uuid.Version(7) {
+		t.Fatalf("record id %q is not UUIDv7", value)
+	}
 }

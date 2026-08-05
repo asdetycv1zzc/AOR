@@ -15,6 +15,7 @@ import (
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 	"github.com/akimisaka/aor/pkg/contracts"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
+	"github.com/google/uuid"
 )
 
 type Clock func() time.Time
@@ -116,7 +117,10 @@ func (s *Service) HandleProject(ctx context.Context, request ProjectRequest) (Pr
 		return ProjectOutcome{}, versionConflict(request.ExpectedVersion, current.Version)
 	}
 	command.At = s.clock().UTC()
-	command = finalizeGoalCommand(command)
+	command, err = finalizeGoalCommand(command)
+	if err != nil {
+		return ProjectOutcome{}, err
+	}
 	projectEvent, decideErr := state.DecideProject(current, command)
 	if decideErr != nil {
 		return ProjectOutcome{}, decideErr
@@ -490,6 +494,14 @@ func contains(values []string, wanted string) bool {
 func stableID(prefix, input string) string {
 	sum := sha256.Sum256([]byte(input))
 	return prefix + "_" + hex.EncodeToString(sum[:16])
+}
+
+func newRecordUUIDv7() (string, error) {
+	value, err := uuid.NewV7()
+	if err != nil {
+		return "", err
+	}
+	return value.String(), nil
 }
 
 func stableUUIDv7(at time.Time, input string) string {

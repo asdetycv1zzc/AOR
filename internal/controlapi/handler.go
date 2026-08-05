@@ -879,8 +879,13 @@ func (handler *Handler) commandProject(response http.ResponseWriter, request *ht
 			return
 		}
 		issuedAt := handler.clock().UTC()
+		approvalID, allocationErr := newRecordUUIDv7()
+		if allocationErr != nil {
+			writeError(response, request, aorerrors.Wrap(aorerrors.CodeInternalError, "", allocationErr, nil))
+			return
+		}
 		command.Approval = &state.ApprovalBinding{
-			RecordID: approvalRecordID(principal.TenantID, principal.ID, idempotencyKey), ApprovalType: "RELEASE_APPROVAL", SubjectType: "PROJECT",
+			RecordID: approvalID, ApprovalType: "RELEASE_APPROVAL", SubjectType: "PROJECT",
 			SubjectID: project.ID, SubjectVersion: int(project.Version), SubjectSHA256: project.Plan.SHA256, PrincipalID: principal.ID,
 			Reason: "explicit release approval", IssuedAt: issuedAt,
 			Signature: releaseApprovalSignature(principal.TenantID, project.ID, project.Version, project.Plan.SHA256, principal.ID, idempotencyKey),
@@ -1692,9 +1697,14 @@ func (handler *Handler) decideGoalSpec(response http.ResponseWriter, request *ht
 			return
 		}
 		issuedAt := handler.clock().UTC()
+		approvalID, allocationErr := newRecordUUIDv7()
+		if allocationErr != nil {
+			writeError(response, request, aorerrors.Wrap(aorerrors.CodeInternalError, "", allocationErr, nil))
+			return
+		}
 		command.Type = state.ProjectCommandApproveGoal
 		command.Approval = &state.ApprovalBinding{
-			RecordID: approvalRecordID(principal.TenantID, principal.ID, idempotencyKey), ApprovalType: "GOAL_APPROVAL", SubjectType: "GOAL_SPEC",
+			RecordID: approvalID, ApprovalType: "GOAL_APPROVAL", SubjectType: "GOAL_SPEC",
 			SubjectID: projection.GoalSpecID, SubjectVersion: version, SubjectSHA256: body.SHA256, PrincipalID: principal.ID,
 			Reason: reason, IssuedAt: issuedAt, Signature: goalApprovalSignature(principal.TenantID, projectID, projection.GoalSpecID, version, body.SHA256, principal.ID, reason, idempotencyKey),
 		}
@@ -1825,12 +1835,12 @@ func goalSpecETag(version int, revision int64) string {
 	return `"goal-v` + strconv.Itoa(version) + `-r` + strconv.FormatInt(revision, 10) + `"`
 }
 
-func approvalRecordID(tenantID, principalID, idempotencyKey string) string {
-	value := sha256.Sum256([]byte(tenantID + "\x00" + principalID + "\x00" + idempotencyKey))
-	value[6] = value[6]&0x0f | 0x50
-	value[8] = value[8]&0x3f | 0x80
-	hexValue := hex.EncodeToString(value[:16])
-	return hexValue[0:8] + "-" + hexValue[8:12] + "-" + hexValue[12:16] + "-" + hexValue[16:20] + "-" + hexValue[20:32]
+func newRecordUUIDv7() (string, error) {
+	value, err := uuid.NewV7()
+	if err != nil {
+		return "", err
+	}
+	return value.String(), nil
 }
 
 func releaseApprovalSignature(tenantID, projectID string, version int64, digest, principalID, idempotencyKey string) string {

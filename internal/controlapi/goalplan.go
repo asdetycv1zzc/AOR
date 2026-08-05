@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/akimisaka/aor/internal/agentruntime"
 	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/authz"
+	"github.com/akimisaka/aor/internal/eventing"
 	"github.com/akimisaka/aor/internal/goalplan"
 	"github.com/akimisaka/aor/internal/modelgateway"
 	"github.com/akimisaka/aor/internal/orchestrator"
@@ -45,7 +47,7 @@ func (handler *Handler) negotiateGoal(ctx context.Context, principal authn.Princ
 		return state.Project{}, err
 	}
 
-	goalSpecID := goalPlanUUID("goal-spec", principal.TenantID, projectID)
+	goalSpecID := ""
 	var previousRef *contracts.SpecRef
 	supersede := false
 	if project.Goal != nil {
@@ -53,10 +55,40 @@ func (handler *Handler) negotiateGoal(ctx context.Context, principal authn.Princ
 		ref := contracts.SpecRef{Version: project.Goal.Version, SHA256: project.Goal.SHA256}
 		previousRef = &ref
 		supersede = project.Goal.ApprovedBy != ""
+	} else {
+		goalVersion := 1
+		if project.GoalAgentCount == 2 {
+			goalVersion++
+		}
+		goalSpecID, _, err = handler.findGoalPlanArtifactSpecID(ctx, principal.TenantID, projectID, goalplan.ArtifactGoalDraft, goalVersion, nil)
+		if err != nil {
+			return state.Project{}, err
+		}
+		if goalSpecID == "" {
+			goalSpecID, err = newRecordUUIDv7()
+			if err != nil {
+				return state.Project{}, err
+			}
+		}
+	}
+	messageID := ""
+	if project.Version == body.ExpectedVersion+1 {
+		messageID, _, err = handler.findGoalPlanArtifactSpecID(ctx, principal.TenantID, projectID, goalplan.ArtifactUserMessage, 1, func(artifact goalplan.SpecArtifact) bool {
+			return artifact.CreatedBy == principal.ID && string(artifact.Content) == body.Message
+		})
+		if err != nil {
+			return state.Project{}, err
+		}
+	}
+	if messageID == "" {
+		messageID, err = newRecordUUIDv7()
+		if err != nil {
+			return state.Project{}, err
+		}
 	}
 	result, err := handler.goalPlan.Negotiator.Negotiate(ctx, goalplan.NegotiationRequest{
 		TenantID: principal.TenantID, ProjectID: projectID, GoalSpecID: goalSpecID,
-		MessageID:       goalPlanUUID("goal-message", principal.TenantID, projectID, principal.ID, idempotencyKey),
+		MessageID:       messageID,
 		UserPrincipalID: principal.ID, UserInput: []byte(body.Message), GoalAgentCount: project.GoalAgentCount,
 		PreviousRef: previousRef, SupersedeApprovedGoal: supersede, ExpectedProjectVersion: body.ExpectedVersion,
 		IdempotencyKey: goalPlanKey("negotiate", principal.TenantID, projectID, principal.ID, idempotencyKey),
@@ -94,11 +126,15 @@ func (handler *Handler) approveGoalAndPlan(ctx context.Context, principal authn.
 		issuedAt = approvedAt.UTC()
 	}
 	goalRef := contracts.SpecRef{Version: projection.Spec.Content.Version, SHA256: body.SHA256}
+	approvalID, err := newRecordUUIDv7()
+	if err != nil {
+		return state.Project{}, err
+	}
 	approval, err := handler.goalPlan.Negotiator.Approve(ctx, goalplan.ApprovalRequest{
 		TenantID: principal.TenantID, ProjectID: projectID, GoalSpecID: projection.GoalSpecID, GoalRef: goalRef,
 		UserPrincipalID: principal.ID, ExpectedProjectVersion: body.ExpectedVersion, IdempotencyKey: idempotencyKey,
 		Approval: goalplan.ApprovalBinding{
-			RecordID:     approvalRecordID(principal.TenantID, principal.ID, idempotencyKey),
+			RecordID:     approvalID,
 			ApprovalType: "GOAL_APPROVAL", SubjectType: "GOAL_SPEC", SubjectID: projection.GoalSpecID,
 			SubjectVersion: goalRef.Version, SubjectSHA256: goalRef.SHA256, PrincipalID: principal.ID,
 			Reason: reason, IssuedAt: issuedAt,
@@ -112,10 +148,23 @@ func (handler *Handler) approveGoalAndPlan(ctx context.Context, principal authn.
 		return state.Project{}, goalplan.ErrAgentOutput
 	}
 
+	planSpecID, _, err := handler.findGoalPlanArtifactSpecID(ctx, principal.TenantID, projectID, goalplan.ArtifactPlanSpec, 1, func(artifact goalplan.SpecArtifact) bool {
+		var stored contracts.PlanSpec
+		return json.Unmarshal(artifact.Content, &stored) == nil && stored.ProjectID == projectID && stored.GoalSpecRef == goalRef
+	})
+	if err != nil {
+		return state.Project{}, err
+	}
+	if planSpecID == "" {
+		planSpecID, err = newRecordUUIDv7()
+		if err != nil {
+			return state.Project{}, err
+		}
+	}
 	plan, err := handler.goalPlan.Planner.BuildAndPublishAutomatic(ctx, goalplan.PlanningRequest{
 		TenantID: principal.TenantID, ProjectID: projectID, PrincipalID: principal.ID,
 		GoalSpecID: projection.GoalSpecID, GoalRef: goalRef,
-		PlanSpecID: goalPlanUUID("plan-spec", principal.TenantID, projectID), PlanVersion: 1,
+		PlanSpecID: planSpecID, PlanVersion: 1,
 		ExpectedProjectVersion: approval.Project.Version,
 		IdempotencyKey:         goalPlanKey("initial-plan", principal.TenantID, projectID, principal.ID, idempotencyKey),
 	})
@@ -123,18 +172,39 @@ func (handler *Handler) approveGoalAndPlan(ctx context.Context, principal authn.
 		return state.Project{}, err
 	}
 	outcome := plan.Publication.Project
-	if outcome.TenantID != principal.TenantID || outcome.ID != projectID || outcome.Version != approval.Project.Version+1 || outcome.State != contracts.ProjectExecuting || outcome.Plan == nil || outcome.Plan.Version != plan.Plan.PlanSpecVersion || outcome.Plan.SHA256 != plan.Plan.SHA256 || plan.PlanArtifact.Kind != goalplan.ArtifactPlanSpec || plan.PlanArtifact.SpecID != goalPlanUUID("plan-spec", principal.TenantID, projectID) {
+	if outcome.TenantID != principal.TenantID || outcome.ID != projectID || outcome.Version != approval.Project.Version+1 || outcome.State != contracts.ProjectExecuting || outcome.Plan == nil || outcome.Plan.Version != plan.Plan.PlanSpecVersion || outcome.Plan.SHA256 != plan.Plan.SHA256 || plan.PlanArtifact.Kind != goalplan.ArtifactPlanSpec || plan.PlanArtifact.SpecID != planSpecID {
 		return state.Project{}, goalplan.ErrAgentOutput
 	}
 	return outcome, nil
 }
 
-func goalPlanUUID(parts ...string) string {
-	digest := sha256.Sum256([]byte(joinGoalPlanParts(parts)))
-	digest[6] = digest[6]&0x0f | 0x50
-	digest[8] = digest[8]&0x3f | 0x80
-	value := hex.EncodeToString(digest[:16])
-	return value[0:8] + "-" + value[8:12] + "-" + value[12:16] + "-" + value[16:20] + "-" + value[20:32]
+func (handler *Handler) findGoalPlanArtifactSpecID(ctx context.Context, tenantID, projectID string, kind goalplan.ArtifactKind, version int, matches func(goalplan.SpecArtifact) bool) (string, bool, error) {
+	lister, ok := handler.store.(eventing.ProjectionList)
+	if !ok {
+		return "", false, nil
+	}
+	projections, err := lister.ListProjections(ctx, tenantID, projectID, "spec_artifact")
+	if err != nil {
+		return "", false, err
+	}
+	result := ""
+	for _, projection := range projections {
+		var artifact goalplan.SpecArtifact
+		if json.Unmarshal(projection.State, &artifact) != nil || artifact.Kind != kind || artifact.Version != version {
+			continue
+		}
+		if artifact.TenantID != tenantID || artifact.ProjectID != projectID || artifact.SpecID == "" {
+			return "", false, goalplan.ErrAgentOutput
+		}
+		if matches != nil && !matches(artifact) {
+			continue
+		}
+		if result != "" && result != artifact.SpecID {
+			return "", false, goalplan.ErrArtifactConflict
+		}
+		result = artifact.SpecID
+	}
+	return result, result != "", nil
 }
 
 func goalPlanKey(kind string, parts ...string) string {

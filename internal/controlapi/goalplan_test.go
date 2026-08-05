@@ -2,6 +2,7 @@ package controlapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/akimisaka/aor/internal/orchestrator"
 	"github.com/akimisaka/aor/internal/state"
 	"github.com/akimisaka/aor/pkg/contracts"
+	"github.com/google/uuid"
 )
 
 type recordingGoalNegotiator struct {
@@ -31,7 +33,14 @@ func (service *recordingGoalNegotiator) Negotiate(_ context.Context, request goa
 	if service.calls != nil {
 		*service.calls = append(*service.calls, "negotiate")
 	}
-	return service.negotiationResult, service.negotiationErr
+	result := service.negotiationResult
+	if result.Artifact.SpecID == "" {
+		result.Artifact.SpecID = request.GoalSpecID
+	}
+	if result.Project.Project.Goal != nil && result.Project.Project.Goal.ID == "" {
+		result.Project.Project.Goal.ID = request.GoalSpecID
+	}
+	return result, service.negotiationErr
 }
 
 func (service *recordingGoalNegotiator) Approve(_ context.Context, request goalplan.ApprovalRequest) (orchestrator.ProjectOutcome, error) {
@@ -54,7 +63,11 @@ func (service *recordingGoalPlanner) BuildAndPublishAutomatic(_ context.Context,
 	if service.calls != nil {
 		*service.calls = append(*service.calls, "plan")
 	}
-	return service.result, service.err
+	result := service.result
+	if result.PlanArtifact.SpecID == "" {
+		result.PlanArtifact.SpecID = request.PlanSpecID
+	}
+	return result, service.err
 }
 
 func TestConfiguredGoalPlanServicesReplaceLegacyMessageOnlyPath(t *testing.T) {
@@ -63,16 +76,15 @@ func TestConfiguredGoalPlanServicesReplaceLegacyMessageOnlyPath(t *testing.T) {
 	handler, _, authorizer := newGoalPlanTestHandler(t, negotiator, planner)
 	project := createTestProject(t, handler)
 	goal := controlGoalSpec(t, project.ID, 1, nil)
-	goalSpecID := goalPlanUUID("goal-spec", testTenantID, project.ID)
 	negotiator.negotiationResult = goalplan.NegotiationResult{
 		Goal: goal,
 		Artifact: goalplan.SpecArtifact{
 			TenantID: testTenantID, ProjectID: project.ID, Kind: goalplan.ArtifactGoalDraft,
-			SpecID: goalSpecID, Version: 1, ContentSHA256: goal.ContentSHA256,
+			Version: 1, ContentSHA256: goal.ContentSHA256,
 		},
 		Project: orchestrator.ProjectOutcome{Project: state.Project{
 			TenantID: testTenantID, ID: project.ID, Version: 2, State: contracts.ProjectGoalNegotiating,
-			Goal: &state.GoalRecord{ID: goalSpecID, Version: 1, SHA256: goal.ContentSHA256},
+			Goal: &state.GoalRecord{Version: 1, SHA256: goal.ContentSHA256},
 		}},
 	}
 	body := []byte(`{"expectedVersion":1,"message":"build through the goal runtime"}`)
@@ -84,6 +96,9 @@ func TestConfiguredGoalPlanServicesReplaceLegacyMessageOnlyPath(t *testing.T) {
 		t.Fatalf("response status=%d etag=%q body=%s", response.Code, response.Header().Get("ETag"), response.Body.String())
 	}
 	request := negotiator.negotiationRequest
+	goalSpecID := request.GoalSpecID
+	requireGoalPlanUUIDv7(t, goalSpecID)
+	requireGoalPlanUUIDv7(t, request.MessageID)
 	if request.TenantID != testTenantID || request.ProjectID != project.ID || request.GoalSpecID != goalSpecID || request.UserPrincipalID != "user-1" || string(request.UserInput) != "build through the goal runtime" || request.GoalAgentCount != 1 || request.PreviousRef != nil || request.SupersedeApprovedGoal || request.ExpectedProjectVersion != 1 || request.MessageID == "" || request.IdempotencyKey == "goal-runtime-1" || len(request.IdempotencyKey) > 256 {
 		t.Fatalf("negotiation request = %#v", request)
 	}
@@ -96,7 +111,7 @@ func TestConfiguredGoalApprovalSynchronouslyPublishesInitialPlan(t *testing.T) {
 	calls := []string{}
 	negotiator := &recordingGoalNegotiator{calls: &calls}
 	planner := &recordingGoalPlanner{calls: &calls}
-	handler, _, _ := newGoalPlanTestHandler(t, negotiator, planner)
+	handler, store, _ := newGoalPlanTestHandler(t, negotiator, planner)
 	project := createTestProject(t, handler)
 	draft := controlGoalSpec(t, project.ID, 1, nil)
 	seedGoalSpec(t, handler, project.ID, 1, state.ProjectCommandProposeGoal, draft)
@@ -107,6 +122,21 @@ func TestConfiguredGoalApprovalSynchronouslyPublishesInitialPlan(t *testing.T) {
 	}
 	negotiator.approvalResult = orchestrator.ProjectOutcome{Project: approvedProject}
 	plan := contracts.PlanSpec{PlanSpecVersion: 1, ProjectID: project.ID, GoalSpecRef: contracts.SpecRef{Version: 1, SHA256: draft.ContentSHA256}, SHA256: "sha256:" + strings.Repeat("3", 64)}
+	planContent, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := goalplan.NewEventArtifactStore(store, func() time.Time { return controlAPITestTime })
+	if err != nil {
+		t.Fatal(err)
+	}
+	storedPlanID := uuid.Must(uuid.NewV7()).String()
+	if _, err := artifacts.Put(context.Background(), goalplan.SpecArtifact{
+		TenantID: testTenantID, ProjectID: project.ID, Kind: goalplan.ArtifactPlanSpec, SpecID: storedPlanID,
+		Version: 1, ContentSHA256: plan.SHA256, Content: planContent, CreatedBy: "agt_plan",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	executingProject := approvedProject
 	executingProject.Version = 4
 	executingProject.State = contracts.ProjectExecuting
@@ -115,7 +145,7 @@ func TestConfiguredGoalApprovalSynchronouslyPublishesInitialPlan(t *testing.T) {
 		Plan: plan,
 		PlanArtifact: goalplan.SpecArtifact{
 			TenantID: testTenantID, ProjectID: project.ID, Kind: goalplan.ArtifactPlanSpec,
-			SpecID: goalPlanUUID("plan-spec", testTenantID, project.ID), Version: 1, ContentSHA256: plan.SHA256,
+			Version: 1, ContentSHA256: plan.SHA256,
 		},
 		Publication: orchestrator.PublishPlanOutcome{Project: executingProject},
 	}
@@ -131,11 +161,13 @@ func TestConfiguredGoalApprovalSynchronouslyPublishesInitialPlan(t *testing.T) {
 		t.Fatalf("calls = %v", calls)
 	}
 	approval := negotiator.approvalRequest
+	requireGoalPlanUUIDv7(t, approval.Approval.RecordID)
 	if approval.GoalSpecID != goalSpecID || approval.GoalRef != (contracts.SpecRef{Version: 1, SHA256: draft.ContentSHA256}) || approval.UserPrincipalID != "user-1" || approval.ExpectedProjectVersion != 2 || approval.IdempotencyKey != "approve-runtime-1" || approval.Approval.RecordID == "" || approval.Approval.PrincipalID != "user-1" || approval.Approval.SubjectID != goalSpecID || approval.Approval.IssuedAt != controlAPITestTime {
 		t.Fatalf("approval request = %#v", approval)
 	}
 	planning := planner.request
-	if planning.TenantID != testTenantID || planning.ProjectID != project.ID || planning.PrincipalID != "user-1" || planning.GoalSpecID != goalSpecID || planning.GoalRef != approval.GoalRef || planning.PlanSpecID != goalPlanUUID("plan-spec", testTenantID, project.ID) || planning.PlanVersion != 1 || planning.ExpectedProjectVersion != 3 || planning.IdempotencyKey == "approve-runtime-1" || len(planning.ModuleTaskIDs) != 0 || len(planning.AttemptSeriesIDs) != 0 || len(planning.ModuleSpecVersions) != 0 || len(planning.RetainedModules) != 0 {
+	requireGoalPlanUUIDv7(t, planning.PlanSpecID)
+	if planning.TenantID != testTenantID || planning.ProjectID != project.ID || planning.PrincipalID != "user-1" || planning.GoalSpecID != goalSpecID || planning.GoalRef != approval.GoalRef || planning.PlanSpecID != storedPlanID || planning.PlanVersion != 1 || planning.ExpectedProjectVersion != 3 || planning.IdempotencyKey == "approve-runtime-1" || len(planning.ModuleTaskIDs) != 0 || len(planning.AttemptSeriesIDs) != 0 || len(planning.ModuleSpecVersions) != 0 || len(planning.RetainedModules) != 0 {
 		t.Fatalf("planning request = %#v", planning)
 	}
 }
@@ -195,6 +227,14 @@ func newGoalPlanTestHandler(t *testing.T, negotiator GoalNegotiationService, pla
 		t.Fatal(err)
 	}
 	return handler, store, authorizer
+}
+
+func requireGoalPlanUUIDv7(t *testing.T, value string) {
+	t.Helper()
+	parsed, err := uuid.Parse(value)
+	if err != nil || parsed.Version() != uuid.Version(7) {
+		t.Fatalf("record id %q is not UUIDv7", value)
+	}
 }
 
 var _ GoalNegotiationService = (*recordingGoalNegotiator)(nil)
