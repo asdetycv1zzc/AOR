@@ -204,6 +204,13 @@
       "file": "000029_project_scoped_read_invocations.up.sql",
       "sha256": "sha256:e76f83912fbd670c988bf94f7bee481bd0f0911ca3b8f1afb964d4748536ee98",
       "destructive": false
+    },
+    {
+      "version": 30,
+      "mode": "EXPAND",
+      "file": "000030_scheduler_aging_capacity.up.sql",
+      "sha256": "sha256:c55299f8fb3e52006ca8d37b2d5cb9a573d822b4e12f8a20ec337111ddd21474",
+      "destructive": false
     }
   ]
 }
