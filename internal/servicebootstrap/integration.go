@@ -138,12 +138,28 @@ func configuredIntegrationChecks(configs []runtimeconfig.IntegrationCheckConfig)
 	return commands, nil
 }
 
-func (activity *integrationActivity) Run(ctx context.Context, tenantID, projectID, integrationID string) (integration.WorkflowResult, error) {
+func (activity *integrationActivity) Run(ctx context.Context, tenantID, projectID, integrationID string) (result integration.WorkflowResult, resultErr error) {
 	parsedID, parseErr := uuid.Parse(integrationID)
 	principal, principalFound := authn.PrincipalFromContext(ctx)
-	if activity == nil || activity.store == nil || activity.authority == nil || activity.repositories == nil || activity.leases == nil || activity.leaseManager == nil || activity.policy == nil || activity.provider == nil || ctx == nil || ctx.Err() != nil || parseErr != nil || parsedID.Version() != 7 || parsedID.String() != integrationID || tenantID == "" || projectID == "" || !principalFound || principal.ID != integrationServicePrincipalID || principal.Type != authn.PrincipalService || principal.Role != authn.RoleService || principal.TenantID != tenantID || principal.ProjectID != projectID {
+	if activity == nil || activity.store == nil || activity.authority == nil || activity.repositories == nil || activity.leases == nil || activity.leaseManager == nil || activity.policy == nil || activity.provider == nil || ctx == nil || ctx.Err() != nil || parseErr != nil || parsedID == uuid.Nil || parsedID.String() != integrationID || tenantID == "" || projectID == "" || !principalFound || principal.ID != integrationServicePrincipalID || principal.Type != authn.PrincipalService || principal.Role != authn.RoleService || principal.TenantID != tenantID || principal.ProjectID != projectID {
 		return integration.WorkflowResult{}, ErrWorkerUnavailable
 	}
+	var lease authz.CapabilityLease
+	leaseIssued := false
+	defer func() {
+		if !leaseIssued {
+			return
+		}
+		cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		revokeErr := activity.leases.Revoke(cleanupContext, principal, leaseauthority.RevokeRequest{
+			TenantID: tenantID, ProjectID: projectID, LeaseID: lease.ID,
+			Reason: "integration activity complete", IdempotencyKey: "integration-revoke:" + integrationID,
+		})
+		cancel()
+		if revokeErr != nil {
+			resultErr = errors.Join(resultErr, revokeErr)
+		}
+	}()
 	durable, found, err := activity.store.Request(ctx, tenantID, integrationID)
 	if err != nil || !found || durable.ProjectID != projectID {
 		if err != nil {
@@ -198,7 +214,7 @@ func (activity *integrationActivity) Run(ctx context.Context, tenantID, projectI
 	if err != nil {
 		return integration.WorkflowResult{}, err
 	}
-	lease, err := activity.leases.Issue(ctx, principal, leaseauthority.GrantRequest{
+	lease, err = activity.leases.Issue(ctx, principal, leaseauthority.GrantRequest{
 		TenantID: tenantID, ProjectID: projectID, Action: authz.ActionIntegrationMerge,
 		Resource: integration.IntegrationResource(integrationID), ParameterDigest: parameterDigest,
 		BudgetAccountID: projectID, IdempotencyKey: "integration-merge-" + leaseKey.String(), TTL: 30 * time.Minute,
@@ -209,6 +225,7 @@ func (activity *integrationActivity) Run(ctx context.Context, tenantID, projectI
 		}
 		return integration.WorkflowResult{}, integration.ErrNotAudited
 	}
+	leaseIssued = true
 	authorizationRequest.LeaseID = lease.ID
 	authorizationRequest.FencingToken = lease.FencingToken
 	authorizer, err := integration.NewLeaseAuthorizer(activity.leaseManager, activity.policy, activity.authority, time.Now)
@@ -248,7 +265,7 @@ func (activity *integrationActivity) Run(ctx context.Context, tenantID, projectI
 	if err != nil {
 		return integration.WorkflowResult{}, err
 	}
-	result, err := workflow.Run(ctx, integration.Request{
+	result, err = workflow.Run(ctx, integration.Request{
 		TenantID: tenantID, ProjectID: projectID, IntegrationID: integrationID,
 		IdempotencyKey: "integration:" + integrationID, BaseCommit: snapshot.repository.BaselineCommit,
 		Candidates: append([]integration.Candidate(nil), snapshot.candidates...), PolicyDigest: snapshot.policy,
