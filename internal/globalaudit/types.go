@@ -248,10 +248,15 @@ func validateDecision(decision Decision) error {
 		}
 		seenFindings[finding.StableFingerprint] = struct{}{}
 	}
+	seenRisks := make(map[string]struct{}, len(decision.ResidualRisks))
 	for _, risk := range decision.ResidualRisks {
 		if !safeText(risk, 4096) {
 			return ErrInvalidReport
 		}
+		if _, exists := seenRisks[risk]; exists {
+			return ErrInvalidReport
+		}
+		seenRisks[risk] = struct{}{}
 	}
 	return nil
 }
