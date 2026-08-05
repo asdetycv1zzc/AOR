@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/akimisaka/aor/internal/eventing"
+	"github.com/google/uuid"
 )
 
 func TestEventArtifactStoreIsImmutableScopedAndIdempotent(t *testing.T) {
@@ -42,6 +43,14 @@ func TestEventArtifactStoreIsImmutableScopedAndIdempotent(t *testing.T) {
 	}
 	if stats := events.Stats(); stats.Events != 1 || stats.Projections != 1 {
 		t.Fatalf("event stats = %#v", stats)
+	}
+	snapshot, err := events.LoadReconciliationSnapshot(context.Background(), "tenant_1")
+	if err != nil || len(snapshot.Events) != 1 {
+		t.Fatalf("event snapshot = %#v, %v", snapshot, err)
+	}
+	eventID, err := uuid.Parse(snapshot.Events[0].EventID)
+	if err != nil || eventID.Version() != uuid.Version(7) {
+		t.Fatalf("event ID = %q, %v", snapshot.Events[0].EventID, err)
 	}
 }
 

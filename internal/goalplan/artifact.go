@@ -14,6 +14,7 @@ import (
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 	"github.com/akimisaka/aor/pkg/contracts"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
+	"github.com/google/uuid"
 )
 
 type ArtifactKind string
@@ -103,9 +104,12 @@ func (s *EventArtifactStore) Put(ctx context.Context, artifact SpecArtifact) (Sp
 	if err != nil {
 		return SpecArtifact{}, err
 	}
-	eventID := stableArtifactUUIDv7(artifact.CreatedAt, artifact.TenantID+"\x00"+aggregateID+"\x00"+artifact.ArtifactSHA256)
+	eventID, err := uuid.NewV7()
+	if err != nil {
+		return SpecArtifact{}, err
+	}
 	event := eventing.DomainEvent{
-		EventID: eventID, TenantID: artifact.TenantID, ProjectID: artifact.ProjectID, AggregateType: "spec_artifact", AggregateID: aggregateID,
+		EventID: eventID.String(), TenantID: artifact.TenantID, ProjectID: artifact.ProjectID, AggregateType: "spec_artifact", AggregateID: aggregateID,
 		AggregateVersion: 1, Type: "io.aor.artifact.spec-stored.v1", Payload: payload, PayloadSHA256: mustArtifactDigest(payload),
 		OccurredAt: artifact.CreatedAt, CorrelationID: "corr_" + artifact.ArtifactSHA256[len("sha256:"):len("sha256:")+32],
 	}
@@ -220,21 +224,4 @@ func mustArtifactDigest(value []byte) string {
 		panic(err)
 	}
 	return digest
-}
-
-func stableArtifactUUIDv7(at time.Time, input string) string {
-	var value [16]byte
-	milliseconds := uint64(at.UnixMilli())
-	value[0] = byte(milliseconds >> 40)
-	value[1] = byte(milliseconds >> 32)
-	value[2] = byte(milliseconds >> 24)
-	value[3] = byte(milliseconds >> 16)
-	value[4] = byte(milliseconds >> 8)
-	value[5] = byte(milliseconds)
-	digest := sha256.Sum256([]byte(input))
-	copy(value[6:], digest[:10])
-	value[6] = value[6]&0x0f | 0x70
-	value[8] = value[8]&0x3f | 0x80
-	hexValue := hex.EncodeToString(value[:])
-	return hexValue[0:8] + "-" + hexValue[8:12] + "-" + hexValue[12:16] + "-" + hexValue[16:20] + "-" + hexValue[20:32]
 }
