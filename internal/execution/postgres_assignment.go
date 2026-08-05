@@ -2,11 +2,8 @@ package execution
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"errors"
-	"strconv"
 	"strings"
 
 	"github.com/akimisaka/aor/internal/agentruntime"
@@ -87,9 +84,6 @@ FOR UPDATE OF t`, request.Project.TenantID, request.Project.ID, request.Task.ID)
 	if targetFence < 1 {
 		return Assignment{}, ErrAssignmentInvalid
 	}
-	fenceValue := strconv.FormatInt(targetFence, 10)
-	agentID := stableAssignmentID("agt_executor_", request.Project.TenantID, request.Project.ID, request.Task.ID, attemptSeriesID, fenceValue)
-	sandboxID := stableAssignmentID("sbx_executor_", request.Project.TenantID, request.Project.ID, request.Task.ID, attemptSeriesID, fenceValue)
 	// Replays must recover the assignment created before a task transition was
 	// committed.  The execution ID is the durable idempotency key; do not derive
 	// a newer generation merely because the task projection has advanced.
@@ -104,11 +98,8 @@ FOR UPDATE`, request.Project.TenantID, request.ExecutionID).Scan(
 		&existingAgent, &existingSandbox, &existingProject, &existingTask,
 		&existingSeries, &existingModule, &existingFence)
 	if existingErr == nil {
-		existingFenceValue := strconv.FormatInt(existingFence, 10)
-		expectedExistingAgent := stableAssignmentID("agt_executor_", request.Project.TenantID, request.Project.ID, request.Task.ID, attemptSeriesID, existingFenceValue)
-		expectedExistingSandbox := stableAssignmentID("sbx_executor_", request.Project.TenantID, request.Project.ID, request.Task.ID, attemptSeriesID, existingFenceValue)
 		if existingProject != request.Project.ID || existingTask != request.Task.ID || existingSeries != attemptSeriesID ||
-			existingModule == "" || existingAgent != expectedExistingAgent || existingSandbox != expectedExistingSandbox || existingFence != targetFence && existingFence != request.Task.FencingToken {
+			existingModule == "" || !validID(existingAgent) || !validID(existingSandbox) || (existingFence != targetFence && existingFence != request.Task.FencingToken) {
 			return Assignment{}, ErrAssignmentInvalid
 		}
 		if err := tx.Commit(); err != nil {
@@ -119,6 +110,16 @@ FOR UPDATE`, request.Project.TenantID, request.ExecutionID).Scan(
 	if !errors.Is(existingErr, sql.ErrNoRows) {
 		return Assignment{}, existingErr
 	}
+	agentUUID, err := uuid.NewV7()
+	if err != nil {
+		return Assignment{}, err
+	}
+	sandboxUUID, err := uuid.NewV7()
+	if err != nil {
+		return Assignment{}, err
+	}
+	agentID := agentUUID.String()
+	sandboxID := sandboxUUID.String()
 
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO agent_instances
@@ -294,15 +295,6 @@ func validRuntimeBinding(request RuntimeBindingRequest) bool {
 		}
 	}
 	return request.FencingToken > 0 && request.PromptVersion == prompts.BaselineVersion
-}
-
-func stableAssignmentID(prefix string, values ...string) string {
-	digest := sha256.New()
-	for _, value := range values {
-		_, _ = digest.Write([]byte(value))
-		_, _ = digest.Write([]byte{0})
-	}
-	return prefix + hex.EncodeToString(digest.Sum(nil))
 }
 
 var _ AssignmentAuthority = (*PostgresAssignmentAuthority)(nil)
