@@ -56,6 +56,21 @@ task_model_lease_roles := {
 	"MODULE_AUDITOR",
 }
 
+global_auditor_read_tools := {
+	"artifact.read",
+	"knowledge.read_range",
+	"knowledge.search",
+	"repository.file.read",
+}
+
+global_auditor_read_tool_resource if {
+	input.resource.type == "tool"
+	input.resource.path != ""
+	startswith(input.resource.id, "tool://")
+	some tool_id in global_auditor_read_tools
+	contains(input.resource.id, concat("", ["/", tool_id, "@"]))
+}
+
 valid_project_scope if {
     input.principal.id != ""
     input.principal.type != ""
@@ -212,6 +227,17 @@ tool_invoke_allowed if {
 	active_lease
 }
 
+tool_invoke_allowed if {
+	valid_project_scope
+	input.action == "tool.invoke"
+	input.principal.type == "AGENT_INSTANCE"
+	input.principal.role == "GLOBAL_AUDITOR"
+	input.project.state == "GLOBAL_AUDIT"
+	global_auditor_read_tool_resource
+	input.budget.available
+	active_lease
+}
+
 lease_grant_input_valid if {
 	valid_task_scope
 	input.action in side_effect_actions
@@ -238,6 +264,19 @@ lease_grant_input_valid if {
 	object.get(object.get(input, "task", {}), "id", "") == ""
 	object.get(object.get(input, "task", {}), "specDigest", "") == ""
 	input.action == "model.generate"
+	not input.lease
+	input.parameterDigest != ""
+	input.budget.accountId != ""
+	input.budget.available
+}
+
+lease_grant_input_valid if {
+	valid_project_scope
+	input.principal.role == "GLOBAL_AUDITOR"
+	object.get(object.get(input, "task", {}), "id", "") == ""
+	object.get(object.get(input, "task", {}), "specDigest", "") == ""
+	input.action == "tool.invoke"
+	global_auditor_read_tool_resource
 	not input.lease
 	input.parameterDigest != ""
 	input.budget.accountId != ""
@@ -292,6 +331,15 @@ tool_invoke_grant_allowed if {
 	input.task.state != "SUPERSEDED"
 	input.task.state != "PASSED"
 	input.task.state != "INTEGRATED"
+}
+
+tool_invoke_grant_allowed if {
+	lease_grant_input_valid
+	input.action == "tool.invoke"
+	input.principal.type == "AGENT_INSTANCE"
+	input.principal.role == "GLOBAL_AUDITOR"
+	input.project.state == "GLOBAL_AUDIT"
+	global_auditor_read_tool_resource
 }
 
 model_generate_grant_allowed if {

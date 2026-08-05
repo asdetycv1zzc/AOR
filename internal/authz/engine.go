@@ -230,7 +230,7 @@ func bindGrant(result PolicyDecision, input PolicyInput, now time.Time) PolicyDe
 
 func leaseGrantActionAllowed(input PolicyInput) bool {
 	if input.Task.ID == "" {
-		return input.Action == ActionModelGenerate && !LeaseRoleRequiresTask(input.Principal.Role)
+		return (input.Action == ActionModelGenerate && !LeaseRoleRequiresTask(input.Principal.Role)) || globalAuditorProjectReadTool(input)
 	}
 	return IsSideEffect(input.Action) || input.Action == ActionModelGenerate && taskModelLeaseRole(input.Principal.Role)
 }
@@ -257,7 +257,7 @@ func reasonForError(err error) string {
 }
 
 func (e *Engine) validateExecutionBoundary(input PolicyInput) error {
-	if !RequiresTask(input.Action) {
+	if !RequiresTask(input.Action) || globalAuditorProjectReadTool(input) {
 		return nil
 	}
 	task := input.Task
@@ -339,6 +339,9 @@ func (e *Engine) defaultDecision(input PolicyInput, lease CapabilityLease, now t
 	case ActionRepoWrite, ActionRepoApplyPatch:
 		return e.repoWriteDecision(input, lease)
 	case ActionToolInvoke:
+		if globalAuditorProjectReadTool(input) && input.Project.State == "GLOBAL_AUDIT" {
+			return e.constrainAllow(allowDecision(e.bundle.Version, "aor.tool.invoke", "ROLE_ALLOWED", "LEASE_VALID"), input, lease)
+		}
 		if roleIn(input.Principal.Role, authn.RoleGoalProposer, authn.RoleGoalChallenger, authn.RolePlanSupervisor, authn.RoleModulePlanner, authn.RoleExecutor, authn.RoleAuditor, authn.RoleKnowledgeCurator, authn.RoleService) {
 			if roleIn(input.Project.State, "ABORTED", "ARCHIVED", "FAILED_SYSTEM", "PAUSED") || roleIn(input.Task.State, "CANCELED", "SUPERSEDED", "PASSED", "INTEGRATED") {
 				return denyDecision(e.bundle.Version, "TASK_NOT_ACTIVE")

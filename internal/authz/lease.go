@@ -451,7 +451,7 @@ func (m *LeaseManager) Issue(ctx context.Context, request LeaseRequest) (Capabil
 
 func leaseActionAllowed(action, role, taskID string) bool {
 	if taskID == "" {
-		return action == ActionModelGenerate && !LeaseRoleRequiresTask(role)
+		return (action == ActionModelGenerate && !LeaseRoleRequiresTask(role)) || (action == ActionToolInvoke && role == authn.RoleGlobalAuditor)
 	}
 	return IsSideEffect(action) || action == ActionModelGenerate && taskModelLeaseRole(role)
 }

@@ -155,7 +155,7 @@ func (input PolicyInput) Validate(now time.Time) *aorerrors.Error {
 		return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "project"})
 	}
 	hasTask := input.Task.ID != "" || input.Task.TenantID != "" || input.Task.ProjectID != "" || input.Task.State != "" || input.Task.SpecDigest != "" || len(input.Task.OwnedPaths) > 0
-	if RequiresTask(input.Action) || hasTask {
+	if (RequiresTask(input.Action) && !globalAuditorProjectReadTool(input)) || hasTask {
 		if !safeID(input.Task.TenantID) || !safeID(input.Task.ProjectID) || !safeID(input.Task.ID) || input.Task.State == "" || input.Task.StateVersion < 0 {
 			return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "task"})
 		}
@@ -443,6 +443,24 @@ func LeaseRoleRequiresTask(role string) bool {
 	default:
 		return true
 	}
+}
+
+func globalAuditorProjectReadTool(input PolicyInput) bool {
+	return input.Action == ActionToolInvoke && input.Principal.Role == authn.RoleGlobalAuditor && input.Task.ID == "" && globalAuditorReadToolResource(input.Resource)
+}
+
+func globalAuditorReadToolResource(resource Resource) bool {
+	if resource.Type != "tool" || resource.Path == "" || !strings.HasPrefix(resource.ID, "tool://") {
+		return false
+	}
+	for _, toolID := range []string{"artifact.read", "knowledge.read_range", "knowledge.search", "repository.file.read"} {
+		marker := "/" + toolID + "@"
+		index := strings.LastIndex(resource.ID, marker)
+		if index > len("tool://") && index+len(marker) < len(resource.ID) && !strings.ContainsAny(resource.ID[index+len(marker):], "/@") {
+			return true
+		}
+	}
+	return false
 }
 
 func taskModelLeaseRole(role string) bool {
