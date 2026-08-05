@@ -176,6 +176,13 @@
       "file": "000025_integration_task_lifecycle.up.sql",
       "sha256": "sha256:1742f64ed8b356647a37c68e529c9e191003568d12c5c16ec5647a4aec306933",
       "destructive": false
+    },
+    {
+      "version": 26,
+      "mode": "EXPAND",
+      "file": "000026_execution_assignments.up.sql",
+      "sha256": "sha256:1e337566ed595e4f78eae84898a5f0b896d820b9aff76f4f3fcf2240efa0a4ef",
+      "destructive": false
     }
   ]
 }
