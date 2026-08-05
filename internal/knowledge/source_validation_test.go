@@ -80,3 +80,50 @@ func TestDeterministicValidationReportGatesCuratedSourcesAndLinks(t *testing.T) 
 		t.Fatalf("broken link passed report: %#v", failed.Report)
 	}
 }
+
+func TestUpdateEnforcesDeterministicValidationReport(t *testing.T) {
+	fixture := newKnowledgeFixture(t, "project-a")
+	missingSource := UpdateProposal{Documents: []DocumentInput{{
+		Path: "architecture/auth.md", Title: "Auth", TrustLevel: TrustCurated, Content: []byte("deny by default\n"),
+	}}}
+	_, err := fixture.service.Update(context.Background(), curatorAccess("project-a", missingSource), missingSource)
+	assertErrorCode(t, err, aorerrors.CodeInvalidArgument)
+	if revision := proposalRevision(t, fixture.service, "project-a"); revision != "" {
+		t.Fatalf("failed validation committed revision %s", revision)
+	}
+
+	brokenLink := UpdateProposal{Documents: []DocumentInput{{
+		Path: "architecture/auth.md", Title: "Auth", TrustLevel: TrustProjectApproved, Content: []byte("See [missing](missing.md).\n"),
+	}}}
+	_, err = fixture.service.Update(context.Background(), curatorAccess("project-a", brokenLink), brokenLink)
+	assertErrorCode(t, err, aorerrors.CodeInvalidArgument)
+
+	lowTrust := UpdateProposal{Documents: []DocumentInput{{
+		Path: "architecture/auth.md", Title: "Auth", TrustLevel: TrustProjectApproved, Content: []byte("deny by default\n"),
+	}}}
+	result, err := fixture.service.Update(context.Background(), curatorAccess("project-a", lowTrust), lowTrust)
+	if err != nil || result.Manifest.Revision == "" {
+		t.Fatalf("source-optional update failed: result=%#v err=%v", result, err)
+	}
+}
+
+func TestCommittedUpdateResumeEnforcesDeterministicValidationReport(t *testing.T) {
+	fixture := newKnowledgeFixture(t, "project-a")
+	proposal := UpdateProposal{Documents: []DocumentInput{{
+		Path: "architecture/auth.md", Title: "Auth", TrustLevel: TrustCurated, Content: []byte("deny by default\n"),
+	}}}
+	access := curatorAccess("project-a", proposal)
+	snapshot, err := fixture.service.prepareSnapshot(context.Background(), access, proposal, knowledgeTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := fixture.repository.Commit(context.Background(), CommitRequest{
+		TenantID: "tenant-1", ProjectID: "project-a", BaseRevision: proposal.BaseRevision, Snapshot: snapshot,
+	})
+	if err != nil || manifest.Revision == "" {
+		t.Fatalf("seed commit failed: manifest=%#v err=%v", manifest, err)
+	}
+
+	_, err = fixture.service.Update(context.Background(), access, proposal)
+	assertErrorCode(t, err, aorerrors.CodeInvalidArgument)
+}

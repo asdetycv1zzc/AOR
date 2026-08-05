@@ -209,7 +209,7 @@ func TestImmutableReferencesAndPaginatedReads(t *testing.T) {
 	}
 	proposal1 := UpdateProposal{Parents: []ParentSnapshot{}, Overrides: []string{}, Documents: []DocumentInput{{
 		Path: "architecture/auth.md", Title: "Authentication architecture", Tags: []string{"auth", "security"},
-		TrustLevel: TrustCurated, Content: []byte(strings.Join(lines, "\r\n") + "\r\n"),
+		TrustLevel: TrustCurated, Content: []byte(strings.Join(lines, "\r\n") + "\r\n"), Source: testSource(TrustCurated),
 	}}}
 	result1 := commitProposal(t, fixture.service, "project-a", proposal1)
 	search, err := fixture.service.Search(context.Background(), SearchRequest{Access: readAccess("project-a"), Path: "architecture/auth.md"})
@@ -240,7 +240,7 @@ func TestImmutableReferencesAndPaginatedReads(t *testing.T) {
 
 	proposal2 := UpdateProposal{BaseRevision: result1.Manifest.Revision, Documents: []DocumentInput{{
 		Path: "architecture/auth.md", Title: "Authentication architecture", Tags: []string{"auth", "security"},
-		TrustLevel: TrustCurated, Content: []byte("replacement\n"),
+		TrustLevel: TrustCurated, Content: []byte("replacement\n"), Source: testSource(TrustCurated),
 	}}}
 	result2 := commitProposal(t, fixture.service, "project-a", proposal2)
 	if result2.Manifest.Revision == result1.Manifest.Revision {
@@ -267,7 +267,7 @@ func TestReadRangeAppliesByteLimit(t *testing.T) {
 		lines[index] = strings.Repeat("x", 400)
 	}
 	result := commitProposal(t, fixture.service, "project-a", UpdateProposal{Documents: []DocumentInput{{
-		Path: "operations/large.md", Title: "Large", TrustLevel: TrustCurated, Content: []byte(strings.Join(lines, "\n")),
+		Path: "operations/large.md", Title: "Large", TrustLevel: TrustCurated, Content: []byte(strings.Join(lines, "\n")), Source: testSource(TrustCurated),
 	}}})
 	search, err := fixture.service.Search(context.Background(), SearchRequest{Access: readAccess("project-a"), Path: "operations/large.md"})
 	if err != nil {
@@ -328,14 +328,14 @@ func TestSearchExactIndexesFullTextAndCaps(t *testing.T) {
 func TestProjectIsolationAndPinnedInheritance(t *testing.T) {
 	fixture := newKnowledgeFixture(t, "parent", "other", "child")
 	parent1 := commitProposal(t, fixture.service, "parent", UpdateProposal{Documents: []DocumentInput{{
-		Path: "architecture/base.md", Title: "Parent", TrustLevel: TrustCurated, Content: []byte("parent-v1\n"),
+		Path: "architecture/base.md", Title: "Parent", TrustLevel: TrustCurated, Content: []byte("parent-v1\n"), Source: testSource(TrustCurated),
 	}}})
 	commitProposal(t, fixture.service, "other", UpdateProposal{Documents: []DocumentInput{{
-		Path: "architecture/other.md", Title: "Other", TrustLevel: TrustCurated, Content: []byte("other-only\n"),
+		Path: "architecture/other.md", Title: "Other", TrustLevel: TrustCurated, Content: []byte("other-only\n"), Source: testSource(TrustCurated),
 	}}})
 	child := commitProposal(t, fixture.service, "child", UpdateProposal{Parents: []ParentSnapshot{{ProjectID: "parent", Revision: parent1.Manifest.Revision, Order: 0}}})
 	parent2 := commitProposal(t, fixture.service, "parent", UpdateProposal{BaseRevision: parent1.Manifest.Revision, Documents: []DocumentInput{{
-		Path: "architecture/base.md", Title: "Parent", TrustLevel: TrustCurated, Content: []byte("parent-v2\n"),
+		Path: "architecture/base.md", Title: "Parent", TrustLevel: TrustCurated, Content: []byte("parent-v2\n"), Source: testSource(TrustCurated),
 	}}})
 	if parent2.Manifest.Revision == parent1.Manifest.Revision {
 		t.Fatal("parent revision did not change")
@@ -364,7 +364,7 @@ func TestProjectIsolationAndPinnedInheritance(t *testing.T) {
 func TestInheritedSnapshotAuthorizationPrecedesParentRead(t *testing.T) {
 	fixture := newKnowledgeFixture(t, "parent", "child")
 	parent := commitProposal(t, fixture.service, "parent", UpdateProposal{Documents: []DocumentInput{{
-		Path: "architecture/base.md", Title: "Parent", TrustLevel: TrustCurated, Content: []byte("parent knowledge\n"),
+		Path: "architecture/base.md", Title: "Parent", TrustLevel: TrustCurated, Content: []byte("parent knowledge\n"), Source: testSource(TrustCurated),
 	}}})
 	commitProposal(t, fixture.service, "child", UpdateProposal{Parents: []ParentSnapshot{{
 		ProjectID: "parent", Revision: parent.Manifest.Revision, Order: 0,
@@ -439,7 +439,7 @@ func TestInheritedSnapshotAuthorizationPrecedesParentRead(t *testing.T) {
 func TestOrderedParentConflictAndTrustResolution(t *testing.T) {
 	fixture := newKnowledgeFixture(t, "parent-a", "parent-b", "child")
 	parentA := commitProposal(t, fixture.service, "parent-a", UpdateProposal{Documents: []DocumentInput{{
-		Path: "policies/rule.md", Title: "Rule A", TrustLevel: TrustCurated, Content: []byte("allow-a\n"),
+		Path: "policies/rule.md", Title: "Rule A", TrustLevel: TrustCurated, Content: []byte("allow-a\n"), Source: testSource(TrustCurated),
 	}}})
 	downgradeOwn := UpdateProposal{BaseRevision: parentA.Manifest.Revision, Documents: []DocumentInput{{
 		Path: "policies/rule.md", Title: "Rule A", TrustLevel: TrustExternalUntrusted, Content: []byte("allow-a-low-trust\n"),
@@ -462,7 +462,7 @@ func TestOrderedParentConflictAndTrustResolution(t *testing.T) {
 	_, err = fixture.service.Update(context.Background(), curatorAccess("child", lowTrust), lowTrust)
 	assertErrorCode(t, err, aorerrors.CodeConflict)
 	resolved := UpdateProposal{Parents: parents, ParentOrderExplicit: true, Overrides: []string{"policies/rule.md"}, Documents: []DocumentInput{{
-		Path: "policies/rule.md", Title: "Resolved", TrustLevel: TrustCurated, Content: []byte("resolved\n"),
+		Path: "policies/rule.md", Title: "Resolved", TrustLevel: TrustCurated, Content: []byte("resolved\n"), Source: testSource(TrustCurated),
 	}}}
 	commitProposal(t, fixture.service, "child", resolved)
 	results, err := fixture.service.Search(context.Background(), SearchRequest{Access: readAccess("child"), Path: "policies/rule.md"})
@@ -478,7 +478,7 @@ func TestAuthorizationAndPathChecksFailClosed(t *testing.T) {
 	fixture := newKnowledgeFixture(t, "project-a")
 	_, err := NewService(ServiceConfig{Repository: fixture.repository, Scopes: fixture.scopes})
 	assertErrorCode(t, err, aorerrors.CodeDependencyUnavailable)
-	proposal := UpdateProposal{Documents: []DocumentInput{{Path: "safe.md", Title: "Safe", TrustLevel: TrustCurated, Content: []byte("safe\n")}}}
+	proposal := UpdateProposal{Documents: []DocumentInput{{Path: "safe.md", Title: "Safe", TrustLevel: TrustCurated, Content: []byte("safe\n"), Source: testSource(TrustCurated)}}}
 	nonCurator := curatorAccess("project-a", proposal)
 	nonCurator.Principal = authn.Principal{ID: "executor", Type: authn.PrincipalAgentInstance, Role: authn.RoleExecutor, TenantID: "tenant-1", ProjectID: "project-a"}
 	_, err = fixture.service.Update(context.Background(), nonCurator, proposal)
@@ -497,7 +497,7 @@ func TestAuthorizationAndPathChecksFailClosed(t *testing.T) {
 	assertErrorCode(t, err, aorerrors.CodeForbidden)
 
 	for _, candidate := range []string{"../escape.md", "/absolute.md", "a\\..\\escape.md", "C:/escape.md", "CON/file.md"} {
-		badProposal := UpdateProposal{BaseRevision: proposalRevision(t, fixture.service, "project-a"), Documents: []DocumentInput{{Path: candidate, Title: "Bad", TrustLevel: TrustCurated, Content: []byte("bad\n")}}}
+		badProposal := UpdateProposal{BaseRevision: proposalRevision(t, fixture.service, "project-a"), Documents: []DocumentInput{{Path: candidate, Title: "Bad", TrustLevel: TrustCurated, Content: []byte("bad\n"), Source: testSource(TrustCurated)}}}
 		_, digestErr := ProposalDigest(badProposal)
 		assertErrorCode(t, digestErr, aorerrors.CodeUnauthorizedPath)
 	}
@@ -531,7 +531,7 @@ func TestFileRepositoryRejectsSymlinkRootsAndTampering(t *testing.T) {
 	if err := os.Symlink(externalProject, projectDirectory); err != nil {
 		t.Fatal(err)
 	}
-	symlinkProposal := UpdateProposal{Documents: []DocumentInput{{Path: "escape.md", Title: "Escape", TrustLevel: TrustCurated, Content: []byte("escape\n")}}}
+	symlinkProposal := UpdateProposal{Documents: []DocumentInput{{Path: "escape.md", Title: "Escape", TrustLevel: TrustCurated, Content: []byte("escape\n"), Source: testSource(TrustCurated)}}}
 	_, err = symlinkFixture.service.Update(context.Background(), curatorAccess("project-a", symlinkProposal), symlinkProposal)
 	assertErrorCode(t, err, aorerrors.CodeUnauthorizedPath)
 	entries, err := os.ReadDir(externalProject)
@@ -544,7 +544,7 @@ func TestFileRepositoryRejectsSymlinkRootsAndTampering(t *testing.T) {
 
 	fixture := newKnowledgeFixture(t, "project-a")
 	result := commitProposal(t, fixture.service, "project-a", UpdateProposal{Documents: []DocumentInput{{
-		Path: "safe.md", Title: "Safe", TrustLevel: TrustCurated, Content: []byte("original\n"),
+		Path: "safe.md", Title: "Safe", TrustLevel: TrustCurated, Content: []byte("original\n"), Source: testSource(TrustCurated),
 	}}})
 	localPath, err := fixture.repository.LocalPath("tenant-1", "project-a", result.Manifest.Revision, "safe.md")
 	if err != nil {
@@ -607,7 +607,7 @@ func TestUpdateRetryResumesEventPublicationAfterSnapshotCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proposal := UpdateProposal{Documents: []DocumentInput{{Path: "retry.md", Title: "Retry", TrustLevel: TrustCurated, Content: []byte("retry\n")}}}
+	proposal := UpdateProposal{Documents: []DocumentInput{{Path: "retry.md", Title: "Retry", TrustLevel: TrustCurated, Content: []byte("retry\n"), Source: testSource(TrustCurated)}}}
 	if _, err := service.Update(context.Background(), curatorAccess("project-a", proposal), proposal); err == nil {
 		t.Fatal("update unexpectedly succeeded without event persistence")
 	}

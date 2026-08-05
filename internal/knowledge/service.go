@@ -276,6 +276,9 @@ func (service *Service) Update(ctx context.Context, access Access, proposal Upda
 	if err := service.validateTrustChange(ctx, access, project, proposal.BaseRevision, updatedDocuments); err != nil {
 		return UpdateResult{}, err
 	}
+	if _, err := validatePreparedProposal(proposal, digest, updatedDocuments); err != nil {
+		return UpdateResult{}, err
+	}
 	// Revalidate immediately before the immutable snapshot and HEAD update.
 	if _, err := service.authorize(ctx, access, true); err != nil {
 		return UpdateResult{}, err
@@ -321,12 +324,19 @@ func (service *Service) ValidateProposal(ctx context.Context, access Access, pro
 	if err := service.validateTrustChange(ctx, access, project, proposal.BaseRevision, documents); err != nil {
 		return ProposalValidation{}, err
 	}
+	report, err := validatePreparedProposal(proposal, digest, documents)
+	return ProposalValidation{Digest: digest, DocumentCount: len(documents), Report: report}, err
+}
+
+func validatePreparedProposal(proposal UpdateProposal, digest string, documents map[string]visibleDocument) (ValidationReport, error) {
 	report := buildValidationReport(proposal, digest, documents)
-	validation := ProposalValidation{Digest: digest, DocumentCount: len(documents), Report: report}
-	if !report.Passed {
-		return validation, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "knowledge validation report", "reportSha256": report.SHA256})
+	if err := ValidateValidationReport(report); err != nil {
+		return report, err
 	}
-	return validation, nil
+	if !report.Passed {
+		return report, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "knowledge validation report", "reportSha256": report.SHA256})
+	}
+	return report, nil
 }
 
 func (service *Service) resumeCommittedUpdate(ctx context.Context, access Access, project authz.ProjectScope, proposal UpdateProposal, digest string) (UpdateResult, error) {
@@ -357,6 +367,9 @@ func (service *Service) resumeCommittedUpdate(ctx context.Context, access Access
 		return UpdateResult{}, err
 	}
 	if err := service.validateTrustChange(ctx, access, project, proposal.BaseRevision, updatedDocuments); err != nil {
+		return UpdateResult{}, err
+	}
+	if _, err := validatePreparedProposal(proposal, digest, updatedDocuments); err != nil {
 		return UpdateResult{}, err
 	}
 	if _, err := service.authorize(ctx, access, true); err != nil {

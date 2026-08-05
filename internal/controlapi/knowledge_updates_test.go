@@ -55,6 +55,7 @@ func TestKnowledgeUpdateAPIBindsDraftAndApproval(t *testing.T) {
 			Documents: []knowledgecurator.Document{{
 				Path: "architecture/auth.md", Title: "Authentication", Tags: []string{},
 				TrustLevel: knowledge.TrustCurated, ContentType: "text/markdown", Content: "# Authentication\n",
+				Source: &knowledge.SourceReference{URI: "https://docs.example/authentication", Revision: "v1", SHA256: proposalDigest, TrustLevel: knowledge.TrustCurated},
 			}}, DeletePaths: []string{},
 		},
 		DraftURI:    "artifact://sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

@@ -56,7 +56,7 @@
     "document": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "title", "tags", "trustLevel", "contentType", "content", "source"],
+      "required": ["path", "title", "tags", "trustLevel", "contentType", "content"],
       "properties": {
         "path": {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^(inherited|requirements|architecture|modules|interfaces|decisions|prompts|workflows|tools|security|operations|lessons)/.+"},
         "title": {"type": "string", "minLength": 1, "maxLength": 512},
@@ -65,7 +65,13 @@
         "contentType": {"type": "string", "minLength": 1, "maxLength": 256},
         "content": {"type": "string", "minLength": 1, "maxLength": 262144},
         "source": {"$ref": "#/$defs/source"}
-      }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"trustLevel": {"const": "CURATED"}}, "required": ["trustLevel"]},
+          "then": {"required": ["source"]}
+        }
+      ]
     },
     "parent": {
       "type": "object",

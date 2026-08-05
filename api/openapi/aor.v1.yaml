@@ -1201,7 +1201,7 @@ components:
     KnowledgeUpdateDocument:
       type: object
       additionalProperties: false
-      required: [path, title, tags, trustLevel, contentType, content, source]
+      required: [path, title, tags, trustLevel, contentType, content]
       properties:
         path:
           type: string
@@ -1216,6 +1216,13 @@ components:
         source: {$ref: '#/components/schemas/KnowledgeSourceReference'}
         contentType: {type: string, minLength: 1, maxLength: 256}
         content: {type: string, minLength: 1, maxLength: 262144}
+      allOf:
+        - if:
+            properties:
+              trustLevel: {const: CURATED}
+            required: [trustLevel]
+          then:
+            required: [source]
     KnowledgeUpdateProposal:
       type: object
       additionalProperties: false
