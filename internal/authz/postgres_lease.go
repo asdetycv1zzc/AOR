@@ -65,7 +65,7 @@ func (store *PostgresLeaseStore) Put(ctx context.Context, lease CapabilityLease)
    nonce_hash, fencing_token, state, revoked_at, signature)
 VALUES
 	  ($1, NULLIF($2, ''), $3::uuid, $4::uuid, $5, NULLIF($6, '')::uuid, $7, $8, $9,
-	   $10, $11, $12, $13, $14, $15::jsonb, $16, $17, $18, $19,
+	   $10, $11, $12, $13, $14::jsonb, $15, $16, $17, $18, $19,
 	   $20::jsonb, $21, $22, $23, $24, $25, $26, $27)`,
 		lease.ID, lease.IdempotencyKey, lease.TenantID, lease.ProjectID, nullableLeaseAgentInstance(lease), nullableLeaseString(lease.TaskID),
 		lease.PrincipalID, string(lease.PrincipalType), lease.Role, lease.Action,
