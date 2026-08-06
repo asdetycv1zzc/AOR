@@ -832,9 +832,14 @@ func configuredWorkerExecution(config runtimeconfig.Config, clients *runtimeclie
 		_ = host.Close()
 		return nil, err
 	}
+	priorEvidence, err := audit.NewArtifactEvidenceStore(capabilityPublisher, artifactCatalog)
+	if err != nil {
+		_ = host.Close()
+		return nil, err
+	}
 	route := config.Execution.Route
 	preparer, err := execution.NewExecutorRuntimePreparer(execution.ExecutorRuntimePreparerConfig{
-		Knowledge: execution.KnowledgeServiceContextSource{Service: knowledgeService}, Leases: leaseService,
+		Knowledge: execution.KnowledgeServiceContextSource{Service: knowledgeService}, PriorEvidence: priorEvidence, Leases: leaseService,
 		Assignments: assignments, Tools: host.Broker().List(),
 		Route: goalplan.ModelRoute{Provider: route.Provider, Model: route.Model, MaxOutputTokens: route.MaxOutputTokens,
 			Temperature: route.Temperature, Seed: route.Seed, ProviderPolicy: route.ProviderPolicy,

@@ -41,6 +41,7 @@ type KnowledgeContextSource interface {
 
 type ExecutorRuntimePreparerConfig struct {
 	Knowledge     KnowledgeContextSource
+	PriorEvidence PriorAuditEvidenceSource
 	Leases        executionLeaseIssuer
 	Assignments   runtimeAssignmentBinder
 	Tools         []toolbroker.ToolDescriptor
@@ -52,6 +53,7 @@ type ExecutorRuntimePreparerConfig struct {
 
 type ExecutorRuntimePreparer struct {
 	knowledge     KnowledgeContextSource
+	priorEvidence PriorAuditEvidenceSource
 	leases        executionLeaseIssuer
 	assignments   runtimeAssignmentBinder
 	tools         []modelgateway.ToolDefinition
@@ -62,7 +64,7 @@ type ExecutorRuntimePreparer struct {
 }
 
 func NewExecutorRuntimePreparer(config ExecutorRuntimePreparerConfig) (*ExecutorRuntimePreparer, error) {
-	if config.Knowledge == nil || config.Leases == nil || config.Assignments == nil || !validExecutionModelRoute(config.Route) {
+	if config.Knowledge == nil || config.PriorEvidence == nil || config.Leases == nil || config.Assignments == nil || !validExecutionModelRoute(config.Route) {
 		return nil, ErrPreparationInvalid
 	}
 	if config.Clock == nil {
@@ -85,7 +87,7 @@ func NewExecutorRuntimePreparer(config ExecutorRuntimePreparerConfig) (*Executor
 		return nil, err
 	}
 	return &ExecutorRuntimePreparer{
-		knowledge: config.Knowledge, leases: config.Leases, assignments: config.Assignments,
+		knowledge: config.Knowledge, priorEvidence: config.PriorEvidence, leases: config.Leases, assignments: config.Assignments,
 		tools: tools, route: cloneExecutionRoute(config.Route), leaseTTL: config.LeaseTTL,
 		maxToolRounds: config.MaxToolRounds, clock: config.Clock,
 	}, nil
@@ -256,6 +258,13 @@ func (preparer *ExecutorRuntimePreparer) contextItems(ctx context.Context, reque
 		executionContextItem("module", agentruntime.ContextModuleReference, executionArtifactRef("module", request.Task.ModuleSpecRef), request.Task.ModuleSpecRef.SHA256, string(moduleContent), agentruntime.TrustProjectApproved),
 		executionContextItem("task", agentruntime.ContextTaskState, "aor://task/"+request.Task.ID, "", string(taskContent), agentruntime.TrustProjectApproved),
 	}
+	if request.Attempt > 1 {
+		feedback, feedbackErr := loadReworkFeedback(ctx, preparer.priorEvidence, request)
+		if feedbackErr != nil {
+			return nil, nil, feedbackErr
+		}
+		items = append(items, feedback)
+	}
 	principal := authn.Principal{ID: request.Assignment.AgentInstanceID, Type: authn.PrincipalAgentInstance, Role: authn.RoleExecutor, TenantID: request.Project.TenantID, ProjectID: request.Project.ID}
 	knowledgeItems, err := preparer.knowledge.Context(ctx, principal, request.Project.TenantID, request.Project.ID, request.ModuleSpec.KnowledgeRefs)
 	if err != nil {
@@ -342,7 +351,7 @@ func executorToolDefinitions(descriptors []toolbroker.ToolDescriptor) ([]modelga
 }
 
 func validPreparationRequest(request PreparationRequest) bool {
-	return validID(request.ExecutionID) && request.Project.TenantID != "" && request.Project.ID != "" && request.Project.TenantID == request.Task.TenantID && request.Project.ID == request.Task.ProjectID && request.Task.ID != "" && request.Task.State == contracts.TaskExecuting && request.Task.Version > 0 && request.Task.FencingToken > 0 && request.Task.AttemptSeriesID != "" && request.Attempt >= 1 && request.Attempt <= 3 && request.Assignment.AgentInstanceID != "" && request.Assignment.FencingToken == request.Task.FencingToken && request.ModuleSpec.ModuleID == request.Task.ModuleID && request.ModuleSpec.SHA256 == request.Task.ModuleSpecRef.SHA256 && request.ModuleSpec.ModuleSpecVersion == request.Task.ModuleSpecRef.Version && request.Project.Goal != nil && request.Project.Goal.Status == contracts.GoalApproved && request.Project.Goal.ApprovedBy != "" && request.Project.Plan != nil && request.Project.State == contracts.ProjectExecuting
+	return validID(request.ExecutionID) && request.Project.TenantID != "" && request.Project.ID != "" && request.Project.TenantID == request.Task.TenantID && request.Project.ID == request.Task.ProjectID && request.Task.ID != "" && request.Task.State == contracts.TaskExecuting && request.Task.Version > 0 && request.Task.FencingToken > 0 && request.Task.AttemptSeriesID != "" && request.Attempt >= 1 && request.Attempt <= 3 && request.Task.Attempt == request.Attempt-1 && request.Assignment.AgentInstanceID != "" && request.Assignment.FencingToken == request.Task.FencingToken && request.ModuleSpec.ModuleID == request.Task.ModuleID && request.ModuleSpec.SHA256 == request.Task.ModuleSpecRef.SHA256 && request.ModuleSpec.ModuleSpecVersion == request.Task.ModuleSpecRef.Version && request.Project.Goal != nil && request.Project.Goal.Status == contracts.GoalApproved && request.Project.Goal.ApprovedBy != "" && request.Project.Plan != nil && request.Project.State == contracts.ProjectExecuting
 }
 
 func validExecutionModelRoute(route goalplan.ModelRoute) bool {
