@@ -37,7 +37,7 @@ type OrchestratorTaskAuthority struct {
 	principal authn.Principal
 }
 
-func NewOrchestratorTaskAuthority(store eventing.Store, policy authz.PolicyEvaluator, principal authn.Principal, clock func() time.Time) (*OrchestratorTaskAuthority, error) {
+func NewOrchestratorTaskAuthority(store eventing.Store, policy authz.PolicyEvaluator, principal authn.Principal, clock func() time.Time, classroomCore bool) (*OrchestratorTaskAuthority, error) {
 	if store == nil || policy == nil || !validAuditServicePrincipal(principal) {
 		return nil, ErrAuditServiceUnavailable
 	}
@@ -49,7 +49,7 @@ func NewOrchestratorTaskAuthority(store eventing.Store, policy authz.PolicyEvalu
 		clock = time.Now
 	}
 	return &OrchestratorTaskAuthority{
-		service:   orchestrator.NewWithBoundary(store, clock, boundary),
+		service:   orchestrator.NewWithBoundaryAndMode(store, clock, boundary, classroomCore),
 		principal: cloneAuditPrincipal(principal),
 	}, nil
 }

@@ -576,7 +576,7 @@ func configuredModuleAudit(config runtimeconfig.Config, clients *runtimeclient.C
 	}
 	principal := authn.Principal{ID: "aor-module-audit-service", Type: authn.PrincipalService, Role: authn.RoleService}
 	store := eventing.NewPostgresStore(clients.Database())
-	tasks, err := audit.NewOrchestratorTaskAuthority(store, policyClient, principal, time.Now)
+	tasks, err := audit.NewOrchestratorTaskAuthority(store, policyClient, principal, time.Now, local)
 	if err != nil {
 		return nil, err
 	}
