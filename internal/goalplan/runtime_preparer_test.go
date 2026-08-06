@@ -191,6 +191,84 @@ func TestAuthoritativeRuntimePreparerBindsModuleToDurablePlanningTask(t *testing
 	}
 }
 
+func TestAuthoritativeRuntimePreparerBuildsPlanCompletionInvocation(t *testing.T) {
+	now := time.Date(2035, 4, 5, 6, 7, 8, 0, time.UTC)
+	goalContent := validGoalContent("approved goal")
+	goalContent.ProjectID = "project_1"
+	goalContent.Version = 1
+	goalContent.CreatedAt = now.Format(time.RFC3339Nano)
+	goalContent.CreatedBy = contracts.AgentIdentity{AgentInstanceID: "project_1:GOAL_PROPOSER", Role: string(agentruntime.RoleGoalProposer)}
+	goal, goalJSON, err := encodeGoal(goalContent, contracts.GoalApproved, &contracts.ApprovalActor{ActorID: "user_1", ApprovedAt: now.Format(time.RFC3339Nano)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	goalArtifact := runtimePreparerArtifact(t, now, ArtifactGoalApproved, "goal_1", 1, goalJSON, goal.ContentSHA256)
+	goalRef := runtimeArtifactRef(goalArtifact)
+	planDraft, _ := json.Marshal(validPlanDraft())
+	plan, planJSON, err := normalizePlanRecord(AgentRecord{
+		RunID: "run_plan", AgentInstanceID: "project_1:PLAN_SUPERVISOR",
+		Role: agentruntime.RolePlanSupervisor, Payload: planDraft,
+	}, "project_1", goalRef, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planArtifact := runtimePreparerArtifact(t, now, ArtifactPlanSpec, "plan_1", 1, planJSON, plan.SHA256)
+	planRef := runtimeArtifactRef(planArtifact)
+	moduleRef := contracts.SpecRef{Version: 1, SHA256: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
+	project := state.Project{
+		TenantID: "tenant_1", ID: "project_1", Version: 9, State: contracts.ProjectExecuting,
+		PromptBundleVersion: prompts.BaselineVersion, DataClassification: "PUBLIC",
+		Goal: &state.GoalRecord{ID: "goal_1", Version: goalRef.Version, SHA256: goalRef.SHA256, Status: contracts.GoalApproved, ApprovedBy: "user_1"},
+		Plan: &planRef,
+	}
+	project.CoreSummary = &state.CoreSummary{
+		SummaryVersion: 1, TenantID: project.TenantID, ProjectID: project.ID, Status: "COMPLETED",
+		GoalSpecRef: goalRef, PlanSpecRef: planRef,
+		Modules: []state.CoreModuleOutcome{{
+			TaskID: "task_1", ModuleID: plan.Modules[0].ModuleID, State: contracts.TaskPassed, Version: 7,
+			ModuleSpecRef: moduleRef, Attempt: 1, AttemptSeriesID: "series_1",
+		}},
+		SummarySHA256: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", CreatedAt: now,
+	}
+	corePayload, _ := json.Marshal(project.CoreSummary)
+	issuer := &runtimePreparerIssuer{now: now, project: project}
+	preparer := newRuntimePreparer(t, now, project, state.ModuleTask{}, issuer, goalArtifact, planArtifact)
+	request := AgentInvocation{
+		InvocationID: "run_plan_summary_1", TenantID: project.TenantID, ProjectID: project.ID,
+		Role: agentruntime.RolePlanSupervisor, Stage: "PLAN_SUMMARY",
+		Inputs: []ArtifactPointer{artifactPointer(goalArtifact), artifactPointer(planArtifact)}, Payload: corePayload,
+	}
+	prepared, err := preparer.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Intent != aop.IntentReportPlanComplete || prepared.Declaration.AgentInstanceID != "project_1:PLAN_SUPERVISOR" || prepared.Declaration.Envelope.GoalSpec == nil || *prepared.Declaration.Envelope.GoalSpec != goalRef || prepared.Declaration.Envelope.PlanSpec == nil || *prepared.Declaration.Envelope.PlanSpec != planRef {
+		t.Fatalf("plan completion declaration = %#v", prepared.Declaration)
+	}
+	foundCore := false
+	for _, item := range prepared.Declaration.ContextManifest.Items {
+		if item.Kind == agentruntime.ContextDeterministicResult && item.Content == string(corePayload) {
+			foundCore = true
+		}
+	}
+	if !foundCore {
+		t.Fatalf("core completion context missing: %#v", prepared.Declaration.ContextManifest.Items)
+	}
+	runtime := newGoalPlanRuntime(t, now, &runtimeInvokerGateway{}, &runtimeInvokerAuthority{})
+	if err := runtime.Declare(prepared.Declaration); err != nil {
+		t.Fatalf("declare plan completion invocation: %v", err)
+	}
+
+	forged := request
+	var changed state.CoreSummary
+	_ = json.Unmarshal(corePayload, &changed)
+	changed.Modules[0].TaskID = "task_other"
+	forged.Payload, _ = json.Marshal(changed)
+	if _, err := preparer.Prepare(context.Background(), forged); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("forged completion error = %v", err)
+	}
+}
+
 type runtimePreparerArtifacts struct {
 	values []SpecArtifact
 }

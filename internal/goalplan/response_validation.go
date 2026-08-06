@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/akimisaka/aor/internal/knowledge"
+	"github.com/akimisaka/aor/internal/state"
 	"github.com/akimisaka/aor/pkg/contracts"
 )
 
@@ -50,6 +51,16 @@ func planDraftSemanticValidator(request AgentInvocation, goalRef contracts.SpecR
 	return func(content json.RawMessage) error {
 		_, _, err := normalizePlanRecord(responseAgentRecord(request, content), request.ProjectID, goalRef, 1)
 		return err
+	}
+}
+
+func planCompletionSemanticValidator(core state.CoreSummary) func(json.RawMessage) error {
+	return func(content json.RawMessage) error {
+		var draft PlanCompletionDraft
+		if err := decodeStrict(content, &draft); err != nil || !validPlanCompletionDraft(draft, core) {
+			return ErrAgentOutput
+		}
+		return nil
 	}
 }
 

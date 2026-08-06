@@ -139,6 +139,10 @@ func expectedRuntimeIntent(request AgentInvocation) aop.Intent {
 		if request.Role == agentruntime.RolePlanSupervisor {
 			return aop.IntentProposePlan
 		}
+	case "PLAN_SUMMARY":
+		if request.Role == agentruntime.RolePlanSupervisor {
+			return aop.IntentReportPlanComplete
+		}
 	case "MODULE_SPEC":
 		if request.Role == agentruntime.RoleModulePlanner {
 			return aop.IntentDefineModule

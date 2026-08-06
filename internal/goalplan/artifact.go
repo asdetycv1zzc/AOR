@@ -28,6 +28,7 @@ const (
 	ArtifactPlanSpec               ArtifactKind = "PLAN_SPEC"
 	ArtifactModuleSpec             ArtifactKind = "MODULE_SPEC"
 	ArtifactPlanAnalysis           ArtifactKind = "PLAN_ANALYSIS"
+	ArtifactPlanCompletion         ArtifactKind = "PLAN_COMPLETION"
 	ArtifactKnowledgeUpdateRequest ArtifactKind = "KNOWLEDGE_UPDATE_REQUEST"
 	ArtifactKnowledgeUpdateDraft   ArtifactKind = "KNOWLEDGE_UPDATE_DRAFT"
 	MaximumArtifactBytes                        = 4 << 20
@@ -183,9 +184,40 @@ func (s *EventArtifactStore) Get(ctx context.Context, tenantID, projectID string
 	return cloneArtifact(artifact), true, nil
 }
 
+func (s *EventArtifactStore) FindByRef(ctx context.Context, tenantID, projectID string, kind ArtifactKind, ref contracts.SpecRef) (SpecArtifact, bool, error) {
+	if s == nil || s.store == nil || tenantID == "" || projectID == "" || !kind.Valid() || ref.Validate() != nil {
+		return SpecArtifact{}, false, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "artifact reference"})
+	}
+	lister, ok := s.store.(eventing.ProjectionList)
+	if !ok {
+		return SpecArtifact{}, false, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "artifact reference lookup"})
+	}
+	projections, err := lister.ListProjections(ctx, tenantID, projectID, "spec_artifact")
+	if err != nil {
+		return SpecArtifact{}, false, err
+	}
+	var result SpecArtifact
+	found := false
+	for _, projection := range projections {
+		var artifact SpecArtifact
+		if json.Unmarshal(projection.State, &artifact) != nil || artifact.Kind != kind || artifact.Version != ref.Version || artifact.ContentSHA256 != ref.SHA256 {
+			continue
+		}
+		if artifact.TenantID != tenantID || artifact.ProjectID != projectID || verifyArtifact(artifact) != nil {
+			return SpecArtifact{}, false, aorerrors.New(aorerrors.CodeArtifactHashMismatch, "", nil)
+		}
+		if found && result.SpecID != artifact.SpecID {
+			return SpecArtifact{}, false, ErrArtifactConflict
+		}
+		result = cloneArtifact(artifact)
+		found = true
+	}
+	return result, found, nil
+}
+
 func (kind ArtifactKind) Valid() bool {
 	switch kind {
-	case ArtifactUserMessage, ArtifactGoalDraft, ArtifactGoalChallenge, ArtifactGoalApproved, ArtifactPlanSpec, ArtifactModuleSpec, ArtifactPlanAnalysis, ArtifactKnowledgeUpdateRequest, ArtifactKnowledgeUpdateDraft:
+	case ArtifactUserMessage, ArtifactGoalDraft, ArtifactGoalChallenge, ArtifactGoalApproved, ArtifactPlanSpec, ArtifactModuleSpec, ArtifactPlanAnalysis, ArtifactPlanCompletion, ArtifactKnowledgeUpdateRequest, ArtifactKnowledgeUpdateDraft:
 		return true
 	default:
 		return false

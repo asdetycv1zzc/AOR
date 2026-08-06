@@ -16,6 +16,8 @@ func responseSchemaFor(stage string) (agentResponseSchema, error) {
 		schema = agentResponseSchema{Reference: "urn:aor:goalplan:goal-challenge:v1", Document: json.RawMessage(goalChallengeSchema)}
 	case "PLAN_DRAFT":
 		schema = agentResponseSchema{Reference: "urn:aor:goalplan:plan-draft:v1", Document: json.RawMessage(planDraftSchema)}
+	case "PLAN_SUMMARY":
+		schema = agentResponseSchema{Reference: "urn:aor:goalplan:plan-summary:v1", Document: json.RawMessage(planSummarySchema)}
 	case "MODULE_SPEC":
 		schema = agentResponseSchema{Reference: "urn:aor:goalplan:module-draft:v1", Document: json.RawMessage(moduleDraftSchema)}
 	case "KNOWLEDGE_UPDATE_DRAFT":
@@ -227,6 +229,40 @@ const moduleDraftSchema = `{
   },
   "$defs": {
     "strings": {"type": "array", "maxItems": 1000, "items": {"type": "string", "minLength": 1, "maxLength": 4096}}
+  }
+}`
+
+const planSummarySchema = `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["overview", "modules", "crossModuleFindings", "recommendedNextActions"],
+  "properties": {
+    "overview": {"type": "string", "minLength": 1, "maxLength": 8192},
+    "modules": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["moduleId", "summary"],
+        "properties": {
+          "moduleId": {"type": "string", "minLength": 1, "maxLength": 128},
+          "summary": {"type": "string", "minLength": 1, "maxLength": 8192}
+        }
+      }
+    },
+    "crossModuleFindings": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {"type": "string", "minLength": 1, "maxLength": 8192}
+    },
+    "recommendedNextActions": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": {"type": "string", "minLength": 1, "maxLength": 8192}
+    }
   }
 }`
 

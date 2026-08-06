@@ -103,7 +103,8 @@ func NewAuthoritativeRuntimePreparer(config RuntimePreparerConfig) (*Authoritati
 }
 
 func (preparer *AuthoritativeRuntimePreparer) Prepare(ctx context.Context, request AgentInvocation) (RuntimeInvocation, error) {
-	if preparer == nil || ctx == nil || !validAgentInvocation(request) || request.Stage != "MODULE_SPEC" && len(request.Payload) != 0 {
+	payloadStage := request.Stage == "MODULE_SPEC" || request.Stage == "PLAN_SUMMARY"
+	if preparer == nil || ctx == nil || !validAgentInvocation(request) || !payloadStage && len(request.Payload) != 0 {
 		return RuntimeInvocation{}, ErrInvalidRequest
 	}
 	project, found, err := preparer.projects.Project(ctx, request.TenantID, request.ProjectID)
@@ -323,6 +324,37 @@ func (preparer *AuthoritativeRuntimePreparer) stageContext(ctx context.Context, 
 		ref := runtimeArtifactRef(goal)
 		stage.goalRef = &ref
 		stage.responseSemanticValidator = planDraftSemanticValidator(request, ref)
+	case "PLAN_SUMMARY":
+		goal, planArtifact := artifacts[ArtifactGoalApproved], artifacts[ArtifactPlanSpec]
+		if !projectGoalMatches(project, goal, true) || project.Plan == nil || project.CoreSummary == nil || len(request.Payload) == 0 || len(request.Payload) > agentruntime.MaximumContextItemBytes || !json.Valid(request.Payload) {
+			return preparedStageContext{}, ErrInvalidRequest
+		}
+		goalRef := runtimeArtifactRef(goal)
+		planRef := runtimeArtifactRef(planArtifact)
+		if planRef != *project.Plan {
+			return preparedStageContext{}, ErrInvalidRequest
+		}
+		if _, err := decodePlanArtifact(planArtifact, goalRef); err != nil {
+			return preparedStageContext{}, ErrInvalidRequest
+		}
+		var core state.CoreSummary
+		if decodeStrict(request.Payload, &core) != nil || !reflect.DeepEqual(core, *project.CoreSummary) || !validCompletionCore(project, core) {
+			return preparedStageContext{}, ErrInvalidRequest
+		}
+		if err := appendArtifact(ArtifactGoalApproved, agentruntime.ContextGoalReference, agentruntime.TrustProjectApproved); err != nil {
+			return preparedStageContext{}, err
+		}
+		if err := appendArtifact(ArtifactPlanSpec, agentruntime.ContextPlanReference, agentruntime.TrustProjectApproved); err != nil {
+			return preparedStageContext{}, err
+		}
+		stage.items = append(stage.items, agentruntime.ContextItem{
+			ID: stableRuntimeID("ctx_", request.ProjectID, "core-summary"), Kind: agentruntime.ContextDeterministicResult,
+			Reference: "aor://project/" + request.ProjectID + "/core-summary", Revision: strconv.FormatInt(project.Version, 10),
+			SHA256: agentruntime.DigestContextContent(string(request.Payload)), Trust: agentruntime.TrustProjectApproved,
+			Content: string(request.Payload),
+		})
+		stage.goalRef, stage.planRef = &goalRef, &planRef
+		stage.responseSemanticValidator = planCompletionSemanticValidator(core)
 	case "MODULE_SPEC":
 		goal, planArtifact := artifacts[ArtifactGoalApproved], artifacts[ArtifactPlanSpec]
 		if !projectGoalMatches(project, goal, true) || len(request.Payload) == 0 || len(request.Payload) > agentruntime.MaximumContextItemBytes || !json.Valid(request.Payload) {
@@ -435,6 +467,8 @@ func validRuntimeInputKinds(request AgentInvocation) bool {
 		return exact(ArtifactUserMessage, ArtifactGoalDraft, ArtifactGoalChallenge)
 	case "PLAN_DRAFT":
 		return exact(ArtifactGoalApproved)
+	case "PLAN_SUMMARY":
+		return exact(ArtifactGoalApproved, ArtifactPlanSpec)
 	case "MODULE_SPEC":
 		return exact(ArtifactGoalApproved, ArtifactPlanSpec)
 	case "KNOWLEDGE_UPDATE_DRAFT":
