@@ -55,6 +55,33 @@ type SandboxFactsSource interface {
 	Facts(context.Context, SandboxFactsRequest) (RuntimeFacts, error)
 }
 
+// WorkerContainerFacts records the TEST worker container as the environment
+// that reads and audits a submitted commit. It does not create another
+// sandbox: the auditor only receives repository read tools.
+type WorkerContainerFacts struct {
+	runtimeDigest string
+}
+
+func NewWorkerContainerFacts(runtimeDigest string) (*WorkerContainerFacts, error) {
+	if !digestPattern.MatchString(runtimeDigest) {
+		return nil, ErrAuditFactsInvalid
+	}
+	return &WorkerContainerFacts{runtimeDigest: runtimeDigest}, nil
+}
+
+func (source *WorkerContainerFacts) Facts(ctx context.Context, request SandboxFactsRequest) (RuntimeFacts, error) {
+	if source == nil || !digestPattern.MatchString(source.runtimeDigest) || ctx == nil || ctx.Err() != nil ||
+		!validCoordinatorID(request.SandboxID) || request.Module.Validate() != nil ||
+		request.Module.ProjectID != request.Project.ID || request.Module.ModuleID != request.Task.ModuleID ||
+		request.Module.ExecutionPlatform != contracts.PlatformLinux || request.Module.SandboxLevel != contracts.IsolationContainer {
+		return RuntimeFacts{}, ErrInvalidAuditRequest
+	}
+	return RuntimeFacts{
+		Platform: request.Module.ExecutionPlatform, Isolation: request.Module.SandboxLevel,
+		SandboxAttestation: "oci:" + source.runtimeDigest,
+	}, nil
+}
+
 // SnapshotSandboxFacts obtains the attestation from the clean Auditor sandbox
 // rather than accepting a caller-supplied platform or isolation claim.
 type SnapshotSandboxFacts struct {

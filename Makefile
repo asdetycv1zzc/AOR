@@ -8,8 +8,6 @@ export GOTOOLCHAIN = local
 COMPOSE = docker compose --parallel 1 -f deploy/compose/docker-compose.yml
 COMPOSE_DEPENDENCIES = postgres temporal temporal-ui nats minio opa identity otel-collector
 COMPOSE_INITIALIZERS = postgres-migrate temporal-init minio-init
-COMPOSE_SANDBOX = aor-sandbox-runtime aor-sandbox-preflight
-COMPOSE_SANDBOX_CACHE = aor-sandbox-cache
 COMPOSE_AOR = aor-api aor-curator aor-model-gateway aor-tool-broker aor-worker
 
 build:
@@ -105,13 +103,9 @@ compose-check: compose-check-secrets
 
 compose-pull: compose-check-infrastructure-secrets
 	$(COMPOSE) config --quiet
-	$(COMPOSE) --profile aor pull $(COMPOSE_DEPENDENCIES) $(COMPOSE_INITIALIZERS) $(COMPOSE_SANDBOX)
+	$(COMPOSE) --profile aor pull $(COMPOSE_DEPENDENCIES) $(COMPOSE_INITIALIZERS)
 
 compose-deps-up: compose-pull
-	$(COMPOSE) --profile aor up -d --no-deps aor-sandbox-runtime
-	$(COMPOSE) --profile aor wait aor-sandbox-runtime
-	$(COMPOSE) --profile aor up -d --no-deps aor-sandbox-preflight
-	$(COMPOSE) --profile aor wait aor-sandbox-preflight
 	$(COMPOSE) up -d --wait --wait-timeout 240 $(COMPOSE_DEPENDENCIES)
 	$(COMPOSE) up -d postgres-migrate
 	$(COMPOSE) wait postgres-migrate
@@ -126,8 +120,6 @@ compose-aor-up: compose-deps-up
 	$(COMPOSE) --profile aor build aor-model-gateway
 	$(COMPOSE) --profile aor build aor-tool-broker
 	$(COMPOSE) --profile aor build aor-worker
-	$(COMPOSE) --profile aor up -d --no-build --no-deps --force-recreate $(COMPOSE_SANDBOX_CACHE)
-	$(COMPOSE) --profile aor wait $(COMPOSE_SANDBOX_CACHE)
 	$(COMPOSE) --profile aor up -d --no-build --no-deps --wait --wait-timeout 240 $(COMPOSE_AOR)
 
 compose-up: compose-aor-up

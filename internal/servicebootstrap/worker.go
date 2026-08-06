@@ -91,6 +91,7 @@ type moduleAuditActivity struct {
 	provider    sandbox.SandboxProvider
 	imageDigest string
 	profile     sandbox.DeploymentProfile
+	local       bool
 }
 
 type workerActivityEffect struct {
@@ -235,8 +236,14 @@ func (effect workerActivityEffect) Execute(ctx context.Context, key string, payl
 
 func (activity *moduleAuditActivity) Run(ctx context.Context, input aorworkflow.ExecutionInput, runID string) (result audit.ModuleAuditResult, resultErr error) {
 	parsedRunID, parseErr := uuid.Parse(runID)
-	if activity == nil || activity.service == nil || activity.provider == nil || ctx == nil || ctx.Err() != nil || parseErr != nil || parsedRunID.Version() != 7 || parsedRunID.String() != runID {
+	if activity == nil || activity.service == nil || !activity.local && activity.provider == nil || ctx == nil || ctx.Err() != nil || parseErr != nil || parsedRunID.Version() != 7 || parsedRunID.String() != runID {
 		return audit.ModuleAuditResult{}, ErrWorkerUnavailable
+	}
+	if activity.local {
+		return activity.service.Run(ctx, audit.ModuleAuditRequest{
+			AuditRunID: runID, TenantID: input.TenantID, ProjectID: input.ProjectID,
+			TaskID: input.TaskID, SandboxID: stableModuleAuditRuntimeID(input, runID),
+		})
 	}
 	spec, err := activity.sandboxSpec(input, runID)
 	if err != nil {
@@ -267,7 +274,7 @@ func (activity *moduleAuditActivity) Run(ctx context.Context, input aorworkflow.
 
 func (activity *moduleAuditActivity) sandboxSpec(input aorworkflow.ExecutionInput, runID string) (sandbox.SandboxSpec, error) {
 	base := sandbox.SandboxSpec{
-		SandboxID: stableModuleAuditSandboxID(input, runID), TenantID: input.TenantID,
+		SandboxID: stableModuleAuditRuntimeID(input, runID), TenantID: input.TenantID,
 		ProjectID: input.ProjectID, TaskID: input.TaskID, Role: sandbox.RoleAuditor,
 		WallTimeSeconds: 1800, AllowedExecutables: []string{}, EnvironmentAllowlist: []string{},
 		DeploymentProfile: activity.profile,
@@ -299,9 +306,26 @@ func (activity *moduleAuditActivity) sandboxSpec(input aorworkflow.ExecutionInpu
 	return base, nil
 }
 
-func stableModuleAuditSandboxID(input aorworkflow.ExecutionInput, runID string) string {
+func stableModuleAuditRuntimeID(input aorworkflow.ExecutionInput, runID string) string {
 	digest := sha256.Sum256([]byte(input.TenantID + "\x00" + input.ProjectID + "\x00" + input.TaskID + "\x00" + runID))
-	return "module-audit-sandbox-" + hex.EncodeToString(digest[:])
+	return "module-audit-runtime-" + hex.EncodeToString(digest[:])
+}
+
+func workerExecutableDigest() (string, error) {
+	path, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 type workerExecutionServices struct {
@@ -434,14 +458,18 @@ func Worker(config runtimeconfig.Config, clients *runtimeclient.Clients) (http.H
 	if config.Component != "aor-worker" || clients == nil || clients.Temporal() == nil || clients.Database() == nil || clients.JetStream() == nil || clients.S3() == nil {
 		return nil, ErrWorkerConfiguration
 	}
-	provider, err := newExecutionProvider(config)
-	if err != nil {
-		return nil, err
-	}
+	var provider sandbox.SandboxProvider
 	probeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := provider.Ready(probeCtx); err != nil {
-		return nil, errors.Join(ErrWorkerUnavailable, err)
+	if config.DeploymentProfile != "TEST" {
+		configuredProvider, err := newExecutionProvider(config)
+		if err != nil {
+			return nil, err
+		}
+		if err := configuredProvider.Ready(probeCtx); err != nil {
+			return nil, errors.Join(ErrWorkerUnavailable, err)
+		}
+		provider = configuredProvider
 	}
 	secretResolver := credentials.NewSecretResolver(os.Getenv("AOR_SECRET_ROOT"))
 	leaseKey, err := secretResolver.Resolve(probeCtx, config.LeaseSigningKeyRef)
@@ -478,13 +506,16 @@ func Worker(config runtimeconfig.Config, clients *runtimeclient.Clients) (http.H
 	if err != nil {
 		return nil, ErrWorkerConfiguration
 	}
-	scopes, err := newPostgresSandboxExecutionScopeResolver(clients.Database())
-	if err != nil {
-		return nil, err
-	}
-	authorizer, err := newLeaseBoundSandboxAuthorizer(config, scopes, leaseManager)
-	if err != nil {
-		return nil, err
+	var authorizer sandboxExecutionAuthorizer
+	if provider != nil {
+		scopes, err := newPostgresSandboxExecutionScopeResolver(clients.Database())
+		if err != nil {
+			return nil, err
+		}
+		authorizer, err = newLeaseBoundSandboxAuthorizer(config, scopes, leaseManager)
+		if err != nil {
+			return nil, err
+		}
 	}
 	activityResults, err := aorworkflow.NewPostgresActivityResultStore(clients.Database())
 	if err != nil {
@@ -499,15 +530,19 @@ func Worker(config runtimeconfig.Config, clients *runtimeclient.Clients) (http.H
 		_ = services.host.Close()
 		return nil, err
 	}
-	globalAuditor, err := configuredGlobalAudit(config, clients, provider, services, globalAuditSigner, secretResolver)
-	if err != nil {
-		_ = services.host.Close()
-		return nil, err
-	}
-	integrationRuntime, err := configuredIntegration(config, clients, provider, services, leaseManager, repositorySigner, moduleAuditSigner)
-	if err != nil {
-		_ = services.host.Close()
-		return nil, err
+	var globalAuditor *globalaudit.Service
+	var integrationRuntime *integrationActivity
+	if config.DeploymentProfile != "TEST" {
+		globalAuditor, err = configuredGlobalAudit(config, clients, provider, services, globalAuditSigner, secretResolver)
+		if err != nil {
+			_ = services.host.Close()
+			return nil, err
+		}
+		integrationRuntime, err = configuredIntegration(config, clients, provider, services, leaseManager, repositorySigner, moduleAuditSigner)
+		if err != nil {
+			_ = services.host.Close()
+			return nil, err
+		}
 	}
 	activities, err := aorworkflow.NewActivitiesWithStore(workerActivityEffect{
 		sandbox: sandboxActivityEffect{provider: provider, authorizer: authorizer}, execution: services.execution,
@@ -530,7 +565,8 @@ func Worker(config runtimeconfig.Config, clients *runtimeclient.Clients) (http.H
 }
 
 func configuredModuleAudit(config runtimeconfig.Config, clients *runtimeclient.Clients, provider sandbox.SandboxProvider, services *workerExecutionServices, repositorySigner repository.Signer, signer *audit.HMACSigner) (*moduleAuditActivity, error) {
-	if clients == nil || provider == nil || services == nil || services.agentRuntime == nil || services.leaseService == nil || services.artifactCatalog == nil || services.artifactPublisher == nil || repositorySigner == nil || signer == nil {
+	local := config.DeploymentProfile == "TEST"
+	if clients == nil || !local && provider == nil || services == nil || services.agentRuntime == nil || services.leaseService == nil || services.artifactCatalog == nil || services.artifactPublisher == nil || repositorySigner == nil || signer == nil {
 		return nil, ErrWorkerConfiguration
 	}
 	policyClient, err := policy.NewOPAClient(config.OPA.URL)
@@ -555,7 +591,20 @@ func configuredModuleAudit(config runtimeconfig.Config, clients *runtimeclient.C
 	if err != nil {
 		return nil, err
 	}
-	inputs, err := audit.NewSnapshotAuthoritativeInputSource(submissions, repositorySigner, artifacts, policyClient, principal, provider)
+	var facts audit.SandboxFactsSource
+	if local {
+		runtimeDigest, digestErr := workerExecutableDigest()
+		if digestErr != nil {
+			return nil, ErrWorkerConfiguration
+		}
+		facts, err = audit.NewWorkerContainerFacts(runtimeDigest)
+	} else {
+		facts, err = audit.NewSnapshotSandboxFacts(provider)
+	}
+	if err != nil {
+		return nil, err
+	}
+	inputs, err := audit.NewAuthoritativeInputSource(submissions, repositorySigner, artifacts, policyClient, principal, facts)
 	if err != nil {
 		return nil, err
 	}
@@ -613,7 +662,7 @@ func configuredModuleAudit(config runtimeconfig.Config, clients *runtimeclient.C
 	if config.DeploymentProfile == "PREPRODUCTION" || config.DeploymentProfile == "PRODUCTION" {
 		profile = sandbox.ProfileProduction
 	}
-	return &moduleAuditActivity{service: service, provider: provider, imageDigest: configuredImageDigest(config.Sandbox.ImageReference), profile: profile}, nil
+	return &moduleAuditActivity{service: service, provider: provider, imageDigest: configuredImageDigest(config.Sandbox.ImageReference), profile: profile, local: local}, nil
 }
 
 func moduleAuditToolDefinitions(descriptors []toolbroker.ToolDescriptor) ([]modelgateway.ToolDefinition, error) {

@@ -63,7 +63,7 @@ func (eraser artifactProjectEraser) FinalizeProjectAuthorizationErasure(ctx cont
 }
 
 func (handler *controlHandler) Ready() error {
-	if handler == nil || handler.dispatcher == nil || handler.retention == nil || handler.scheduler == nil || handler.moduleAuditScheduler == nil || handler.integrationScheduler == nil || handler.globalAuditScheduler == nil {
+	if handler == nil || handler.dispatcher == nil || handler.retention == nil || handler.scheduler == nil || handler.moduleAuditScheduler == nil {
 		return runtimeclient.ErrDependencyUnavailable
 	}
 	if err := handler.dispatcher.Ready(); err != nil {
@@ -78,10 +78,15 @@ func (handler *controlHandler) Ready() error {
 	if err := handler.moduleAuditScheduler.Ready(); err != nil {
 		return err
 	}
-	if err := handler.integrationScheduler.Ready(); err != nil {
-		return err
+	if handler.integrationScheduler != nil {
+		if err := handler.integrationScheduler.Ready(); err != nil {
+			return err
+		}
 	}
-	return handler.globalAuditScheduler.Ready()
+	if handler.globalAuditScheduler != nil {
+		return handler.globalAuditScheduler.Ready()
+	}
+	return nil
 }
 
 func (handler *controlHandler) Close() error {
@@ -244,43 +249,53 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	if err != nil {
 		return nil, err
 	}
-	integrationRequests, err := aorworkflow.NewPostgresIntegrationRequests(clients.Database())
-	if err != nil {
-		return nil, err
-	}
-	integrationStarter, err := aorworkflow.NewIntegrationStarter(clients.Temporal(), integrationRequests, config.Temporal.TaskQueue)
-	if err != nil {
-		return nil, err
-	}
-	integrationScheduler, err := aorworkflow.NewIntegrationScheduler(integrationRequests, integrationStarter)
-	if err != nil {
-		return nil, err
-	}
-	globalAuditRequests, err := aorworkflow.NewPostgresGlobalAuditRequests(clients.Database())
-	if err != nil {
-		return nil, err
-	}
-	globalAuditStarter, err := aorworkflow.NewGlobalAuditStarter(clients.Temporal(), globalAuditRequests, config.Temporal.TaskQueue)
-	if err != nil {
-		return nil, err
-	}
-	globalAuditScheduler, err := aorworkflow.NewGlobalAuditScheduler(globalAuditRequests, globalAuditStarter)
-	if err != nil {
-		return nil, err
+	var integrationScheduler *aorworkflow.IntegrationScheduler
+	var globalAuditScheduler *aorworkflow.GlobalAuditScheduler
+	if config.DeploymentProfile != "TEST" {
+		integrationRequests, err := aorworkflow.NewPostgresIntegrationRequests(clients.Database())
+		if err != nil {
+			return nil, err
+		}
+		integrationStarter, err := aorworkflow.NewIntegrationStarter(clients.Temporal(), integrationRequests, config.Temporal.TaskQueue)
+		if err != nil {
+			return nil, err
+		}
+		integrationScheduler, err = aorworkflow.NewIntegrationScheduler(integrationRequests, integrationStarter)
+		if err != nil {
+			return nil, err
+		}
+		globalAuditRequests, err := aorworkflow.NewPostgresGlobalAuditRequests(clients.Database())
+		if err != nil {
+			return nil, err
+		}
+		globalAuditStarter, err := aorworkflow.NewGlobalAuditStarter(clients.Temporal(), globalAuditRequests, config.Temporal.TaskQueue)
+		if err != nil {
+			return nil, err
+		}
+		globalAuditScheduler, err = aorworkflow.NewGlobalAuditScheduler(globalAuditRequests, globalAuditStarter)
+		if err != nil {
+			return nil, err
+		}
 	}
 	dispatchContext, cancel := context.WithCancel(context.Background())
 	dispatchDone := make(chan error, 1)
 	retentionDone := make(chan error, 1)
 	schedulerDone := make(chan error, 1)
 	moduleAuditDone := make(chan error, 1)
-	integrationDone := make(chan error, 1)
-	globalAuditDone := make(chan error, 1)
+	var integrationDone chan error
+	var globalAuditDone chan error
 	go func() { dispatchDone <- dispatcher.Run(dispatchContext) }()
 	go func() { retentionDone <- retentionWorker.Run(dispatchContext) }()
 	go func() { schedulerDone <- scheduler.Run(dispatchContext) }()
 	go func() { moduleAuditDone <- moduleAuditScheduler.Run(dispatchContext) }()
-	go func() { integrationDone <- integrationScheduler.Run(dispatchContext) }()
-	go func() { globalAuditDone <- globalAuditScheduler.Run(dispatchContext) }()
+	if integrationScheduler != nil {
+		integrationDone = make(chan error, 1)
+		go func() { integrationDone <- integrationScheduler.Run(dispatchContext) }()
+	}
+	if globalAuditScheduler != nil {
+		globalAuditDone = make(chan error, 1)
+		go func() { globalAuditDone <- globalAuditScheduler.Run(dispatchContext) }()
+	}
 	return &controlHandler{
 		Handler: withRequestTrace(domain), dispatcher: dispatcher, retention: retentionWorker, scheduler: scheduler,
 		moduleAuditScheduler: moduleAuditScheduler, integrationScheduler: integrationScheduler,

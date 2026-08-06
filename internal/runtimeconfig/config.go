@@ -857,13 +857,13 @@ func validIntegrationConfig(config IntegrationConfig, allowedMountRoots []string
 	requiredKinds := map[string]bool{
 		"COMPILE": false, "CONTRACT": false, "INTEGRATION": false, "E2E": false, "MIGRATION": false,
 	}
-	if !validKnowledgeRoot(config.WorkRoot) || len(config.Checks) != len(requiredKinds) || !pathWithinAllowedRoot(config.WorkRoot, allowedMountRoots) {
+	if !validKnowledgeRoot(config.WorkRoot) || len(config.Checks) != len(requiredKinds) || requireDependencyCache && !pathWithinAllowedRoot(config.WorkRoot, allowedMountRoots) {
 		return false
 	}
 	if requireDependencyCache && config.DependencyCache == "" {
 		return false
 	}
-	if config.DependencyCache != "" && (!validKnowledgeRoot(config.DependencyCache) || config.DependencyCache == config.WorkRoot || !pathWithinAllowedRoot(config.DependencyCache, allowedMountRoots)) {
+	if config.DependencyCache != "" && (!validKnowledgeRoot(config.DependencyCache) || config.DependencyCache == config.WorkRoot || requireDependencyCache && !pathWithinAllowedRoot(config.DependencyCache, allowedMountRoots)) {
 		return false
 	}
 	totalTimeout := 0
