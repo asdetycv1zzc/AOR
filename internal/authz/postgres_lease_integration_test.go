@@ -5,11 +5,13 @@ package authz
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/akimisaka/aor/internal/authn"
+	aorerrors "github.com/akimisaka/aor/pkg/errors"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -76,5 +78,42 @@ func TestPostgresLeaseStoreLifecycle(t *testing.T) {
 	var fencingToken int64
 	if err := database.QueryRowContext(withLeaseTenant(context.Background(), tenantID), `SELECT latest_fencing_token FROM module_tasks WHERE tenant_id = $1::uuid AND id = $2::uuid`, tenantID, taskID).Scan(&fencingToken); err == nil {
 		t.Fatal("direct connection unexpectedly bypassed tenant transaction boundary")
+	}
+
+	databaseNow, err := store.Now(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	expired := cloneLease(lease)
+	expired.ID = "lease_integration_postgres_expired"
+	expired.IdempotencyKey = ""
+	expired.Action = ActionModelGenerate
+	expired.Resource = Resource{Type: "model", ID: "provider/model"}
+	expired.Capabilities = []string{ActionModelGenerate}
+	expired.IssuedAt = databaseNow.Add(-2 * time.Minute)
+	expired.ExpiresAt = databaseNow.Add(-time.Minute)
+	expired.LastHeartbeatAt = expired.IssuedAt
+	expired.State = LeaseActive
+	expired.RevokedAt = nil
+	if err := manager.sign(&expired); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(context.Background(), expired); err != nil {
+		t.Fatal(err)
+	}
+	revival := cloneLease(expired)
+	revival.ExpiresAt = databaseNow.Add(5 * time.Minute)
+	revival.LastHeartbeatAt = databaseNow
+	if err := manager.sign(&revival); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := store.CompareAndSwap(context.Background(), expired.ID, expired.FencingToken, revival)
+	var typed *aorerrors.Error
+	if updated || !errors.As(err, &typed) || typed.Code != aorerrors.CodeLeaseExpired {
+		t.Fatalf("expired lease revival: updated=%v err=%v", updated, err)
+	}
+	loaded, found, err = store.Get(withLeaseTenant(context.Background(), tenantID), expired.ID)
+	if err != nil || !found || !loaded.ExpiresAt.Equal(expired.ExpiresAt) || !loaded.LastHeartbeatAt.Equal(expired.LastHeartbeatAt) {
+		t.Fatalf("expired lease changed: found=%v lease=%#v err=%v", found, loaded, err)
 	}
 }

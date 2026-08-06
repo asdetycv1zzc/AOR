@@ -138,6 +138,13 @@ func (store *PostgresLeaseStore) CompareAndSwap(ctx context.Context, id string, 
 		}
 		return false, nil
 	}
+	var now time.Time
+	if err := tx.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
+		return false, err
+	}
+	if !allowsPostgresLeaseTransition(current, replacement, now.UTC()) {
+		return false, aorerrors.New(aorerrors.CodeLeaseExpired, "", nil)
+	}
 	result, err := tx.ExecContext(ctx, `
 UPDATE agent_leases
 SET expires_at = $4, last_heartbeat_at = $5, fencing_token = $6, state = $7,
@@ -164,6 +171,13 @@ WHERE tenant_id = $1::uuid AND id = $2 AND fencing_token = $3`,
 		return false, err
 	}
 	return true, nil
+}
+
+func allowsPostgresLeaseTransition(current, replacement CapabilityLease, now time.Time) bool {
+	if replacement.State != LeaseActive {
+		return true
+	}
+	return current.State == LeaseActive && !current.IsExpired(now) && !replacement.IsExpired(now)
 }
 
 func (store *PostgresLeaseStore) begin(ctx context.Context, tenantID string, readOnly bool) (*sql.Tx, error) {

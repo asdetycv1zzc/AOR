@@ -29,3 +29,53 @@ func TestPostgresLeaseCASAllowsOnlyMutableFields(t *testing.T) {
 		t.Fatal("project binding change was accepted")
 	}
 }
+
+func TestPostgresLeaseCASRejectsActiveLeaseRevival(t *testing.T) {
+	now := time.Date(2030, 2, 3, 4, 5, 6, 0, time.UTC)
+	base := CapabilityLease{
+		State: LeaseActive, ExpiresAt: now.Add(time.Minute), LastHeartbeatAt: now.Add(-time.Second),
+		HeartbeatIntervalSeconds: 30,
+	}
+	replacement := cloneLease(base)
+	replacement.ExpiresAt = now.Add(5 * time.Minute)
+	replacement.LastHeartbeatAt = now
+
+	tests := []struct {
+		name    string
+		current CapabilityLease
+	}{
+		{name: "absolute expiry", current: func() CapabilityLease {
+			lease := cloneLease(base)
+			lease.ExpiresAt = now
+			return lease
+		}()},
+		{name: "heartbeat deadline", current: func() CapabilityLease {
+			lease := cloneLease(base)
+			lease.ExpiresAt = now.Add(10 * time.Minute)
+			lease.LastHeartbeatAt = now.Add(-90 * time.Second)
+			return lease
+		}()},
+		{name: "inactive state", current: func() CapabilityLease {
+			lease := cloneLease(base)
+			lease.State = LeaseRevoked
+			return lease
+		}()},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if allowsPostgresLeaseTransition(test.current, replacement, now) {
+				t.Fatal("expired or inactive lease was allowed to become active")
+			}
+		})
+	}
+	if !allowsPostgresLeaseTransition(base, replacement, now) {
+		t.Fatal("live active lease transition was rejected")
+	}
+	revocation := cloneLease(base)
+	revocation.State = LeaseRevoked
+	expired := cloneLease(base)
+	expired.ExpiresAt = now
+	if !allowsPostgresLeaseTransition(expired, revocation, now) {
+		t.Fatal("non-active transition changed existing revocation semantics")
+	}
+}
