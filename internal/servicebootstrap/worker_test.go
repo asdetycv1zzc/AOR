@@ -7,10 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/akimisaka/aor/internal/audit"
 	"github.com/akimisaka/aor/internal/authz"
+	"github.com/akimisaka/aor/internal/goalplan"
 	"github.com/akimisaka/aor/internal/runtimeconfig"
 	"github.com/akimisaka/aor/internal/sandbox"
 	aorworkflow "github.com/akimisaka/aor/internal/workflow"
+	"github.com/google/uuid"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/testsuite"
 	temporalworkflow "go.temporal.io/sdk/workflow"
@@ -28,6 +31,28 @@ type workerSandboxAuthorizer struct {
 	err   error
 }
 
+type moduleAuditRunnerStub struct {
+	result   audit.ModuleAuditResult
+	err      error
+	requests []audit.ModuleAuditRequest
+}
+
+func (runner *moduleAuditRunnerStub) Run(_ context.Context, request audit.ModuleAuditRequest) (audit.ModuleAuditResult, error) {
+	runner.requests = append(runner.requests, request)
+	return runner.result, runner.err
+}
+
+type planCompletionPublisherStub struct {
+	result   goalplan.PlanCompletionResult
+	err      error
+	requests []goalplan.PlanCompletionRequest
+}
+
+func (publisher *planCompletionPublisherStub) Publish(_ context.Context, request goalplan.PlanCompletionRequest) (goalplan.PlanCompletionResult, error) {
+	publisher.requests = append(publisher.requests, request)
+	return publisher.result, publisher.err
+}
+
 func (authorizer *workerSandboxAuthorizer) Authorize(context.Context, aorworkflow.ExecutionInput, sandboxActivityInput) error {
 	authorizer.calls++
 	return authorizer.err
@@ -43,6 +68,39 @@ func TestLinuxExecutionProviderRequiresPinnedDedicatedEngine(t *testing.T) {
 	}})
 	if !errors.Is(err, ErrWorkerConfiguration) && !errors.Is(err, ErrWorkerUnavailable) {
 		t.Fatalf("missing Linux engine configuration error = %v", err)
+	}
+}
+
+func TestModuleAuditActivityPublishesPlanCompletionAfterSuccessfulAudit(t *testing.T) {
+	runID := uuid.Must(uuid.NewV7()).String()
+	input := aorworkflow.ExecutionInput{TenantID: "tenant_1", ProjectID: "project_1", TaskID: "task_1"}
+	runner := &moduleAuditRunnerStub{result: audit.ModuleAuditResult{Duplicate: true}}
+	completion := &planCompletionPublisherStub{result: goalplan.PlanCompletionResult{Published: false}}
+	activity := &moduleAuditActivity{service: runner, completion: completion, local: true}
+
+	result, err := activity.Run(context.Background(), input, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Duplicate || len(runner.requests) != 1 || runner.requests[0].AuditRunID != runID || runner.requests[0].TaskID != input.TaskID {
+		t.Fatalf("audit result = %#v requests = %#v", result, runner.requests)
+	}
+	if len(completion.requests) != 1 || completion.requests[0] != (goalplan.PlanCompletionRequest{TenantID: input.TenantID, ProjectID: input.ProjectID}) {
+		t.Fatalf("completion requests = %#v", completion.requests)
+	}
+}
+
+func TestModuleAuditActivityDoesNotPublishCompletionAfterAuditError(t *testing.T) {
+	auditErr := errors.New("audit failed")
+	runner := &moduleAuditRunnerStub{err: auditErr}
+	completion := &planCompletionPublisherStub{}
+	activity := &moduleAuditActivity{service: runner, completion: completion, local: true}
+
+	_, err := activity.Run(context.Background(), aorworkflow.ExecutionInput{
+		TenantID: "tenant_1", ProjectID: "project_1", TaskID: "task_1",
+	}, uuid.Must(uuid.NewV7()).String())
+	if !errors.Is(err, auditErr) || len(completion.requests) != 0 {
+		t.Fatalf("audit error = %v completion requests = %#v", err, completion.requests)
 	}
 }
 

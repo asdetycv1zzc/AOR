@@ -87,8 +87,17 @@ type moduleAuditActivityInput struct {
 	RunID  string `json:"runId"`
 }
 
+type moduleAuditRunner interface {
+	Run(context.Context, audit.ModuleAuditRequest) (audit.ModuleAuditResult, error)
+}
+
+type planCompletionPublisher interface {
+	Publish(context.Context, goalplan.PlanCompletionRequest) (goalplan.PlanCompletionResult, error)
+}
+
 type moduleAuditActivity struct {
-	service     *audit.ModuleAuditService
+	service     moduleAuditRunner
+	completion  planCompletionPublisher
 	provider    sandbox.SandboxProvider
 	imageDigest string
 	profile     sandbox.DeploymentProfile
@@ -241,10 +250,11 @@ func (activity *moduleAuditActivity) Run(ctx context.Context, input aorworkflow.
 		return audit.ModuleAuditResult{}, ErrWorkerUnavailable
 	}
 	if activity.local {
-		return activity.service.Run(ctx, audit.ModuleAuditRequest{
+		result, resultErr = activity.service.Run(ctx, audit.ModuleAuditRequest{
 			AuditRunID: runID, TenantID: input.TenantID, ProjectID: input.ProjectID,
 			TaskID: input.TaskID, SandboxID: stableModuleAuditRuntimeID(input, runID),
 		})
+		return activity.publishPlanCompletion(ctx, input, result, resultErr)
 	}
 	spec, err := activity.sandboxSpec(input, runID)
 	if err != nil {
@@ -268,9 +278,18 @@ func (activity *moduleAuditActivity) Run(ctx context.Context, input aorworkflow.
 		spec.Platform == sandbox.PlatformWindows && handle.Attestation.Runtime != "native-process" {
 		return audit.ModuleAuditResult{}, ErrWorkerUnavailable
 	}
-	return activity.service.Run(ctx, audit.ModuleAuditRequest{
+	result, resultErr = activity.service.Run(ctx, audit.ModuleAuditRequest{
 		AuditRunID: runID, TenantID: input.TenantID, ProjectID: input.ProjectID, TaskID: input.TaskID, SandboxID: handle.ID,
 	})
+	return activity.publishPlanCompletion(ctx, input, result, resultErr)
+}
+
+func (activity *moduleAuditActivity) publishPlanCompletion(ctx context.Context, input aorworkflow.ExecutionInput, result audit.ModuleAuditResult, auditErr error) (audit.ModuleAuditResult, error) {
+	if auditErr != nil || activity.completion == nil {
+		return result, auditErr
+	}
+	_, err := activity.completion.Publish(ctx, goalplan.PlanCompletionRequest{TenantID: input.TenantID, ProjectID: input.ProjectID})
+	return result, err
 }
 
 func (activity *moduleAuditActivity) sandboxSpec(input aorworkflow.ExecutionInput, runID string) (sandbox.SandboxSpec, error) {
@@ -337,6 +356,7 @@ type workerExecutionServices struct {
 	leaseService      *leaseauthority.Service
 	artifactCatalog   *artifact.PostgresS3Catalog
 	artifactPublisher *artifact.CapabilityPublisher
+	planCompletion    *goalplan.PlanCompletionService
 }
 
 func (effect sandboxActivityEffect) Execute(ctx context.Context, key string, payload json.RawMessage) (output json.RawMessage, resultErr error) {
@@ -567,7 +587,7 @@ func Worker(config runtimeconfig.Config, clients *runtimeclient.Clients) (http.H
 
 func configuredModuleAudit(config runtimeconfig.Config, clients *runtimeclient.Clients, provider sandbox.SandboxProvider, services *workerExecutionServices, repositorySigner repository.Signer, signer *audit.HMACSigner) (*moduleAuditActivity, error) {
 	local := config.DeploymentProfile == "TEST"
-	if clients == nil || !local && provider == nil || services == nil || services.agentRuntime == nil || services.leaseService == nil || services.artifactCatalog == nil || services.artifactPublisher == nil || repositorySigner == nil || signer == nil {
+	if clients == nil || !local && provider == nil || services == nil || services.agentRuntime == nil || services.leaseService == nil || services.artifactCatalog == nil || services.artifactPublisher == nil || local && services.planCompletion == nil || repositorySigner == nil || signer == nil {
 		return nil, ErrWorkerConfiguration
 	}
 	policyClient, err := policy.NewOPAClient(config.OPA.URL)
@@ -671,7 +691,7 @@ func configuredModuleAudit(config runtimeconfig.Config, clients *runtimeclient.C
 	if config.DeploymentProfile == "PREPRODUCTION" || config.DeploymentProfile == "PRODUCTION" {
 		profile = sandbox.ProfileProduction
 	}
-	return &moduleAuditActivity{service: service, provider: provider, imageDigest: configuredImageDigest(config.Sandbox.ImageReference), profile: profile, local: local}, nil
+	return &moduleAuditActivity{service: service, completion: services.planCompletion, provider: provider, imageDigest: configuredImageDigest(config.Sandbox.ImageReference), profile: profile, local: local}, nil
 }
 
 func moduleAuditToolDefinitions(descriptors []toolbroker.ToolDescriptor) ([]modelgateway.ToolDefinition, error) {
@@ -874,9 +894,36 @@ func configuredWorkerExecution(config runtimeconfig.Config, clients *runtimeclie
 		_ = host.Close()
 		return nil, err
 	}
+	var planCompletion *goalplan.PlanCompletionService
+	if config.DeploymentProfile == "TEST" {
+		routes, routeErr := configuredGoalPlanRoutes(config.GoalPlan)
+		if routeErr != nil {
+			_ = host.Close()
+			return nil, routeErr
+		}
+		completionPreparer, prepareErr := goalplan.NewAuthoritativeRuntimePreparer(goalplan.RuntimePreparerConfig{
+			Artifacts: artifacts, Projects: tasks, Tasks: tasks, Leases: leaseService,
+			Routes: routes, LeaseTTL: 5 * time.Minute, Clock: time.Now,
+		})
+		if prepareErr != nil {
+			_ = host.Close()
+			return nil, prepareErr
+		}
+		completionInvoker, invokeErr := goalplan.NewRuntimeAgentInvoker(agentRuntime, completionPreparer)
+		if invokeErr != nil {
+			_ = host.Close()
+			return nil, invokeErr
+		}
+		planCompletion, err = goalplan.NewPlanCompletionService(artifacts, completionInvoker, tasks)
+		if err != nil {
+			_ = host.Close()
+			return nil, err
+		}
+	}
 	return &workerExecutionServices{
 		execution: service, host: host, agentRuntime: agentRuntime, tasks: tasks,
 		leaseService: leaseService, artifactCatalog: artifactCatalog, artifactPublisher: capabilityPublisher,
+		planCompletion: planCompletion,
 	}, nil
 }
 
