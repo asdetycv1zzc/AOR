@@ -855,7 +855,16 @@ func configuredWorkerExecution(config runtimeconfig.Config, clients *runtimeclie
 		_ = host.Close()
 		return nil, err
 	}
-	service, err := execution.New(execution.Config{Tasks: tasks, Specs: specs, Assignments: assignments, Preparer: preparer, Runtime: agentRuntime, Bases: repositoryClient.service, Submissions: submissions})
+	var bases repositoryWorkspaceBaseResolver = repositoryClient.service
+	if config.DeploymentProfile == "TEST" {
+		bases, err = newDependencyWorkspaceBaseResolver(repositoryClient.service, tasks, submissions)
+		if err != nil {
+			_ = host.Close()
+			return nil, err
+		}
+	}
+	repositoryClient.bases = bases
+	service, err := execution.New(execution.Config{Tasks: tasks, Specs: specs, Assignments: assignments, Preparer: preparer, Runtime: agentRuntime, Bases: bases, Submissions: submissions})
 	if err != nil {
 		_ = host.Close()
 		return nil, err

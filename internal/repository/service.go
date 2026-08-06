@@ -201,8 +201,14 @@ func (s *Service) CreateWorkspace(ctx context.Context, request WorkspaceRequest)
 		return Workspace{}, err
 	}
 	if _, err := git(ctx, directory, "rev-parse", "--verify", request.BaseCommit+"^{commit}"); err != nil {
-		cleanupWorkspace(directory, gitDirectory)
-		return Workspace{}, ErrInitialCommitNeeded
+		if _, fetchErr := git(ctx, directory, "fetch", "--no-tags", "--no-write-fetch-head", source, request.BaseCommit); fetchErr != nil {
+			cleanupWorkspace(directory, gitDirectory)
+			return Workspace{}, ErrInitialCommitNeeded
+		}
+		if _, verifyErr := git(ctx, directory, "rev-parse", "--verify", request.BaseCommit+"^{commit}"); verifyErr != nil {
+			cleanupWorkspace(directory, gitDirectory)
+			return Workspace{}, ErrInitialCommitNeeded
+		}
 	}
 	if err := checkoutCommit(ctx, workspace, request.BaseCommit); err != nil {
 		cleanupWorkspace(directory, gitDirectory)

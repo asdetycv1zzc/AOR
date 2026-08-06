@@ -7,9 +7,11 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/integration"
 	"github.com/akimisaka/aor/internal/repository"
+	"github.com/akimisaka/aor/internal/state"
 	"github.com/akimisaka/aor/internal/toolbroker"
 	"github.com/akimisaka/aor/pkg/contracts"
 	"github.com/akimisaka/aor/pkg/mcp"
@@ -44,6 +47,25 @@ type repositoryExecutionScope struct {
 type repositoryMCPClient struct {
 	service   *repository.Service
 	authority *repositoryExecutionAuthority
+	bases     repositoryWorkspaceBaseResolver
+}
+
+type repositoryWorkspaceBaseResolver interface {
+	ResolveWorkspaceBaseCommit(context.Context, string, string, string, string, int) (string, error)
+}
+
+type dependencyTaskSource interface {
+	Tasks(context.Context, string, string) ([]state.ModuleTask, error)
+}
+
+type dependencySubmissionSource interface {
+	Submission(context.Context, string, string, string, int) (repository.Submission, bool, error)
+}
+
+type dependencyWorkspaceBaseResolver struct {
+	base        *repository.Service
+	tasks       dependencyTaskSource
+	submissions dependencySubmissionSource
 }
 
 type repositoryCreateArguments struct {
@@ -128,7 +150,95 @@ func newRepositoryMCPClient(root string, database *sql.DB, leases toolbroker.Lea
 	if err != nil {
 		return nil, err
 	}
-	return &repositoryMCPClient{service: service, authority: authority}, nil
+	return &repositoryMCPClient{service: service, authority: authority, bases: service}, nil
+}
+
+func newDependencyWorkspaceBaseResolver(base *repository.Service, tasks dependencyTaskSource, submissions dependencySubmissionSource) (*dependencyWorkspaceBaseResolver, error) {
+	if base == nil || tasks == nil || submissions == nil {
+		return nil, repository.ErrInvalidRequest
+	}
+	return &dependencyWorkspaceBaseResolver{base: base, tasks: tasks, submissions: submissions}, nil
+}
+
+func (resolver *dependencyWorkspaceBaseResolver) ResolveWorkspaceBaseCommit(ctx context.Context, tenantID, projectID, taskID, attemptSeriesID string, attempt int) (string, error) {
+	if resolver == nil || resolver.base == nil || resolver.tasks == nil || resolver.submissions == nil {
+		return "", repository.ErrInvalidRequest
+	}
+	baseCommit, err := resolver.base.ResolveWorkspaceBaseCommit(ctx, tenantID, projectID, taskID, attemptSeriesID, attempt)
+	if err != nil || attempt != 1 {
+		return baseCommit, err
+	}
+	tasks, err := resolver.tasks.Tasks(ctx, tenantID, projectID)
+	if err != nil {
+		return "", err
+	}
+	currentFound := false
+	candidates := make([]string, 0)
+	for _, task := range tasks {
+		if task.ID == taskID {
+			currentFound = task.TenantID == tenantID && task.ProjectID == projectID
+			continue
+		}
+		if !containsTaskID(task.DependentTaskIDs, taskID) {
+			continue
+		}
+		if task.TenantID != tenantID || task.ProjectID != projectID || task.Attempt < 1 || task.Attempt > 3 ||
+			(task.State != contracts.TaskPassed && task.State != contracts.TaskIntegrated) {
+			return "", repository.ErrSubmissionConflict
+		}
+		submission, found, lookupErr := resolver.submissions.Submission(ctx, tenantID, task.ID, task.AttemptSeriesID, task.Attempt)
+		if lookupErr != nil {
+			return "", lookupErr
+		}
+		manifest := submission.Manifest
+		if !found || manifest.Validate() != nil || submission.Workspace.TenantID != tenantID ||
+			submission.Workspace.ProjectID != projectID || submission.Workspace.TaskID != task.ID ||
+			manifest.ProjectID != projectID || manifest.ModuleTaskID != task.ID ||
+			manifest.AttemptSeriesID != task.AttemptSeriesID || manifest.Attempt != task.Attempt {
+			return "", repository.ErrSubmissionConflict
+		}
+		candidates = append(candidates, manifest.HeadCommit)
+	}
+	if !currentFound {
+		return "", repository.ErrSubmissionConflict
+	}
+	if len(candidates) == 0 {
+		return baseCommit, nil
+	}
+	sort.Strings(candidates)
+	for index := 1; index < len(candidates); index++ {
+		if candidates[index] == candidates[index-1] {
+			return "", repository.ErrSubmissionConflict
+		}
+	}
+	projectRepository, found, err := resolver.base.ProjectRepository(ctx, tenantID, projectID)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", repository.ErrRepositoryNotFound
+	}
+	merger, err := integration.NewGitMerger(projectRepository.Path)
+	if err != nil {
+		return "", err
+	}
+	return merger.Merge(ctx, baseCommit, candidates, dependencyBaseID(tenantID, projectID, taskID, attemptSeriesID, baseCommit, candidates))
+}
+
+func dependencyBaseID(tenantID, projectID, taskID, attemptSeriesID, baseCommit string, candidates []string) string {
+	values := []string{tenantID, projectID, taskID, attemptSeriesID, baseCommit}
+	values = append(values, candidates...)
+	digest := sha256.Sum256([]byte(strings.Join(values, "\x00")))
+	return "dependency-base-" + hex.EncodeToString(digest[:])
+}
+
+func containsTaskID(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func (client *repositoryMCPClient) Initialize(ctx context.Context) (mcp.InitializeResponse, error) {
@@ -169,7 +279,7 @@ func (client *repositoryMCPClient) CallTool(ctx context.Context, name string, ar
 		if err != nil {
 			return mcp.ToolCallResult{}, err
 		}
-		request.BaseCommit, err = client.service.ResolveWorkspaceBaseCommit(ctx, request.TenantID, request.ProjectID, request.TaskID, request.AttemptSeriesID, request.Attempt)
+		request.BaseCommit, err = client.bases.ResolveWorkspaceBaseCommit(ctx, request.TenantID, request.ProjectID, request.TaskID, request.AttemptSeriesID, request.Attempt)
 		if err != nil {
 			return mcp.ToolCallResult{}, err
 		}
