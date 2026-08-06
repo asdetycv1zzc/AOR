@@ -137,7 +137,8 @@ func initialGoalRuntimeInvocation(t *testing.T, now time.Time) RuntimeInvocation
 	declaration := agentruntime.Declaration{
 		RunID: "run_goal", TenantID: "tenant_goal", ProjectID: "project_goal", AgentInstanceID: "agent_goal", Role: agentruntime.RoleGoalProposer,
 		PromptBundle: bundle, ContextManifest: manifest, ResponseSchemaRef: "schema://goal-draft", ResponseSchema: responseSchema,
-		ToolSchemaDigest: agentruntime.DigestToolDefinitions(nil), PolicyVersion: "policy_v1", PolicyDigest: agentruntime.DigestContextContent("policy_v1"), DataClassification: "INTERNAL",
+		ResponseSemanticValidator: func(json.RawMessage) error { return nil },
+		ToolSchemaDigest:          agentruntime.DigestToolDefinitions(nil), PolicyVersion: "policy_v1", PolicyDigest: agentruntime.DigestContextContent("policy_v1"), DataClassification: "INTERNAL",
 		Envelope: aop.Envelope{
 			AOPVersion: aop.Version, MessageID: "message_goal", IdempotencyKey: "idempotency_goal", CorrelationID: "correlation_goal",
 			ProjectID: "project_goal", Sender: aop.Sender{AgentInstanceID: "scheduler_goal", Role: "SERVICE", LeaseID: "lease_scheduler"},

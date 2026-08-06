@@ -211,7 +211,8 @@ func (preparer *AuthoritativeRuntimePreparer) Prepare(ctx context.Context, reque
 		TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID,
 		AgentInstanceID: agentID, Role: request.Role, PromptBundle: bundle, ContextManifest: manifest,
 		ResponseSchemaRef: responseSchema.Reference, ResponseSchema: responseSchema.Document,
-		Tools: nil, ToolSchemaDigest: agentruntime.DigestToolDefinitions(nil),
+		ResponseSemanticValidator: stage.responseSemanticValidator,
+		Tools:                     nil, ToolSchemaDigest: agentruntime.DigestToolDefinitions(nil),
 		PolicyVersion: lease.PolicyVersion, PolicyDigest: lease.PolicyVersion,
 		DataClassification: project.DataClassification,
 	}
@@ -234,13 +235,14 @@ func (preparer *AuthoritativeRuntimePreparer) Prepare(ctx context.Context, reque
 }
 
 type preparedStageContext struct {
-	items           []agentruntime.ContextItem
-	goalRef         *contracts.SpecRef
-	planRef         *contracts.SpecRef
-	scope           aop.Scope
-	expectedVersion int64
-	taskVersion     int64
-	specDigest      string
+	items                     []agentruntime.ContextItem
+	goalRef                   *contracts.SpecRef
+	planRef                   *contracts.SpecRef
+	scope                     aop.Scope
+	expectedVersion           int64
+	taskVersion               int64
+	specDigest                string
+	responseSemanticValidator func(json.RawMessage) error
 }
 
 func (preparer *AuthoritativeRuntimePreparer) stageContext(ctx context.Context, request AgentInvocation, project state.Project, artifacts map[ArtifactKind]SpecArtifact) (preparedStageContext, error) {
@@ -256,6 +258,7 @@ func (preparer *AuthoritativeRuntimePreparer) stageContext(ctx context.Context, 
 	}
 	switch request.Stage {
 	case "GOAL_DRAFT":
+		stage.responseSemanticValidator = goalDraftSemanticValidator(request)
 		if err := appendArtifact(ArtifactUserMessage, agentruntime.ContextUserInput, agentruntime.TrustExternalUntrusted); err != nil {
 			return preparedStageContext{}, err
 		}
@@ -287,7 +290,9 @@ func (preparer *AuthoritativeRuntimePreparer) stageContext(ctx context.Context, 
 		}
 		ref := runtimeArtifactRef(draft)
 		stage.goalRef = &ref
+		stage.responseSemanticValidator = challengeSemanticValidator(request, ref)
 	case "GOAL_REVISION":
+		stage.responseSemanticValidator = goalDraftSemanticValidator(request)
 		if err := appendArtifact(ArtifactUserMessage, agentruntime.ContextUserInput, agentruntime.TrustExternalUntrusted); err != nil {
 			return preparedStageContext{}, err
 		}
@@ -317,6 +322,7 @@ func (preparer *AuthoritativeRuntimePreparer) stageContext(ctx context.Context, 
 		}
 		ref := runtimeArtifactRef(goal)
 		stage.goalRef = &ref
+		stage.responseSemanticValidator = planDraftSemanticValidator(request, ref)
 	case "MODULE_SPEC":
 		goal, planArtifact := artifacts[ArtifactGoalApproved], artifacts[ArtifactPlanSpec]
 		if !projectGoalMatches(project, goal, true) || len(request.Payload) == 0 || len(request.Payload) > agentruntime.MaximumContextItemBytes || !json.Valid(request.Payload) {
@@ -360,11 +366,16 @@ func (preparer *AuthoritativeRuntimePreparer) stageContext(ctx context.Context, 
 		stage.goalRef, stage.planRef = &goalRef, &planRef
 		stage.scope, stage.expectedVersion = aop.ScopeTask, task.Version
 		stage.taskVersion, stage.specDigest = task.Version, task.PlanningSpecRef.SHA256
+		stage.responseSemanticValidator = moduleDraftSemanticValidator(request, plan, planned)
 	case "KNOWLEDGE_UPDATE_DRAFT":
+		stage.responseSemanticValidator = knowledgeDraftSemanticValidator(request.ProjectID)
 		if err := appendArtifact(ArtifactKnowledgeUpdateRequest, agentruntime.ContextUserInput, agentruntime.TrustExternalUntrusted); err != nil {
 			return preparedStageContext{}, err
 		}
 	default:
+		return preparedStageContext{}, ErrInvalidRequest
+	}
+	if stage.responseSemanticValidator == nil {
 		return preparedStageContext{}, ErrInvalidRequest
 	}
 	return stage, nil

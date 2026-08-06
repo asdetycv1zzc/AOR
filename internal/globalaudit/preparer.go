@@ -244,7 +244,8 @@ func (preparer *AuthoritativePreparer) Prepare(ctx context.Context, request Requ
 		RunID: request.RunID, Envelope: envelope, TenantID: request.TenantID, ProjectID: request.ProjectID,
 		AgentInstanceID: agentID, Role: agentruntime.RoleGlobalAuditor, PromptBundle: bundle,
 		ContextManifest: manifest, ResponseSchemaRef: DecisionSchemaReference, ResponseSchema: DecisionSchema(),
-		Tools: cloneGlobalAuditTools(preparer.tools), ToolSchemaDigest: agentruntime.DigestToolDefinitions(preparer.tools),
+		ResponseSemanticValidator: globalAuditResponseSemanticValidator(criteria),
+		Tools:                     cloneGlobalAuditTools(preparer.tools), ToolSchemaDigest: agentruntime.DigestToolDefinitions(preparer.tools),
 		PolicyVersion: lease.PolicyVersion, PolicyDigest: lease.PolicyVersion, DataClassification: project.DataClassification,
 	}
 	if _, err := agentruntime.AssemblePrompt(bundle, manifest, declaration.ResponseSchemaRef, declaration.ResponseSchema); err != nil {

@@ -195,23 +195,26 @@ type ContextManifest struct {
 }
 
 type Declaration struct {
-	RunID              string
-	Envelope           aop.Envelope
-	TenantID           string
-	ProjectID          string
-	TaskID             string
-	AgentInstanceID    string
-	Role               Role
-	PromptBundle       PromptBundle
-	ContextManifest    ContextManifest
-	ResponseSchemaRef  string
-	ResponseSchema     json.RawMessage
-	Tools              []modelgateway.ToolDefinition
-	ToolSchemaDigest   string
-	PolicyVersion      string
-	PolicyDigest       string
-	DataClassification string
-	Priority           int
+	RunID             string
+	Envelope          aop.Envelope
+	TenantID          string
+	ProjectID         string
+	TaskID            string
+	AgentInstanceID   string
+	Role              Role
+	PromptBundle      PromptBundle
+	ContextManifest   ContextManifest
+	ResponseSchemaRef string
+	ResponseSchema    json.RawMessage
+	// ResponseSemanticValidator is trusted process-local validation code. It is
+	// deliberately not part of the model request digest or wire representation.
+	ResponseSemanticValidator func(json.RawMessage) error `json:"-"`
+	Tools                     []modelgateway.ToolDefinition
+	ToolSchemaDigest          string
+	PolicyVersion             string
+	PolicyDigest              string
+	DataClassification        string
+	Priority                  int
 }
 
 type ModelCall struct {

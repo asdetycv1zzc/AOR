@@ -281,8 +281,9 @@ func (r *Runtime) generate(ctx context.Context, runID string, call ModelCall, me
 		TaskID: declaration.TaskID, AgentInstanceID: declaration.AgentInstanceID, Role: string(declaration.Role),
 		Model: call.Model, PromptBundleVersion: declaration.PromptBundle.Version, Messages: cloneMessages(messages),
 		Tools: cloneToolDefinitions(declaration.Tools), ResponseSchemaRef: declaration.ResponseSchemaRef,
-		ResponseSchema: append(json.RawMessage(nil), declaration.ResponseSchema...), MaxOutputTokens: call.MaxOutputTokens,
-		Temperature: call.Temperature, ProviderPolicy: call.ProviderPolicy,
+		ResponseSchema: append(json.RawMessage(nil), declaration.ResponseSchema...), ResponseSemanticValidator: declaration.ResponseSemanticValidator,
+		MaxOutputTokens: call.MaxOutputTokens,
+		Temperature:     call.Temperature, ProviderPolicy: call.ProviderPolicy,
 		DataClassification: declaration.DataClassification, CachePolicy: call.CachePolicy, PromptDigest: prompt.SHA256,
 		ToolSchemaDigest: declaration.ToolSchemaDigest, PolicyDigest: declaration.PolicyDigest, WorstCaseCostMicros: call.WorstCaseCostMicros,
 	}
@@ -396,11 +397,12 @@ func (r *Runtime) Complete(ctx context.Context, runID string, output AgentOutput
 	promptDigest := run.prompt.SHA256
 	contextDigest := run.declaration.ContextManifest.SHA256
 	responseSchema := append(json.RawMessage(nil), run.declaration.ResponseSchema...)
+	responseSemanticValidator := run.declaration.ResponseSemanticValidator
 	r.mu.RUnlock()
 	if !intentAllowed(role, output.Intent) {
 		return AcceptedResult{}, ErrIntentDenied
 	}
-	if err := validateAgentOutput(responseSchema, output); err != nil {
+	if err := validateAgentOutput(responseSchema, responseSemanticValidator, output); err != nil {
 		return AcceptedResult{}, err
 	}
 	if err := r.validateLease(ctx, runID, lease, "", LeaseOperationResult); err != nil {
@@ -722,7 +724,8 @@ func validateDeclaration(declaration Declaration, now time.Time) (AssembledPromp
 		declaration.ContextManifest.Role != declaration.Role || !validClassification(declaration.DataClassification) ||
 		declaration.Priority < 0 || declaration.Priority > 10000 ||
 		!safeProtocolString(declaration.PolicyVersion, 256) || !validDigest(declaration.PolicyDigest) || !validDigest(declaration.ToolSchemaDigest) ||
-		declaration.ToolSchemaDigest != DigestToolDefinitions(declaration.Tools) || len(declaration.ResponseSchema) > MaximumResponseSchemaBytes || len(declaration.Tools) > 100 {
+		declaration.ToolSchemaDigest != DigestToolDefinitions(declaration.Tools) || len(declaration.ResponseSchema) > MaximumResponseSchemaBytes ||
+		declaration.ResponseSemanticValidator == nil || len(declaration.Tools) > 100 {
 		return AssembledPrompt{}, ErrInvalidDeclaration
 	}
 	seenTools := make(map[string]struct{}, len(declaration.Tools))
@@ -844,7 +847,7 @@ func validClassification(value string) bool {
 	}
 }
 
-func validateAgentOutput(schemaJSON json.RawMessage, output AgentOutput) error {
+func validateAgentOutput(schemaJSON json.RawMessage, semanticValidator func(json.RawMessage) error, output AgentOutput) error {
 	var schemaDocument any
 	if err := json.Unmarshal(schemaJSON, &schemaDocument); err != nil {
 		return ErrOutputInvalid
@@ -860,6 +863,9 @@ func validateAgentOutput(schemaJSON json.RawMessage, output AgentOutput) error {
 	}
 	var instance any
 	if err := json.Unmarshal(output.Payload, &instance); err != nil || schema.Validate(instance) != nil {
+		return ErrOutputInvalid
+	}
+	if semanticValidator == nil || semanticValidator(append(json.RawMessage(nil), output.Payload...)) != nil {
 		return ErrOutputInvalid
 	}
 	return nil

@@ -19,6 +19,7 @@ import (
 	"github.com/akimisaka/aor/internal/leaseauthority"
 	"github.com/akimisaka/aor/internal/modelgateway"
 	"github.com/akimisaka/aor/internal/observability"
+	"github.com/akimisaka/aor/internal/state"
 	"github.com/akimisaka/aor/internal/toolbroker"
 	"github.com/akimisaka/aor/pkg/aop"
 	"github.com/akimisaka/aor/pkg/canonicaljson"
@@ -186,7 +187,8 @@ func (preparer *ExecutorRuntimePreparer) Prepare(ctx context.Context, request Pr
 		RunID: request.ExecutionID, Envelope: envelope, TenantID: request.Project.TenantID, ProjectID: request.Project.ID,
 		TaskID: task.ID, AgentInstanceID: agentID, Role: agentruntime.RoleExecutor, PromptBundle: bundle,
 		ContextManifest: manifest, ResponseSchemaRef: "urn:aor:execution:submission-manifest:v1", ResponseSchema: responseSchema,
-		Tools: cloneExecutionTools(preparer.tools), ToolSchemaDigest: agentruntime.DigestToolDefinitions(preparer.tools),
+		ResponseSemanticValidator: executorResponseSemanticValidator(task, request.Attempt, request.BaseCommit, agentID, lease.ID),
+		Tools:                     cloneExecutionTools(preparer.tools), ToolSchemaDigest: agentruntime.DigestToolDefinitions(preparer.tools),
 		PolicyVersion: lease.PolicyVersion, PolicyDigest: lease.PolicyVersion, DataClassification: request.Project.DataClassification,
 	}
 	if _, err := agentruntime.AssemblePrompt(bundle, manifest, declaration.ResponseSchemaRef, responseSchema); err != nil {
@@ -200,6 +202,19 @@ func (preparer *ExecutorRuntimePreparer) Prepare(ctx context.Context, request Pr
 			WorstCaseCostMicros: preparer.route.WorstCaseCostMicros, MaxAttempts: preparer.route.MaxAttempts},
 		MaxToolRounds: preparer.maxToolRounds,
 	}, nil
+}
+
+func executorResponseSemanticValidator(task state.ModuleTask, attempt int, baseCommit, agentID, leaseID string) func(json.RawMessage) error {
+	return func(content json.RawMessage) error {
+		manifest, err := decodeManifest(content)
+		if err != nil || manifest.ProjectID != task.ProjectID || manifest.ModuleTaskID != task.ID ||
+			manifest.AttemptSeriesID != task.AttemptSeriesID || manifest.Attempt != attempt ||
+			manifest.ModuleSpecRef != task.ModuleSpecRef || manifest.BaseCommit != baseCommit ||
+			manifest.AgentIdentity.AgentInstanceID != agentID || manifest.AgentIdentity.LeaseID != leaseID {
+			return ErrSubmissionInvalid
+		}
+		return nil
+	}
 }
 
 func (preparer *ExecutorRuntimePreparer) contextItems(ctx context.Context, request PreparationRequest, goalRef, planRef contracts.SpecRef) ([]agentruntime.ContextItem, []string, error) {

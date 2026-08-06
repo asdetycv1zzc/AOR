@@ -324,7 +324,8 @@ func runtimeExecutionDeclaration(lease authz.CapabilityLease, descriptor toolbro
 		AgentInstanceID: lease.AgentInstanceID, Role: agentruntime.RoleExecutor,
 		PromptBundle: bundle, ContextManifest: manifest, ResponseSchemaRef: "urn:aor:execution:result",
 		ResponseSchema: json.RawMessage(`{"type":"object"}`), Tools: []modelgateway.ToolDefinition{tool},
-		PolicyVersion: lease.PolicyVersion, PolicyDigest: agentruntime.DigestContextContent("policy"), DataClassification: "INTERNAL",
+		ResponseSemanticValidator: func(json.RawMessage) error { return nil },
+		PolicyVersion:             lease.PolicyVersion, PolicyDigest: agentruntime.DigestContextContent("policy"), DataClassification: "INTERNAL",
 	}
 	declaration.ToolSchemaDigest = agentruntime.DigestToolDefinitions(declaration.Tools)
 	declaration.Envelope = aop.Envelope{

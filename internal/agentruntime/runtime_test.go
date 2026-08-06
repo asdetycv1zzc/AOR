@@ -37,6 +37,9 @@ func TestRuntimeUsesOnlyGatewayAndBrokerBoundaries(t *testing.T) {
 	if request.TenantID != declaration.TenantID || request.AgentInstanceID != declaration.AgentInstanceID || request.PromptDigest == "" || request.PromptBundleVersion != declaration.PromptBundle.Version {
 		t.Fatalf("gateway request binding = %#v", request)
 	}
+	if request.ResponseSemanticValidator == nil {
+		t.Fatal("gateway request omitted semantic validator")
+	}
 	if options.AccountID != "budget_test" || options.ReservationID != "res_model" {
 		t.Fatalf("gateway options = %#v", options)
 	}
@@ -105,6 +108,31 @@ func TestCompleteRevalidatesStructuredOutputSchema(t *testing.T) {
 	}
 }
 
+func TestCompleteRevalidatesStructuredOutputSemantics(t *testing.T) {
+	clock := &mutableClock{now: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)}
+	runtime := newTestRuntime(t, clock, &fakeAuthority{clock: clock}, &fakeGateway{}, &fakeBroker{})
+	declaration := testDeclaration(RoleExecutor)
+	declaration.ResponseSchema = json.RawMessage(`{"type":"object","required":["commit"],"properties":{"commit":{"type":"string"}},"additionalProperties":false}`)
+	declaration.ResponseSemanticValidator = func(payload json.RawMessage) error {
+		var value struct {
+			Commit string `json:"commit"`
+		}
+		if err := json.Unmarshal(payload, &value); err != nil || len(value.Commit) != 40 {
+			return errors.New("commit must be a full object id")
+		}
+		return nil
+	}
+	startRun(t, runtime, declaration, testLease(clock.Now(), declaration))
+	_, err := runtime.Complete(context.Background(), declaration.RunID, AgentOutput{Intent: aop.IntentSubmitImplementation, Payload: json.RawMessage(`{"commit":"short"}`)})
+	if !errors.Is(err, ErrOutputInvalid) {
+		t.Fatalf("semantic-invalid output error = %v", err)
+	}
+	snapshot, _ := runtime.Snapshot(declaration.RunID)
+	if snapshot.State != StateRunning {
+		t.Fatalf("semantic rejection changed state to %s", snapshot.State)
+	}
+}
+
 func TestDeclarationRejectsExpiredAndMismatchedAOPEnvelope(t *testing.T) {
 	clock := &mutableClock{now: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)}
 	runtime := newTestRuntime(t, clock, &fakeAuthority{clock: clock}, &fakeGateway{}, &fakeBroker{})
@@ -122,6 +150,11 @@ func TestDeclarationRejectsExpiredAndMismatchedAOPEnvelope(t *testing.T) {
 	substituted.Envelope.ModuleSpec.SHA256 = DigestContextContent("different-module")
 	if err := runtime.Declare(substituted); !errors.Is(err, ErrInvalidDeclaration) {
 		t.Fatalf("substituted context error = %v", err)
+	}
+	missingSemanticValidation := testDeclaration(RoleExecutor)
+	missingSemanticValidation.ResponseSemanticValidator = nil
+	if err := runtime.Declare(missingSemanticValidation); !errors.Is(err, ErrInvalidDeclaration) {
+		t.Fatalf("missing semantic validator error = %v", err)
 	}
 }
 
@@ -426,7 +459,8 @@ func testDeclaration(role Role) Declaration {
 		RunID: "run_test", TenantID: "tenant_test", ProjectID: "project_test", AgentInstanceID: "agent_test", Role: role,
 		PromptBundle: bundle, ContextManifest: manifest, ResponseSchemaRef: "schema://agent-output",
 		ResponseSchema: json.RawMessage(`{"type":"object"}`), Tools: []modelgateway.ToolDefinition{tool},
-		PolicyVersion: "policy_v1", PolicyDigest: DigestContextContent("policy"), DataClassification: "INTERNAL",
+		ResponseSemanticValidator: func(json.RawMessage) error { return nil },
+		PolicyVersion:             "policy_v1", PolicyDigest: DigestContextContent("policy"), DataClassification: "INTERNAL",
 	}
 	if roleRequiresTask(role) {
 		declaration.TaskID = "task_test"

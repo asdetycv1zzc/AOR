@@ -310,6 +310,17 @@ func validAcceptedResult(accepted agentruntime.AcceptedResult, prepared Prepared
 		!accepted.AcceptedAt.IsZero() && !accepted.AcceptedAt.Before(prepared.Lease.IssuedAt)
 }
 
+func globalAuditResponseSemanticValidator(requiredCriteria []string) func(json.RawMessage) error {
+	required := append([]string(nil), requiredCriteria...)
+	return func(content json.RawMessage) error {
+		var decision Decision
+		if err := decodeStrict(content, &decision); err != nil || validateDecision(decision) != nil || !criteriaMatch(required, decision.CriteriaResults) {
+			return ErrInvalidReport
+		}
+		return nil
+	}
+}
+
 func validProject(project state.Project, request Request) bool {
 	return project.TenantID == request.TenantID && project.ID == request.ProjectID && project.State == contracts.ProjectGlobalAudit &&
 		project.Version > 0 && project.Goal != nil && project.Goal.Status == contracts.GoalApproved && project.Goal.ApprovedBy != "" &&

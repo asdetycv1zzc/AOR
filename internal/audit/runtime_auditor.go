@@ -169,27 +169,9 @@ func (auditor *runtimeAuditor) Audit(ctx context.Context, input BlindAuditInput)
 	if accepted.RunID != prepared.declaration.RunID || accepted.Intent != aop.IntentReportLLMAudit || accepted.ContextDigest != prepared.declaration.ContextManifest.SHA256 || !validAuditDigest(accepted.PromptDigest) || len(accepted.Payload) == 0 {
 		return LLMAuditResult{}, ErrRuntimeAuditorOutput
 	}
-	var response moduleAuditResponse
-	if err := decodeStrictAudit(accepted.Payload, &response); err != nil {
-		return LLMAuditResult{}, ErrRuntimeAuditorOutput
-	}
-	if response.Findings == nil || response.CriteriaResults == nil || response.ResidualRisks == nil || math.IsNaN(response.Confidence) || math.IsInf(response.Confidence, 0) || response.Confidence < 0 || response.Confidence > 1 || !criteriaMatch(input.RequiredCriteria, response.CriteriaResults) {
-		return LLMAuditResult{}, ErrRuntimeAuditorOutput
-	}
-	for _, finding := range response.Findings {
-		if finding.Validate() != nil {
-			return LLMAuditResult{}, ErrRuntimeAuditorOutput
-		}
-	}
-	for _, criterion := range response.CriteriaResults {
-		if criterion.Validate() != nil {
-			return LLMAuditResult{}, ErrRuntimeAuditorOutput
-		}
-	}
-	for _, risk := range response.ResidualRisks {
-		if strings.TrimSpace(risk) != risk || risk == "" || strings.ContainsAny(risk, "\x00\r\n") {
-			return LLMAuditResult{}, ErrRuntimeAuditorOutput
-		}
+	response, err := decodeModuleAuditResponse(accepted.Payload, input.RequiredCriteria)
+	if err != nil {
+		return LLMAuditResult{}, err
 	}
 	return LLMAuditResult{AuditorRunID: input.AuditRunID, ModelIdentity: prepared.modelCall.Provider + "/" + prepared.modelCall.Model, PromptDigest: accepted.PromptDigest, ContextDigest: accepted.ContextDigest, Verdict: response.Verdict, Findings: response.Findings, CriteriaResults: response.CriteriaResults, ResidualRisks: response.ResidualRisks, Confidence: response.Confidence}, nil
 }
@@ -253,7 +235,11 @@ func (auditor *runtimeAuditor) prepare(ctx context.Context, input BlindAuditInpu
 	if envelope.Validate(now) != nil {
 		return preparedModuleAudit{}, ErrRuntimeAuditorUnavailable
 	}
-	declaration := agentruntime.Declaration{RunID: input.AuditRunID, Envelope: envelope, TenantID: refs.TenantID, ProjectID: input.ProjectID, TaskID: input.TaskID, AgentInstanceID: agentID, Role: agentruntime.RoleModuleAuditor, PromptBundle: bundle, ContextManifest: manifest, ResponseSchemaRef: ModuleAuditDecisionSchemaReference, ResponseSchema: ModuleAuditDecisionSchema(), Tools: cloneModelTools(auditor.factory.tools), ToolSchemaDigest: agentruntime.DigestToolDefinitions(auditor.factory.tools), PolicyVersion: lease.PolicyVersion, PolicyDigest: lease.PolicyVersion, DataClassification: refs.DataClassification}
+	requiredCriteria := append([]string(nil), input.RequiredCriteria...)
+	declaration := agentruntime.Declaration{RunID: input.AuditRunID, Envelope: envelope, TenantID: refs.TenantID, ProjectID: input.ProjectID, TaskID: input.TaskID, AgentInstanceID: agentID, Role: agentruntime.RoleModuleAuditor, PromptBundle: bundle, ContextManifest: manifest, ResponseSchemaRef: ModuleAuditDecisionSchemaReference, ResponseSchema: ModuleAuditDecisionSchema(), ResponseSemanticValidator: func(content json.RawMessage) error {
+		_, err := decodeModuleAuditResponse(content, requiredCriteria)
+		return err
+	}, Tools: cloneModelTools(auditor.factory.tools), ToolSchemaDigest: agentruntime.DigestToolDefinitions(auditor.factory.tools), PolicyVersion: lease.PolicyVersion, PolicyDigest: lease.PolicyVersion, DataClassification: refs.DataClassification}
 	if _, err := agentruntime.AssemblePrompt(bundle, manifest, declaration.ResponseSchemaRef, declaration.ResponseSchema); err != nil {
 		return preparedModuleAudit{}, err
 	}
@@ -343,6 +329,33 @@ func decodeStrictAudit(encoded []byte, target any) error {
 		return ErrRuntimeAuditorOutput
 	}
 	return nil
+}
+
+func decodeModuleAuditResponse(encoded []byte, requiredCriteria []string) (moduleAuditResponse, error) {
+	var response moduleAuditResponse
+	if err := decodeStrictAudit(encoded, &response); err != nil ||
+		(response.Verdict != "PASS" && response.Verdict != "FAIL" && response.Verdict != "INCONCLUSIVE") ||
+		response.Findings == nil || response.CriteriaResults == nil || response.ResidualRisks == nil ||
+		math.IsNaN(response.Confidence) || math.IsInf(response.Confidence, 0) || response.Confidence < 0 || response.Confidence > 1 ||
+		!criteriaMatch(requiredCriteria, response.CriteriaResults) {
+		return moduleAuditResponse{}, ErrRuntimeAuditorOutput
+	}
+	for _, finding := range response.Findings {
+		if finding.Validate() != nil {
+			return moduleAuditResponse{}, ErrRuntimeAuditorOutput
+		}
+	}
+	for _, criterion := range response.CriteriaResults {
+		if criterion.Validate() != nil {
+			return moduleAuditResponse{}, ErrRuntimeAuditorOutput
+		}
+	}
+	for _, risk := range response.ResidualRisks {
+		if strings.TrimSpace(risk) != risk || risk == "" || strings.ContainsAny(risk, "\x00\r\n") {
+			return moduleAuditResponse{}, ErrRuntimeAuditorOutput
+		}
+	}
+	return response, nil
 }
 
 func moduleAuditParameterDigest(input BlindAuditInput, refs ModuleAuditReferences, bundle agentruntime.PromptBundle, manifest agentruntime.ContextManifest, responseDigest string, route goalplan.ModelRoute, tools []modelgateway.ToolDefinition) (string, error) {
