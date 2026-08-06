@@ -1348,18 +1348,32 @@ requirements:
     status: implemented
   - id: AOR-ACC-095
     title: Every Runbook has drill evidence from the last one hundred eighty days
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/operations/runbook_evidence.go
+      - runbooks/README.md
+    tests:
+      - internal/operations/runbook_evidence_test.go
+    evidenceType: signed-runbook-record+180-day-freshness-gate
     owner: operations
     status: planned
   - id: AOR-ACC-096
     title: Data retention deletion export and legal hold flows are executable and tested
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/artifact/catalog.go
+      - internal/artifact/retention.go
+      - internal/controlapi/handler.go
+      - internal/state/project.go
+      - migrations/postgres/000016_project_erasure.up.sql
+      - migrations/postgres/000040_artifact_retention.up.sql
+    tests:
+      - internal/artifact/catalog_test.go
+      - internal/artifact/retention_test.go
+      - internal/controlapi/handler_test.go
+      - internal/eventing/migration_test.go
+      - internal/state/project_test.go
+    evidenceType: durable-retention-erasure-export-legal-hold-tests
     owner: operations
-    status: planned
+    status: implemented
   - id: AOR-ACC-097
     title: Deployment packages include licenses notices SBOM and provenance
     implementation:

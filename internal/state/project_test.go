@@ -1,6 +1,7 @@
 package state
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -158,6 +159,32 @@ func TestProjectDeletionStopsWorkAndRequiresLegalHoldRelease(t *testing.T) {
 	project = applyProject(t, project, ProjectCommand{Type: ProjectCommandBeginDeletion, ActorID: "svc_retention", At: testTime()})
 	if project.Deletion.Status != ProjectDeletionErasing || project.Deletion.StartedAt == nil {
 		t.Fatalf("started deletion = %#v", project.Deletion)
+	}
+}
+
+func TestProjectDeletionAndLegalHoldSurviveDurableJSONRoundTrip(t *testing.T) {
+	project := createProject(t)
+	hold := ProjectLegalHold{ID: "hold_1", Reason: "records request", PlacedBy: "compliance_1", PlacedAt: testTime()}
+	project = applyProject(t, project, ProjectCommand{Type: ProjectCommandPlaceLegalHold, ActorID: "compliance_1", LegalHold: &hold, At: testTime()})
+	deletion := ProjectDeletion{ID: "deletion_1", RequestedBy: "usr_1", RequestedAt: testTime(), EarliestExecutionAt: testTime()}
+	project = applyProject(t, project, ProjectCommand{Type: ProjectCommandRequestDeletion, ActorID: "usr_1", Deletion: &deletion, At: testTime()})
+
+	encoded, err := json.Marshal(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored Project
+	if err := json.Unmarshal(encoded, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored.Version != project.Version || restored.Deletion == nil || restored.Deletion.Status != ProjectDeletionBlocked || len(restored.LegalHolds) != 1 || restored.LegalHolds[0].ReleasedAt != nil {
+		t.Fatalf("durable lifecycle round trip lost legal hold or deletion state: %#v", restored)
+	}
+
+	restored = applyProject(t, restored, ProjectCommand{Type: ProjectCommandReleaseLegalHold, ActorID: "compliance_2", LegalHoldID: hold.ID, ReleaseReason: "request completed", At: testTime()})
+	restored = applyProject(t, restored, ProjectCommand{Type: ProjectCommandBeginDeletion, ActorID: "svc_retention", At: testTime()})
+	if restored.Deletion == nil || restored.Deletion.Status != ProjectDeletionErasing || restored.LegalHolds[0].ReleasedAt == nil {
+		t.Fatalf("restored lifecycle could not continue safely: %#v", restored)
 	}
 }
 
