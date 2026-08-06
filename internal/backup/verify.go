@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/akimisaka/aor/pkg/canonicaljson"
@@ -33,8 +34,10 @@ type Snapshot struct {
 }
 
 type ProjectRecord struct {
-	TenantID string `json:"tenantId"`
-	ID       string `json:"id"`
+	TenantID     string `json:"tenantId"`
+	ID           string `json:"id"`
+	ActiveGoalID string `json:"activeGoalId,omitempty"`
+	ActivePlanID string `json:"activePlanId,omitempty"`
 }
 
 type GoalRecord struct {
@@ -59,11 +62,12 @@ type TaskRecord struct {
 }
 
 type AuditRecord struct {
-	TenantID    string   `json:"tenantId"`
-	ProjectID   string   `json:"projectId"`
-	ID          string   `json:"id"`
-	TaskID      string   `json:"taskId"`
-	ArtifactIDs []string `json:"artifactIds"`
+	TenantID     string   `json:"tenantId"`
+	ProjectID    string   `json:"projectId"`
+	ID           string   `json:"id"`
+	TaskID       string   `json:"taskId"`
+	ArtifactIDs  []string `json:"artifactIds"`
+	EvidenceRefs []string `json:"evidenceRefs,omitempty"`
 }
 
 type ArtifactRecord struct {
@@ -141,21 +145,28 @@ func validateSnapshot(snapshot Snapshot) error {
 	}
 	plans := make(map[string]struct{}, len(snapshot.Plans))
 	for _, plan := range snapshot.Plans {
-		if plan.TenantID == "" || plan.ProjectID == "" || plan.ID == "" || !has(projects, plan.TenantID, plan.ProjectID) || plan.GoalID != "" && !has(goals, plan.TenantID, plan.ProjectID, plan.GoalID) || !addUnique(plans, recordKey(plan.TenantID, plan.ProjectID, plan.ID)) {
+		if plan.TenantID == "" || plan.ProjectID == "" || plan.ID == "" || plan.GoalID == "" || !has(projects, plan.TenantID, plan.ProjectID) || !has(goals, plan.TenantID, plan.ProjectID, plan.GoalID) || !addUnique(plans, recordKey(plan.TenantID, plan.ProjectID, plan.ID)) {
 			return ErrDanglingReference
 		}
 	}
 	tasks := make(map[string]struct{}, len(snapshot.Tasks))
 	for _, task := range snapshot.Tasks {
-		if task.TenantID == "" || task.ProjectID == "" || task.ID == "" || !has(projects, task.TenantID, task.ProjectID) || task.PlanID != "" && !has(plans, task.TenantID, task.ProjectID, task.PlanID) || !addUnique(tasks, recordKey(task.TenantID, task.ProjectID, task.ID)) {
+		if task.TenantID == "" || task.ProjectID == "" || task.ID == "" || task.PlanID == "" || !has(projects, task.TenantID, task.ProjectID) || !has(plans, task.TenantID, task.ProjectID, task.PlanID) || !addUnique(tasks, recordKey(task.TenantID, task.ProjectID, task.ID)) {
+			return ErrDanglingReference
+		}
+	}
+	for _, project := range snapshot.Projects {
+		if project.ActiveGoalID != "" && !has(goals, project.TenantID, project.ID, project.ActiveGoalID) || project.ActivePlanID != "" && !has(plans, project.TenantID, project.ID, project.ActivePlanID) {
 			return ErrDanglingReference
 		}
 	}
 	artifacts := make(map[string]struct{}, len(snapshot.Artifacts))
+	artifactURIs := make(map[string]struct{}, len(snapshot.Artifacts))
 	for _, artifact := range snapshot.Artifacts {
 		if artifact.TenantID == "" || artifact.ProjectID == "" || artifact.ID == "" || artifact.URI == "" || !digestPattern.MatchString(artifact.SHA256) || artifact.Size < 0 || !has(projects, artifact.TenantID, artifact.ProjectID) || artifact.TaskID != "" && !has(tasks, artifact.TenantID, artifact.ProjectID, artifact.TaskID) || !addUnique(artifacts, recordKey(artifact.TenantID, artifact.ProjectID, artifact.ID)) {
 			return ErrDanglingReference
 		}
+		artifactURIs[scopeKey(artifact.TenantID, artifact.ProjectID, artifact.URI)] = struct{}{}
 	}
 	audits := make(map[string]struct{}, len(snapshot.Audits))
 	for _, audit := range snapshot.Audits {
@@ -165,6 +176,14 @@ func validateSnapshot(snapshot Snapshot) error {
 		seen := make(map[string]struct{}, len(audit.ArtifactIDs))
 		for _, artifactID := range audit.ArtifactIDs {
 			if artifactID == "" || !addUnique(seen, artifactID) || !has(artifacts, audit.TenantID, audit.ProjectID, artifactID) {
+				return ErrDanglingReference
+			}
+		}
+		for _, reference := range audit.EvidenceRefs {
+			if reference == "" || strings.ContainsAny(reference, "\r\n\x00") {
+				return ErrInvalidSnapshot
+			}
+			if strings.HasPrefix(reference, "artifact://") && !has(artifactURIs, audit.TenantID, audit.ProjectID, reference) {
 				return ErrDanglingReference
 			}
 		}
@@ -219,6 +238,8 @@ func canonicalSnapshot(snapshot Snapshot) Snapshot {
 	for index := range canonical.Audits {
 		canonical.Audits[index].ArtifactIDs = append([]string(nil), canonical.Audits[index].ArtifactIDs...)
 		sort.Strings(canonical.Audits[index].ArtifactIDs)
+		canonical.Audits[index].EvidenceRefs = append([]string(nil), canonical.Audits[index].EvidenceRefs...)
+		sort.Strings(canonical.Audits[index].EvidenceRefs)
 	}
 	sort.Slice(canonical.Audits, func(i, j int) bool {
 		return compareStrings(canonical.Audits[i].TenantID, canonical.Audits[j].TenantID, canonical.Audits[i].ProjectID, canonical.Audits[j].ProjectID, canonical.Audits[i].ID, canonical.Audits[j].ID)

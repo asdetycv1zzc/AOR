@@ -2,10 +2,16 @@ package backup
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
+	"io"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/akimisaka/aor/internal/artifact"
 )
 
 type artifactVerifier func(context.Context, ArtifactRecord) error
@@ -117,15 +123,84 @@ func TestVerifyRejectsDuplicateAuditRecords(t *testing.T) {
 	}
 }
 
+func TestVerifyRejectsCrossProjectActiveReferences(t *testing.T) {
+	snapshot := validSnapshot()
+	snapshot.Projects = append(snapshot.Projects, ProjectRecord{TenantID: "tenant-1", ID: "project-2", ActiveGoalID: "goal-1"})
+	_, err := Verify(context.Background(), snapshot, artifactVerifier(func(context.Context, ArtifactRecord) error { return nil }))
+	if !errors.Is(err, ErrDanglingReference) {
+		t.Fatalf("cross-project active goal result = %v", err)
+	}
+}
+
+func TestVerifyRejectsMissingPlanBindings(t *testing.T) {
+	snapshot := validSnapshot()
+	snapshot.Plans[0].GoalID = ""
+	_, err := Verify(context.Background(), snapshot, artifactVerifier(func(context.Context, ArtifactRecord) error { return nil }))
+	if !errors.Is(err, ErrDanglingReference) {
+		t.Fatalf("missing plan goal result = %v", err)
+	}
+	snapshot = validSnapshot()
+	snapshot.Tasks[0].PlanID = ""
+	_, err = Verify(context.Background(), snapshot, artifactVerifier(func(context.Context, ArtifactRecord) error { return nil }))
+	if !errors.Is(err, ErrDanglingReference) {
+		t.Fatalf("missing task plan result = %v", err)
+	}
+}
+
+func TestVerifyRejectsMissingFindingArtifactReference(t *testing.T) {
+	snapshot := validSnapshot()
+	snapshot.Audits[0].EvidenceRefs = []string{"artifact://sha256/ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}
+	_, err := Verify(context.Background(), snapshot, artifactVerifier(func(context.Context, ArtifactRecord) error { return nil }))
+	if !errors.Is(err, ErrDanglingReference) {
+		t.Fatalf("missing finding artifact result = %v", err)
+	}
+}
+
+func TestCatalogArtifactVerifierChecksRowAndContent(t *testing.T) {
+	content := "restored artifact"
+	digest := sha256.Sum256([]byte(content))
+	expectedDigest := "sha256:" + hex.EncodeToString(digest[:])
+	expected := ArtifactRecord{TenantID: "tenant-1", ProjectID: "project-1", ID: "artifact-1", URI: "artifact://sha256/" + hex.EncodeToString(digest[:]), SHA256: expectedDigest, Size: int64(len(content))}
+	catalog := &fakeBackupArtifactCatalog{record: artifact.Record{ID: expected.ID, TenantID: expected.TenantID, ProjectID: expected.ProjectID, URI: expected.URI, SHA256: expected.SHA256, SizeBytes: expected.Size}, content: content}
+	verifier, err := NewCatalogArtifactVerifier(catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := verifier.Verify(context.Background(), expected); err != nil {
+		t.Fatal(err)
+	}
+	catalog.record.URI = "artifact://sha256/other"
+	if !errors.Is(verifier.Verify(context.Background(), expected), ErrArtifactRecordMismatch) {
+		t.Fatal("catalog record mismatch was accepted")
+	}
+}
+
+type fakeBackupArtifactCatalog struct {
+	record  artifact.Record
+	content string
+}
+
+func (catalog *fakeBackupArtifactCatalog) List(context.Context, string, string, string, int) (artifact.Page, error) {
+	return artifact.Page{}, nil
+}
+
+func (catalog *fakeBackupArtifactCatalog) Get(context.Context, string, string, string) (artifact.Record, error) {
+	return catalog.record, nil
+}
+
+func (catalog *fakeBackupArtifactCatalog) Open(context.Context, string, string, string) (artifact.Record, io.ReadCloser, error) {
+	return catalog.record, io.NopCloser(strings.NewReader(catalog.content)), nil
+}
+
 func validSnapshot() Snapshot {
 	return Snapshot{
 		Version:   1,
 		CreatedAt: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
-		Projects:  []ProjectRecord{{TenantID: "tenant-1", ID: "project-1"}},
+		Projects:  []ProjectRecord{{TenantID: "tenant-1", ID: "project-1", ActiveGoalID: "goal-1", ActivePlanID: "plan-1"}},
 		Goals:     []GoalRecord{{TenantID: "tenant-1", ProjectID: "project-1", ID: "goal-1", Version: 1}},
 		Plans:     []PlanRecord{{TenantID: "tenant-1", ProjectID: "project-1", ID: "plan-1", GoalID: "goal-1"}},
 		Tasks:     []TaskRecord{{TenantID: "tenant-1", ProjectID: "project-1", ID: "task-1", PlanID: "plan-1"}},
-		Audits:    []AuditRecord{{TenantID: "tenant-1", ProjectID: "project-1", ID: "audit-1", TaskID: "task-1", ArtifactIDs: []string{"artifact-1"}}},
-		Artifacts: []ArtifactRecord{{TenantID: "tenant-1", ProjectID: "project-1", TaskID: "task-1", ID: "artifact-1", URI: "s3://aor/1", SHA256: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", Size: 10}},
+		Audits:    []AuditRecord{{TenantID: "tenant-1", ProjectID: "project-1", ID: "audit-1", TaskID: "task-1", ArtifactIDs: []string{"artifact-1"}, EvidenceRefs: []string{"artifact://sha256/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}},
+		Artifacts: []ArtifactRecord{{TenantID: "tenant-1", ProjectID: "project-1", TaskID: "task-1", ID: "artifact-1", URI: "artifact://sha256/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", SHA256: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", Size: 10}},
 	}
 }

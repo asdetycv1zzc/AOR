@@ -3,6 +3,7 @@ package backup
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"time"
 
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
@@ -105,7 +106,7 @@ func setSnapshotTenant(ctx context.Context, tx *sql.Tx, tenantID string) error {
 
 func loadProjects(ctx context.Context, tx *sql.Tx, tenantID string, snapshot *Snapshot) error {
 	rows, err := tx.QueryContext(ctx, `
-SELECT id::text
+SELECT id::text, COALESCE(active_goal_spec_id::text, ''), COALESCE(active_plan_spec_id::text, '')
 FROM projects
 WHERE tenant_id = $1::uuid
 ORDER BY id`, tenantID)
@@ -114,11 +115,12 @@ ORDER BY id`, tenantID)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var projectID string
-		if err := rows.Scan(&projectID); err != nil {
+		var record ProjectRecord
+		if err := rows.Scan(&record.ID, &record.ActiveGoalID, &record.ActivePlanID); err != nil {
 			return err
 		}
-		snapshot.Projects = append(snapshot.Projects, ProjectRecord{TenantID: tenantID, ID: projectID})
+		record.TenantID = tenantID
+		snapshot.Projects = append(snapshot.Projects, record)
 	}
 	return rows.Err()
 }
@@ -235,7 +237,46 @@ ORDER BY audit.project_id, audit.id, evidence.id`, tenantID)
 		}
 		snapshot.Audits[index].ArtifactIDs = append(snapshot.Audits[index].ArtifactIDs, artifactID.String)
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	refs, err := tx.QueryContext(ctx, `
+SELECT audit.id::text, finding.evidence_refs_jsonb
+FROM audit_runs AS audit
+JOIN audit_findings AS finding
+  ON finding.tenant_id = audit.tenant_id AND finding.audit_run_id = audit.id
+WHERE audit.tenant_id = $1::uuid
+ORDER BY audit.id, finding.stable_fingerprint`, tenantID)
+	if err != nil {
+		return err
+	}
+	for index := range snapshot.Audits {
+		auditIndexes[snapshot.Audits[index].ID] = index
+	}
+	for refs.Next() {
+		var auditID string
+		var encoded []byte
+		if err := refs.Scan(&auditID, &encoded); err != nil {
+			_ = refs.Close()
+			return err
+		}
+		index, found := auditIndexes[auditID]
+		if !found {
+			_ = refs.Close()
+			return ErrDanglingReference
+		}
+		var values []string
+		if err := json.Unmarshal(encoded, &values); err != nil || values == nil && string(encoded) != "[]" {
+			_ = refs.Close()
+			return ErrInvalidSnapshot
+		}
+		snapshot.Audits[index].EvidenceRefs = append(snapshot.Audits[index].EvidenceRefs, values...)
+	}
+	if err := refs.Err(); err != nil {
+		_ = refs.Close()
+		return err
+	}
+	return refs.Close()
 }
 
 func loadArtifacts(ctx context.Context, tx *sql.Tx, tenantID string, snapshot *Snapshot) error {
