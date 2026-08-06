@@ -208,6 +208,21 @@ func (r *Runner) runExternalDriver(ctx context.Context, root string, request Req
 	if err != nil {
 		return nil, err
 	}
+	executableRelative := filepath.Join("external", runID, "driver-executable"+filepath.Ext(executable))
+	executableRef, err := writeExternalRaw(outputDirectory, executableRelative, executableBytes)
+	if err != nil {
+		return nil, fmt.Errorf("verified driver executable: %w", err)
+	}
+	verifiedExecutable := filepath.Join(outputDirectory, "raw", executableRelative)
+	if err := os.Chmod(verifiedExecutable, 0o700); err != nil {
+		return nil, fmt.Errorf("verified driver executable permissions: %w", err)
+	}
+	corpusRelative := filepath.Join("external", runID, "driver-corpus"+filepath.Ext(corpusPath))
+	corpusRef, err := writeExternalRaw(outputDirectory, corpusRelative, corpusBytes)
+	if err != nil {
+		return nil, fmt.Errorf("verified driver corpus: %w", err)
+	}
+	verifiedCorpus := filepath.Join(outputDirectory, "raw", corpusRelative)
 	manifestRef, err := writeExternalRaw(outputDirectory, filepath.Join("external", runID, "driver-manifest.json"), manifestBytes)
 	if err != nil {
 		return nil, fmt.Errorf("driver manifest evidence: %w", err)
@@ -226,7 +241,7 @@ func (r *Runner) runExternalDriver(ctx context.Context, root string, request Req
 	stderr := &externalLimitedBuffer{limit: maxOutput}
 	driverContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	command := exec.CommandContext(driverContext, executable, manifest.Args...)
+	command := exec.CommandContext(driverContext, verifiedExecutable, manifest.Args...)
 	command.Dir = evidenceDirectory
 	command.Stdout = stdout
 	command.Stderr = stderr
@@ -238,7 +253,7 @@ func (r *Runner) runExternalDriver(ctx context.Context, root string, request Req
 		"AOR_CONFORMANCE_RELEASE_VERSION="+manifest.ReleaseVersion,
 		"AOR_CONFORMANCE_SOURCE_COMMIT="+manifest.SourceCommit,
 		"AOR_CONFORMANCE_BUILD_DIGEST="+buildDigest,
-		"AOR_CONFORMANCE_CORPUS_PATH="+corpusPath,
+		"AOR_CONFORMANCE_CORPUS_PATH="+verifiedCorpus,
 		"AOR_CONFORMANCE_TENANT_ID="+manifest.TenantID,
 		"AOR_CONFORMANCE_NAMESPACE="+manifest.Namespace,
 		"AOR_CONFORMANCE_RUN_ID="+runID,
@@ -272,7 +287,7 @@ func (r *Runner) runExternalDriver(ctx context.Context, root string, request Req
 	if err != nil {
 		return nil, fmt.Errorf("driver result evidence: %w", err)
 	}
-	commonRefs := []string{manifestRef, manifestArtifactRef, stdoutRef, stderrRef, resultRef,
+	commonRefs := []string{manifestRef, manifestArtifactRef, executableRef, corpusRef, stdoutRef, stderrRef, resultRef,
 		"artifact://conformance/driver-corpus#sha256=" + strings.TrimPrefix(manifest.CorpusSHA256, "sha256:"),
 		"artifact://conformance/driver-executable#sha256=" + strings.TrimPrefix(manifest.ExecutableSHA256, "sha256:"),
 	}
@@ -687,6 +702,13 @@ func readExternalFile(path string, limit int64) ([]byte, error) {
 		return nil, err
 	}
 	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil || !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
+		return nil, ErrInvalidRequest
+	}
+	if openedInfo.Size() > limit {
+		return nil, errors.New("file exceeds the configured limit")
+	}
 	value, err := io.ReadAll(io.LimitReader(file, limit+1))
 	if err != nil {
 		return nil, err

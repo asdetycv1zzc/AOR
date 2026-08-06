@@ -81,12 +81,14 @@ func TestExternalDriverBindsSignedManifestScopeAndRawEvidence(t *testing.T) {
 	if len(evidence.Results) != 1 || evidence.Results[0].Status != "PASS" || evidence.Results[0].RequirementID != "AOR-ACC-043" {
 		t.Fatalf("external result = %#v", evidence.Results)
 	}
-	var foundManifest, foundRaw bool
+	var foundManifest, foundExecutable, foundCorpus, foundRaw bool
 	for _, reference := range evidence.Results[0].EvidenceURIs {
 		foundManifest = foundManifest || strings.HasPrefix(reference, "artifact://conformance/driver-manifest#sha256=")
+		foundExecutable = foundExecutable || strings.Contains(reference, "/driver-executable")
+		foundCorpus = foundCorpus || strings.Contains(reference, "/driver-corpus")
 		foundRaw = foundRaw || strings.HasPrefix(reference, "file:raw/external/")
 	}
-	if !foundManifest || !foundRaw {
+	if !foundManifest || !foundExecutable || !foundCorpus || !foundRaw {
 		t.Fatalf("external evidence references = %#v", evidence.Results[0].EvidenceURIs)
 	}
 }
@@ -228,6 +230,17 @@ func TestExternalDriverProcess(t *testing.T) {
 func externalDriverHelperProcess() {
 	evidenceDirectory := os.Getenv("AOR_CONFORMANCE_EVIDENCE_DIR")
 	if evidenceDirectory == "" {
+		os.Exit(2)
+	}
+	executable, err := os.Executable()
+	if err != nil || filepath.Dir(executable) != evidenceDirectory || !strings.HasPrefix(filepath.Base(executable), "driver-executable") {
+		os.Exit(2)
+	}
+	corpusPath := os.Getenv("AOR_CONFORMANCE_CORPUS_PATH")
+	if filepath.Dir(corpusPath) != evidenceDirectory || !strings.HasPrefix(filepath.Base(corpusPath), "driver-corpus") {
+		os.Exit(2)
+	}
+	if corpus, err := os.ReadFile(corpusPath); err != nil || len(corpus) == 0 {
 		os.Exit(2)
 	}
 	evidence := []byte("independent trace\n")
