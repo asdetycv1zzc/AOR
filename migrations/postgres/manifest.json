@@ -295,6 +295,13 @@
       "file": "000042_service_capability_leases.up.sql",
       "sha256": "sha256:a3421aacd48daa7e0f921b2d4e253bb092c3bcace9d8e31cf74527f117e2b799",
       "destructive": false
+    },
+    {
+      "version": 43,
+      "mode": "EXPAND",
+      "file": "000043_tenant_registration_grant.up.sql",
+      "sha256": "sha256:af50dcda07068e35a7a6fad8ea41b48c79698b58f4973d0962f6684c7f39e196",
+      "destructive": false
     }
   ]
 }
