@@ -326,7 +326,15 @@ func (repository *FileRepository) Commit(ctx context.Context, request CommitRequ
 	if err := hardenTree(stage); err != nil {
 		return Manifest{}, err
 	}
+	// Some container volume drivers require the source directory itself to be
+	// owner-writable during rename. Contents remain sealed throughout.
+	if err := os.Chmod(stage, 0o750); err != nil {
+		return Manifest{}, aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", err, nil)
+	}
 	if err := os.Rename(stage, revisionDirectory); err != nil {
+		return Manifest{}, aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", err, nil)
+	}
+	if err := os.Chmod(revisionDirectory, 0o550); err != nil {
 		return Manifest{}, aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", err, nil)
 	}
 	committed = true
