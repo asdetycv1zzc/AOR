@@ -38,6 +38,8 @@ type IntegrationCandidate struct {
 	ProjectID      string
 	ProjectVersion int64
 	IntegrationID  string
+	Traceparent    string
+	Tracestate     string
 }
 
 type IntegrationCandidateSource interface {
@@ -84,6 +86,12 @@ FROM aor_integration_candidates($1)`, limit)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for index := range candidates {
+		candidates[index].Traceparent, candidates[index].Tracestate = loadSchedulerTrace(ctx, store.database, candidates[index].TenantID, candidates[index].ProjectID, "")
 	}
 	return candidates, nil
 }
@@ -147,10 +155,10 @@ func (starter *IntegrationStarter) Ensure(ctx context.Context, candidate Integra
 	if err != nil {
 		return ProjectExecutionStartResult{}, err
 	}
-	input := ExecutionInput{
+	input := executionInputWithTrace(ctx, ExecutionInput{
 		TenantID: candidate.TenantID, ProjectID: candidate.ProjectID, TaskID: integrationID,
 		ActivityID: integrationActivityID(integrationID), Payload: payload,
-	}
+	}, candidate.Traceparent, candidate.Tracestate)
 	run, err := starter.client.ExecuteWorkflow(ctx, temporalclient.StartWorkflowOptions{
 		ID: workflowID, TaskQueue: starter.taskQueue,
 		WorkflowIDReusePolicy:                    enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY,

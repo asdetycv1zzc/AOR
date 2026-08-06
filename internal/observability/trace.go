@@ -5,8 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -56,6 +61,7 @@ type Tracer struct {
 	sampler Sampler
 	limits  Limits
 	clock   func() time.Time
+	backend oteltrace.Tracer
 }
 
 func NewTracer(sink TraceSink, sampler Sampler, limits Limits) (*Tracer, error) {
@@ -75,6 +81,7 @@ type Span struct {
 	tracer      *Tracer
 	record      SpanRecord
 	correlation Correlation
+	backend     oteltrace.Span
 	mu          sync.Mutex
 	ended       bool
 }
@@ -94,16 +101,12 @@ func (t *Tracer) Start(ctx context.Context, name string, correlation Correlation
 		if err := parent.Validate(); err != nil {
 			return nil, nil, err
 		}
-	} else {
+	} else if t.backend == nil {
 		var err error
 		parent, err = NewRootTraceContext(false)
 		if err != nil {
 			return nil, nil, err
 		}
-	}
-	spanID, err := randomHex(8)
-	if err != nil {
-		return nil, nil, err
 	}
 	combined := cloneStrings(attributes)
 	for key, value := range correlation.traceAttributes() {
@@ -112,6 +115,35 @@ func (t *Tracer) Start(ctx context.Context, name string, correlation Correlation
 	parentSpanID := ""
 	if hasParent {
 		parentSpanID = parent.SpanID
+	}
+	if t.backend != nil {
+		startedAt := t.clock().UTC()
+		backendContext := ctx
+		if hasParent {
+			spanContext, err := openTelemetrySpanContext(parent)
+			if err != nil {
+				return nil, nil, err
+			}
+			backendContext = oteltrace.ContextWithRemoteSpanContext(backendContext, spanContext)
+		}
+		backendContext, backendSpan := t.backend.Start(backendContext, name, oteltrace.WithTimestamp(startedAt))
+		spanContext := backendSpan.SpanContext()
+		record := SpanRecord{
+			TraceID: spanContext.TraceID().String(), SpanID: spanContext.SpanID().String(), ParentSpanID: parentSpanID,
+			TraceState: spanContext.TraceState().String(), Name: name, StartedAt: startedAt, Attributes: combined,
+		}
+		propagation := TraceContext{TraceID: record.TraceID, SpanID: record.SpanID, TraceFlags: byte(spanContext.TraceFlags()), TraceState: record.TraceState}
+		childContext, err := ContextWithTrace(backendContext, propagation)
+		if err != nil {
+			backendSpan.End(oteltrace.WithTimestamp(t.clock().UTC()))
+			return nil, nil, err
+		}
+		childContext = context.WithValue(childContext, tracerContextKey{}, t)
+		return childContext, &Span{tracer: t, record: record, correlation: correlation, backend: backendSpan}, nil
+	}
+	spanID, err := randomHex(8)
+	if err != nil {
+		return nil, nil, err
 	}
 	record := SpanRecord{
 		TraceID: parent.TraceID, SpanID: spanID, ParentSpanID: parentSpanID,
@@ -148,6 +180,18 @@ func (s *Span) End(ctx context.Context, status SpanStatus, outcome TraceOutcome,
 	for key, value := range s.correlation.traceAttributes() {
 		s.record.Attributes[key] = value
 	}
+	if outcome.Attempt > 0 {
+		s.record.Attributes["aor.attempt"] = strconv.Itoa(outcome.Attempt)
+	}
+	if outcome.SecurityDenied {
+		s.record.Attributes["aor.security.denied"] = "true"
+	}
+	if outcome.BudgetDenied {
+		s.record.Attributes["aor.budget.denied"] = "true"
+	}
+	if outcome.Critical {
+		s.record.Attributes["aor.severity"] = "CRITICAL"
+	}
 	safe, _, err := sanitizeAttributes(s.record.Attributes, s.tracer.limits)
 	if err != nil {
 		return err
@@ -157,6 +201,33 @@ func (s *Span) End(ctx context.Context, status SpanStatus, outcome TraceOutcome,
 		return err
 	}
 	s.ended = true
+	if s.backend != nil {
+		keys := make([]string, 0, len(s.record.Attributes))
+		for key := range s.record.Attributes {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		values := make([]attribute.KeyValue, 0, len(keys))
+		for _, key := range keys {
+			value := s.record.Attributes[key]
+			if key == "aor.attempt" {
+				if attempt, err := strconv.ParseInt(value, 10, 64); err == nil {
+					values = append(values, attribute.Int64(key, attempt))
+					continue
+				}
+			}
+			values = append(values, attribute.String(key, value))
+		}
+		s.backend.SetAttributes(values...)
+		switch status {
+		case SpanStatusOK:
+			s.backend.SetStatus(codes.Ok, "")
+		case SpanStatusError:
+			s.backend.SetStatus(codes.Error, "operation failed")
+		}
+		s.backend.End(oteltrace.WithTimestamp(s.record.EndedAt))
+		return nil
+	}
 	trace := TraceContext{TraceID: s.record.TraceID, SpanID: s.record.SpanID}
 	if !s.tracer.sampler.ShouldSample(trace, outcome) {
 		return nil

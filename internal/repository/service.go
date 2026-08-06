@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/akimisaka/aor/internal/observability"
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 	"github.com/akimisaka/aor/pkg/contracts"
 	"github.com/google/uuid"
@@ -343,13 +344,30 @@ func (s *Service) ReadFile(ctx context.Context, workspaceID, name string) ([]byt
 	return append([]byte(nil), content...), nil
 }
 
-func (s *Service) Submit(ctx context.Context, request SubmissionRequest) (Submission, error) {
+func (s *Service) Submit(ctx context.Context, request SubmissionRequest) (submission Submission, resultErr error) {
 	s.submitMu.Lock()
 	defer s.submitMu.Unlock()
 	workspace, err := s.workspace(ctx, request.WorkspaceID)
 	if err != nil {
 		return Submission{}, err
 	}
+	ctx, traceSpan := observability.StartSpan(ctx, observability.SpanRepoCommit, observability.Correlation{
+		ProjectID:        workspace.ProjectID,
+		WorkflowIDReason: observability.ReasonUnavailable,
+		TaskID:           workspace.TaskID,
+		AgentRunIDReason: observability.ReasonUnavailable,
+	}, map[string]string{
+		"aor.agent.id":            workspace.AgentIdentity.AgentInstanceID,
+		"aor.agent.role":          workspace.AgentIdentity.Role,
+		"aor.module_spec.version": strconv.Itoa(workspace.ModuleSpecRef.Version),
+	})
+	defer func() {
+		attributes := map[string]string{}
+		if submission.Manifest.HeadCommit != "" {
+			attributes["aor.repo.commit.id"] = submission.Manifest.HeadCommit
+		}
+		observability.EndSpan(ctx, traceSpan, resultErr, observability.TraceOutcome{Attempt: request.Attempt}, attributes)
+	}()
 	if request.Attempt != workspace.Attempt || request.Attempt < 1 || request.Attempt > 3 || !safeCommitMetadata(request.IdempotencyKey) {
 		return Submission{}, ErrInvalidRequest
 	}
@@ -410,7 +428,7 @@ func (s *Service) Submit(ctx context.Context, request SubmissionRequest) (Submis
 	if err := manifest.Validate(); err != nil {
 		return Submission{}, err
 	}
-	submission := Submission{Manifest: manifest, Workspace: cloneWorkspace(workspace), CommitAt: s.clock().UTC(), IdempotencyKey: request.IdempotencyKey, RequestSHA256: requestDigest}
+	submission = Submission{Manifest: manifest, Workspace: cloneWorkspace(workspace), CommitAt: s.clock().UTC(), IdempotencyKey: request.IdempotencyKey, RequestSHA256: requestDigest}
 	if err := s.validateWorkspaceLease(ctx, workspace, request.Lease, LeaseActionSubmit, workspace.Path, requestDigest); err != nil {
 		return Submission{}, err
 	}

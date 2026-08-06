@@ -40,6 +40,8 @@ type ModuleAuditCandidate struct {
 	TaskVersion     int64
 	AttemptSeriesID string
 	Attempt         int
+	Traceparent     string
+	Tracestate      string
 }
 
 type ModuleAuditCandidateSource interface {
@@ -86,6 +88,12 @@ FROM aor_module_audit_candidates($1)`, limit)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for index := range candidates {
+		candidates[index].Traceparent, candidates[index].Tracestate = loadSchedulerTrace(ctx, store.database, candidates[index].TenantID, candidates[index].ProjectID, candidates[index].TaskID)
 	}
 	return candidates, nil
 }
@@ -141,10 +149,10 @@ func (starter *ModuleAuditStarter) Ensure(ctx context.Context, candidate ModuleA
 	if err != nil {
 		return ProjectExecutionStartResult{}, err
 	}
-	input := ExecutionInput{
+	input := executionInputWithTrace(ctx, ExecutionInput{
 		TenantID: candidate.TenantID, ProjectID: candidate.ProjectID, TaskID: candidate.TaskID,
 		ActivityID: moduleAuditActivityID(runID), Payload: payload,
-	}
+	}, candidate.Traceparent, candidate.Tracestate)
 	run, err := starter.client.ExecuteWorkflow(ctx, temporalclient.StartWorkflowOptions{
 		ID: workflowID, TaskQueue: starter.taskQueue,
 		WorkflowIDReusePolicy:                    enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY,

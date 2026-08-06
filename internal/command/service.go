@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/akimisaka/aor/internal/credentials"
+	"github.com/akimisaka/aor/internal/observability"
 	"github.com/akimisaka/aor/internal/runtimeclient"
 	"github.com/akimisaka/aor/internal/runtimeconfig"
 	"github.com/akimisaka/aor/internal/version"
@@ -62,6 +63,21 @@ func runServer(component string, factory HandlerFactory) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	var telemetry *observability.Tracer
+	if config.Telemetry.OTLPEndpoint != "" {
+		var shutdown func(context.Context) error
+		telemetry, shutdown, err = observability.NewOTLPTracer(ctx, component, config.Telemetry.OTLPEndpoint)
+		if err != nil {
+			return err
+		}
+		restore := observability.SetDefaultTracer(telemetry)
+		defer restore()
+		defer func() {
+			shutdownContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = shutdown(shutdownContext)
+		}()
+	}
 	resolver := credentials.NewSecretResolver(envOrDefault("AOR_SECRET_ROOT", credentials.DefaultSecretRoot))
 	clients, err := runtimeclient.Open(ctx, config, resolver)
 	if err != nil {
@@ -87,11 +103,15 @@ func runServer(component string, factory HandlerFactory) error {
 			return domainReady.Ready()
 		}
 	}
+	servedDomain := domain
+	if telemetry != nil && domain != nil {
+		servedDomain = observability.HTTPHandler(telemetry, domain)
+	}
 	listener, err := net.Listen("tcp", config.ListenAddress)
 	if err != nil {
 		return err
 	}
-	return ServeWithHandler(ctx, component, listener, readiness, domain)
+	return ServeWithHandler(ctx, component, listener, readiness, servedDomain)
 }
 
 // Serve runs a bounded health and identity surface. Domain APIs remain owned

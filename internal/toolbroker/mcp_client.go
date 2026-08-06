@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/akimisaka/aor/internal/observability"
 	"github.com/akimisaka/aor/pkg/mcp"
 )
 
@@ -198,6 +199,7 @@ func (client *StreamableHTTPClient) request(ctx context.Context, method string, 
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json, text/event-stream")
+	client.injectTrace(ctx, request)
 	client.setAuthorization(request)
 	if client.origin != "" {
 		request.Header.Set("Origin", client.origin)
@@ -271,6 +273,7 @@ func (client *StreamableHTTPClient) notification(ctx context.Context, method str
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json, text/event-stream")
+	client.injectTrace(ctx, request)
 	client.setAuthorization(request)
 	client.mu.Lock()
 	if client.version != "" {
@@ -296,6 +299,12 @@ func (client *StreamableHTTPClient) setAuthorization(request *http.Request) {
 	defer client.mu.Unlock()
 	if len(client.bearerToken) > 0 {
 		request.Header.Set("Authorization", "Bearer "+string(client.bearerToken))
+	}
+}
+
+func (client *StreamableHTTPClient) injectTrace(ctx context.Context, request *http.Request) {
+	if trace, found := observability.TraceFromContext(ctx); found {
+		_ = observability.InjectTrace(request.Header, trace)
 	}
 }
 

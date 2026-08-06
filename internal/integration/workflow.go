@@ -6,8 +6,10 @@ import (
 	"errors"
 	"reflect"
 	"sort"
+	"strconv"
 	"time"
 
+	"github.com/akimisaka/aor/internal/observability"
 	"github.com/akimisaka/aor/internal/state"
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 	"github.com/akimisaka/aor/pkg/contracts"
@@ -107,13 +109,34 @@ func NewWorkflow(config WorkflowConfig) (*Workflow, error) {
 // Run advances one recoverable integration attempt. The queue owns the
 // durable attempt CAS; this coordinator only derives the next valid request
 // from that authoritative state.
-func (workflow *Workflow) Run(ctx context.Context, request Request) (WorkflowResult, error) {
+func (workflow *Workflow) Run(ctx context.Context, request Request) (result WorkflowResult, resultErr error) {
 	if workflow == nil || workflow.queue == nil || workflow.tasks == nil || workflow.checks == nil || workflow.summaries == nil || ctx == nil || ctx.Err() != nil {
 		return WorkflowResult{}, ErrWorkflowUnavailable
 	}
 	if request.TenantID == "" || request.ProjectID == "" || request.IntegrationID == "" {
 		return WorkflowResult{}, ErrInvalidRequest
 	}
+	correlation := observability.Correlation{
+		ProjectID: request.ProjectID, WorkflowID: request.IntegrationID,
+		TaskID: request.OwnerTaskID, AgentRunIDReason: observability.ReasonNotApplicable,
+	}
+	if request.OwnerTaskID == "" {
+		correlation.TaskIDReason = observability.ReasonNotCreated
+	}
+	ctx, traceSpan := observability.StartSpan(ctx, observability.SpanIntegrationMerge, correlation, map[string]string{
+		"aor.agent.id":       request.PrincipalID,
+		"aor.policy.version": request.PolicyDigest,
+	})
+	defer func() {
+		attributes := map[string]string{}
+		if result.Merge.Commit != "" {
+			attributes["aor.repo.commit.id"] = result.Merge.Commit
+		}
+		if request.Attempt > 0 {
+			attributes["aor.attempt"] = strconv.Itoa(request.Attempt)
+		}
+		observability.EndSpan(ctx, traceSpan, resultErr, observability.TraceOutcome{Attempt: request.Attempt}, attributes)
+	}()
 	request = cloneRequest(request)
 	integrationTask, found, err := workflow.queue.Task(ctx, request.TenantID, request.IntegrationID)
 	if err != nil {

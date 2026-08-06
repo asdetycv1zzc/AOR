@@ -10,6 +10,8 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 	temporalworkflow "go.temporal.io/sdk/workflow"
+
+	"github.com/akimisaka/aor/internal/observability"
 )
 
 type temporalEffect struct{}
@@ -56,5 +58,53 @@ func TestProjectExecutionWorkflowRejectsInvalidInputAsNonRetryable(t *testing.T)
 	var appErr *temporal.ApplicationError
 	if !errors.As(err, &appErr) || appErr.Type() != "AORInvalidArgument" {
 		t.Fatalf("workflow error = %v", err)
+	}
+}
+
+type traceTemporalEffect struct {
+	observed chan observability.TraceContext
+}
+
+func (effect *traceTemporalEffect) Execute(ctx context.Context, _ string, _ json.RawMessage) (json.RawMessage, error) {
+	trace, found := observability.TraceFromContext(ctx)
+	if found {
+		effect.observed <- trace
+	}
+	return json.RawMessage(`{"ok":true}`), nil
+}
+
+func TestProjectExecutionWorkflowRestoresTraceInActivity(t *testing.T) {
+	trace, err := observability.ParseTraceParent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", "vendor=value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	effect := &traceTemporalEffect{observed: make(chan observability.TraceContext, 1)}
+	activities, err := NewActivities(effect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var suite testsuite.WorkflowTestSuite
+	environment := suite.NewTestWorkflowEnvironment()
+	environment.RegisterWorkflowWithOptions(ProjectExecutionWorkflow, temporalworkflow.RegisterOptions{Name: ProjectExecutionWorkflowName})
+	environment.RegisterActivityWithOptions(activities.Execute, activity.RegisterOptions{Name: ExecuteActivityName})
+	traceparent, err := trace.TraceParent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := executionInputWithTrace(context.Background(), ExecutionInput{
+		TenantID: "tenant_1", ProjectID: "project_1", TaskID: "task_1", ActivityID: "activity_1",
+		Payload: json.RawMessage(`{"value":1}`),
+	}, traceparent, trace.TraceState)
+	environment.ExecuteWorkflow(ProjectExecutionWorkflowName, input)
+	if err := environment.GetWorkflowError(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case observed := <-effect.observed:
+		if observed != trace {
+			t.Fatalf("activity trace = %#v", observed)
+		}
+	default:
+		t.Fatal("activity did not receive trace context")
 	}
 }

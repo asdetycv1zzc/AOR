@@ -9,12 +9,14 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"strconv"
 	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
+	"github.com/akimisaka/aor/internal/observability"
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 )
 
@@ -381,7 +383,7 @@ func (g *Gateway) CancelStream(ctx context.Context, tenantID, reservationID, pro
 	return nil
 }
 
-func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, options GenerateOptions) (NormalizedResponse, error) {
+func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, options GenerateOptions) (response NormalizedResponse, resultErr error) {
 	if ctx == nil {
 		return NormalizedResponse{}, ErrInvalidRequest
 	}
@@ -392,6 +394,25 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 	if err != nil {
 		return NormalizedResponse{}, err
 	}
+	ctx, traceSpan := observability.StartSpan(ctx, observability.SpanModelGenerate, modelTraceCorrelation(request), map[string]string{
+		"aor.agent.id":         request.AgentInstanceID,
+		"aor.agent.role":       request.Role,
+		"aor.policy.version":   request.PolicyDigest,
+		"aor.prompt.version":   request.PromptBundleVersion,
+		"gen_ai.provider.name": options.Provider,
+		"gen_ai.request.model": request.Model,
+	})
+	defer func() {
+		attributes := map[string]string{
+			"gen_ai.response.model":      response.ModelVersion,
+			"gen_ai.usage.input_tokens":  strconv.FormatInt(response.Usage.InputTokens, 10),
+			"gen_ai.usage.output_tokens": strconv.FormatInt(response.Usage.OutputTokens, 10),
+		}
+		if response.ModelVersion == "" {
+			attributes["gen_ai.response.model"] = "UNAVAILABLE"
+		}
+		observability.EndSpan(ctx, traceSpan, resultErr, observability.TraceOutcome{BudgetDenied: errors.Is(resultErr, ErrBudgetExceeded)}, attributes)
+	}()
 	digest, err := normalizedRequestDigest(request, options)
 	if err != nil {
 		return NormalizedResponse{}, err
@@ -423,6 +444,19 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 	}
 	g.finishExecution(request, digest, execution, response, runErr)
 	return response, runErr
+}
+
+func modelTraceCorrelation(request NormalizedRequest) observability.Correlation {
+	correlation := observability.Correlation{
+		ProjectID:        request.ProjectID,
+		WorkflowIDReason: observability.ReasonUnavailable,
+		TaskID:           request.TaskID,
+		AgentRunIDReason: observability.ReasonUnavailable,
+	}
+	if request.TaskID == "" {
+		correlation.TaskIDReason = observability.ReasonNotApplicable
+	}
+	return correlation
 }
 
 type executionDigestInput struct {

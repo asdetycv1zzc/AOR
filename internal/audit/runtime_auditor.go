@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -127,10 +128,29 @@ type moduleAuditResponse struct {
 	Confidence      float64                     `json:"confidence"`
 }
 
-func (auditor *runtimeAuditor) Audit(ctx context.Context, input BlindAuditInput) (LLMAuditResult, error) {
+func (auditor *runtimeAuditor) Audit(ctx context.Context, input BlindAuditInput) (result LLMAuditResult, resultErr error) {
 	if auditor == nil || auditor.factory == nil || ctx == nil || ctx.Err() != nil || validateBlindInput(input) != nil || !validAuditRunID(input.AuditRunID) || input.TenantID == "" || input.AttemptSeriesID == "" {
 		return LLMAuditResult{}, ErrBlindContext
 	}
+	ctx, traceSpan := observability.StartSpan(ctx, observability.SpanAuditLLM, observability.Correlation{
+		ProjectID: input.ProjectID, WorkflowIDReason: observability.ReasonUnavailable,
+		TaskID: input.TaskID, AgentRunID: input.AuditRunID,
+	}, map[string]string{
+		"aor.module_spec.version": strconv.Itoa(input.ModuleSpecRef.Version),
+	})
+	var prepared preparedModuleAudit
+	defer func() {
+		attributes := map[string]string{}
+		if prepared.declaration.AgentInstanceID != "" {
+			attributes["aor.agent.id"] = prepared.declaration.AgentInstanceID
+			attributes["aor.agent.role"] = string(prepared.declaration.Role)
+			attributes["aor.policy.version"] = prepared.declaration.PolicyVersion
+			attributes["aor.prompt.version"] = prepared.declaration.PromptBundle.Version
+			attributes["gen_ai.provider.name"] = prepared.modelCall.Provider
+			attributes["gen_ai.request.model"] = prepared.modelCall.Model
+		}
+		observability.EndSpan(ctx, traceSpan, resultErr, observability.TraceOutcome{Attempt: input.Attempt}, attributes)
+	}()
 	refs, err := auditor.factory.references.Resolve(ctx, input)
 	if err != nil {
 		return LLMAuditResult{}, err
@@ -138,7 +158,7 @@ func (auditor *runtimeAuditor) Audit(ctx context.Context, input BlindAuditInput)
 	if err := validModuleAuditReferences(refs, input); err != nil {
 		return LLMAuditResult{}, err
 	}
-	prepared, err := auditor.prepare(ctx, input, refs)
+	prepared, err = auditor.prepare(ctx, input, refs)
 	if err != nil {
 		return LLMAuditResult{}, err
 	}

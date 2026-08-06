@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/akimisaka/aor/internal/observability"
 	"github.com/akimisaka/aor/internal/state"
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 	"github.com/akimisaka/aor/pkg/contracts"
@@ -101,13 +102,23 @@ func NewModuleAuditService(config ModuleAuditServiceConfig) (*ModuleAuditService
 	}, nil
 }
 
-func (service *ModuleAuditService) Run(ctx context.Context, request ModuleAuditRequest) (ModuleAuditResult, error) {
+func (service *ModuleAuditService) Run(ctx context.Context, request ModuleAuditRequest) (result ModuleAuditResult, resultErr error) {
 	if service == nil || service.tasks == nil || service.inputs == nil || service.pipeline == nil ||
 		service.evidence == nil || service.signer == nil || service.checkpoints == nil ||
 		ctx == nil || ctx.Err() != nil || !validAuditRunID(request.AuditRunID) ||
 		!validCoordinatorID(request.TenantID) || !validCoordinatorID(request.ProjectID) || !validCoordinatorID(request.TaskID) {
 		return ModuleAuditResult{}, ErrInvalidAuditRequest
 	}
+	ctx, traceSpan := observability.StartSpan(ctx, observability.SpanAuditCheck, observability.Correlation{
+		ProjectID: request.ProjectID, WorkflowIDReason: observability.ReasonUnavailable,
+		TaskID: request.TaskID, AgentRunID: request.AuditRunID,
+	}, map[string]string{"aor.audit.pipeline.version": service.pipeline.version})
+	attempt := 0
+	defer func() {
+		observability.EndSpan(ctx, traceSpan, resultErr, observability.TraceOutcome{
+			Attempt: attempt, SecurityDenied: errors.Is(resultErr, ErrAuditAuthorization),
+		}, nil)
+	}()
 	project, found, err := service.tasks.Project(ctx, request.TenantID, request.ProjectID)
 	if err != nil {
 		return ModuleAuditResult{}, err
@@ -122,6 +133,7 @@ func (service *ModuleAuditService) Run(ctx context.Context, request ModuleAuditR
 	if !found || task.Attempt < 1 || task.Attempt > 3 || task.AttemptSeriesID == "" || task.ModuleSpecRef.Validate() != nil {
 		return ModuleAuditResult{}, ErrTaskNotAuditable
 	}
+	attempt = task.Attempt
 	checkpoint, checkpointFound, err := service.checkpoints.Get(ctx, task.TenantID, task.ID, task.AttemptSeriesID, task.Attempt)
 	if err != nil {
 		return ModuleAuditResult{}, err

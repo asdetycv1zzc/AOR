@@ -281,6 +281,20 @@
       "file": "000040_artifact_retention.up.sql",
       "sha256": "sha256:c00706fb3265acfcc5b085050d36c4dfeb95ce275c0a5bc89e5418bb994b8c8a",
       "destructive": false
+    },
+    {
+      "version": 41,
+      "mode": "EXPAND",
+      "file": "000041_scheduler_trace_context.up.sql",
+      "sha256": "sha256:5712b7a998044d5a80b6b07dfd13c81a94ed6b5f047a83ff81dbfa204d83eafa",
+      "destructive": false
+    },
+    {
+      "version": 42,
+      "mode": "EXPAND",
+      "file": "000042_service_capability_leases.up.sql",
+      "sha256": "sha256:a3421aacd48daa7e0f921b2d4e253bb092c3bcace9d8e31cf74527f117e2b799",
+      "destructive": false
     }
   ]
 }

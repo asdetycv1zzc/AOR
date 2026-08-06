@@ -5,11 +5,13 @@ package leaseauthority
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
 	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/authz"
+	"github.com/akimisaka/aor/internal/observability"
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
 	"github.com/google/uuid"
@@ -128,7 +130,25 @@ func (service *Service) issueAtFencing(ctx context.Context, principal authn.Prin
 	return service.issue(ctx, principal, request, fencingToken)
 }
 
-func (service *Service) issue(ctx context.Context, principal authn.Principal, request GrantRequest, fencingToken int64) (authz.CapabilityLease, error) {
+func (service *Service) issue(ctx context.Context, principal authn.Principal, request GrantRequest, fencingToken int64) (lease authz.CapabilityLease, resultErr error) {
+	correlation := observability.Correlation{
+		ProjectID: request.ProjectID, WorkflowIDReason: observability.ReasonUnavailable,
+		TaskID: request.TaskID, AgentRunIDReason: observability.ReasonUnavailable,
+	}
+	if request.TaskID == "" {
+		correlation.TaskIDReason = observability.ReasonNotApplicable
+	}
+	ctx, traceSpan := observability.StartSpan(ctx, observability.SpanAgentLease, correlation, map[string]string{
+		"aor.agent.id": principal.ID, "aor.agent.role": principal.Role, "aor.lease.action": request.Action,
+	})
+	defer func() {
+		attributes := map[string]string{}
+		if lease.PolicyVersion != "" {
+			attributes["aor.policy.version"] = lease.PolicyVersion
+		}
+		securityDenied, budgetDenied := leaseDeniedOutcomes(resultErr)
+		observability.EndSpan(ctx, traceSpan, resultErr, observability.TraceOutcome{SecurityDenied: securityDenied, BudgetDenied: budgetDenied}, attributes)
+	}()
 	input, grant, err := service.authorizeGrant(ctx, principal, request)
 	if err != nil {
 		return authz.CapabilityLease{}, err
@@ -168,6 +188,16 @@ func (service *Service) issue(ctx context.Context, principal authn.Principal, re
 		return existing, nil
 	}
 	return authz.CapabilityLease{}, issueErr
+}
+
+func leaseDeniedOutcomes(err error) (bool, bool) {
+	var wireError *aorerrors.Error
+	if !errors.As(err, &wireError) {
+		return false, false
+	}
+	securityDenied := wireError.Code == aorerrors.CodeUnauthorized || wireError.Code == aorerrors.CodeForbidden || wireError.Code == aorerrors.CodePolicyDenied
+	budgetDenied := wireError.Code == aorerrors.CodeBudgetExceeded || wireError.Code == aorerrors.CodeBudgetReservationFailed
+	return securityDenied, budgetDenied
 }
 
 func (service *Service) Renew(ctx context.Context, principal authn.Principal, request RenewRequest) (authz.CapabilityLease, error) {

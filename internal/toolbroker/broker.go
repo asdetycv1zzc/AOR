@@ -17,6 +17,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/akimisaka/aor/internal/credentials"
+	"github.com/akimisaka/aor/internal/observability"
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 )
 
@@ -171,6 +172,21 @@ func (b *Broker) Invoke(ctx context.Context, request ToolRequest) (result ToolRe
 	if !found {
 		return ToolResult{}, ErrUnknownTool
 	}
+	ctx, traceSpan := observability.StartSpan(ctx, observability.SpanToolCall, toolTraceCorrelation(request), map[string]string{
+		"aor.agent.id":         request.Principal.ID,
+		"aor.agent.role":       request.Principal.Role,
+		"aor.policy.version":   request.PolicyVersion,
+		"aor.tool.id":          descriptor.ToolID,
+		"aor.tool.version":     descriptor.Version,
+		"aor.tool.risk":        string(descriptor.Risk),
+		"aor.tool.side_effect": string(descriptor.SideEffect),
+	})
+	defer func() {
+		observability.EndSpan(ctx, traceSpan, err, observability.TraceOutcome{
+			SecurityDenied: toolSecurityDenied(err),
+			Critical:       descriptor.Risk == RiskCritical,
+		}, map[string]string{"aor.tool.redacted": strconv.FormatBool(result.Redacted)})
+	}()
 	defer func() {
 		if err != nil {
 			b.recordFailedAttempt(request, descriptor, err)
@@ -299,6 +315,23 @@ func (b *Broker) Invoke(ctx context.Context, request ToolRequest) (result ToolRe
 	}
 	b.storeCached(cacheKey, digest, result)
 	return result, nil
+}
+
+func toolTraceCorrelation(request ToolRequest) observability.Correlation {
+	correlation := observability.Correlation{
+		ProjectID:        request.ProjectID,
+		WorkflowIDReason: observability.ReasonUnavailable,
+		TaskID:           request.TaskID,
+		AgentRunIDReason: observability.ReasonUnavailable,
+	}
+	if request.TaskID == "" {
+		correlation.TaskIDReason = observability.ReasonNotApplicable
+	}
+	return correlation
+}
+
+func toolSecurityDenied(err error) bool {
+	return errors.Is(err, ErrPolicyDenied) || errors.Is(err, ErrLeaseInvalid) || errors.Is(err, ErrApprovalRequired) || errors.Is(err, ErrNetworkDenied)
 }
 
 func (b *Broker) revalidatePermanentEffect(ctx context.Context, request ToolRequest, descriptor ToolDescriptor) error {

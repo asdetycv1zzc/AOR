@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/authz"
+	"github.com/akimisaka/aor/internal/observability"
 	"github.com/akimisaka/aor/pkg/contracts"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
 )
@@ -79,7 +81,14 @@ func (service *Service) Initialize(ctx context.Context, tenantID, projectID stri
 	return service.repository.Initialize(ctx, tenantID, projectID, createdAt)
 }
 
-func (service *Service) Search(ctx context.Context, request SearchRequest) (SearchResponse, error) {
+func (service *Service) Search(ctx context.Context, request SearchRequest) (response SearchResponse, resultErr error) {
+	ctx, traceSpan := observability.StartSpan(ctx, observability.SpanKnowledgeSearch, knowledgeTraceCorrelation(request.Access), knowledgeTraceAttributes(request.Access))
+	defer func() {
+		observability.EndSpan(ctx, traceSpan, resultErr, observability.TraceOutcome{SecurityDenied: knowledgeSecurityDenied(resultErr)}, map[string]string{
+			"aor.knowledge.result_count": strconv.Itoa(len(response.References)),
+			"aor.knowledge.revision":     response.Revision,
+		})
+	}()
 	project, err := service.authorize(ctx, request.Access, false)
 	if err != nil {
 		return SearchResponse{}, err
@@ -129,7 +138,7 @@ func (service *Service) Search(ctx context.Context, request SearchRequest) (Sear
 	if len(matches) > query.Limit {
 		matches = matches[:query.Limit]
 	}
-	response := SearchResponse{Revision: revision, References: make([]Reference, 0, len(matches))}
+	response = SearchResponse{Revision: revision, References: make([]Reference, 0, len(matches))}
 	for _, match := range matches {
 		lineStart := 1
 		lineEnd := match.visible.Document.Metadata.LineCount
@@ -146,7 +155,13 @@ func (service *Service) Search(ctx context.Context, request SearchRequest) (Sear
 	return response, nil
 }
 
-func (service *Service) ReadRange(ctx context.Context, request ReadRangeRequest) (ReadRangeResponse, error) {
+func (service *Service) ReadRange(ctx context.Context, request ReadRangeRequest) (response ReadRangeResponse, resultErr error) {
+	ctx, traceSpan := observability.StartSpan(ctx, observability.SpanKnowledgeRead, knowledgeTraceCorrelation(request.Access), knowledgeTraceAttributes(request.Access))
+	defer func() {
+		observability.EndSpan(ctx, traceSpan, resultErr, observability.TraceOutcome{SecurityDenied: knowledgeSecurityDenied(resultErr)}, map[string]string{
+			"aor.knowledge.bytes": strconv.Itoa(len(response.Content)),
+		})
+	}()
 	project, err := service.authorize(ctx, request.Access, false)
 	if err != nil {
 		return ReadRangeResponse{}, err
@@ -214,11 +229,38 @@ func (service *Service) ReadRange(ctx context.Context, request ReadRangeRequest)
 	if pageEnd < len(lines) || terminalLF {
 		pageContent += "\n"
 	}
-	response := ReadRangeResponse{Reference: pageReference, Content: pageContent}
+	response = ReadRangeResponse{Reference: pageReference, Content: pageContent}
 	if pageEnd < lineEnd {
 		response.NextLine = pageEnd + 1
 	}
 	return response, nil
+}
+
+func knowledgeTraceCorrelation(access Access) observability.Correlation {
+	correlation := observability.Correlation{
+		ProjectID: access.ProjectID, WorkflowIDReason: observability.ReasonUnavailable,
+		TaskID: access.TaskID, AgentRunIDReason: observability.ReasonUnavailable,
+	}
+	if access.TaskID == "" {
+		correlation.TaskIDReason = observability.ReasonNotApplicable
+	}
+	return correlation
+}
+
+func knowledgeTraceAttributes(access Access) map[string]string {
+	return map[string]string{
+		"aor.agent.id":       access.Principal.ID,
+		"aor.agent.role":     access.Principal.Role,
+		"aor.policy.version": access.PolicyVersion,
+	}
+}
+
+func knowledgeSecurityDenied(err error) bool {
+	var wireError *aorerrors.Error
+	if !errors.As(err, &wireError) {
+		return false
+	}
+	return wireError.Code == aorerrors.CodeUnauthorized || wireError.Code == aorerrors.CodeForbidden || wireError.Code == aorerrors.CodePolicyDenied
 }
 
 func (service *Service) Manifest(ctx context.Context, access Access, revision string) (Manifest, error) {

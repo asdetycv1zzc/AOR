@@ -17,6 +17,7 @@ import (
 	"github.com/akimisaka/aor/internal/eventing"
 	"github.com/akimisaka/aor/internal/knowledge"
 	"github.com/akimisaka/aor/internal/leaseauthority"
+	"github.com/akimisaka/aor/internal/observability"
 	"github.com/akimisaka/aor/internal/policy"
 	"github.com/akimisaka/aor/internal/runtimeclient"
 	"github.com/akimisaka/aor/internal/runtimeconfig"
@@ -407,7 +408,11 @@ func withRequestTrace(next http.Handler) http.Handler {
 			response.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
-		trace, err := requestTrace(request)
+		trace, found := observability.TraceFromContext(request.Context())
+		var err error
+		if !found {
+			trace, err = requestTrace(request)
+		}
 		if err != nil {
 			trace, err = observability.NewRootTraceContext(false)
 			if err != nil {

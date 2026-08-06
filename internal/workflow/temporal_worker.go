@@ -16,6 +16,8 @@ import (
 	"go.temporal.io/sdk/temporal"
 	temporalworker "go.temporal.io/sdk/worker"
 	temporalworkflow "go.temporal.io/sdk/workflow"
+
+	"github.com/akimisaka/aor/internal/observability"
 )
 
 const (
@@ -35,11 +37,13 @@ var (
 // ExecutionInput is the immutable input recorded in Temporal history. Payload
 // is opaque to the workflow and is interpreted only by the activity boundary.
 type ExecutionInput struct {
-	TenantID   string          `json:"tenantId"`
-	ProjectID  string          `json:"projectId"`
-	TaskID     string          `json:"taskId"`
-	ActivityID string          `json:"activityId"`
-	Payload    json.RawMessage `json:"payload"`
+	TenantID    string          `json:"tenantId"`
+	ProjectID   string          `json:"projectId"`
+	TaskID      string          `json:"taskId"`
+	ActivityID  string          `json:"activityId"`
+	Payload     json.RawMessage `json:"payload"`
+	Traceparent string          `json:"traceparent,omitempty"`
+	Tracestate  string          `json:"tracestate,omitempty"`
 }
 
 type ExecutionOutput struct {
@@ -67,7 +71,31 @@ func (input ExecutionInput) Validate() error {
 		len(input.Payload) == 0 || len(input.Payload) > MaximumActivityResultBytes || !json.Valid(input.Payload) {
 		return ErrInvalidExecution
 	}
+	if input.Traceparent == "" {
+		if input.Tracestate != "" {
+			return ErrInvalidExecution
+		}
+	} else if _, err := observability.ParseTraceParent(input.Traceparent, input.Tracestate); err != nil {
+		return ErrInvalidExecution
+	}
 	return nil
+}
+
+func executionInputWithTrace(ctx context.Context, input ExecutionInput, persistedTraceparent, persistedTracestate string) ExecutionInput {
+	trace, found := observability.TraceFromContext(ctx)
+	if found {
+		traceparent, err := trace.TraceParent()
+		if err == nil {
+			input.Traceparent = traceparent
+			input.Tracestate = trace.TraceState
+			return input
+		}
+	}
+	if _, err := observability.ParseTraceParent(persistedTraceparent, persistedTracestate); err == nil {
+		input.Traceparent = persistedTraceparent
+		input.Tracestate = persistedTracestate
+	}
+	return input
 }
 
 // ProjectExecutionWorkflow only coordinates durable activity execution. It
@@ -122,6 +150,16 @@ func (activities *Activities) Execute(ctx context.Context, input ExecutionInput)
 	}
 	if err := input.Validate(); err != nil {
 		return ExecutionOutput{}, temporal.NewNonRetryableApplicationError(err.Error(), "AORInvalidArgument", nil)
+	}
+	if input.Traceparent != "" {
+		trace, err := observability.ParseTraceParent(input.Traceparent, input.Tracestate)
+		if err != nil {
+			return ExecutionOutput{}, temporal.NewNonRetryableApplicationError(err.Error(), "AORInvalidArgument", nil)
+		}
+		ctx, err = observability.ContextWithTrace(ctx, trace)
+		if err != nil {
+			return ExecutionOutput{}, temporal.NewNonRetryableApplicationError(err.Error(), "AORInvalidArgument", nil)
+		}
 	}
 	info := activity.GetInfo(ctx)
 	identity := ActivityIdentity{TenantID: input.TenantID, WorkflowID: info.WorkflowExecution.ID, ActivityID: input.ActivityID}

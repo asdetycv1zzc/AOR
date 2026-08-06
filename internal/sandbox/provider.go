@@ -13,11 +13,13 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/akimisaka/aor/internal/credentials"
+	"github.com/akimisaka/aor/internal/observability"
 )
 
 var (
@@ -139,7 +141,7 @@ func (p *Provider) Create(ctx context.Context, spec SandboxSpec) (SandboxHandle,
 	return handle, nil
 }
 
-func (p *Provider) Exec(ctx context.Context, id string, req ExecRequest) (ExecResult, error) {
+func (p *Provider) Exec(ctx context.Context, id string, req ExecRequest) (result ExecResult, resultErr error) {
 	state, err := p.active(id)
 	if err != nil {
 		return ExecResult{}, err
@@ -148,6 +150,19 @@ func (p *Provider) Exec(ctx context.Context, id string, req ExecRequest) (ExecRe
 	spec := cloneSpec(state.spec)
 	handle := state.handle
 	state.mu.Unlock()
+	ctx, traceSpan := observability.StartSpan(ctx, observability.SpanSandboxExec, observability.Correlation{
+		ProjectID: spec.ProjectID, WorkflowIDReason: observability.ReasonUnavailable,
+		TaskID: spec.TaskID, AgentRunIDReason: observability.ReasonUnavailable,
+	}, map[string]string{
+		"aor.agent.role":       string(spec.Role),
+		"aor.sandbox.level":    string(spec.IsolationLevel),
+		"aor.sandbox.platform": string(spec.Platform),
+	})
+	defer func() {
+		observability.EndSpan(ctx, traceSpan, resultErr, observability.TraceOutcome{
+			SecurityDenied: errors.Is(resultErr, ErrUnsafeWorkload) || errors.Is(resultErr, ErrCredentialDetected),
+		}, map[string]string{"aor.sandbox.exit_code": strconv.Itoa(result.ExitCode)})
+	}()
 	if req.Executable == "" || req.Timeout <= 0 || req.Timeout > time.Duration(spec.WallTimeSeconds)*time.Second || !contains(spec.AllowedExecutables, req.Executable) {
 		return ExecResult{}, ErrInvalidSpec
 	}
@@ -167,7 +182,7 @@ func (p *Provider) Exec(ctx context.Context, id string, req ExecRequest) (ExecRe
 	}
 	execCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	result, err := p.backend.Exec(execCtx, id, cloneExec(req))
+	result, err = p.backend.Exec(execCtx, id, cloneExec(req))
 	if err != nil {
 		if credentials.Contains(err.Error()) {
 			return ExecResult{}, ErrCredentialDetected

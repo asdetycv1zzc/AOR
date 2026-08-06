@@ -291,6 +291,14 @@ services:
         if [ "$$artifact_retention_installed" != "t" ]; then
           psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000040_artifact_retention.up.sql
         fi
+        scheduler_trace_context_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT to_regprocedure('public.aor_scheduler_trace_context(uuid,uuid,uuid)') IS NOT NULL")"
+        if [ "$$scheduler_trace_context_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000041_scheduler_trace_context.up.sql
+        fi
+        service_capability_leases_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT is_nullable = 'YES' AND has_table_privilege('aor_app', 'public.approvals', 'SELECT') FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'agent_leases' AND column_name = 'agent_instance_id'")"
+        if [ "$$service_capability_leases_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000042_service_capability_leases.up.sql
+        fi
         unset AOR_APP_PASSWORD
     secrets: [postgres_password, postgres_app_password]
     volumes:
@@ -334,6 +342,8 @@ services:
       - ../../migrations/postgres/000038_budget_reservation_ids.up.sql:/migrations/000038_budget_reservation_ids.up.sql:ro
       - ../../migrations/postgres/000039_user_decision_grants.up.sql:/migrations/000039_user_decision_grants.up.sql:ro
       - ../../migrations/postgres/000040_artifact_retention.up.sql:/migrations/000040_artifact_retention.up.sql:ro
+      - ../../migrations/postgres/000041_scheduler_trace_context.up.sql:/migrations/000041_scheduler_trace_context.up.sql:ro
+      - ../../migrations/postgres/000042_service_capability_leases.up.sql:/migrations/000042_service_capability_leases.up.sql:ro
       - ./postgres-app-password.sql:/migrations/postgres-app-password.sql:ro
     read_only: true
     tmpfs: [/tmp]
@@ -574,6 +584,7 @@ services:
         condition: service_healthy
     environment:
       AOR_ENVIRONMENT: test
+      AOR_OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       AOR_SERVER_MODE: CONTROL
       AOR_LISTEN_ADDR: :8080
       AOR_DATABASE_HOST: postgres
@@ -648,6 +659,7 @@ services:
         condition: service_healthy
     environment:
       AOR_ENVIRONMENT: test
+      AOR_OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       AOR_LISTEN_ADDR: :8080
       AOR_DATABASE_HOST: postgres
       AOR_DATABASE_PORT: "5432"
@@ -699,6 +711,7 @@ services:
     user: "${AOR_SANDBOX_ENGINE_UID:?Set AOR_SANDBOX_ENGINE_UID to the non-root rootless-engine owner UID}:${AOR_SANDBOX_ENGINE_GID:?Set AOR_SANDBOX_ENGINE_GID to the rootless-engine socket GID}"
     environment:
       AOR_ENVIRONMENT: test
+      AOR_OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       AOR_DEPLOYMENT_PROFILE: TEST
       AOR_LISTEN_ADDR: :8080
       AOR_DATABASE_HOST: postgres
@@ -751,6 +764,7 @@ services:
     user: "${AOR_SANDBOX_ENGINE_UID:?Set AOR_SANDBOX_ENGINE_UID to the non-root rootless-engine owner UID}:${AOR_SANDBOX_ENGINE_GID:?Set AOR_SANDBOX_ENGINE_GID to the rootless-engine socket GID}"
     environment:
       AOR_ENVIRONMENT: test
+      AOR_OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       AOR_DEPLOYMENT_PROFILE: TEST
       AOR_LISTEN_ADDR: :8080
       AOR_DATABASE_HOST: postgres

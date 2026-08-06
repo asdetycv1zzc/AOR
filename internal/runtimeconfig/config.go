@@ -47,6 +47,7 @@ type Config struct {
 	Integration         IntegrationConfig
 	Services            ServiceEndpoints
 	Sandbox             SandboxConfig
+	Telemetry           TelemetryConfig
 }
 
 type DatabaseConfig struct {
@@ -80,6 +81,10 @@ type S3Config struct {
 	AccessKeyRef string
 	SecretKeyRef string
 	UsePathStyle bool
+}
+
+type TelemetryConfig struct {
+	OTLPEndpoint string
 }
 
 type OPAConfig struct {
@@ -265,6 +270,7 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 			SeccompProfile:               strictValue(lookup, "AOR_SANDBOX_SECCOMP_PROFILE", "builtin"),
 			MandatoryPolicy:              strictValue(lookup, "AOR_SANDBOX_MANDATORY_POLICY", "apparmor=aor-sandbox"),
 		},
+		Telemetry: TelemetryConfig{OTLPEndpoint: value(lookup, "AOR_OTEL_EXPORTER_OTLP_ENDPOINT", "")},
 	}
 
 	var err error
@@ -392,6 +398,11 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 
 func (config Config) Validate() error {
 	if !knownComponent(config.Component) || !oneOf(config.Environment, EnvironmentDevelopment, EnvironmentTest, EnvironmentPreproduction, EnvironmentProduction) || !validListenAddress(config.ListenAddress) {
+		return ErrInvalidConfiguration
+	}
+	if config.Telemetry.OTLPEndpoint != "" && !validOTLPEndpoint(config.Telemetry.OTLPEndpoint) ||
+		(config.Environment == EnvironmentPreproduction || config.Environment == EnvironmentProduction) && config.Telemetry.OTLPEndpoint == "" ||
+		config.Environment == EnvironmentProduction && !strings.HasPrefix(config.Telemetry.OTLPEndpoint, "https://") {
 		return ErrInvalidConfiguration
 	}
 	if config.Component == "aor-tool-broker" && (!validSecretReference(config.LeaseSigningKeyRef) || !validDeploymentProfile(config.DeploymentProfile) || !validKnowledgeRoot(config.RepositoryRoot)) {
@@ -747,6 +758,11 @@ func validSecretReference(reference string) bool {
 func validURL(raw string, schemes ...string) bool {
 	parsed, err := url.Parse(raw)
 	return err == nil && parsed.Host != "" && oneOf(parsed.Scheme, schemes...) && parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == ""
+}
+
+func validOTLPEndpoint(raw string) bool {
+	parsed, err := url.Parse(raw)
+	return err == nil && parsed.Host != "" && oneOf(parsed.Scheme, "http", "https") && parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == "" && (parsed.Path == "" || parsed.Path == "/")
 }
 
 func validHostPort(address string) bool {

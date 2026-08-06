@@ -36,6 +36,8 @@ type GlobalAuditCandidate struct {
 	TenantID       string
 	ProjectID      string
 	ProjectVersion int64
+	Traceparent    string
+	Tracestate     string
 }
 
 type GlobalAuditCandidateSource interface {
@@ -81,6 +83,12 @@ FROM aor_global_audit_candidates($1)`, limit)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for index := range candidates {
+		candidates[index].Traceparent, candidates[index].Tracestate = loadSchedulerTrace(ctx, store.database, candidates[index].TenantID, candidates[index].ProjectID, "")
 	}
 	return candidates, nil
 }
@@ -135,10 +143,10 @@ func (starter *GlobalAuditStarter) Ensure(ctx context.Context, candidate GlobalA
 	if err != nil {
 		return ProjectExecutionStartResult{}, err
 	}
-	input := ExecutionInput{
+	input := executionInputWithTrace(ctx, ExecutionInput{
 		TenantID: candidate.TenantID, ProjectID: candidate.ProjectID, TaskID: runID,
 		ActivityID: globalAuditActivityID(runID), Payload: payload,
-	}
+	}, candidate.Traceparent, candidate.Tracestate)
 	run, err := starter.client.ExecuteWorkflow(ctx, temporalclient.StartWorkflowOptions{
 		ID: workflowID, TaskQueue: starter.taskQueue,
 		WorkflowIDReusePolicy:                    enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY,

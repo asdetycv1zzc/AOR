@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/akimisaka/aor/internal/agentruntime"
 	"github.com/akimisaka/aor/internal/modelgateway"
+	"github.com/akimisaka/aor/internal/observability"
 	"github.com/akimisaka/aor/internal/state"
 	"github.com/akimisaka/aor/pkg/aop"
 	"github.com/akimisaka/aor/pkg/canonicaljson"
@@ -109,6 +111,11 @@ func (service *Service) Run(ctx context.Context, request Request) (result Result
 	if service == nil || ctx == nil || ctx.Err() != nil || !uuidV7(request.RunID) || !canonicalUUID(request.TenantID) || !canonicalUUID(request.ProjectID) {
 		return Result{}, ErrInvalidRequest
 	}
+	ctx, traceSpan := observability.StartSpan(ctx, observability.SpanAuditCheck, observability.Correlation{
+		ProjectID: request.ProjectID, WorkflowIDReason: observability.ReasonUnavailable,
+		TaskIDReason: observability.ReasonNotApplicable, AgentRunID: request.RunID,
+	}, map[string]string{"aor.audit.pipeline.version": service.pipelineVersion})
+	defer func() { observability.EndSpan(ctx, traceSpan, err, observability.TraceOutcome{}, nil) }()
 	project, found, err := service.projects.Project(ctx, request.TenantID, request.ProjectID)
 	if err != nil {
 		return Result{}, err
@@ -209,8 +216,31 @@ func (service *Service) finish(ctx context.Context, report Report, evidenceSHA25
 	return Result{Report: report, EvidenceSHA256: evidenceSHA256, Followups: followups, Duplicate: duplicate}, nil
 }
 
-func (service *Service) execute(ctx context.Context, prepared PreparedRun) (agentruntime.AcceptedResult, error) {
+func (service *Service) execute(ctx context.Context, prepared PreparedRun) (acceptedResult agentruntime.AcceptedResult, resultErr error) {
 	runID := prepared.Declaration.RunID
+	ctx, traceSpan := observability.StartSpan(ctx, observability.SpanAuditLLM, observability.Correlation{
+		ProjectID: prepared.Declaration.ProjectID, WorkflowIDReason: observability.ReasonUnavailable,
+		TaskIDReason: observability.ReasonNotApplicable, AgentRunID: runID,
+	}, map[string]string{
+		"aor.agent.id":         prepared.Declaration.AgentInstanceID,
+		"aor.agent.role":       string(prepared.Declaration.Role),
+		"aor.policy.version":   prepared.Declaration.PolicyVersion,
+		"aor.prompt.version":   prepared.Declaration.PromptBundle.Version,
+		"gen_ai.provider.name": prepared.ModelCall.Provider,
+		"gen_ai.request.model": prepared.ModelCall.Model,
+	})
+	var modelResponse modelgateway.NormalizedResponse
+	defer func() {
+		attributes := map[string]string{
+			"gen_ai.response.model":      modelResponse.ModelVersion,
+			"gen_ai.usage.input_tokens":  strconv.FormatInt(modelResponse.Usage.InputTokens, 10),
+			"gen_ai.usage.output_tokens": strconv.FormatInt(modelResponse.Usage.OutputTokens, 10),
+		}
+		if modelResponse.ModelVersion == "" {
+			attributes["gen_ai.response.model"] = "UNAVAILABLE"
+		}
+		observability.EndSpan(ctx, traceSpan, resultErr, observability.TraceOutcome{}, attributes)
+	}()
 	if err := service.runtime.Declare(prepared.Declaration); err != nil {
 		if errors.Is(err, agentruntime.ErrRunExists) {
 			accepted, found := service.runtime.AcceptedResult(runID)
@@ -234,14 +264,14 @@ func (service *Service) execute(ctx context.Context, prepared PreparedRun) (agen
 	if err := service.runtime.Start(ctx, runID); err != nil {
 		return fail(err)
 	}
-	response, err := service.runtime.RunToolLoop(ctx, runID, prepared.ModelCall, prepared.MaxToolRounds)
+	modelResponse, err := service.runtime.RunToolLoop(ctx, runID, prepared.ModelCall, prepared.MaxToolRounds)
 	if err != nil {
 		return fail(err)
 	}
-	if response.RequestID != prepared.ModelCall.RequestID || response.ModelVersion != prepared.ModelCall.Model || len(response.Content) == 0 {
+	if modelResponse.RequestID != prepared.ModelCall.RequestID || modelResponse.ModelVersion != prepared.ModelCall.Model || len(modelResponse.Content) == 0 {
 		return fail(ErrInvalidReport)
 	}
-	accepted, err := service.runtime.Complete(ctx, runID, agentruntime.AgentOutput{Intent: aop.IntentReportGlobalAudit, Payload: append(json.RawMessage(nil), response.Content...)})
+	accepted, err := service.runtime.Complete(ctx, runID, agentruntime.AgentOutput{Intent: aop.IntentReportGlobalAudit, Payload: append(json.RawMessage(nil), modelResponse.Content...)})
 	if err != nil {
 		return fail(err)
 	}

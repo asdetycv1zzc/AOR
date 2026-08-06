@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/akimisaka/aor/internal/agentruntime"
+	"github.com/akimisaka/aor/internal/observability"
 	"github.com/akimisaka/aor/internal/orchestrator"
 	"github.com/akimisaka/aor/internal/state"
 	"github.com/akimisaka/aor/pkg/canonicaljson"
@@ -156,10 +158,18 @@ func (p *Planner) BuildAndPublish(ctx context.Context, request PlanningRequest) 
 // identifiers after the PlanSupervisor has defined the module set. It is
 // intentionally limited to the first plan; replanning requires explicit retain
 // decisions and version assignments from impact analysis.
-func (p *Planner) BuildAndPublishAutomatic(ctx context.Context, request PlanningRequest) (PlanningResult, error) {
+func (p *Planner) BuildAndPublishAutomatic(ctx context.Context, request PlanningRequest) (result PlanningResult, resultErr error) {
 	if p == nil || len(request.ModuleTaskIDs) != 0 || len(request.AttemptSeriesIDs) != 0 || len(request.ModuleSpecVersions) != 0 || len(request.RetainedModules) != 0 {
 		return PlanningResult{}, ErrInvalidRequest
 	}
+	ctx, traceSpan := observability.StartSpan(ctx, observability.SpanPlanGenerate, observability.Correlation{
+		ProjectID: request.ProjectID, WorkflowIDReason: observability.ReasonUnavailable,
+		TaskIDReason: observability.ReasonNotApplicable, AgentRunIDReason: observability.ReasonUnavailable,
+	}, map[string]string{
+		"aor.agent.id": request.PrincipalID, "aor.agent.role": string(agentruntime.RolePlanSupervisor),
+		"aor.goal.version": strconv.Itoa(request.GoalRef.Version), "aor.plan.version": strconv.Itoa(request.PlanVersion),
+	})
+	defer func() { observability.EndSpan(ctx, traceSpan, resultErr, observability.TraceOutcome{}, nil) }()
 	project, found, err := p.projects.Project(ctx, request.TenantID, request.ProjectID)
 	if err != nil || !found {
 		if err != nil {

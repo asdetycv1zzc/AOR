@@ -41,6 +41,8 @@ type ReadyExecution struct {
 	TaskState    contracts.ModuleTaskState
 	FencingToken int64
 	Recovery     bool
+	Traceparent  string
+	Tracestate   string
 }
 
 type ReadyExecutionSource interface {
@@ -83,6 +85,12 @@ FROM aor_ready_execution_tasks_v2($1)`, limit)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for index := range ready {
+		ready[index].Traceparent, ready[index].Tracestate = loadSchedulerTrace(ctx, source.database, ready[index].TenantID, ready[index].ProjectID, ready[index].TaskID)
 	}
 	return ready, nil
 }
@@ -134,10 +142,10 @@ func (starter *ProjectExecutionStarter) Ensure(ctx context.Context, ready ReadyE
 		return ProjectExecutionStartResult{}, err
 	}
 	workflowID := executionWorkflowIdentityPrefix + identity
-	input := ExecutionInput{
+	input := executionInputWithTrace(ctx, ExecutionInput{
 		TenantID: ready.TenantID, ProjectID: ready.ProjectID, TaskID: ready.TaskID,
 		ActivityID: activityID, Payload: payload,
-	}
+	}, ready.Traceparent, ready.Tracestate)
 	run, err := starter.client.ExecuteWorkflow(ctx, temporalclient.StartWorkflowOptions{
 		ID: workflowID, TaskQueue: starter.taskQueue,
 		WorkflowIDReusePolicy:                    enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY,

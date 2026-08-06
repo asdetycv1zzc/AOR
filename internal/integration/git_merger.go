@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/akimisaka/aor/internal/observability"
 )
 
 const gitOutputLimit = 64 << 10
@@ -49,7 +51,7 @@ func NewGitMerger(repositoryPath string) (*GitMerger, error) {
 	return merger, nil
 }
 
-func (m *GitMerger) Merge(ctx context.Context, baseCommit string, candidates []string, integrationID string) (string, error) {
+func (m *GitMerger) Merge(ctx context.Context, baseCommit string, candidates []string, integrationID string) (commit string, resultErr error) {
 	if m == nil || ctx == nil || ctx.Err() != nil || !commitID(baseCommit) || !safeIntegrationID(integrationID) || len(candidates) == 0 || len(candidates) > 1024 {
 		return "", ErrInvalidRequest
 	}
@@ -60,6 +62,19 @@ func (m *GitMerger) Merge(ctx context.Context, baseCommit string, candidates []s
 			return "", ErrInvalidRequest
 		}
 	}
+	ctx, traceSpan := observability.StartSpan(ctx, observability.SpanRepoCommit, observability.Correlation{
+		ProjectIDReason:  observability.ReasonUnavailable,
+		WorkflowID:       integrationID,
+		TaskIDReason:     observability.ReasonNotApplicable,
+		AgentRunIDReason: observability.ReasonNotApplicable,
+	}, nil)
+	defer func() {
+		attributes := map[string]string{}
+		if commit != "" {
+			attributes["aor.repo.commit.id"] = commit
+		}
+		observability.EndSpan(ctx, traceSpan, resultErr, observability.TraceOutcome{}, attributes)
+	}()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -100,7 +115,8 @@ func (m *GitMerger) Merge(ctx context.Context, baseCommit string, candidates []s
 		}
 		return "", ErrMergeConflict
 	}
-	return current, nil
+	commit = current
+	return commit, nil
 }
 
 func (m *GitMerger) Lookup(ctx context.Context, integrationID string) (string, bool, error) {
