@@ -219,7 +219,7 @@ services:
         if [ "$$service_capability_leases_installed" != "t" ]; then
           psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000042_service_capability_leases.up.sql
         fi
-        tenant_registration_grant_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT has_table_privilege('aor_app', 'public.tenants', 'INSERT')")"
+        tenant_registration_grant_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT has_table_privilege('aor_app', 'public.tenants', 'SELECT') AND has_table_privilege('aor_app', 'public.tenants', 'INSERT')")"
         if [ "$$tenant_registration_grant_installed" != "t" ]; then
           psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000043_tenant_registration_grant.up.sql
         fi

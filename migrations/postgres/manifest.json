@@ -300,7 +300,7 @@
       "version": 43,
       "mode": "EXPAND",
       "file": "000043_tenant_registration_grant.up.sql",
-      "sha256": "sha256:af50dcda07068e35a7a6fad8ea41b48c79698b58f4973d0962f6684c7f39e196",
+      "sha256": "sha256:b30c8408bb6831b82d71c44d334bffd2afe9bce2982ce3118c38151d6268bad6",
       "destructive": false
     }
   ]
