@@ -1,4 +1,4 @@
-.PHONY: build test lint schema cross-language sdk backup-restore supply-chain release-tool release-package-check repository-check secret-scan security-corpus license-scan state-machine postgres-reconciliation verify compose-check compose-check-secrets compose-pull compose-deps-up compose-aor-up compose-up compose-ps
+.PHONY: build test lint schema cross-language sdk backup-restore supply-chain release-tool release-package-check repository-check secret-scan security-corpus license-scan state-machine postgres-reconciliation verify compose-init-secrets compose-check compose-check-secrets compose-pull compose-deps-up compose-aor-up compose-up compose-ps
 
 GOCACHE ?= $(CURDIR)/.cache/go-build
 GOMODCACHE ?= $(CURDIR)/.cache/go-mod
@@ -71,7 +71,20 @@ postgres-reconciliation:
 
 verify: build lint test schema cross-language sdk backup-restore supply-chain repository-check secret-scan security-corpus license-scan state-machine
 
-compose-check-secrets:
+compose-init-secrets:
+	command -v openssl >/dev/null
+	mkdir -p deploy/compose/secrets
+	chmod 0700 deploy/compose/secrets
+	test -s deploy/compose/secrets/postgres_password || (umask 077; openssl rand -hex 32 > deploy/compose/secrets/postgres_password)
+	test -s deploy/compose/secrets/postgres_app_password || (umask 077; openssl rand -hex 32 > deploy/compose/secrets/postgres_app_password)
+	test -s deploy/compose/secrets/minio_root_user || (umask 077; openssl rand -hex 16 > deploy/compose/secrets/minio_root_user)
+	test -s deploy/compose/secrets/minio_root_password || (umask 077; openssl rand -hex 32 > deploy/compose/secrets/minio_root_password)
+	test -s deploy/compose/secrets/model_replay_key || (umask 077; openssl rand 32 > deploy/compose/secrets/model_replay_key)
+	test -s deploy/compose/secrets/lease_signing_key || (umask 077; openssl rand -hex 32 > deploy/compose/secrets/lease_signing_key)
+	test -s deploy/compose/secrets/aor_server_oauth_client_secret || (umask 077; openssl rand -hex 32 > deploy/compose/secrets/aor_server_oauth_client_secret)
+	chmod 0444 deploy/compose/secrets/postgres_password deploy/compose/secrets/postgres_app_password deploy/compose/secrets/minio_root_user deploy/compose/secrets/minio_root_password deploy/compose/secrets/model_replay_key deploy/compose/secrets/lease_signing_key deploy/compose/secrets/aor_server_oauth_client_secret
+
+compose-check-secrets: compose-init-secrets
 	test -s deploy/compose/secrets/postgres_password
 	test -s deploy/compose/secrets/postgres_app_password
 	test -s deploy/compose/secrets/minio_root_user
@@ -83,10 +96,10 @@ compose-check-secrets:
 	test -s deploy/compose/secrets/lease_signing_key
 	test -s deploy/compose/secrets/aor_server_oauth_client_secret
 
-compose-check:
+compose-check: compose-check-secrets
 	$(COMPOSE) config --quiet
 
-compose-pull: compose-check-secrets compose-check
+compose-pull: compose-check
 	$(COMPOSE) --profile aor pull $(COMPOSE_DEPENDENCIES) $(COMPOSE_INITIALIZERS) $(COMPOSE_SANDBOX)
 
 compose-deps-up: compose-pull
