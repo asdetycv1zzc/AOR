@@ -91,7 +91,7 @@ func ToolBroker(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	if err != nil {
 		return nil, runtimeconfig.ErrInvalidConfiguration
 	}
-	leaseManager, err := authz.NewLeaseManager(authz.LeaseManagerConfig{Store: leaseStore, Signer: leaseSigner, Clock: time.Now, HeartbeatInterval: 30 * time.Second})
+	leaseManager, err := authz.NewLeaseManager(authz.LeaseManagerConfig{Store: leaseStore, Signer: leaseSigner, HeartbeatInterval: 30 * time.Second})
 	if err != nil {
 		return nil, runtimeconfig.ErrInvalidConfiguration
 	}

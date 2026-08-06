@@ -23,6 +23,20 @@ func NewPostgresLeaseStore(database *sql.DB) (*PostgresLeaseStore, error) {
 	return &PostgresLeaseStore{database: database}, nil
 }
 
+func (store *PostgresLeaseStore) Now(ctx context.Context) (time.Time, error) {
+	if store == nil || store.database == nil || ctx == nil {
+		return time.Time{}, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", nil)
+	}
+	if err := ctx.Err(); err != nil {
+		return time.Time{}, err
+	}
+	var now time.Time
+	if err := store.database.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
+		return time.Time{}, err
+	}
+	return now.UTC(), nil
+}
+
 func (store *PostgresLeaseStore) Put(ctx context.Context, lease CapabilityLease) error {
 	if store == nil || store.database == nil {
 		return aorerrors.New(aorerrors.CodeDependencyUnavailable, "", nil)

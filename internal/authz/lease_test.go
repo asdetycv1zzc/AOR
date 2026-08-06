@@ -21,6 +21,12 @@ var authzTestNow = time.Date(2030, 2, 3, 4, 5, 6, 0, time.UTC)
 
 type approvalVerifierFunc func(context.Context, Approval) error
 
+type leaseTimeSourceFunc func(context.Context) (time.Time, error)
+
+func (f leaseTimeSourceFunc) Now(ctx context.Context) (time.Time, error) {
+	return f(ctx)
+}
+
 func (f approvalVerifierFunc) Verify(ctx context.Context, approval Approval) error {
 	return f(ctx, approval)
 }
@@ -519,6 +525,49 @@ func TestLeaseValidateActiveUsesTrustedTime(t *testing.T) {
 		_, err := manager.ValidateActive(context.Background(), lease.ID, authzTestNow.Add(10*time.Second))
 		assertAuthzErrorCode(t, err, aorerrors.CodeLeaseExpired)
 	})
+}
+
+func TestLeaseManagerUsesAuthoritativeTimeSource(t *testing.T) {
+	signer, err := NewHMACSigner([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewMemoryLeaseStore()
+	manager, err := NewLeaseManager(LeaseManagerConfig{
+		Store: store, Signer: signer, TimeSource: leaseTimeSourceFunc(func(context.Context) (time.Time, error) {
+			return authzTestNow, nil
+		}), DefaultTTL: time.Minute, MaxTTL: 5 * time.Minute, HeartbeatInterval: 10 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := testEngine(manager, func() time.Time { return authzTestNow })
+	lease, _ := issueForInput(t, manager, engine, testInput(), authzTestNow.Add(time.Hour))
+	if !lease.IssuedAt.Equal(authzTestNow) {
+		t.Fatalf("lease used caller clock instead of authoritative source: %s", lease.IssuedAt)
+	}
+}
+
+func TestLeaseManagerFailsClosedWhenAuthoritativeTimeUnavailable(t *testing.T) {
+	signer, err := NewHMACSigner([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewLeaseManager(LeaseManagerConfig{
+		Store: NewMemoryLeaseStore(), Signer: signer, TimeSource: leaseTimeSourceFunc(func(context.Context) (time.Time, error) {
+			return time.Time{}, errors.New("clock unavailable")
+		}), DefaultTTL: time.Minute, MaxTTL: 5 * time.Minute, HeartbeatInterval: 10 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := testEngine(manager, func() time.Time { return authzTestNow })
+	grant, err := engine.EvaluateLeaseGrant(context.Background(), testInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = manager.Issue(context.Background(), leaseRequestForInput(testInput(), grant))
+	assertAuthzErrorCode(t, err, aorerrors.CodeDependencyUnavailable)
 }
 
 func TestConcurrentRenewalHasOneFencingWinner(t *testing.T) {

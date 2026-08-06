@@ -474,7 +474,7 @@ func Worker(config runtimeconfig.Config, clients *runtimeclient.Clients) (http.H
 	if err != nil {
 		return nil, ErrWorkerConfiguration
 	}
-	leaseManager, err := authz.NewLeaseManager(authz.LeaseManagerConfig{Store: leaseStore, Signer: leaseSigner, Clock: time.Now, DefaultTTL: 5 * time.Minute, MaxTTL: 35 * time.Minute, HeartbeatInterval: 30 * time.Second})
+	leaseManager, err := authz.NewLeaseManager(authz.LeaseManagerConfig{Store: leaseStore, Signer: leaseSigner, DefaultTTL: 5 * time.Minute, MaxTTL: 35 * time.Minute, HeartbeatInterval: 30 * time.Second})
 	if err != nil {
 		return nil, ErrWorkerConfiguration
 	}

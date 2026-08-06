@@ -393,7 +393,7 @@ func controlLeaseManager(config runtimeconfig.Config, database *sql.DB) (*authz.
 		return nil, nil, runtimeconfig.ErrInvalidConfiguration
 	}
 	leaseManager, err := authz.NewLeaseManager(authz.LeaseManagerConfig{
-		Store: leaseStore, Signer: leaseSigner, Clock: time.Now,
+		Store: leaseStore, Signer: leaseSigner,
 		DefaultTTL: 5 * time.Minute, MaxTTL: 15 * time.Minute, HeartbeatInterval: 30 * time.Second,
 	})
 	if err != nil {

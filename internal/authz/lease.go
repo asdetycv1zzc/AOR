@@ -151,6 +151,13 @@ type LeaseStore interface {
 	CompareAndSwap(context.Context, string, int64, CapabilityLease) (bool, error)
 }
 
+// LeaseTimeSource supplies the authoritative wall clock used for lease
+// lifecycle and authorization decisions. Production stores should derive it
+// from the same database that persists lease state.
+type LeaseTimeSource interface {
+	Now(context.Context) (time.Time, error)
+}
+
 type MemoryLeaseStore struct {
 	mu     sync.RWMutex
 	leases map[string]CapabilityLease
@@ -158,6 +165,19 @@ type MemoryLeaseStore struct {
 
 func NewMemoryLeaseStore() *MemoryLeaseStore {
 	return &MemoryLeaseStore{leases: make(map[string]CapabilityLease)}
+}
+
+func (s *MemoryLeaseStore) Now(ctx context.Context) (time.Time, error) {
+	if s == nil {
+		return time.Time{}, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", nil)
+	}
+	if ctx == nil {
+		return time.Time{}, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", nil)
+	}
+	if err := ctx.Err(); err != nil {
+		return time.Time{}, err
+	}
+	return time.Now().UTC(), nil
 }
 
 func (s *MemoryLeaseStore) Put(ctx context.Context, lease CapabilityLease) error {
@@ -327,6 +347,7 @@ type LeaseManagerConfig struct {
 	Store             LeaseStore
 	Signer            Signer
 	Clock             func() time.Time
+	TimeSource        LeaseTimeSource
 	DefaultTTL        time.Duration
 	MaxTTL            time.Duration
 	HeartbeatInterval time.Duration
@@ -336,6 +357,7 @@ type LeaseManager struct {
 	store             LeaseStore
 	signer            Signer
 	clock             func() time.Time
+	timeSource        LeaseTimeSource
 	defaultTTL        time.Duration
 	maxTTL            time.Duration
 	heartbeatInterval time.Duration
@@ -395,14 +417,32 @@ func NewLeaseManager(config LeaseManagerConfig) (*LeaseManager, error) {
 			return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "lease ttl"})
 		}
 	}
-	return &LeaseManager{store: store, signer: signer, clock: config.Clock, defaultTTL: config.DefaultTTL, maxTTL: config.MaxTTL, heartbeatInterval: config.HeartbeatInterval}, nil
+	timeSource := config.TimeSource
+	if timeSource == nil {
+		timeSource, _ = store.(LeaseTimeSource)
+	}
+	return &LeaseManager{store: store, signer: signer, clock: config.Clock, timeSource: timeSource, defaultTTL: config.DefaultTTL, maxTTL: config.MaxTTL, heartbeatInterval: config.HeartbeatInterval}, nil
 }
 
-func (m *LeaseManager) now() time.Time {
+func (m *LeaseManager) now(ctx context.Context) (time.Time, error) {
 	if m != nil && m.clock != nil {
-		return m.clock().UTC()
+		now := m.clock().UTC()
+		if now.IsZero() {
+			return time.Time{}, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "lease clock"})
+		}
+		return now, nil
 	}
-	return time.Now().UTC()
+	if m != nil && m.timeSource != nil {
+		now, err := m.timeSource.Now(ctx)
+		if err != nil {
+			return time.Time{}, aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", err, map[string]any{"scope": "lease clock"})
+		}
+		if now.IsZero() {
+			return time.Time{}, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "lease clock"})
+		}
+		return now.UTC(), nil
+	}
+	return time.Now().UTC(), nil
 }
 
 func (m *LeaseManager) Issue(ctx context.Context, request LeaseRequest) (CapabilityLease, error) {
@@ -436,7 +476,11 @@ func (m *LeaseManager) Issue(ctx context.Context, request LeaseRequest) (Capabil
 	if !leaseActionAllowed(request.Action, request.Role, request.TaskID) {
 		return CapabilityLease{}, aorerrors.New(aorerrors.CodePolicyDenied, "", map[string]any{"scope": "action"})
 	}
-	now := leaseAuthorizationTime(ctx, m.now())
+	trustedNow, err := m.now(ctx)
+	if err != nil {
+		return CapabilityLease{}, err
+	}
+	now := leaseAuthorizationTime(ctx, trustedNow)
 	binding := DecisionBinding{PrincipalID: request.Principal.ID, TenantID: request.TenantID, ProjectID: request.ProjectID, ProjectVersion: request.ProjectVersion, TaskID: request.TaskID, TaskVersion: request.TaskVersion, SpecDigest: request.SpecDigest, Role: request.Role, Action: request.Action, Resource: cloneResource(request.Resource), ParameterDigest: request.ParameterDigest, BudgetAccountID: request.BudgetAccountID}
 	if err := validateLeaseGrant(request.Grant, request.PolicyVersion, binding, now); err != nil {
 		return CapabilityLease{}, err
@@ -541,7 +585,10 @@ func (m *LeaseManager) Renew(ctx context.Context, request LeaseRenewalRequest) (
 	if request.RequestDigest != "" && !digestPattern.MatchString(request.RequestDigest) {
 		return CapabilityLease{}, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "lease request digest"})
 	}
-	now := m.now()
+	now, err := m.now(ctx)
+	if err != nil {
+		return CapabilityLease{}, err
+	}
 	current, found, err := m.store.Get(withLeaseTenant(ctx, request.TenantID), request.LeaseID)
 	if err != nil {
 		return CapabilityLease{}, err
@@ -616,7 +663,10 @@ func (m *LeaseManager) Heartbeat(ctx context.Context, request LeaseHeartbeatRequ
 	if err := ctx.Err(); err != nil {
 		return CapabilityLease{}, aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", err, nil)
 	}
-	now := m.now()
+	now, err := m.now(ctx)
+	if err != nil {
+		return CapabilityLease{}, err
+	}
 	current, found, err := m.store.Get(withLeaseTenant(ctx, request.TenantID), request.LeaseID)
 	if err != nil {
 		return CapabilityLease{}, err
@@ -672,7 +722,10 @@ func (m *LeaseManager) Revoke(ctx context.Context, request LeaseRevokeRequest) e
 	if request.ProjectID == "" || request.Reason == "" || len(request.Reason) > 256 || strings.ContainsAny(request.Reason, "\r\n\x00") || !digestPattern.MatchString(request.RequestDigest) {
 		return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "revoke reason"})
 	}
-	now := m.now()
+	now, err := m.now(ctx)
+	if err != nil {
+		return err
+	}
 	current, found, err := m.store.Get(withLeaseTenant(ctx, request.Actor.TenantID), request.LeaseID)
 	if err != nil {
 		return err
@@ -724,7 +777,11 @@ func (m *LeaseManager) Validate(ctx context.Context, check LeaseCheck) (Capabili
 	if err := ctx.Err(); err != nil {
 		return CapabilityLease{}, aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", err, nil)
 	}
-	now := leaseAuthorizationTime(ctx, m.now())
+	trustedNow, err := m.now(ctx)
+	if err != nil {
+		return CapabilityLease{}, err
+	}
+	now := leaseAuthorizationTime(ctx, trustedNow)
 	current, found, err := m.store.Get(withLeaseTenant(ctx, check.TenantID), check.LeaseID)
 	if err != nil {
 		return CapabilityLease{}, err
@@ -773,7 +830,10 @@ func (m *LeaseManager) ValidateActive(ctx context.Context, leaseID string, _ tim
 	if err := m.verify(current); err != nil {
 		return CapabilityLease{}, err
 	}
-	now := m.now()
+	now, err := m.now(ctx)
+	if err != nil {
+		return CapabilityLease{}, err
+	}
 	if current.State != LeaseActive || current.IsExpired(now) {
 		return CapabilityLease{}, aorerrors.New(aorerrors.CodeLeaseExpired, "", nil)
 	}
