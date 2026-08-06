@@ -26,8 +26,12 @@ import (
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 )
 
+// ExternalDriverProtocolVersion is the wire version for signed environment
+// driver manifests and results.
+const ExternalDriverProtocolVersion = "1.0"
+
 const (
-	externalDriverProtocolVersion = "1.0"
+	externalDriverProtocolVersion = ExternalDriverProtocolVersion
 	maxExternalManifestBytes      = 1 << 20
 	maxExternalPublicKeyBytes     = 16 << 10
 	maxExternalDriverOutputBytes  = 8 << 20
@@ -81,21 +85,21 @@ type ExternalDriverManifest struct {
 	Signature        *Signature `json:"signature"`
 }
 
-type externalDriverEvidence struct {
+type ExternalDriverEvidence struct {
 	Path   string `json:"path"`
 	SHA256 string `json:"sha256"`
 	Kind   string `json:"kind"`
 }
 
-type externalDriverResult struct {
+type ExternalDriverResult struct {
 	Group         string                   `json:"group"`
 	RequirementID string                   `json:"requirementId"`
 	Status        string                   `json:"status"`
-	Evidence      []externalDriverEvidence `json:"evidence"`
+	Evidence      []ExternalDriverEvidence `json:"evidence"`
 	Message       string                   `json:"message,omitempty"`
 }
 
-type externalDriverOutput struct {
+type ExternalDriverOutput struct {
 	ProtocolVersion string                 `json:"protocolVersion"`
 	ManifestSHA256  string                 `json:"manifestSha256"`
 	Target          string                 `json:"target"`
@@ -106,12 +110,12 @@ type externalDriverOutput struct {
 	TenantID        string                 `json:"tenantId"`
 	Namespace       string                 `json:"namespace"`
 	RunID           string                 `json:"runId"`
-	Results         []externalDriverResult `json:"results"`
+	Results         []ExternalDriverResult `json:"results"`
 	Signature       *Signature             `json:"signature"`
 }
 
 type externalDriverRun struct {
-	results map[string]RequirementResult
+	results map[string][]RequirementResult
 }
 
 // runExternalDriver verifies and executes the independent gate. It returns
@@ -218,7 +222,7 @@ func (r *Runner) runExternalDriver(ctx context.Context, root string, request Req
 	driverContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	command := exec.CommandContext(driverContext, executable, manifest.Args...)
-	command.Dir = root
+	command.Dir = evidenceDirectory
 	command.Stdout = stdout
 	command.Stderr = stderr
 	command.Env = appendExternalEnvironment(os.Environ(),
@@ -229,6 +233,7 @@ func (r *Runner) runExternalDriver(ctx context.Context, root string, request Req
 		"AOR_CONFORMANCE_RELEASE_VERSION="+manifest.ReleaseVersion,
 		"AOR_CONFORMANCE_SOURCE_COMMIT="+manifest.SourceCommit,
 		"AOR_CONFORMANCE_BUILD_DIGEST="+buildDigest,
+		"AOR_CONFORMANCE_CORPUS_PATH="+corpusPath,
 		"AOR_CONFORMANCE_TENANT_ID="+manifest.TenantID,
 		"AOR_CONFORMANCE_NAMESPACE="+manifest.Namespace,
 		"AOR_CONFORMANCE_RUN_ID="+runID,
@@ -266,7 +271,7 @@ func (r *Runner) runExternalDriver(ctx context.Context, root string, request Req
 		"artifact://conformance/driver-corpus#sha256=" + strings.TrimPrefix(manifest.CorpusSHA256, "sha256:"),
 		"artifact://conformance/driver-executable#sha256=" + strings.TrimPrefix(manifest.ExecutableSHA256, "sha256:"),
 	}
-	result := &externalDriverRun{results: make(map[string]RequirementResult, len(driverOutput.Results))}
+	result := &externalDriverRun{results: make(map[string][]RequirementResult, len(groups))}
 	currentEvidenceDirectory, err := filepath.EvalSymlinks(evidenceDirectory)
 	if err != nil || currentEvidenceDirectory != resolvedEvidenceDirectory {
 		return nil, errors.New("driver changed the evidence directory")
@@ -277,7 +282,7 @@ func (r *Runner) runExternalDriver(ctx context.Context, root string, request Req
 			return nil, err
 		}
 		allRefs := append(append([]string(nil), commonRefs...), refs...)
-		result.results[item.Group] = RequirementResult{RequirementID: item.RequirementID, Status: item.Status, EvidenceURIs: allRefs, Tool: manifest.Tool, ToolVersion: manifest.ToolVersion}
+		result.results[item.Group] = append(result.results[item.Group], RequirementResult{RequirementID: item.RequirementID, Status: item.Status, EvidenceURIs: allRefs, Tool: manifest.Tool, ToolVersion: manifest.ToolVersion})
 	}
 	return result, nil
 }
@@ -292,7 +297,7 @@ func validateExternalManifest(manifest ExternalDriverManifest, request Request, 
 	if !externalDigestPattern.MatchString(manifest.ExecutableSHA256) || !externalDigestPattern.MatchString(manifest.CorpusSHA256) {
 		return errors.New("driver executable and corpus digests are required")
 	}
-	if manifest.Target != request.Target || manifest.SpecVersion != request.SpecVersion || manifest.ReleaseVersion != request.ReleaseVersion || manifest.SourceCommit != request.SourceCommit || manifest.BuildDigest != buildDigest || manifest.Target == "" && request.Profile == "production" {
+	if manifest.Target != request.Target || manifest.SpecVersion != request.SpecVersion || manifest.ReleaseVersion != request.ReleaseVersion || manifest.SourceCommit != request.SourceCommit || manifest.BuildDigest != buildDigest || manifest.Target == "" && request.Profile != "test" {
 		return errors.New("driver manifest is not bound to the requested target or release")
 	}
 	if !externalScopePattern.MatchString(manifest.TenantID) || !externalScopePattern.MatchString(manifest.Namespace) {
@@ -318,14 +323,14 @@ func validateExternalManifest(manifest ExternalDriverManifest, request Request, 
 		return errors.New("driver manifest groups do not match the requested external groups")
 	}
 	for _, group := range got {
-		if _, ok := externalRequirementForGroup(group); !ok {
+		if len(externalRequirementsForGroup(group)) == 0 {
 			return errors.New("driver manifest contains a non-external group")
 		}
 	}
 	return nil
 }
 
-func validateExternalOutput(ctx context.Context, output externalDriverOutput, payload []byte, config *ExternalDriverConfig, profile string, manifest ExternalDriverManifest, manifestDigest, buildDigest, runID string, groups []string) error {
+func validateExternalOutput(ctx context.Context, output ExternalDriverOutput, payload []byte, config *ExternalDriverConfig, profile string, manifest ExternalDriverManifest, manifestDigest, buildDigest, runID string, groups []string) error {
 	if output.ProtocolVersion != externalDriverProtocolVersion || output.ManifestSHA256 != manifestDigest || output.Target != manifest.Target || output.SpecVersion != manifest.SpecVersion || output.ReleaseVersion != manifest.ReleaseVersion || output.SourceCommit != manifest.SourceCommit || output.BuildDigest != buildDigest || output.TenantID != manifest.TenantID || output.Namespace != manifest.Namespace || output.RunID != runID {
 		return errors.New("driver result is not bound to the signed target, scope, build, or run")
 	}
@@ -344,23 +349,34 @@ func validateExternalOutput(ctx context.Context, output externalDriverOutput, pa
 			return errors.New("production driver results require an Ed25519 signature")
 		}
 	}
-	if len(output.Results) != len(groups) {
-		return errors.New("driver result must contain exactly one result per external group")
-	}
-	wanted := make(map[string]string, len(groups))
+	wanted := make(map[string]map[string]struct{}, len(groups))
+	expectedResults := 0
 	for _, group := range groups {
-		wanted[group], _ = externalRequirementForGroup(group)
+		requirements := externalRequirementsForGroup(group)
+		allowed := make(map[string]struct{}, len(requirements))
+		for _, requirement := range requirements {
+			allowed[requirement] = struct{}{}
+		}
+		wanted[group] = allowed
+		expectedResults += len(requirements)
+	}
+	if len(output.Results) != expectedResults {
+		return errors.New("driver result must contain exactly one result per external requirement")
 	}
 	seen := make(map[string]struct{}, len(output.Results))
 	for _, item := range output.Results {
-		requirement, ok := wanted[item.Group]
-		if !ok || item.RequirementID != requirement {
+		allowed, ok := wanted[item.Group]
+		if !ok {
+			return errors.New("driver result group mapping is invalid")
+		}
+		if _, ok := allowed[item.RequirementID]; !ok {
 			return errors.New("driver result requirement mapping is invalid")
 		}
-		if _, exists := seen[item.Group]; exists {
-			return errors.New("driver returned duplicate group results")
+		key := item.Group + "\x00" + item.RequirementID
+		if _, exists := seen[key]; exists {
+			return errors.New("driver returned duplicate requirement results")
 		}
-		seen[item.Group] = struct{}{}
+		seen[key] = struct{}{}
 		if item.Status != "PASS" && item.Status != "FAIL" && item.Status != "INCONCLUSIVE" {
 			return errors.New("driver result status is invalid")
 		}
@@ -373,53 +389,61 @@ func validateExternalOutput(ctx context.Context, output externalDriverOutput, pa
 			}
 		}
 	}
-	if len(seen) != len(groups) {
-		return errors.New("driver omitted an external group result")
+	if len(seen) != expectedResults {
+		return errors.New("driver omitted an external requirement result")
 	}
 	return nil
 }
 
-func externalRequirementForGroup(group string) (string, bool) {
+func externalRequirementsForGroup(group string) []string {
 	switch group {
 	case "security":
-		return "AOR-ACC-043", true
+		return []string{"AOR-ACC-043"}
 	case "authn":
-		return "AOR-ACC-041", true
+		return []string{"AOR-ACC-041"}
 	case "authz", "tool-broker":
-		return "AOR-ACC-042", true
+		return []string{"AOR-ACC-042"}
 	case "sandbox-linux":
-		return "AOR-ACC-054", true
+		return []string{"AOR-ACC-054"}
 	case "sandbox-windows":
-		return "AOR-ACC-055", true
+		return []string{"AOR-ACC-055"}
 	case "budget":
-		return "AOR-ACC-072", true
+		return []string{"AOR-ACC-072"}
 	case "knowledge":
-		return "AOR-ACC-012", true
+		return []string{"AOR-ACC-012"}
 	case "audit":
-		return "AOR-ACC-048", true
+		return []string{"AOR-ACC-048"}
 	case "integration":
-		return "AOR-ACC-019", true
+		return []string{"AOR-ACC-019"}
 	case "observability":
-		return "AOR-ACC-078", true
+		return []string{"AOR-ACC-078"}
 	case "backup-restore":
-		return "AOR-ACC-036", true
+		return []string{"AOR-ACC-036"}
 	case "chaos":
-		return "AOR-ACC-056", true
+		return []string{"AOR-ACC-056", "AOR-ACC-057", "AOR-ACC-058", "AOR-ACC-059", "AOR-ACC-060", "AOR-ACC-061", "AOR-ACC-062", "AOR-ACC-063", "AOR-ACC-064"}
 	case "performance":
-		return "AOR-ACC-066", true
+		return []string{"AOR-ACC-066", "AOR-ACC-067", "AOR-ACC-068", "AOR-ACC-069", "AOR-ACC-070", "AOR-ACC-071", "AOR-ACC-073", "AOR-ACC-074", "AOR-ACC-075"}
 	case "supply-chain":
-		return "AOR-ACC-050", true
+		return []string{"AOR-ACC-050"}
 	case "full":
-		return "AOR-ACC-100", true
+		return []string{"AOR-ACC-100"}
 	default:
+		return nil
+	}
+}
+
+func externalRequirementForGroup(group string) (string, bool) {
+	requirements := externalRequirementsForGroup(group)
+	if len(requirements) != 1 {
 		return "", false
 	}
+	return requirements[0], true
 }
 
 func requestedExternalGroups(groups []string) []string {
 	result := make([]string, 0, len(groups))
 	for _, group := range groups {
-		if _, ok := externalRequirementForGroup(group); ok {
+		if len(externalRequirementsForGroup(group)) > 0 {
 			result = append(result, group)
 		}
 	}
@@ -445,17 +469,17 @@ func decodeExternalManifest(raw []byte) (ExternalDriverManifest, []byte, string,
 	return manifest, payload, digest, nil
 }
 
-func decodeExternalOutput(raw []byte) (externalDriverOutput, []byte, error) {
-	var output externalDriverOutput
+func decodeExternalOutput(raw []byte) (ExternalDriverOutput, []byte, error) {
+	var output ExternalDriverOutput
 	if len(raw) == 0 || len(raw) > maxExternalDriverOutputBytes {
-		return externalDriverOutput{}, nil, errors.New("driver result is empty or exceeds the limit")
+		return ExternalDriverOutput{}, nil, errors.New("driver result is empty or exceeds the limit")
 	}
 	if err := decodeStrictExternal(raw, &output); err != nil {
-		return externalDriverOutput{}, nil, fmt.Errorf("driver result: %w", err)
+		return ExternalDriverOutput{}, nil, fmt.Errorf("driver result: %w", err)
 	}
 	payload, _, err := externalSignedPayload(raw, "signature", "", "aor-conformance-driver-result-v1")
 	if err != nil {
-		return externalDriverOutput{}, nil, fmt.Errorf("driver result digest: %w", err)
+		return ExternalDriverOutput{}, nil, fmt.Errorf("driver result digest: %w", err)
 	}
 	return output, payload, nil
 }
@@ -638,12 +662,25 @@ func digestBytes(value []byte) string {
 func appendExternalEnvironment(base []string, values ...string) []string {
 	filtered := make([]string, 0, len(base)+len(values))
 	for _, item := range base {
-		if strings.HasPrefix(item, "AOR_CONFORMANCE_") {
+		name, _, _ := strings.Cut(item, "=")
+		if !safeExternalEnvironmentName(name) {
 			continue
 		}
 		filtered = append(filtered, item)
 	}
 	return append(filtered, values...)
+}
+
+func safeExternalEnvironmentName(name string) bool {
+	if strings.HasPrefix(name, "AOR_CONFORMANCE_") {
+		return false
+	}
+	switch name {
+	case "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR", "TMP", "TEMP", "SystemRoot", "WINDIR", "PATHEXT":
+		return true
+	default:
+		return false
+	}
 }
 
 func externalRunID() (string, error) {
@@ -691,7 +728,7 @@ func (b *externalLimitedBuffer) Overflowed() bool {
 	return b.overflow
 }
 
-func copyExternalEvidence(outputDirectory, evidenceDirectory, runID, group string, evidence []externalDriverEvidence) ([]string, error) {
+func copyExternalEvidence(outputDirectory, evidenceDirectory, runID, group string, evidence []ExternalDriverEvidence) ([]string, error) {
 	if len(evidence) > maxExternalEvidenceReferences {
 		return nil, errors.New("driver evidence reference count exceeds the limit")
 	}

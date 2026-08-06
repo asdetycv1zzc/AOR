@@ -181,12 +181,18 @@ func (r *Runner) Run(ctx context.Context, request Request) (ReleaseEvidence, err
 	for _, group := range request.Groups {
 		results, gateErr, environmentGate := runGroup(ctx, root, group)
 		if environmentGate && externalRun != nil {
-			if externalResult, ok := externalRun.results[group]; ok {
-				results = []RequirementResult{externalResult}
-				environmentGate = externalResult.Status == "INCONCLUSIVE"
-				if externalResult.Status == "FAIL" {
-					gateErr = ErrGateFailed
-				} else if externalResult.Status == "INCONCLUSIVE" && request.Profile != "test" {
+			if externalResults, ok := externalRun.results[group]; ok {
+				results = externalResults
+				environmentGate = false
+				for _, externalResult := range externalResults {
+					if externalResult.Status == "INCONCLUSIVE" {
+						environmentGate = true
+					}
+					if externalResult.Status == "FAIL" {
+						gateErr = ErrGateFailed
+					}
+				}
+				if gateErr == nil && environmentGate && request.Profile != "test" {
 					gateErr = ErrEnvironmentGate
 				}
 			}
@@ -196,7 +202,9 @@ func (r *Runner) Run(ctx context.Context, request Request) (ReleaseEvidence, err
 		}
 		evidence.Results = append(evidence.Results, results...)
 		if environmentGate {
-			if request.Profile == "production" {
+			if externalRun != nil {
+				evidence.Exceptions = append(evidence.Exceptions, group+": external driver returned INCONCLUSIVE")
+			} else if request.Profile == "production" {
 				evidence.Exceptions = append(evidence.Exceptions, group+": external preproduction evidence required")
 			} else {
 				evidence.Exceptions = append(evidence.Exceptions, group+": environment gate not executed in local runner")

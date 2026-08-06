@@ -14,10 +14,6 @@ import (
 )
 
 func TestExternalDriverBindsSignedManifestScopeAndRawEvidence(t *testing.T) {
-	if os.Getenv("AOR_EXTERNAL_DRIVER_HELPER") == "1" {
-		externalDriverHelperProcess()
-		return
-	}
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -46,7 +42,7 @@ func TestExternalDriverBindsSignedManifestScopeAndRawEvidence(t *testing.T) {
 		ToolVersion:      "1.2.3",
 		Executable:       executable,
 		ExecutableSHA256: digestBytes(mustReadExternalTestFile(t, executable)),
-		Args:             []string{"-test.run=TestExternalDriverBindsSignedManifestScopeAndRawEvidence"},
+		Args:             []string{"-test.run=TestExternalDriverProcess"},
 		CorpusPath:       "security-corpus/prompt-injection.json",
 		CorpusSHA256:     digestBytes(corpus),
 		Target:           "",
@@ -66,10 +62,6 @@ func TestExternalDriverBindsSignedManifestScopeAndRawEvidence(t *testing.T) {
 	if err := os.WriteFile(manifestPath, manifestBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	os.Setenv("AOR_EXTERNAL_DRIVER_HELPER", "1")
-	os.Setenv("AOR_EXTERNAL_DRIVER_PRIVATE_KEY", base64.RawStdEncoding.EncodeToString(privateKey))
-	defer os.Unsetenv("AOR_EXTERNAL_DRIVER_HELPER")
-	defer os.Unsetenv("AOR_EXTERNAL_DRIVER_PRIVATE_KEY")
 	runner := NewRunner(nil)
 	evidence, runErr := runner.Run(context.Background(), Request{
 		Root:           root,
@@ -98,9 +90,6 @@ func TestExternalDriverBindsSignedManifestScopeAndRawEvidence(t *testing.T) {
 }
 
 func TestExternalDriverRejectsTamperedSignedManifest(t *testing.T) {
-	if os.Getenv("AOR_EXTERNAL_DRIVER_HELPER") == "1" {
-		return
-	}
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -116,7 +105,7 @@ func TestExternalDriverRejectsTamperedSignedManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifest := ExternalDriverManifest{ProtocolVersion: externalDriverProtocolVersion, Tool: "driver", ToolVersion: "1", Executable: executable, ExecutableSHA256: digestBytes(mustReadExternalTestFile(t, executable)), Args: []string{"-test.run=TestExternalDriverBindsSignedManifestScopeAndRawEvidence"}, CorpusPath: "security-corpus/prompt-injection.json", CorpusSHA256: digestBytes(corpus), Target: "", SpecVersion: "2.0.0", ReleaseVersion: "0.1.0-dev", SourceCommit: "unknown", BuildDigest: build, TenantID: "tenant", Namespace: "namespace", Groups: []string{"security"}, TimeoutSeconds: 5, MaxOutputBytes: 1 << 20}
+	manifest := ExternalDriverManifest{ProtocolVersion: externalDriverProtocolVersion, Tool: "driver", ToolVersion: "1", Executable: executable, ExecutableSHA256: digestBytes(mustReadExternalTestFile(t, executable)), Args: []string{"-test.run=TestExternalDriverProcess"}, CorpusPath: "security-corpus/prompt-injection.json", CorpusSHA256: digestBytes(corpus), Target: "", SpecVersion: "2.0.0", ReleaseVersion: "0.1.0-dev", SourceCommit: "unknown", BuildDigest: build, TenantID: "tenant", Namespace: "namespace", Groups: []string{"security"}, TimeoutSeconds: 5, MaxOutputBytes: 1 << 20}
 	manifest.CorpusSignature = signExternalTestPayload(t, privateKey, []byte("aor-conformance-driver-corpus-v1\n"+manifest.CorpusSHA256), "driver-test")
 	encoded := signExternalTestManifest(t, manifest, privateKey)
 	encoded[len(encoded)-2] ^= 1
@@ -131,10 +120,25 @@ func TestExternalDriverRejectsTamperedSignedManifest(t *testing.T) {
 	}
 }
 
-func externalDriverHelperProcess() {
-	if os.Getenv("AOR_EXTERNAL_DRIVER_HELPER") != "1" {
+func TestExternalGroupRequirementsCoverReliabilityAndPerformanceGates(t *testing.T) {
+	chaos := externalRequirementsForGroup("chaos")
+	if len(chaos) != 9 || chaos[0] != "AOR-ACC-056" || chaos[len(chaos)-1] != "AOR-ACC-064" {
+		t.Fatalf("chaos requirements = %#v", chaos)
+	}
+	performance := externalRequirementsForGroup("performance")
+	if len(performance) != 9 || performance[0] != "AOR-ACC-066" || performance[len(performance)-1] != "AOR-ACC-075" {
+		t.Fatalf("performance requirements = %#v", performance)
+	}
+}
+
+func TestExternalDriverProcess(t *testing.T) {
+	if os.Getenv("AOR_CONFORMANCE_PROTOCOL_VERSION") != externalDriverProtocolVersion {
 		return
 	}
+	externalDriverHelperProcess()
+}
+
+func externalDriverHelperProcess() {
 	evidenceDirectory := os.Getenv("AOR_CONFORMANCE_EVIDENCE_DIR")
 	if evidenceDirectory == "" {
 		os.Exit(2)
@@ -143,7 +147,7 @@ func externalDriverHelperProcess() {
 	if err := os.WriteFile(filepath.Join(evidenceDirectory, "trace.json"), evidence, 0o600); err != nil {
 		os.Exit(2)
 	}
-	output := externalDriverOutput{
+	output := ExternalDriverOutput{
 		ProtocolVersion: externalDriverProtocolVersion,
 		ManifestSHA256:  os.Getenv("AOR_CONFORMANCE_MANIFEST_SHA256"),
 		Target:          os.Getenv("AOR_CONFORMANCE_TARGET"),
@@ -154,22 +158,16 @@ func externalDriverHelperProcess() {
 		TenantID:        os.Getenv("AOR_CONFORMANCE_TENANT_ID"),
 		Namespace:       os.Getenv("AOR_CONFORMANCE_NAMESPACE"),
 		RunID:           os.Getenv("AOR_CONFORMANCE_RUN_ID"),
-		Results: []externalDriverResult{{
+		Results: []ExternalDriverResult{{
 			Group:         "security",
 			RequirementID: "AOR-ACC-043",
 			Status:        "PASS",
-			Evidence: []externalDriverEvidence{{
+			Evidence: []ExternalDriverEvidence{{
 				Path:   "trace.json",
 				SHA256: digestBytes(evidence),
 				Kind:   "trace",
 			}},
 		}},
-	}
-	privateRaw, err := base64.RawStdEncoding.DecodeString(os.Getenv("AOR_EXTERNAL_DRIVER_PRIVATE_KEY"))
-	if err == nil && len(privateRaw) == ed25519.PrivateKeySize {
-		unsigned, _ := json.Marshal(output)
-		payload, _, _ := externalSignedPayload(unsigned, "signature", "", "aor-conformance-driver-result-v1")
-		output.Signature = &Signature{Type: "Ed25519", KID: "driver-test", Value: base64.RawURLEncoding.EncodeToString(ed25519.Sign(ed25519.PrivateKey(privateRaw), payload))}
 	}
 	encoded, _ := json.Marshal(output)
 	_, _ = os.Stdout.Write(encoded)

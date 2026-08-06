@@ -968,25 +968,35 @@ requirements:
     status: implemented
   - id: AOR-ACC-056
     title: Random stateless service termination recovers active workflows without state corruption
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/conformance/external.go
+      - internal/workflow/temporal_worker.go
+    tests:
+      - internal/conformance/external_test.go
+      - internal/workflow/temporal_worker_test.go
+    evidenceType: signed-chaos-driver+durable-state-recovery-gate
     owner: reliability
     status: planned
   - id: AOR-ACC-057
     title: Terminated workers leave no Linux process residue and disclose Windows NONE limitations
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/conformance/external.go
+      - internal/sandbox/provider.go
+    tests:
+      - internal/conformance/external_test.go
+      - internal/sandbox/provider_test.go
+    evidenceType: signed-chaos-driver+platform-cleanup-gate
     owner: reliability
     status: planned
   - id: AOR-ACC-058
     title: Thirty-minute provider outage remains recoverable without exhausting budget
     implementation:
       - internal/modelgateway/gateway.go
+      - internal/conformance/external.go
     tests:
       - internal/modelgateway/mock_test.go
-    evidenceType: bounded-circuit-breaker+budget-reconciliation-gate
+      - internal/conformance/external_test.go
+    evidenceType: bounded-circuit-breaker+signed-chaos-driver
     owner: reliability
     status: planned
   - id: AOR-ACC-059
@@ -994,16 +1004,22 @@ requirements:
     implementation:
       - internal/eventing/outbox.go
       - internal/eventing/postgres.go
+      - internal/conformance/external.go
     tests:
       - internal/eventing/outbox_test.go
-    evidenceType: durable-outbox+recovery-drain-gate
+      - internal/conformance/external_test.go
+    evidenceType: durable-outbox+signed-chaos-driver
     owner: reliability
     status: planned
   - id: AOR-ACC-060
     title: Database failover meets RPO and RTO without split-brain writes
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/conformance/external.go
+      - internal/backup/postgres.go
+    tests:
+      - internal/conformance/external_test.go
+      - internal/backup/verify_test.go
+    evidenceType: signed-failover-driver+rpo-rto-split-brain-gate
     owner: reliability
     status: planned
   - id: AOR-ACC-061
@@ -1029,9 +1045,13 @@ requirements:
     status: planned
   - id: AOR-ACC-063
     title: Regional recovery drills meet RPO RTO and retain evidence for twenty-four months
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/conformance/external.go
+      - internal/backup/verify.go
+    tests:
+      - internal/conformance/external_test.go
+      - internal/backup/verify_test.go
+    evidenceType: signed-regional-recovery-driver+24-month-evidence-retention-gate
     owner: reliability
     status: planned
   - id: AOR-ACC-064
@@ -1055,44 +1075,75 @@ requirements:
     status: implemented
   - id: AOR-ACC-066
     title: Three-replica control API sustains required throughput and p95 latency
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/performance/percentile.go
+      - internal/conformance/external.go
+    tests:
+      - internal/performance/percentile_test.go
+      - internal/conformance/external_test.go
+      - tests/performance/capacity_test.go
+    evidenceType: percentile-gate+signed-load-driver
     owner: performance
     status: planned
   - id: AOR-ACC-067
     title: Control API p99 latency meets the production objective
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/performance/percentile.go
+      - internal/conformance/external.go
+    tests:
+      - internal/performance/percentile_test.go
+      - internal/conformance/external_test.go
+      - tests/performance/capacity_test.go
+    evidenceType: percentile-gate+signed-load-driver
     owner: performance
     status: planned
   - id: AOR-ACC-068
     title: Event commit-to-consumption p99 latency meets the production objective
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/performance/percentile.go
+      - internal/conformance/external.go
+    tests:
+      - internal/performance/percentile_test.go
+      - internal/conformance/external_test.go
+      - tests/performance/capacity_test.go
+    evidenceType: percentile-gate+signed-load-driver
     owner: performance
     status: planned
   - id: AOR-ACC-069
     title: Projection state query p99 latency meets the production objective
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/performance/percentile.go
+      - internal/conformance/external.go
+    tests:
+      - internal/performance/percentile_test.go
+      - internal/conformance/external_test.go
+      - tests/performance/capacity_test.go
+    evidenceType: percentile-gate+signed-load-driver
     owner: performance
     status: planned
   - id: AOR-ACC-070
     title: Capability Lease issuance p99 latency meets the production objective
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/performance/percentile.go
+      - internal/authz/lease.go
+      - internal/conformance/external.go
+    tests:
+      - internal/performance/percentile_test.go
+      - internal/authz/lease_test.go
+      - internal/conformance/external_test.go
+    evidenceType: percentile-gate+signed-load-driver
     owner: performance
     status: planned
   - id: AOR-ACC-071
     title: Cancellation terminates the worker process tree within ten seconds at p99
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/performance/percentile.go
+      - internal/conformance/external.go
+    tests:
+      - internal/performance/percentile_test.go
+      - internal/conformance/external_test.go
+      - tests/performance/capacity_test.go
+    evidenceType: percentile-gate+signed-process-tree-driver
     owner: performance
     status: planned
   - id: AOR-ACC-072
@@ -1109,23 +1160,39 @@ requirements:
     status: planned
   - id: AOR-ACC-073
     title: One thousand queued ModuleTasks remain lossless fair and bounded to eight active per Project
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/agentruntime/slots.go
+      - internal/performance/percentile.go
+      - internal/conformance/external.go
+    tests:
+      - internal/agentruntime/slots_test.go
+      - tests/performance/capacity_test.go
+      - internal/conformance/external_test.go
+    evidenceType: queue-fairness+signed-load-driver
     owner: performance
     status: planned
   - id: AOR-ACC-074
     title: One hundred concurrent Projects remain isolated with bounded resource growth
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/eventing/memory.go
+      - internal/performance/percentile.go
+      - internal/conformance/external.go
+    tests:
+      - tests/performance/capacity_test.go
+      - internal/conformance/external_test.go
+    evidenceType: tenant-isolation+signed-load-driver
     owner: performance
     status: planned
   - id: AOR-ACC-075
     title: Ten thousand Project events replay within ten minutes and bounded peak memory
-    implementation: []
-    tests: []
-    evidenceType: pending
+    implementation:
+      - internal/projection/projector.go
+      - internal/performance/percentile.go
+      - internal/conformance/external.go
+    tests:
+      - tests/performance/replay_test.go
+      - internal/conformance/external_test.go
+    evidenceType: replay-benchmark+signed-load-driver
     owner: performance
     status: planned
   - id: AOR-ACC-076
