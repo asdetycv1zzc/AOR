@@ -186,7 +186,6 @@ func validSubmitTaskAuthorityRequest(request SubmitTaskRequest) bool {
 type executionCommitFacts struct {
 	db     *sql.DB
 	leases executionLeaseReader
-	clock  func() time.Time
 }
 
 func (facts *executionCommitFacts) Revalidate(ctx context.Context, capability orchestrator.CommitCapability) error {
@@ -214,12 +213,14 @@ func (facts *executionCommitFacts) Revalidate(ctx context.Context, capability or
 	var accountID string
 	var hardLimit, spent, reserved int64
 	var periodEnd sql.NullTime
+	var now time.Time
 	err = tx.QueryRowContext(ctx, `
 SELECT p.state, p.state_version, t.state, t.state_version,
        COALESCE(t.active_attempt_series_id::text, ''), t.latest_fencing_token,
        ms.version, ms.content_sha256, ea.execution_id, ea.agent_instance_id,
        COALESCE(ea.lease_id, ''), ea.fencing_token, ai.role, ai.state,
-       ba.id, ba.hard_limit_micros, ba.spent_micros, ba.reserved_micros, ba.period_end
+       ba.id, ba.hard_limit_micros, ba.spent_micros, ba.reserved_micros, ba.period_end,
+       clock_timestamp()
 FROM projects AS p
 JOIN module_tasks AS t ON t.tenant_id = p.tenant_id AND t.project_id = p.id
 JOIN module_specs AS ms ON ms.tenant_id = t.tenant_id AND ms.id = t.module_spec_id
@@ -234,14 +235,14 @@ WHERE p.tenant_id = $1::uuid AND p.id = $2::uuid AND t.id = $3::uuid
 		capability.TenantID, capability.ProjectID, capability.TaskID, capability.Action, capability.LeaseID, capability.BudgetAccountID).Scan(
 		&projectState, &projectVersion, &taskState, &taskVersion, &seriesID, &latestFence,
 		&specVersion, &specDigest, &executionID, &agentID, &assignmentLeaseID, &assignmentFence,
-		&role, &agentState, &accountID, &hardLimit, &spent, &reserved, &periodEnd)
+		&role, &agentState, &accountID, &hardLimit, &spent, &reserved, &periodEnd, &now)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrAssignmentInvalid
 	}
 	if err != nil {
 		return err
 	}
-	now := facts.clock().UTC()
+	now = now.UTC()
 	if projectState != string(contracts.ProjectExecuting) || projectVersion != capability.ProjectVersion || taskVersion != capability.TaskVersion ||
 		specVersion != capability.ModuleSpecRef.Version || specDigest != capability.ModuleSpecRef.SHA256 || seriesID == "" ||
 		agentID != capability.PrincipalID || role != authn.RoleExecutor || agentState == "FAILED" || agentState == "CANCELED" || agentState == "EXPIRED" || agentState == "TERMINATED" ||
@@ -277,7 +278,7 @@ WHERE p.tenant_id = $1::uuid AND p.id = $2::uuid AND t.id = $3::uuid
 }
 
 func (authority *OrchestratorTaskAuthority) revalidator() *executionCommitFacts {
-	return &executionCommitFacts{db: authority.db, leases: authority.leases, clock: authority.clock}
+	return &executionCommitFacts{db: authority.db, leases: authority.leases}
 }
 
 func (authority *OrchestratorTaskAuthority) Revalidate(ctx context.Context, capability orchestrator.CommitCapability) error {
