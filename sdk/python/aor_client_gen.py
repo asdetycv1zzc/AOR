@@ -3,7 +3,7 @@ import json
 from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
-OPENAPI_SHA256 = "sha256:34acd9164a385b7daca8ca94c675a40da683431ba36cd59bb2029883beb79a9b"
+OPENAPI_SHA256 = "sha256:9e22d8418fe799c107d6e5fcdfe110a7abeeb1f129fbe523e10b8d89d803a1df"
 
 
 class AORClient:
@@ -53,6 +53,9 @@ class AORClient:
     def approve_goal_spec(self, options=None):
         return self._request("POST", "/v1/projects/{projectId}/goal/specs/{version}:approve", options)
 
+    def approve_knowledge_update(self, options=None):
+        return self._request("POST", "/v1/projects/{projectId}/knowledge/updates/{updateId}:approve", options)
+
     def approve_project_release(self, options=None):
         return self._request("POST", "/v1/projects/{projectId}:approve-release", options)
 
@@ -88,6 +91,9 @@ class AORClient:
 
     def get_knowledge_manifest(self, options=None):
         return self._request("GET", "/v1/projects/{projectId}/knowledge/manifest", options)
+
+    def get_knowledge_update(self, options=None):
+        return self._request("GET", "/v1/projects/{projectId}/knowledge/updates/{updateId}", options)
 
     def get_plan(self, options=None):
         return self._request("GET", "/v1/projects/{projectId}/plans/{version}", options)
@@ -146,6 +152,9 @@ class AORClient:
     def probe_sandboxes(self, options=None):
         return self._request("POST", "/v1/admin/sandboxes:probe", options)
 
+    def propose_knowledge_update(self, options=None):
+        return self._request("POST", "/v1/projects/{projectId}/knowledge:propose-update", options)
+
     def read_knowledge_range(self, options=None):
         return self._request("POST", "/v1/projects/{projectId}/knowledge:read-range", options)
 
@@ -181,3 +190,6 @@ class AORClient:
 
     def test_policies(self, options=None):
         return self._request("POST", "/v1/admin/policies:test", options)
+
+    def verify_backup(self, options=None):
+        return self._request("POST", "/v1/admin/backup:verify", options)

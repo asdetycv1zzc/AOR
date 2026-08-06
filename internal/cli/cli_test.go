@@ -266,11 +266,49 @@ func TestResponseSizeIsBounded(t *testing.T) {
 	}
 }
 
+func TestAdminBackupVerifyCallsRestoreGate(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodPost || request.URL.Path != "/v1/admin/backup:verify" {
+			t.Fatalf("request = %s %s", request.Method, request.URL.Path)
+		}
+		if request.Header.Get("Authorization") != "Bearer test-token" || request.Header.Get("Idempotency-Key") != "restore-drill-1" {
+			t.Fatalf("headers = %#v", request.Header)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil || len(body) != 0 {
+			t.Fatalf("body = %#v error=%v", body, err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(
+				`{"projects":1,"goals":1,"plans":1,"tasks":1,"audits":1,"artifacts":1,"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`,
+			)),
+		}, nil
+	})}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Main(context.Background(), []string{
+		"--server", "https://aor.example.test", "--json", "admin", "backup", "verify", "--idempotency-key", "restore-drill-1",
+	}, Config{
+		Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr, HTTPClient: client,
+		LookupEnv: func(name string) (string, bool) {
+			if name == "AOR_TOKEN" {
+				return "test-token", true
+			}
+			return "", false
+		},
+	})
+	if exitCode != 0 || stderr.String() != "" || !strings.Contains(stdout.String(), `"digest"`) {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", exitCode, stdout.String(), stderr.String())
+	}
+}
+
 func TestAllSPEC19CommandsAreRegistered(t *testing.T) {
 	for _, command := range []string{
 		"project create", "project status", "goal send", "goal diff", "goal approve", "task list", "task show",
 		"task decide", "audit show", "artifact download", "knowledge refs", "budget show", "project pause", "project resume",
-		"project abort", "admin doctor", "admin policy test", "admin sandbox probe",
+		"project abort", "admin doctor", "admin policy test", "admin sandbox probe", "admin backup verify",
 	} {
 		if _, found := commandDefinitions[command]; !found {
 			t.Fatalf("command %q is not registered", command)
@@ -296,4 +334,10 @@ func runTestCLI(t *testing.T, server *httptest.Server, stdin string, args []stri
 		},
 	})
 	return exitCode, stdout.String(), stderr.String()
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
 }

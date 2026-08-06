@@ -77,3 +77,22 @@ func TestAdminEndpointsRejectRegularUser(t *testing.T) {
 		t.Fatalf("user status=%d body=%s", response.Code, response.Body.String())
 	}
 }
+
+func TestBackupVerificationEndpointRequiresRestoreDependencies(t *testing.T) {
+	handler, err := New(Config{
+		Store: eventing.NewMemoryStore(),
+		Authenticator: fixedAuthenticator{principal: authn.Principal{
+			ID: "admin-1", Type: authn.PrincipalBreakGlassAdmin, Role: authn.RoleBreakGlassAdmin, TenantID: testTenantID,
+		}},
+		Authorizer: &recordingAuthorizer{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := performRequest(handler, http.MethodPost, "/v1/admin/backup:verify", []byte(`{}`), map[string]string{
+		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json", "Idempotency-Key": "backup-verify-1",
+	})
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("backup verification status=%d body=%s", response.Code, response.Body.String())
+	}
+}

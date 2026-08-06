@@ -85,13 +85,13 @@ type ArtifactVerifier interface {
 }
 
 type Report struct {
-	Projects  int
-	Goals     int
-	Plans     int
-	Tasks     int
-	Audits    int
-	Artifacts int
-	Digest    string
+	Projects  int    `json:"projects"`
+	Goals     int    `json:"goals"`
+	Plans     int    `json:"plans"`
+	Tasks     int    `json:"tasks"`
+	Audits    int    `json:"audits"`
+	Artifacts int    `json:"artifacts"`
+	Digest    string `json:"digest"`
 }
 
 func (s Snapshot) Digest() (string, error) {

@@ -506,4 +506,5 @@ Commands:
   aor admin doctor
   aor admin policy test [--file request.json]
   aor admin sandbox probe [--file request.json]
+  aor admin backup verify
 `

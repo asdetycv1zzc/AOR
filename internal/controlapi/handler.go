@@ -335,6 +335,8 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 			handler.admin(response, request, principal, "policy-test")
 		case "/v1/admin/sandboxes:probe":
 			handler.admin(response, request, principal, "sandbox-probe")
+		case "/v1/admin/backup:verify":
+			handler.admin(response, request, principal, "backup-verify")
 		default:
 			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
 		}

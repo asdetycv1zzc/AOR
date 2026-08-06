@@ -699,6 +699,9 @@ paths:
   /v1/admin/sandboxes:probe:
     $ref: '#/components/pathItems/AdminCommand'
     x-operation-id: probeSandboxes
+  /v1/admin/backup:verify:
+    $ref: '#/components/pathItems/AdminCommand'
+    x-operation-id: verifyBackup
 components:
   securitySchemes:
     oidc:

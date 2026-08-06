@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-const OpenAPISHA256 = "sha256:34acd9164a385b7daca8ca94c675a40da683431ba36cd59bb2029883beb79a9b"
+const OpenAPISHA256 = "sha256:9e22d8418fe799c107d6e5fcdfe110a7abeeb1f129fbe523e10b8d89d803a1df"
 
 type TokenProvider func(context.Context) (string, error)
 
@@ -115,6 +115,10 @@ func (c *Client) ApproveGoalSpec(ctx context.Context, options RequestOptions) (*
 	return c.request(ctx, "POST", "/v1/projects/{projectId}/goal/specs/{version}:approve", options)
 }
 
+func (c *Client) ApproveKnowledgeUpdate(ctx context.Context, options RequestOptions) (*http.Response, error) {
+	return c.request(ctx, "POST", "/v1/projects/{projectId}/knowledge/updates/{updateId}:approve", options)
+}
+
 func (c *Client) ApproveProjectRelease(ctx context.Context, options RequestOptions) (*http.Response, error) {
 	return c.request(ctx, "POST", "/v1/projects/{projectId}:approve-release", options)
 }
@@ -161,6 +165,10 @@ func (c *Client) GetGoalSpec(ctx context.Context, options RequestOptions) (*http
 
 func (c *Client) GetKnowledgeManifest(ctx context.Context, options RequestOptions) (*http.Response, error) {
 	return c.request(ctx, "GET", "/v1/projects/{projectId}/knowledge/manifest", options)
+}
+
+func (c *Client) GetKnowledgeUpdate(ctx context.Context, options RequestOptions) (*http.Response, error) {
+	return c.request(ctx, "GET", "/v1/projects/{projectId}/knowledge/updates/{updateId}", options)
 }
 
 func (c *Client) GetPlan(ctx context.Context, options RequestOptions) (*http.Response, error) {
@@ -239,6 +247,10 @@ func (c *Client) ProbeSandboxes(ctx context.Context, options RequestOptions) (*h
 	return c.request(ctx, "POST", "/v1/admin/sandboxes:probe", options)
 }
 
+func (c *Client) ProposeKnowledgeUpdate(ctx context.Context, options RequestOptions) (*http.Response, error) {
+	return c.request(ctx, "POST", "/v1/projects/{projectId}/knowledge:propose-update", options)
+}
+
 func (c *Client) ReadKnowledgeRange(ctx context.Context, options RequestOptions) (*http.Response, error) {
 	return c.request(ctx, "POST", "/v1/projects/{projectId}/knowledge:read-range", options)
 }
@@ -285,4 +297,8 @@ func (c *Client) StreamProjectEvents(ctx context.Context, options RequestOptions
 
 func (c *Client) TestPolicies(ctx context.Context, options RequestOptions) (*http.Response, error) {
 	return c.request(ctx, "POST", "/v1/admin/policies:test", options)
+}
+
+func (c *Client) VerifyBackup(ctx context.Context, options RequestOptions) (*http.Response, error) {
+	return c.request(ctx, "POST", "/v1/admin/backup:verify", options)
 }

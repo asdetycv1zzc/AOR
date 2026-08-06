@@ -84,6 +84,10 @@ var commandDefinitions = map[string]commandDefinition{
 		usage: "aor admin sandbox probe [--file request.json] [--idempotency-key KEY]",
 		flags: map[string]flagDefinition{"file": {kind: stringFlag}, "idempotency-key": {kind: stringFlag}}, run: probeSandboxes,
 	},
+	"admin backup verify": {
+		usage: "aor admin backup verify [--idempotency-key KEY]",
+		flags: map[string]flagDefinition{"idempotency-key": {kind: stringFlag}}, run: verifyBackup,
+	},
 }
 
 func createProject(ctx context.Context, application *app, arguments parsedArguments) error {
@@ -663,6 +667,24 @@ func testPolicies(ctx context.Context, application *app, arguments parsedArgumen
 
 func probeSandboxes(ctx context.Context, application *app, arguments parsedArguments) error {
 	return executeAdminCommand(ctx, application, arguments, func(client *aorsdk.Client) adminCommand { return client.ProbeSandboxes })
+}
+
+func verifyBackup(ctx context.Context, application *app, arguments parsedArguments) error {
+	key, err := idempotencyKey(arguments)
+	if err != nil {
+		return err
+	}
+	client, err := application.api()
+	if err != nil {
+		return err
+	}
+	response, err := client.VerifyBackup(ctx, aorsdk.RequestOptions{
+		Headers: commandHeaders(key, ""), Body: map[string]any{},
+	})
+	if err != nil {
+		return requestFailure(err)
+	}
+	return application.emitResponse(response)
 }
 
 func executeAdminCommand(ctx context.Context, application *app, arguments parsedArguments, selectCall func(*aorsdk.Client) adminCommand) error {

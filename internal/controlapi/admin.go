@@ -2,12 +2,14 @@ package controlapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sort"
 	"time"
 
 	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/authz"
+	"github.com/akimisaka/aor/internal/backup"
 	"github.com/akimisaka/aor/internal/sandbox"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
 )
@@ -58,8 +60,49 @@ func (handler *Handler) admin(response http.ResponseWriter, request *http.Reques
 		handler.adminPolicyTest(response, request, principal)
 	case "sandbox-probe":
 		handler.adminSandboxProbe(response, request)
+	case "backup-verify":
+		handler.adminBackupVerify(response, request, principal)
 	default:
 		writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+	}
+}
+
+// adminBackupVerify validates the authenticated tenant's restored metadata
+// graph and every referenced artifact object. It is intentionally read-only;
+// restore tooling performs the database/object restoration before invoking
+// this gate.
+func (handler *Handler) adminBackupVerify(response http.ResponseWriter, request *http.Request, principal authn.Principal) {
+	if handler == nil || handler.database == nil || handler.artifacts == nil {
+		writeError(response, request, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "backup restore verification"}))
+		return
+	}
+	verifier, err := backup.NewCatalogArtifactVerifier(handler.artifacts)
+	if err != nil {
+		writeError(response, request, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "backup restore verification"}))
+		return
+	}
+	report, err := backup.VerifyPostgres(request.Context(), handler.database, principal.TenantID, verifier)
+	if err != nil {
+		writeError(response, request, normalizeBackupVerificationError(err))
+		return
+	}
+	writeJSON(response, http.StatusOK, report)
+}
+
+func normalizeBackupVerificationError(err error) error {
+	var typed *aorerrors.Error
+	if errors.As(err, &typed) {
+		return typed
+	}
+	switch {
+	case errors.Is(err, backup.ErrArtifactIntegrity):
+		return aorerrors.New(aorerrors.CodeArtifactHashMismatch, "", map[string]any{"scope": "backup artifact"})
+	case errors.Is(err, backup.ErrDanglingReference), errors.Is(err, backup.ErrInvalidSnapshot):
+		return aorerrors.New(aorerrors.CodeAuditEvidenceInvalid, "", map[string]any{"scope": "backup restore graph"})
+	case errors.Is(err, context.DeadlineExceeded):
+		return aorerrors.New(aorerrors.CodeTimeout, "", map[string]any{"scope": "backup restore verification"})
+	default:
+		return aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "backup restore verification"})
 	}
 }
 
