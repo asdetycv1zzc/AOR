@@ -62,7 +62,8 @@ func (client *OPAClient) EvaluateLeaseGrant(ctx context.Context, input authz.Pol
 	taskLease := (authz.IsSideEffect(input.Action) || input.Action == authz.ActionModelGenerate) && input.Task.ID != "" && input.Task.SpecDigest != ""
 	projectModelLease := input.Action == authz.ActionModelGenerate && input.Task.ID == "" && input.Task.StateVersion == 0 && input.Task.SpecDigest == "" && !authz.LeaseRoleRequiresTask(input.Principal.Role)
 	projectIntegrationLease := input.Action == authz.ActionIntegrationMerge && input.Principal.Role == authn.RoleService && input.Task.ID == "" && input.Task.StateVersion == 0 && input.Task.SpecDigest == ""
-	if (!taskLease && !projectModelLease && !projectIntegrationLease) || input.Lease != nil || input.ParameterDigest == "" || input.Budget.AccountID == "" || !input.Budget.Available {
+	projectArtifactLease := input.Action == authz.ActionArtifactPublish && input.Principal.Type == authn.PrincipalService && input.Principal.Role == authn.RoleService && input.Task.ID == "" && input.Task.StateVersion == 0 && input.Task.SpecDigest == ""
+	if (!taskLease && !projectModelLease && !projectIntegrationLease && !projectArtifactLease) || input.Lease != nil || input.ParameterDigest == "" || input.Budget.AccountID == "" || !input.Budget.Available {
 		return denied("INVALID_LEASE_GRANT_INPUT"), ErrInvalidPolicyResponse
 	}
 	return client.evaluate(ctx, input, leaseGrantPath, true)

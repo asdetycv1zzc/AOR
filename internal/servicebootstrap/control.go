@@ -17,7 +17,6 @@ import (
 	"github.com/akimisaka/aor/internal/eventing"
 	"github.com/akimisaka/aor/internal/knowledge"
 	"github.com/akimisaka/aor/internal/leaseauthority"
-	"github.com/akimisaka/aor/internal/observability"
 	"github.com/akimisaka/aor/internal/policy"
 	"github.com/akimisaka/aor/internal/runtimeclient"
 	"github.com/akimisaka/aor/internal/runtimeconfig"
@@ -56,6 +55,10 @@ func (eraser artifactProjectEraser) EraseProject(ctx context.Context, tenantID, 
 		Scopes: append([]string(nil), report.Scopes...), Records: report.Records,
 		Objects: report.Objects, CacheEntries: report.CacheEntries,
 	}, nil
+}
+
+func (eraser artifactProjectEraser) FinalizeProjectAuthorizationErasure(ctx context.Context, tenantID, projectID, deletionID string) error {
+	return eraser.catalog.FinalizeProjectAuthorizationErasure(ctx, tenantID, projectID, deletionID)
 }
 
 func (handler *controlHandler) Ready() error {
@@ -173,6 +176,10 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	if err != nil {
 		return nil, err
 	}
+	artifactPublisher, err := controlArtifactPublisher(config, clients.Database(), artifactCatalog, authorizer)
+	if err != nil {
+		return nil, err
+	}
 	decisionReportSigner, err := controlDecisionReportSigner(config)
 	if err != nil {
 		return nil, err
@@ -189,7 +196,7 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	}
 	domain, err := controlapi.New(controlapi.Config{
 		Store: lifecycleStore, Authenticator: authenticator, Authorizer: authorizer,
-		Database: clients.Database(), Artifacts: artifactCatalog, Knowledge: knowledgeService,
+		Database: clients.Database(), Artifacts: artifactPublisher, Knowledge: knowledgeService,
 		KnowledgeCurator: knowledgeCurator, KnowledgeCuratorURL: config.KnowledgeCuratorURL,
 		DecisionReportSigner: decisionReportSigner,
 		Eraser:               artifactProjectEraser{catalog: artifactCatalog}, Leases: leaseService,
@@ -327,27 +334,9 @@ func controlLeaseAuthority(config runtimeconfig.Config, database *sql.DB, author
 	if database == nil || authorizer == nil {
 		return nil, runtimeclient.ErrInvalidClientConfig
 	}
-	resolveContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	leaseKey, err := credentials.NewSecretResolver(os.Getenv("AOR_SECRET_ROOT")).Resolve(resolveContext, config.LeaseSigningKeyRef)
-	cancel()
+	leaseManager, _, err := controlLeaseManager(config, database)
 	if err != nil {
-		return nil, runtimeconfig.ErrInvalidConfiguration
-	}
-	leaseSigner, err := authz.NewHMACSigner(leaseKey)
-	clearBytes(leaseKey)
-	if err != nil {
-		return nil, runtimeconfig.ErrInvalidConfiguration
-	}
-	leaseStore, err := authz.NewPostgresLeaseStore(database)
-	if err != nil {
-		return nil, runtimeconfig.ErrInvalidConfiguration
-	}
-	leaseManager, err := authz.NewLeaseManager(authz.LeaseManagerConfig{
-		Store: leaseStore, Signer: leaseSigner, Clock: time.Now,
-		DefaultTTL: 5 * time.Minute, MaxTTL: 15 * time.Minute, HeartbeatInterval: 30 * time.Second,
-	})
-	if err != nil {
-		return nil, runtimeconfig.ErrInvalidConfiguration
+		return nil, err
 	}
 	leaseScopes, err := leaseauthority.NewPostgresScopeResolver(database, config.DeploymentProfile)
 	if err != nil {
@@ -358,6 +347,58 @@ func controlLeaseAuthority(config runtimeconfig.Config, database *sql.DB, author
 		return nil, runtimeconfig.ErrInvalidConfiguration
 	}
 	return service, nil
+}
+
+func controlArtifactPublisher(config runtimeconfig.Config, database *sql.DB, catalog *artifact.PostgresS3Catalog, policyClient publicationPolicyClient) (*artifact.CapabilityPublisher, error) {
+	if database == nil || catalog == nil || policyClient == nil {
+		return nil, runtimeclient.ErrInvalidClientConfig
+	}
+	leaseManager, _, err := controlLeaseManager(config, database)
+	if err != nil {
+		return nil, err
+	}
+	publisher, err := artifact.NewCapabilityPublisher(artifact.CapabilityPublisherConfig{
+		Catalog: catalog, Leases: leaseManager, Policy: policyClient,
+		ServiceID: "aor-control-artifact-service", DeploymentProfile: config.DeploymentProfile,
+	})
+	if err != nil {
+		return nil, runtimeconfig.ErrInvalidConfiguration
+	}
+	return publisher, nil
+}
+
+type publicationPolicyClient interface {
+	authz.PolicyEvaluator
+	authz.LeaseGrantEvaluator
+}
+
+func controlLeaseManager(config runtimeconfig.Config, database *sql.DB) (*authz.LeaseManager, authz.Signer, error) {
+	if database == nil {
+		return nil, nil, runtimeclient.ErrInvalidClientConfig
+	}
+	resolveContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	leaseKey, err := credentials.NewSecretResolver(os.Getenv("AOR_SECRET_ROOT")).Resolve(resolveContext, config.LeaseSigningKeyRef)
+	cancel()
+	if err != nil {
+		return nil, nil, runtimeconfig.ErrInvalidConfiguration
+	}
+	leaseSigner, err := authz.NewHMACSigner(leaseKey)
+	clearBytes(leaseKey)
+	if err != nil {
+		return nil, nil, runtimeconfig.ErrInvalidConfiguration
+	}
+	leaseStore, err := authz.NewPostgresLeaseStore(database)
+	if err != nil {
+		return nil, nil, runtimeconfig.ErrInvalidConfiguration
+	}
+	leaseManager, err := authz.NewLeaseManager(authz.LeaseManagerConfig{
+		Store: leaseStore, Signer: leaseSigner, Clock: time.Now,
+		DefaultTTL: 5 * time.Minute, MaxTTL: 15 * time.Minute, HeartbeatInterval: 30 * time.Second,
+	})
+	if err != nil {
+		return nil, nil, runtimeconfig.ErrInvalidConfiguration
+	}
+	return leaseManager, leaseSigner, nil
 }
 
 func withRequestTrace(next http.Handler) http.Handler {

@@ -2,6 +2,7 @@ package authz
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/akimisaka/aor/internal/authn"
@@ -74,7 +75,10 @@ func (e *Engine) Evaluate(ctx context.Context, input PolicyInput) (PolicyDecisio
 		decision := denyDecision(e.bundle.Version, "REQUEST_CANCELED")
 		return decision, aorerrors.Wrap(aorerrors.CodePolicyDenied, "", err, map[string]any{"policyVersion": e.bundle.Version})
 	}
-	now := e.now()
+	now, timeErr := policyAuthorizationTime(input, e.now())
+	if timeErr != nil {
+		return denyDecision(e.bundle.Version, reasonForError(timeErr)), timeErr
+	}
 	if err := input.Validate(now); err != nil {
 		decision := denyDecision(e.bundle.Version, reasonForError(err))
 		return decision, err
@@ -143,7 +147,10 @@ func (e *Engine) EvaluateLeaseGrant(ctx context.Context, input PolicyInput) (Pol
 	if err := ctx.Err(); err != nil {
 		return denyDecision(e.bundle.Version, "REQUEST_CANCELED"), aorerrors.Wrap(aorerrors.CodePolicyDenied, "", err, map[string]any{"policyVersion": e.bundle.Version})
 	}
-	now := e.now()
+	now, timeErr := policyAuthorizationTime(input, e.now())
+	if timeErr != nil {
+		return denyDecision(e.bundle.Version, reasonForError(timeErr)), timeErr
+	}
 	if err := input.Validate(now); err != nil {
 		return denyDecision(e.bundle.Version, reasonForError(err)), err
 	}
@@ -235,6 +242,7 @@ func leaseGrantActionAllowed(input PolicyInput) bool {
 	if input.Task.ID == "" {
 		return (input.Action == ActionModelGenerate && !LeaseRoleRequiresTask(input.Principal.Role)) ||
 			globalAuditorProjectReadTool(input) ||
+			(input.Action == ActionArtifactPublish && input.Principal.Type == authn.PrincipalService && input.Principal.Role == authn.RoleService) ||
 			(input.Action == ActionIntegrationMerge && input.Principal.Role == authn.RoleService)
 	}
 	return IsSideEffect(input.Action) || input.Action == ActionModelGenerate && taskModelLeaseRole(input.Principal.Role)
@@ -373,13 +381,16 @@ func (e *Engine) defaultDecision(input PolicyInput, lease CapabilityLease, now t
 		}
 		return e.constrainAllow(allowDecision(e.bundle.Version, "aor.knowledge.write", "CURATOR_ALLOWED", "APPROVAL_VALID", "LEASE_VALID"), input, lease)
 	case ActionArtifactPublish:
-		if input.Principal.Type != authn.PrincipalService && input.Principal.Role != authn.RoleService {
+		if input.Principal.Type != authn.PrincipalService || input.Principal.Role != authn.RoleService {
 			return denyDecision(e.bundle.Version, "TRUSTED_SERVICE_REQUIRED")
 		}
-		if !approvalMatches(input, now) {
+		if input.Resource.Type != "artifact" || !strings.HasPrefix(input.Resource.ID, "artifact://sha256/") || len(input.Resource.ID) != len("artifact://sha256/")+64 || !digestPattern.MatchString("sha256:"+strings.TrimPrefix(input.Resource.ID, "artifact://sha256/")) || !input.Budget.Available || !artifactPublicationProjectStateAllowed(input) || input.Task.ID != "" && roleIn(input.Task.State, "CANCELED", "SUPERSEDED", "PASSED", "INTEGRATED") {
+			return denyDecision(e.bundle.Version, "PUBLISH_SCOPE_DENIED")
+		}
+		if input.Approval != nil && !approvalMatches(input, now) {
 			return approvalDecision(e.bundle.Version, "PUBLISH_APPROVAL_REQUIRED")
 		}
-		return e.constrainAllow(allowDecision(e.bundle.Version, "aor.artifact.publish", "TRUSTED_SERVICE_ALLOWED", "APPROVAL_VALID", "LEASE_VALID"), input, lease)
+		return e.constrainAllow(allowDecision(e.bundle.Version, "aor.artifact.publish", "TRUSTED_SERVICE_ALLOWED", "LEASE_VALID"), input, lease)
 	case ActionPolicyTest:
 		if input.Principal.Type == authn.PrincipalService || input.Principal.Type == authn.PrincipalBreakGlassAdmin || input.Principal.Role == authn.RoleBreakGlassAdmin {
 			return allowDecision(e.bundle.Version, "aor.policy.test", "ADMIN_ROLE_ALLOWED")
@@ -396,6 +407,18 @@ func (e *Engine) defaultDecision(input PolicyInput, lease CapabilityLease, now t
 	default:
 		return denyDecision(e.bundle.Version, "UNKNOWN_ACTION")
 	}
+}
+
+func artifactPublicationProjectStateAllowed(input PolicyInput) bool {
+	if !roleIn(input.Project.State, "PAUSED", "ABORTED", "FAILED_SYSTEM", "ARCHIVED") {
+		return true
+	}
+	if input.Resource.Attributes["operation"] == "project-export" {
+		return roleIn(input.Project.State, "PAUSED", "ABORTED", "ARCHIVED")
+	}
+	return roleIn(input.Project.State, "PAUSED", "ARCHIVED") &&
+		input.Resource.Attributes["operation"] == "deletion-proof" &&
+		input.Resource.Attributes["deletionId"] != ""
 }
 
 func (e *Engine) sandboxExecDecision(input PolicyInput, lease CapabilityLease) PolicyDecision {
@@ -474,7 +497,7 @@ func approvalMatches(input PolicyInput, now time.Time) bool {
 		return false
 	}
 	subjectVersion := input.Task.StateVersion
-	if input.Action == ActionKnowledgeWrite {
+	if input.Action == ActionKnowledgeWrite || input.Action == ActionArtifactPublish && input.Task.ID == "" {
 		subjectVersion = input.Project.StateVersion
 	}
 	if input.Approval.TenantID != input.Project.TenantID || input.Approval.ProjectID != input.Project.ID || input.Approval.SubjectVersion != subjectVersion || input.Approval.SubjectDigest != input.ParameterDigest {

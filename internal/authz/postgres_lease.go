@@ -53,7 +53,7 @@ VALUES
 	  ($1, NULLIF($2, ''), $3::uuid, $4::uuid, $5, NULLIF($6, '')::uuid, $7, $8, $9,
 	   $10, $11, $12, $13, $14, $15::jsonb, $16, $17, $18, $19,
 	   $20::jsonb, $21, $22, $23, $24, $25, $26, $27)`,
-		lease.ID, lease.IdempotencyKey, lease.TenantID, lease.ProjectID, lease.AgentInstanceID, nullableLeaseString(lease.TaskID),
+		lease.ID, lease.IdempotencyKey, lease.TenantID, lease.ProjectID, nullableLeaseAgentInstance(lease), nullableLeaseString(lease.TaskID),
 		lease.PrincipalID, string(lease.PrincipalType), lease.Role, lease.Action,
 		lease.ProjectVersion, lease.TaskVersion, nullableLeaseString(lease.SpecDigest), resource,
 		lease.ParameterDigest, lease.IssuedAt.UTC(), lease.ExpiresAt.UTC(),
@@ -183,7 +183,7 @@ func setLeaseTenant(ctx context.Context, tx *sql.Tx, tenantID string) error {
 
 func loadPostgresLease(ctx context.Context, tx *sql.Tx, tenantID, id string, lock bool) (CapabilityLease, bool, error) {
 	query := `
-	SELECT id, agent_instance_id, principal_id, principal_type, tenant_id::text,
+	SELECT id, COALESCE(agent_instance_id, principal_id), principal_id, principal_type, tenant_id::text,
 	       idempotency_key, project_id::text, project_version, COALESCE(task_id::text, ''), task_version,
 	       COALESCE(spec_sha256::text, ''),
        role, action, resource_jsonb, parameter_sha256, capabilities_jsonb, issued_at,
@@ -231,7 +231,7 @@ func (store *PostgresLeaseStore) GetByIdempotency(ctx context.Context, tenantID,
 
 func loadPostgresLeaseByIdempotency(ctx context.Context, tx *sql.Tx, tenantID, principalID, key string) (CapabilityLease, bool, error) {
 	lease, err := scanPostgresLease(tx.QueryRowContext(ctx, `
-SELECT id, agent_instance_id, principal_id, principal_type, tenant_id::text,
+SELECT id, COALESCE(agent_instance_id, principal_id), principal_id, principal_type, tenant_id::text,
        idempotency_key, project_id::text, project_version, COALESCE(task_id::text, ''), task_version,
        COALESCE(spec_sha256::text, ''), role, action, resource_jsonb, parameter_sha256, capabilities_jsonb, issued_at,
        expires_at, last_heartbeat_at, heartbeat_interval_seconds, policy_version,
@@ -336,6 +336,13 @@ func nullableLeaseString(value string) any {
 		return nil
 	}
 	return value
+}
+
+func nullableLeaseAgentInstance(lease CapabilityLease) any {
+	if lease.PrincipalType == authn.PrincipalService {
+		return nil
+	}
+	return lease.AgentInstanceID
 }
 
 func advanceTaskFencing(ctx context.Context, tx *sql.Tx, lease CapabilityLease) error {

@@ -123,9 +123,10 @@ type Approval struct {
 }
 
 type ExecutionContext struct {
-	IP           string `json:"ip,omitempty"`
-	Platform     string `json:"platform,omitempty"`
-	SandboxLevel string `json:"sandboxLevel,omitempty"`
+	IP                string `json:"ip,omitempty"`
+	Platform          string `json:"platform,omitempty"`
+	SandboxLevel      string `json:"sandboxLevel,omitempty"`
+	AuthorizationTime string `json:"authorizationTime,omitempty"`
 }
 
 type BudgetScope struct {
@@ -149,6 +150,11 @@ type PolicyInput struct {
 }
 
 func (input PolicyInput) Validate(now time.Time) *aorerrors.Error {
+	var timeErr *aorerrors.Error
+	now, timeErr = policyAuthorizationTime(input, now)
+	if timeErr != nil {
+		return timeErr
+	}
 	if err := input.Principal.Validate(); err != nil {
 		return err
 	}
@@ -211,6 +217,17 @@ func (input PolicyInput) Validate(now time.Time) *aorerrors.Error {
 		}
 	}
 	return nil
+}
+
+func policyAuthorizationTime(input PolicyInput, fallback time.Time) (time.Time, *aorerrors.Error) {
+	if input.Context.AuthorizationTime == "" {
+		return fallback.UTC(), nil
+	}
+	value, err := time.Parse(time.RFC3339Nano, input.Context.AuthorizationTime)
+	if err != nil || value.Location() != time.UTC || value.Format(time.RFC3339Nano) != input.Context.AuthorizationTime {
+		return time.Time{}, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "authorization time"})
+	}
+	return value, nil
 }
 
 func validTaskExecutionScope(task TaskScope) bool {
@@ -428,7 +445,7 @@ func IsSideEffect(action string) bool {
 func RequiresTask(action string) bool {
 	switch action {
 	case ActionProjectCreate, ActionProjectRead, ActionProjectCommand, ActionGoalRead, ActionPlanRead,
-		ActionKnowledgeRead, ActionKnowledgeWrite, ActionPolicyTest, ActionModelCapabilities, ActionModelGenerate,
+		ActionKnowledgeRead, ActionKnowledgeWrite, ActionArtifactPublish, ActionPolicyTest, ActionModelCapabilities, ActionModelGenerate,
 		ActionModelStream, ActionModelCancel, ActionModelReconcile, ActionIntegrationMerge:
 		return false
 	default:

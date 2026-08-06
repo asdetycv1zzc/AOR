@@ -65,7 +65,9 @@ type Publication struct {
 	ContentType        string
 	Metadata           map[string]any
 	RetentionUntil     *time.Time
+	ApprovalID         string
 	Data               []byte
+	Authorization      PublicationAuthorization
 }
 
 type Catalog interface {
@@ -94,10 +96,12 @@ type RetentionReport struct {
 }
 
 type PostgresS3Catalog struct {
-	database *sql.DB
-	objects  *minio.Client
-	bucket   string
-	clock    func() time.Time
+	database             *sql.DB
+	objects              *minio.Client
+	bucket               string
+	clock                func() time.Time
+	publicationValidator *capabilityPublicationValidator
+	deploymentProfile    string
 }
 
 func NewPostgresS3Catalog(database *sql.DB, objects *minio.Client, bucket string, clock func() time.Time) (*PostgresS3Catalog, error) {
@@ -327,6 +331,9 @@ func (catalog *PostgresS3Catalog) Publish(ctx context.Context, publication Publi
 	if err := validateContent(publication.Data); err != nil {
 		return Record{}, err
 	}
+	if catalog.publicationValidator == nil {
+		return Record{}, ErrCommitAuthorization
+	}
 	sum := sha256.Sum256(publication.Data)
 	digest := "sha256:" + hex.EncodeToString(sum[:])
 	uri, _ := URIFromDigest(digest)
@@ -363,18 +370,12 @@ func (catalog *PostgresS3Catalog) Publish(ctx context.Context, publication Publi
 	if err := validateContent(metadataBytes); err != nil {
 		return Record{}, err
 	}
-	now := catalog.clock().UTC()
 	retentionUntil := publication.RetentionUntil
 	if retentionUntil == nil {
-		value := now.AddDate(1, 0, 0)
-		retentionUntil = &value
-	} else {
-		value := retentionUntil.UTC()
-		retentionUntil = &value
+		return Record{}, ErrCommitAuthorization
 	}
-	if retentionUntil.Before(now) {
-		return Record{}, ErrInvalidRequest
-	}
+	value := retentionUntil.UTC()
+	retentionUntil = &value
 	objectName := projectObjectName(publication.TenantID, publication.ProjectID, digest)
 	stageName := "staging/" + publication.TenantID + "/" + publication.ProjectID + "/" + uuid.NewString()
 	if _, err := catalog.objects.PutObject(ctx, catalog.bucket, stageName, bytes.NewReader(publication.Data), int64(len(publication.Data)), minio.PutObjectOptions{ContentType: publication.ContentType, UserMetadata: map[string]string{"Aor-Sha256": digest}}); err != nil {
@@ -396,26 +397,24 @@ func (catalog *PostgresS3Catalog) Publish(ctx context.Context, publication Publi
 		return Record{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var classification string
-	var deletionStatus sql.NullString
-	var deletionID sql.NullString
-	if err := tx.QueryRowContext(ctx, `
-SELECT data_classification, deletion_status, deletion_id
-FROM projects
-WHERE tenant_id = $1::uuid AND id = $2::uuid
-FOR UPDATE`, publication.TenantID, publication.ProjectID).Scan(&classification, &deletionStatus, &deletionID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return Record{}, ErrNotFound
-		}
+	scope, project, err := loadPublicationCommitScope(ctx, tx, publication, publication.Authorization, catalog.deploymentProfile)
+	if err != nil {
 		return Record{}, err
 	}
-	if deletionStatus.Valid && (deletionStatus.String == "ERASING" || deletionStatus.String == "COMPLETED") {
-		proofAllowed := deletionStatus.String == "ERASING" && deletionID.Valid && metadataString(metadata, "kind") == "deletion-proof" && metadataString(metadata, "deletionId") == deletionID.String
+	if err := catalog.publicationValidator.validateCommit(ctx, publication, publication.Authorization, scope); err != nil {
+		return Record{}, err
+	}
+	now := scope.AuthorizationTime
+	if !retentionUntil.After(now) {
+		return Record{}, ErrInvalidRequest
+	}
+	if project.DeletionStatus == "ERASING" || project.DeletionStatus == "COMPLETED" {
+		proofAllowed := project.DeletionStatus == "ERASING" && metadataString(metadata, "kind") == "deletion-proof" && metadataString(metadata, "deletionId") == project.DeletionID
 		if !proofAllowed {
 			return Record{}, ErrConflict
 		}
 	}
-	record := Record{ID: artifactID, TenantID: publication.TenantID, ProjectID: publication.ProjectID, URI: uri, SHA256: digest, SizeBytes: int64(len(publication.Data)), ContentType: publication.ContentType, Classification: classification, CreatedByPrincipal: publication.CreatedByPrincipal, Metadata: metadata, CreatedAt: now, RetentionUntil: retentionUntil}
+	record := Record{ID: artifactID, TenantID: publication.TenantID, ProjectID: publication.ProjectID, URI: uri, SHA256: digest, SizeBytes: int64(len(publication.Data)), ContentType: publication.ContentType, Classification: project.Scope.Classification, CreatedByPrincipal: publication.CreatedByPrincipal, Metadata: metadata, CreatedAt: now, RetentionUntil: retentionUntil}
 	if err := validateRecord(record); err != nil {
 		return Record{}, err
 	}
@@ -504,6 +503,9 @@ WHERE k.tenant_id = $1::uuid AND k.project_id = $2::uuid AND k.idempotency_key =
 		} else if boundArtifactID != record.ID {
 			return Record{}, ErrConflict
 		}
+	}
+	if err := validatePublicationAuthorizationStillActive(ctx, tx, publication, publication.Authorization); err != nil {
+		return Record{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return Record{}, err
@@ -981,8 +983,6 @@ WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND deletion_id = $3 AND re
 		`DELETE FROM model_calls WHERE tenant_id = $1::uuid AND project_id = $2::uuid`,
 		`DELETE FROM agent_leases WHERE tenant_id = $1::uuid AND project_id = $2::uuid`,
 		`DELETE FROM agent_instances WHERE tenant_id = $1::uuid AND project_id = $2::uuid`,
-		`DELETE FROM budget_reservations WHERE tenant_id = $1::uuid AND account_id IN (SELECT id FROM budget_accounts WHERE tenant_id = $1::uuid AND scope_type = 'PROJECT' AND scope_id = $2)`,
-		`DELETE FROM budget_accounts WHERE tenant_id = $1::uuid AND scope_type = 'PROJECT' AND scope_id = $2`,
 		`DELETE FROM artifact_publication_keys WHERE tenant_id = $1::uuid AND project_id = $2::uuid`,
 		`DELETE FROM artifacts WHERE tenant_id = $1::uuid AND project_id = $2::uuid`,
 		`DELETE FROM aggregate_projections WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND aggregate_type <> 'project'`,
@@ -1006,6 +1006,62 @@ WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND deletion_id = $3`, tena
 		return ErasureReport{}, err
 	}
 	return report, nil
+}
+
+// FinalizeProjectAuthorizationErasure removes the project budget and the
+// short-lived publication lease only after the deletion proof is durable and
+// the project projection records completed deletion. It is idempotent so a
+// control-plane retry can finish cleanup after an unknown commit result.
+func (catalog *PostgresS3Catalog) FinalizeProjectAuthorizationErasure(ctx context.Context, tenantID, projectID, deletionID string) error {
+	if ctx == nil || catalog == nil || catalog.database == nil || !trustedTenant(ctx, tenantID) || !uuidValuePattern.MatchString(projectID) || !safeText(deletionID, 256) {
+		return ErrInvalidRequest
+	}
+	tx, err := beginCatalogTx(ctx, catalog.database, tenantID, false)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var proofURI string
+	err = tx.QueryRowContext(ctx, `
+SELECT state_jsonb->'deletion'->>'proofArtifactUri'
+FROM aggregate_projections
+WHERE tenant_id = $1::uuid AND project_id = $2::uuid
+	  AND aggregate_type = 'project' AND aggregate_id = $2::text
+  AND state_jsonb->'deletion'->>'status' = 'COMPLETED'
+  AND state_jsonb->'deletion'->>'id' = $3
+FOR UPDATE`, tenantID, projectID, deletionID).Scan(&proofURI)
+	if errors.Is(err, sql.ErrNoRows) || proofURI == "" {
+		return ErrConflict
+	}
+	if err != nil {
+		return err
+	}
+	var proofExists bool
+	if err := tx.QueryRowContext(ctx, `
+SELECT EXISTS (
+  SELECT 1 FROM artifacts
+  WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND uri = $3
+    AND metadata_jsonb->>'kind' = 'deletion-proof'
+    AND metadata_jsonb->>'deletionId' = $4
+)`, tenantID, projectID, proofURI, deletionID).Scan(&proofExists); err != nil || !proofExists {
+		if err != nil {
+			return err
+		}
+		return ErrIntegrity
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_leases WHERE tenant_id = $1::uuid AND project_id = $2::uuid`, tenantID, projectID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM budget_reservations WHERE tenant_id = $1::uuid AND account_id = $2`, tenantID, projectID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+DELETE FROM budget_accounts
+WHERE tenant_id = $1::uuid AND id = $2
+  AND scope_type = 'PROJECT' AND scope_id = $2`, tenantID, projectID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func erasureScopes() []string {
@@ -1058,7 +1114,7 @@ func validateRecord(record Record) error {
 }
 
 func validPublication(publication Publication) bool {
-	if !uuidValuePattern.MatchString(publication.TenantID) || !uuidValuePattern.MatchString(publication.ProjectID) || publication.TaskID != "" && !uuidValuePattern.MatchString(publication.TaskID) || publication.IdempotencyKey != "" && !safeText(publication.IdempotencyKey, 256) || !safeText(publication.CreatedByPrincipal, 256) || !safeText(publication.ContentType, 256) || len(publication.Data) > 1<<30 {
+	if !uuidValuePattern.MatchString(publication.TenantID) || !uuidValuePattern.MatchString(publication.ProjectID) || publication.ArtifactID != "" && !uuidValuePattern.MatchString(publication.ArtifactID) || publication.ApprovalID != "" && !uuidValuePattern.MatchString(publication.ApprovalID) || publication.TaskID != "" && !uuidValuePattern.MatchString(publication.TaskID) || publication.IdempotencyKey != "" && !safeText(publication.IdempotencyKey, 256) || !safeText(publication.CreatedByPrincipal, 256) || !safeText(publication.ContentType, 256) || len(publication.Data) > 1<<30 {
 		return false
 	}
 	_, _, err := mime.ParseMediaType(publication.ContentType)

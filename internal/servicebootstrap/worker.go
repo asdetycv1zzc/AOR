@@ -305,12 +305,13 @@ func stableModuleAuditSandboxID(input aorworkflow.ExecutionInput, runID string) 
 }
 
 type workerExecutionServices struct {
-	execution       *execution.Service
-	host            *toolbroker.Host
-	agentRuntime    *agentruntime.Runtime
-	tasks           *execution.OrchestratorTaskAuthority
-	leaseService    *leaseauthority.Service
-	artifactCatalog *artifact.PostgresS3Catalog
+	execution         *execution.Service
+	host              *toolbroker.Host
+	agentRuntime      *agentruntime.Runtime
+	tasks             *execution.OrchestratorTaskAuthority
+	leaseService      *leaseauthority.Service
+	artifactCatalog   *artifact.PostgresS3Catalog
+	artifactPublisher *artifact.CapabilityPublisher
 }
 
 func (effect sandboxActivityEffect) Execute(ctx context.Context, key string, payload json.RawMessage) (output json.RawMessage, resultErr error) {
@@ -529,7 +530,7 @@ func Worker(config runtimeconfig.Config, clients *runtimeclient.Clients) (http.H
 }
 
 func configuredModuleAudit(config runtimeconfig.Config, clients *runtimeclient.Clients, provider sandbox.SandboxProvider, services *workerExecutionServices, repositorySigner repository.Signer, signer *audit.HMACSigner) (*moduleAuditActivity, error) {
-	if clients == nil || provider == nil || services == nil || services.agentRuntime == nil || services.leaseService == nil || services.artifactCatalog == nil || repositorySigner == nil || signer == nil {
+	if clients == nil || provider == nil || services == nil || services.agentRuntime == nil || services.leaseService == nil || services.artifactCatalog == nil || services.artifactPublisher == nil || repositorySigner == nil || signer == nil {
 		return nil, ErrWorkerConfiguration
 	}
 	policyClient, err := policy.NewOPAClient(config.OPA.URL)
@@ -558,11 +559,11 @@ func configuredModuleAudit(config runtimeconfig.Config, clients *runtimeclient.C
 	if err != nil {
 		return nil, err
 	}
-	evidence, err := audit.NewArtifactEvidenceStore(services.artifactCatalog, services.artifactCatalog)
+	evidence, err := audit.NewArtifactEvidenceStore(services.artifactPublisher, services.artifactCatalog)
 	if err != nil {
 		return nil, err
 	}
-	pipelineArtifacts, err := audit.NewCatalogArtifactPublisher(services.artifactCatalog)
+	pipelineArtifacts, err := audit.NewCatalogArtifactPublisher(services.artifactPublisher)
 	if err != nil {
 		return nil, err
 	}
@@ -670,7 +671,14 @@ func configuredWorkerExecution(config runtimeconfig.Config, clients *runtimeclie
 	if err != nil {
 		return nil, err
 	}
-	artifactPublisher, err := toolbroker.NewArtifactPublisher(artifactCatalog)
+	capabilityPublisher, err := artifact.NewCapabilityPublisher(artifact.CapabilityPublisherConfig{
+		Catalog: artifactCatalog, Leases: leaseManager, Policy: policyClient,
+		ServiceID: "aor-worker-artifact-service", DeploymentProfile: config.DeploymentProfile,
+	})
+	if err != nil {
+		return nil, err
+	}
+	artifactPublisher, err := toolbroker.NewArtifactPublisher(capabilityPublisher)
 	if err != nil {
 		return nil, err
 	}
@@ -796,12 +804,12 @@ func configuredWorkerExecution(config runtimeconfig.Config, clients *runtimeclie
 	}
 	return &workerExecutionServices{
 		execution: service, host: host, agentRuntime: agentRuntime, tasks: tasks,
-		leaseService: leaseService, artifactCatalog: artifactCatalog,
+		leaseService: leaseService, artifactCatalog: artifactCatalog, artifactPublisher: capabilityPublisher,
 	}, nil
 }
 
 func configuredGlobalAudit(config runtimeconfig.Config, clients *runtimeclient.Clients, provider sandbox.SandboxProvider, services *workerExecutionServices, signer *audit.HMACSigner, secretResolver *credentials.SecretResolver) (*globalaudit.Service, error) {
-	if clients == nil || provider == nil || services == nil || services.agentRuntime == nil || services.tasks == nil || services.leaseService == nil || services.artifactCatalog == nil || signer == nil || secretResolver == nil || runtime.GOOS != "linux" {
+	if clients == nil || provider == nil || services == nil || services.agentRuntime == nil || services.tasks == nil || services.leaseService == nil || services.artifactCatalog == nil || services.artifactPublisher == nil || signer == nil || secretResolver == nil || runtime.GOOS != "linux" {
 		return nil, ErrWorkerConfiguration
 	}
 	routeConfig := config.GlobalAuditRoute
@@ -846,7 +854,7 @@ func configuredGlobalAudit(config runtimeconfig.Config, clients *runtimeclient.C
 	if err != nil {
 		return nil, err
 	}
-	store, err := globalaudit.NewPostgresStore(clients.Database(), services.artifactCatalog, signer)
+	store, err := globalaudit.NewPostgresStore(clients.Database(), services.artifactPublisher, signer)
 	if err != nil {
 		return nil, err
 	}

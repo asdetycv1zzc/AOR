@@ -125,7 +125,14 @@ func ToolBroker(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	if err != nil {
 		return nil, err
 	}
-	artifactPublisher, err := toolbroker.NewArtifactPublisher(artifactCatalog)
+	capabilityPublisher, err := artifact.NewCapabilityPublisher(artifact.CapabilityPublisherConfig{
+		Catalog: artifactCatalog, Leases: leaseManager, Policy: policyClient,
+		ServiceID: "aor-tool-broker-artifact-service", DeploymentProfile: config.DeploymentProfile,
+	})
+	if err != nil {
+		return nil, err
+	}
+	artifactPublisher, err := toolbroker.NewArtifactPublisher(capabilityPublisher)
 	if err != nil {
 		return nil, err
 	}

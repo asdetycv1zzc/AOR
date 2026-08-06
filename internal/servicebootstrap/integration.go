@@ -58,7 +58,7 @@ type integrationSnapshot struct {
 }
 
 func configuredIntegration(config runtimeconfig.Config, clients *runtimeclient.Clients, provider sandbox.SandboxProvider, services *workerExecutionServices, leaseManager *authz.LeaseManager, repositorySigner repository.Signer, evidenceSigner audit.Signer) (*integrationActivity, error) {
-	if clients == nil || provider == nil || services == nil || services.leaseService == nil || services.artifactCatalog == nil || leaseManager == nil || repositorySigner == nil || evidenceSigner == nil {
+	if clients == nil || provider == nil || services == nil || services.leaseService == nil || services.artifactCatalog == nil || services.artifactPublisher == nil || leaseManager == nil || repositorySigner == nil || evidenceSigner == nil {
 		return nil, ErrWorkerConfiguration
 	}
 	if err := os.MkdirAll(config.Integration.WorkRoot, 0o700); err != nil {
@@ -96,7 +96,7 @@ func configuredIntegration(config runtimeconfig.Config, clients *runtimeclient.C
 	if err != nil {
 		return nil, err
 	}
-	evidenceStore, err := audit.NewArtifactEvidenceStore(services.artifactCatalog, services.artifactCatalog)
+	evidenceStore, err := audit.NewArtifactEvidenceStore(services.artifactPublisher, services.artifactCatalog)
 	if err != nil {
 		return nil, err
 	}

@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/authz"
@@ -88,6 +89,30 @@ func TestOPAClientEvaluateLeaseGrantUsesDedicatedEntrypoint(t *testing.T) {
 
 func TestOPAClientEvaluateLeaseGrantAcceptsProjectModelLease(t *testing.T) {
 	input := projectLeaseGrantInput()
+	expected := authz.DecisionBinding{
+		PrincipalID: input.Principal.ID, TenantID: input.Project.TenantID,
+		ProjectID: input.Project.ID, ProjectVersion: input.Project.StateVersion,
+		Role: input.Principal.Role, Action: input.Action, Resource: input.Resource,
+		ParameterDigest: input.ParameterDigest, BudgetAccountID: input.Budget.AccountID,
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != leaseGrantPath {
+			t.Fatalf("path = %q", request.URL.Path)
+		}
+		decision := validDecision(authz.DecisionAllow)
+		decision.Binding = &expected
+		_ = json.NewEncoder(writer).Encode(map[string]any{"result": decision})
+	}))
+	defer server.Close()
+
+	decision, err := mustOPAClient(t, server.URL).EvaluateLeaseGrant(context.Background(), input)
+	if err != nil || decision.Decision != authz.DecisionAllow || decision.Binding == nil || !reflect.DeepEqual(*decision.Binding, expected) {
+		t.Fatalf("EvaluateLeaseGrant() = %#v, %v", decision, err)
+	}
+}
+
+func TestOPAClientEvaluateLeaseGrantAcceptsProjectArtifactLease(t *testing.T) {
+	input := artifactLeaseGrantInput()
 	expected := authz.DecisionBinding{
 		PrincipalID: input.Principal.ID, TenantID: input.Project.TenantID,
 		ProjectID: input.Project.ID, ProjectVersion: input.Project.StateVersion,
@@ -328,5 +353,22 @@ func projectLeaseGrantInput() authz.PolicyInput {
 		Resource:        authz.Resource{Type: "model", ID: "model://goal/default"},
 		ParameterDigest: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
 		Budget:          authz.BudgetScope{AccountID: "budget_1", Available: true},
+	}
+}
+
+func artifactLeaseGrantInput() authz.PolicyInput {
+	return authz.PolicyInput{
+		Principal:       authn.Principal{ID: "artifact_service", Type: authn.PrincipalService, Role: authn.RoleService, TenantID: "tenant_1", ProjectID: "project_1"},
+		Project:         authz.ProjectScope{TenantID: "tenant_1", ID: "project_1", State: "GLOBAL_AUDIT", StateVersion: 7, Classification: "INTERNAL"},
+		Action:          authz.ActionArtifactPublish,
+		Resource:        authz.Resource{Type: "artifact", ID: "artifact://sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+		ParameterDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		Budget:          authz.BudgetScope{AccountID: "budget_1", Available: true},
+		Approval: &authz.Approval{
+			ID: "approval_artifact", TenantID: "tenant_1", ProjectID: "project_1", PrincipalID: "user_1",
+			SubjectType: authz.ActionArtifactPublish, SubjectID: "artifact://sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			SubjectVersion: 7, SubjectDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			IssuedAt: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC), ExpiresAt: time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC), Signature: "signed-approval",
+		},
 	}
 }

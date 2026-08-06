@@ -2,6 +2,7 @@ package authz
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -145,6 +146,57 @@ func TestDefaultPolicyRoleOwnershipAndApproval(t *testing.T) {
 	if err != nil || decision.Decision != DecisionAllow {
 		t.Fatalf("valid curator approval rejected: decision=%#v err=%v", decision, err)
 	}
+}
+
+func TestArtifactPublicationGrantRequiresExactServiceIdentityAndScope(t *testing.T) {
+	engine := testEngine(nil, func() time.Time { return authzTestNow })
+	input := artifactPublicationInput()
+	decision, err := engine.EvaluateLeaseGrant(context.Background(), input)
+	if err != nil || decision.Decision != DecisionAllow || decision.Binding == nil || decision.Binding.ProjectVersion != input.Project.StateVersion {
+		t.Fatalf("artifact grant = %#v, err=%v", decision, err)
+	}
+	manager, _ := testManager(t, func() time.Time { return authzTestNow })
+	wrongTypeRequest := leaseRequestForInput(input, decision)
+	wrongTypeRequest.Principal.Type = authn.PrincipalUser
+	if _, issueErr := manager.Issue(context.Background(), wrongTypeRequest); issueErr == nil {
+		t.Fatal("artifact lease issued to non-service principal type")
+	}
+
+	for name, mutate := range map[string]func(*PolicyInput){
+		"service type only": func(candidate *PolicyInput) { candidate.Principal.Role = authn.RoleUser },
+		"service role only": func(candidate *PolicyInput) { candidate.Principal.Type = authn.PrincipalUser },
+		"wrong resource": func(candidate *PolicyInput) {
+			candidate.Resource = Resource{Type: "artifact", ID: "artifact://sha256/short"}
+		},
+		"paused project": func(candidate *PolicyInput) { candidate.Project.State = "PAUSED" },
+		"empty budget":   func(candidate *PolicyInput) { candidate.Budget.Available = false },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := artifactPublicationInput()
+			mutate(&candidate)
+			decision, err := engine.EvaluateLeaseGrant(context.Background(), candidate)
+			if decision.Decision == DecisionAllow {
+				t.Fatalf("invalid artifact grant = %#v, err=%v", decision, err)
+			}
+		})
+	}
+}
+
+func artifactPublicationInput() PolicyInput {
+	input := testInput()
+	input.Principal = authn.Principal{ID: "artifact_service", Type: authn.PrincipalService, Role: authn.RoleService, TenantID: input.Project.TenantID, ProjectID: input.Project.ID}
+	input.Task = TaskScope{}
+	input.Action = ActionArtifactPublish
+	input.Resource = Resource{Type: "artifact", ID: "artifact://sha256/" + strings.Repeat("a", 64)}
+	input.Context = ExecutionContext{}
+	input.Approval = &Approval{
+		ID: "approval_artifact", TenantID: input.Project.TenantID, ProjectID: input.Project.ID,
+		PrincipalID: "release_approver", SubjectType: ActionArtifactPublish,
+		SubjectID: input.Resource.ID, SubjectVersion: input.Project.StateVersion,
+		SubjectDigest: input.ParameterDigest, IssuedAt: authzTestNow.Add(-time.Minute),
+		ExpiresAt: authzTestNow.Add(time.Minute), Signature: "signed-approval",
+	}
+	return input
 }
 
 func TestKnowledgeCuratorGrantRequiresProjectApprovalAndExactIdentity(t *testing.T) {

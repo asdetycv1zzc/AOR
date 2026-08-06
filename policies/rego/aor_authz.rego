@@ -214,11 +214,19 @@ integration_service_control_allowed if {
 	input.resource.attributes.policy_digest == data.aor.policy.version
 }
 
+authorization_time_ns := time.parse_rfc3339_ns(object.get(object.get(input, "context", {}), "authorizationTime", "")) if {
+	object.get(object.get(input, "context", {}), "authorizationTime", "") != ""
+}
+
+authorization_time_ns := time.now_ns() if {
+	object.get(object.get(input, "context", {}), "authorizationTime", "") == ""
+}
+
 active_lease if {
     input.lease.id != ""
     input.lease.policyVersion == data.aor.policy.version
     input.lease.fencingToken > 0
-    time.parse_rfc3339_ns(input.lease.expiresAt) > time.now_ns()
+    time.parse_rfc3339_ns(input.lease.expiresAt) > authorization_time_ns
 }
 
 knowledge_curator_scope_valid if {
@@ -245,17 +253,17 @@ knowledge_subject_id := input.resource.path if {
 knowledge_approval_active if {
 	input.approval.issuedAt != ""
 	input.approval.expiresAt != ""
-	time.parse_rfc3339_ns(input.approval.issuedAt) <= time.now_ns()
-	time.parse_rfc3339_ns(input.approval.expiresAt) > time.now_ns()
+	time.parse_rfc3339_ns(input.approval.issuedAt) <= authorization_time_ns
+	time.parse_rfc3339_ns(input.approval.expiresAt) > authorization_time_ns
 	object.get(input.approval, "revokedAt", "") == ""
 }
 
 knowledge_approval_active if {
 	input.approval.issuedAt != ""
 	input.approval.expiresAt != ""
-	time.parse_rfc3339_ns(input.approval.issuedAt) <= time.now_ns()
-	time.parse_rfc3339_ns(input.approval.expiresAt) > time.now_ns()
-	time.parse_rfc3339_ns(input.approval.revokedAt) > time.now_ns()
+	time.parse_rfc3339_ns(input.approval.issuedAt) <= authorization_time_ns
+	time.parse_rfc3339_ns(input.approval.expiresAt) > authorization_time_ns
+	time.parse_rfc3339_ns(input.approval.revokedAt) > authorization_time_ns
 }
 
 knowledge_write_request_valid if {
@@ -283,6 +291,80 @@ knowledge_approval_valid if {
 knowledge_write_allowed if {
 	knowledge_write_request_valid
 	knowledge_approval_valid
+	active_lease
+}
+
+artifact_publish_task_valid if {
+	object.get(object.get(input, "task", {}), "id", "") == ""
+}
+
+artifact_publish_task_valid if {
+	valid_task_scope
+	input.task.state not in {"CANCELED", "SUPERSEDED", "PASSED", "INTEGRATED"}
+}
+
+artifact_subject_version := input.task.stateVersion if {
+	object.get(object.get(input, "task", {}), "id", "") != ""
+}
+
+artifact_subject_version := input.project.stateVersion if {
+	object.get(object.get(input, "task", {}), "id", "") == ""
+}
+
+artifact_project_state_valid if {
+	input.project.state not in {"PAUSED", "ABORTED", "FAILED_SYSTEM", "ARCHIVED"}
+}
+
+artifact_project_state_valid if {
+	input.project.state in {"PAUSED", "ARCHIVED"}
+	object.get(object.get(object.get(input, "resource", {}), "attributes", {}), "operation", "") == "deletion-proof"
+	object.get(object.get(object.get(input, "resource", {}), "attributes", {}), "deletionId", "") != ""
+}
+
+artifact_project_state_valid if {
+	input.project.state in {"PAUSED", "ABORTED", "ARCHIVED"}
+	object.get(object.get(object.get(input, "resource", {}), "attributes", {}), "operation", "") == "project-export"
+}
+
+artifact_publish_request_valid if {
+	valid_project_scope
+	artifact_publish_task_valid
+	input.action == "artifact.publish"
+	input.principal.type == "SERVICE"
+	input.principal.role == "SERVICE"
+	artifact_project_state_valid
+	input.resource.type == "artifact"
+	regex.match("^artifact://sha256/[0-9a-f]{64}$", input.resource.id)
+	regex.match("^sha256:[0-9a-f]{64}$", input.parameterDigest)
+	input.budget.accountId != ""
+	input.budget.available
+}
+
+artifact_approval_valid if {
+	artifact_publish_request_valid
+	input.approval.id != ""
+	input.approval.principalId != ""
+	input.approval.tenantId == input.project.tenantId
+	input.approval.projectId == input.project.id
+	input.approval.subjectId == input.resource.id
+	input.approval.subjectVersion == artifact_subject_version
+	input.approval.subjectDigest == input.parameterDigest
+	input.approval.subjectType in {input.action, input.resource.type}
+	input.approval.signature != ""
+	knowledge_approval_active
+}
+
+artifact_approval_satisfied if {
+	not input.approval
+}
+
+artifact_approval_satisfied if {
+	artifact_approval_valid
+}
+
+artifact_publish_allowed if {
+	artifact_publish_request_valid
+	artifact_approval_satisfied
 	active_lease
 }
 
@@ -382,6 +464,12 @@ lease_grant_input_valid if {
 	input.parameterDigest != ""
 	input.budget.accountId != ""
 	input.budget.available
+}
+
+lease_grant_input_valid if {
+	artifact_publish_request_valid
+	object.get(object.get(input, "task", {}), "id", "") == ""
+	not input.lease
 }
 
 lease_grant_input_valid if {
@@ -516,6 +604,11 @@ knowledge_write_grant_allowed if {
 	knowledge_approval_valid
 }
 
+artifact_publish_grant_allowed if {
+	lease_grant_input_valid
+	artifact_approval_satisfied
+}
+
 model_generate_grant_allowed if {
 	lease_grant_input_valid
 	input.action == "model.generate"
@@ -556,6 +649,10 @@ lease_grant_allowed if {
 
 lease_grant_allowed if {
 	knowledge_write_grant_allowed
+}
+
+lease_grant_allowed if {
+	artifact_publish_grant_allowed
 }
 
 lease_grant_binding := {
@@ -726,6 +823,16 @@ decision := {
 }
 
 decision := {
+	"decision": "ALLOW",
+	"policyVersion": data.aor.policy.version,
+	"reasonCodes": ["TRUSTED_SERVICE_ALLOWED", "LEASE_VALID"],
+	"ruleId": "aor.artifact.publish",
+	"constraints": {"expiresAt": input.lease.expiresAt},
+} if {
+	artifact_publish_allowed
+}
+
+decision := {
     "decision": "APPROVAL_REQUIRED",
     "policyVersion": data.aor.policy.version,
     "reasonCodes": ["CURATOR_APPROVAL_REQUIRED"],
@@ -783,6 +890,10 @@ matched if {
 
 matched if {
 	knowledge_write_allowed
+}
+
+matched if {
+	artifact_publish_allowed
 }
 
 matched if {

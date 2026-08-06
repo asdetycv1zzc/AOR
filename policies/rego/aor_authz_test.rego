@@ -66,6 +66,27 @@ curator_grant_input := {
 	},
 }
 
+artifact_grant_input := {
+	"principal": {
+		"id": "artifact_service", "type": "SERVICE", "role": "SERVICE",
+		"tenantId": "tenant_1", "projectId": "project_1",
+	},
+	"project": {"id": "project_1", "tenantId": "tenant_1", "state": "GLOBAL_AUDIT", "stateVersion": 7},
+	"task": {"id": "", "stateVersion": 0, "specDigest": ""},
+	"action": "artifact.publish",
+	"resource": {"type": "artifact", "id": "artifact://sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+	"parameterDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+	"budget": {"accountId": "budget_1", "available": true},
+	"approval": {
+		"id": "approval_artifact", "tenantId": "tenant_1", "projectId": "project_1", "principalId": "user_1",
+		"subjectType": "artifact.publish",
+		"subjectId": "artifact://sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"subjectVersion": 7,
+		"subjectDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"issuedAt": "2020-01-01T00:00:00Z", "expiresAt": "2099-01-01T00:00:00Z", "signature": "signed-approval",
+	},
+}
+
 test_unknown_action_is_denied if {
     result := authz.decision with input as object.union(base_input, {"action": "unknown.action"})
     result.decision == "DENY"
@@ -226,6 +247,55 @@ test_knowledge_curator_rejects_task_scope_or_wrong_identity if {
 	wrong_project_request := object.union(curator_grant_input, {"principal": wrong_project_principal})
 	wrong_project_result := authz.lease_grant with input as wrong_project_request
 	wrong_project_result.decision == "DENY"
+}
+
+test_artifact_publication_grant_and_commit_are_exactly_bound if {
+	grant := authz.lease_grant with input as artifact_grant_input
+	grant.decision == "ALLOW"
+	grant.binding.projectVersion == artifact_grant_input.project.stateVersion
+	grant.binding.taskId == ""
+	grant.binding.resource == artifact_grant_input.resource
+	grant.binding.parameterDigest == artifact_grant_input.parameterDigest
+
+	request := object.union(artifact_grant_input, {
+		"lease": {
+			"id": "lease_artifact", "policyVersion": data.aor.policy.version,
+			"fencingToken": 1, "expiresAt": "2099-01-01T00:00:00Z",
+		},
+	})
+	result := authz.decision with input as request
+	result.decision == "ALLOW"
+	result.ruleId == "aor.artifact.publish"
+}
+
+test_artifact_publication_rejects_invalid_approval_and_stale_scope if {
+	missing := object.union(artifact_grant_input, {"approval": {}})
+	missing_result := authz.lease_grant with input as missing
+	missing_result.decision == "DENY"
+
+	wrong_type := object.union(artifact_grant_input, {
+		"principal": object.union(artifact_grant_input.principal, {"type": "USER"}),
+	})
+	wrong_type_result := authz.lease_grant with input as wrong_type
+	wrong_type_result.decision == "DENY"
+
+	stale := object.union(artifact_grant_input, {
+		"approval": object.union(artifact_grant_input.approval, {"subjectVersion": 6}),
+	})
+	stale_result := authz.lease_grant with input as stale
+	stale_result.decision == "DENY"
+
+	paused := object.union(artifact_grant_input, {
+		"project": object.union(artifact_grant_input.project, {"state": "PAUSED"}),
+	})
+	paused_result := authz.lease_grant with input as paused
+	paused_result.decision == "DENY"
+
+	without_budget := object.union(artifact_grant_input, {
+		"budget": object.union(artifact_grant_input.budget, {"available": false}),
+	})
+	budget_result := authz.lease_grant with input as without_budget
+	budget_result.decision == "DENY"
 }
 
 test_knowledge_curator_commit_requires_exact_proposal_and_current_project if {

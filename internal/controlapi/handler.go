@@ -68,6 +68,10 @@ type ProjectEraser interface {
 	EraseProject(context.Context, string, string, string) (ErasureReport, error)
 }
 
+type projectAuthorizationEraser interface {
+	FinalizeProjectAuthorizationErasure(context.Context, string, string, string) error
+}
+
 type KnowledgeReader interface {
 	Search(context.Context, knowledge.SearchRequest) (knowledge.SearchResponse, error)
 	ReadRange(context.Context, knowledge.ReadRangeRequest) (knowledge.ReadRangeResponse, error)
@@ -1154,6 +1158,10 @@ func (handler *Handler) executeProjectDeletion(response http.ResponseWriter, req
 		return
 	}
 	if project.Deletion.Status == state.ProjectDeletionCompleted {
+		if err := handler.finalizeProjectAuthorizationErasure(request.Context(), principal.TenantID, projectID, project.Deletion.ID); err != nil {
+			writeError(response, request, normalizeProjectErasureError(err))
+			return
+		}
 		writeProject(response, http.StatusAccepted, project)
 		return
 	}
@@ -1227,7 +1235,19 @@ func (handler *Handler) executeProjectDeletion(response http.ResponseWriter, req
 		writeError(response, request, normalizeError(err))
 		return
 	}
+	if err := handler.finalizeProjectAuthorizationErasure(request.Context(), principal.TenantID, projectID, project.Deletion.ID); err != nil {
+		writeError(response, request, normalizeProjectErasureError(err))
+		return
+	}
 	writeProject(response, http.StatusAccepted, completed.Project)
+}
+
+func (handler *Handler) finalizeProjectAuthorizationErasure(ctx context.Context, tenantID, projectID, deletionID string) error {
+	finalizer, ok := handler.eraser.(projectAuthorizationEraser)
+	if !ok {
+		return nil
+	}
+	return finalizer.FinalizeProjectAuthorizationErasure(ctx, tenantID, projectID, deletionID)
 }
 
 func (handler *Handler) erasureUnavailable() bool {

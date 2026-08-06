@@ -341,6 +341,29 @@ type LeaseManager struct {
 	heartbeatInterval time.Duration
 }
 
+type leaseAuthorizationTimeKey struct{}
+
+func (m *LeaseManager) IssueWithAuthoritativeTime(ctx context.Context, request LeaseRequest, at time.Time) (CapabilityLease, error) {
+	if at.IsZero() {
+		return CapabilityLease{}, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "lease authorization time"})
+	}
+	return m.Issue(context.WithValue(ctx, leaseAuthorizationTimeKey{}, at.UTC()), request)
+}
+
+func (m *LeaseManager) ValidateWithAuthoritativeTime(ctx context.Context, check LeaseCheck, at time.Time) (CapabilityLease, error) {
+	if at.IsZero() {
+		return CapabilityLease{}, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "lease authorization time"})
+	}
+	return m.Validate(context.WithValue(ctx, leaseAuthorizationTimeKey{}, at.UTC()), check)
+}
+
+func leaseAuthorizationTime(ctx context.Context, fallback time.Time) time.Time {
+	if value, ok := ctx.Value(leaseAuthorizationTimeKey{}).(time.Time); ok && !value.IsZero() {
+		return value.UTC()
+	}
+	return fallback.UTC()
+}
+
 func NewLeaseManager(config LeaseManagerConfig) (*LeaseManager, error) {
 	store := config.Store
 	if store == nil {
@@ -413,7 +436,7 @@ func (m *LeaseManager) Issue(ctx context.Context, request LeaseRequest) (Capabil
 	if !leaseActionAllowed(request.Action, request.Role, request.TaskID) {
 		return CapabilityLease{}, aorerrors.New(aorerrors.CodePolicyDenied, "", map[string]any{"scope": "action"})
 	}
-	now := m.now()
+	now := leaseAuthorizationTime(ctx, m.now())
 	binding := DecisionBinding{PrincipalID: request.Principal.ID, TenantID: request.TenantID, ProjectID: request.ProjectID, ProjectVersion: request.ProjectVersion, TaskID: request.TaskID, TaskVersion: request.TaskVersion, SpecDigest: request.SpecDigest, Role: request.Role, Action: request.Action, Resource: cloneResource(request.Resource), ParameterDigest: request.ParameterDigest, BudgetAccountID: request.BudgetAccountID}
 	if err := validateLeaseGrant(request.Grant, request.PolicyVersion, binding, now); err != nil {
 		return CapabilityLease{}, err
@@ -491,16 +514,21 @@ func leaseActionAllowed(action, role, taskID string) bool {
 	if taskID == "" {
 		return (action == ActionModelGenerate && !LeaseRoleRequiresTask(role)) ||
 			(action == ActionToolInvoke && role == authn.RoleGlobalAuditor) ||
+			(action == ActionArtifactPublish && role == authn.RoleService) ||
 			(action == ActionIntegrationMerge && role == authn.RoleService)
 	}
 	return IsSideEffect(action) || action == ActionModelGenerate && taskModelLeaseRole(role)
 }
 
 func validLeasePrincipalBinding(action string, principalType authn.PrincipalType, role string) bool {
-	if action != ActionKnowledgeWrite {
+	switch action {
+	case ActionKnowledgeWrite:
+		return principalType == authn.PrincipalKnowledgeCurator && role == authn.RoleKnowledgeCurator
+	case ActionArtifactPublish:
+		return principalType == authn.PrincipalService && role == authn.RoleService
+	default:
 		return true
 	}
-	return principalType == authn.PrincipalKnowledgeCurator && role == authn.RoleKnowledgeCurator
 }
 
 func (m *LeaseManager) Renew(ctx context.Context, request LeaseRenewalRequest) (CapabilityLease, error) {
@@ -696,7 +724,7 @@ func (m *LeaseManager) Validate(ctx context.Context, check LeaseCheck) (Capabili
 	if err := ctx.Err(); err != nil {
 		return CapabilityLease{}, aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", err, nil)
 	}
-	now := m.now()
+	now := leaseAuthorizationTime(ctx, m.now())
 	current, found, err := m.store.Get(withLeaseTenant(ctx, check.TenantID), check.LeaseID)
 	if err != nil {
 		return CapabilityLease{}, err
