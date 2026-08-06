@@ -146,7 +146,7 @@ ORDER BY project_id, id`, tenantID)
 
 func loadPlans(ctx context.Context, tx *sql.Tx, tenantID string, snapshot *Snapshot) error {
 	rows, err := tx.QueryContext(ctx, `
-SELECT project_id::text, id::text, goal_spec_id::text
+SELECT project_id::text, id::text, COALESCE(goal_spec_id::text, '')
 FROM plan_specs
 WHERE tenant_id = $1::uuid
 ORDER BY project_id, id`, tenantID)
@@ -167,10 +167,10 @@ ORDER BY project_id, id`, tenantID)
 
 func loadTasks(ctx context.Context, tx *sql.Tx, tenantID string, snapshot *Snapshot) error {
 	rows, err := tx.QueryContext(ctx, `
-SELECT task.project_id::text, task.id::text, plan.id::text
+SELECT task.project_id::text, task.id::text, COALESCE(plan.id::text, '')
 FROM module_tasks AS task
 LEFT JOIN module_specs AS spec ON spec.tenant_id = task.tenant_id AND spec.id = task.module_spec_id
-JOIN plan_specs AS plan ON plan.tenant_id = task.tenant_id AND plan.id = COALESCE(task.planning_spec_id, spec.plan_spec_id)
+LEFT JOIN plan_specs AS plan ON plan.tenant_id = task.tenant_id AND plan.id = COALESCE(task.planning_spec_id, spec.plan_spec_id)
 WHERE task.tenant_id = $1::uuid
 ORDER BY task.project_id, task.id`, tenantID)
 	if err != nil {
