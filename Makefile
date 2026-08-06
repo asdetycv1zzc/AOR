@@ -24,13 +24,13 @@ schema:
 	go run ./cmd/aor-conformance schemas
 
 cross-language:
-	node --experimental-strip-types conformance/contracts/cross-language/typescript.ts
+	node conformance/contracts/cross-language/typescript.ts
 	python3 conformance/contracts/cross-language/python.py
 
 sdk:
 	go run ./cmd/aor-sdkgen -check -root .
 	go test ./sdk/go/aor
-	node --experimental-strip-types conformance/contracts/sdk/typescript.ts
+	node conformance/contracts/sdk/typescript.ts
 	python3 conformance/contracts/sdk/python.py
 
 backup-restore:
