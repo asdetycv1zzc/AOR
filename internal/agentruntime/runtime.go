@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"reflect"
 	"sort"
 	"sync"
 	"time"
@@ -67,11 +68,26 @@ func (r *Runtime) Declare(declaration Declaration) error {
 	declaration = cloneDeclaration(declaration)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, exists := r.runs[declaration.RunID]; exists {
-		return ErrRunExists
+	if existing, exists := r.runs[declaration.RunID]; exists {
+		retryable := existing.state == StateFailed || existing.state == StateExpired
+		if !retryable || existing.busy || existing.result != nil || !sameDeclaration(existing.declaration, declaration) {
+			return ErrRunExists
+		}
 	}
 	r.runs[declaration.RunID] = &agentRun{declaration: declaration, prompt: assembled, state: StateDeclared}
 	return nil
+}
+
+func sameDeclaration(left, right Declaration) bool {
+	left.ResponseSemanticValidator = nil
+	right.ResponseSemanticValidator = nil
+	left.Envelope.CreatedAt = time.Time{}
+	left.Envelope.ExpiresAt = time.Time{}
+	left.Envelope.TraceContext = nil
+	right.Envelope.CreatedAt = time.Time{}
+	right.Envelope.ExpiresAt = time.Time{}
+	right.Envelope.TraceContext = nil
+	return reflect.DeepEqual(left, right)
 }
 
 func (r *Runtime) Queue(runID string) error {

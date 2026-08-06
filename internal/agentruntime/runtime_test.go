@@ -180,6 +180,31 @@ func TestModulePlannerDeclarationPrecedesModuleSpec(t *testing.T) {
 	}
 }
 
+func TestDeclareRetriesOnlyTheSameFailedRun(t *testing.T) {
+	clock := &mutableClock{now: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)}
+	runtime := newTestRuntime(t, clock, &fakeAuthority{clock: clock}, &fakeGateway{}, &fakeBroker{})
+	declaration := testDeclaration(RoleExecutor)
+	startRun(t, runtime, declaration, testLease(clock.Now(), declaration))
+	if err := runtime.Fail(declaration.RunID); err != nil {
+		t.Fatal(err)
+	}
+
+	changed := cloneDeclaration(declaration)
+	changed.Priority++
+	if err := runtime.Declare(changed); !errors.Is(err, ErrRunExists) {
+		t.Fatalf("changed failed run declaration error = %v", err)
+	}
+	retry := cloneDeclaration(declaration)
+	retry.Envelope.ExpiresAt = retry.Envelope.ExpiresAt.Add(time.Minute)
+	if err := runtime.Declare(retry); err != nil {
+		t.Fatalf("same failed run declaration error = %v", err)
+	}
+	snapshot, err := runtime.Snapshot(declaration.RunID)
+	if err != nil || snapshot.State != StateDeclared {
+		t.Fatalf("retry snapshot = %#v error = %v", snapshot, err)
+	}
+}
+
 func TestDraftReferenceTrustCannotMasqueradeAsApproved(t *testing.T) {
 	clock := &mutableClock{now: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)}
 	runtime := newTestRuntime(t, clock, &fakeAuthority{clock: clock}, &fakeGateway{}, &fakeBroker{})
