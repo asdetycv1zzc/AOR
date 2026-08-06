@@ -34,7 +34,8 @@ var (
 
 // ModuleAuditReferences are immutable control-plane references required to
 // bind an auditor declaration. They are resolved from authoritative state;
-// BlindAuditInput remains limited to submission and deterministic evidence.
+// BlindAuditInput remains limited to authoritative criteria, submission
+// references, and deterministic evidence.
 type ModuleAuditReferences struct {
 	TenantID           string
 	ProjectVersion     int64
@@ -290,6 +291,13 @@ func moduleAuditContextItems(input BlindAuditInput, refs ModuleAuditReferences) 
 	if err != nil {
 		return nil, err
 	}
+	module, err := json.Marshal(struct {
+		ModuleSpecRef      contracts.SpecRef `json:"moduleSpecRef"`
+		AcceptanceCriteria []string          `json:"acceptanceCriteria"`
+	}{input.ModuleSpecRef, append([]string(nil), input.RequiredCriteria...)})
+	if err != nil {
+		return nil, err
+	}
 	diff, err := json.Marshal(struct {
 		BaseCommit       string   `json:"baseCommit"`
 		SubmissionCommit string   `json:"submissionCommit"`
@@ -304,7 +312,7 @@ func moduleAuditContextItems(input BlindAuditInput, refs ModuleAuditReferences) 
 	}
 	return []agentruntime.ContextItem{
 		moduleAuditContextItem("goal", agentruntime.ContextGoalReference, "goal://"+refs.GoalSpec.SHA256, refs.GoalSpec.SHA256, goal, agentruntime.TrustProjectApproved),
-		moduleAuditContextItem("module", agentruntime.ContextModuleReference, "module://"+input.ModuleSpecRef.SHA256, input.ModuleSpecRef.SHA256, mustJSON(input.ModuleSpecRef), agentruntime.TrustProjectApproved),
+		moduleAuditContextItem("module", agentruntime.ContextModuleReference, "module://"+input.ModuleSpecRef.SHA256, input.ModuleSpecRef.SHA256, module, agentruntime.TrustProjectApproved),
 		moduleAuditContextItem("diff", agentruntime.ContextDeterministicDiff, "git://diff/"+input.BaseCommit+"/"+input.SubmissionCommit, "", diff, agentruntime.TrustCurated),
 		moduleAuditContextItem("checks", agentruntime.ContextDeterministicResult, "audit://deterministic/"+input.AuditRunID, "", checks, agentruntime.TrustCurated),
 	}, nil
