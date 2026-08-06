@@ -300,7 +300,7 @@ artifact_publish_task_valid if {
 
 artifact_publish_task_valid if {
 	valid_task_scope
-	input.task.state not in {"CANCELED", "SUPERSEDED", "PASSED", "INTEGRATED"}
+	not input.task.state in {"CANCELED", "SUPERSEDED", "PASSED", "INTEGRATED"}
 }
 
 artifact_subject_version := input.task.stateVersion if {
@@ -312,7 +312,7 @@ artifact_subject_version := input.project.stateVersion if {
 }
 
 artifact_project_state_valid if {
-	input.project.state not in {"PAUSED", "ABORTED", "FAILED_SYSTEM", "ARCHIVED"}
+	not input.project.state in {"PAUSED", "ABORTED", "FAILED_SYSTEM", "ARCHIVED"}
 }
 
 artifact_project_state_valid if {
