@@ -155,7 +155,7 @@ func ServeWithHandler(ctx context.Context, component string, listener net.Listen
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      10 * time.Second,
+		WriteTimeout:      30 * time.Minute,
 		IdleTimeout:       30 * time.Second,
 	}
 	result := make(chan error, 1)
