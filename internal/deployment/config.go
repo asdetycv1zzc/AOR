@@ -125,7 +125,13 @@ func ValidateCompose(input []byte) error {
 		} `yaml:"services"`
 		Secrets map[string]struct{} `yaml:"secrets"`
 	}
-	if err := yaml.Unmarshal(input, &document); err != nil || len(document.Services) == 0 {
+	var root yaml.Node
+	decoder := yaml.NewDecoder(bytes.NewReader(input))
+	if err := decoder.Decode(&root); err != nil {
+		return ErrInvalidDeployment
+	}
+	clearComposeExtensionTags(&root)
+	if err := root.Decode(&document); err != nil || len(document.Services) == 0 {
 		return ErrInvalidDeployment
 	}
 	for _, service := range document.Services {
@@ -144,8 +150,6 @@ func ValidateCompose(input []byte) error {
 		}
 	}
 	worker, workerFound := document.Services["aor-worker"]
-	preflight, preflightFound := document.Services["aor-sandbox-preflight"]
-	runtimeImage, runtimeFound := document.Services["aor-sandbox-runtime"]
 	api, apiFound := document.Services["aor-api"]
 	curator, curatorFound := document.Services["aor-curator"]
 	modelGateway, modelGatewayFound := document.Services["aor-model-gateway"]
@@ -167,31 +171,13 @@ func ValidateCompose(input []byte) error {
 	if modelGateway.Environment["AOR_OIDC_SERVICE_SUBJECTS_JSON"] != `[{"subject":"Cgphb3Itc2VydmVy","tenantId":"11111111-1111-4111-8111-111111111111"}]` || modelGateway.Environment["AOR_OIDC_DEFAULT_TENANT_ID"] != "" || modelGateway.Environment["AOR_OIDC_DEFAULT_ROLE"] != "" {
 		return ErrInvalidDeployment
 	}
-	if !workerFound || !preflightFound || !runtimeFound || !worker.ReadOnly || !preflight.ReadOnly || !runtimeImage.ReadOnly || runtimeImage.NetworkMode != "none" || preflight.NetworkMode != "none" || worker.Build.Target != "worker-runtime" {
+	if !workerFound || !worker.ReadOnly || worker.Build.Target != "worker-runtime" || !containsString(worker.CapDrop, "ALL") || !containsString(worker.SecurityOpt, "no-new-privileges:true") {
 		return ErrInvalidDeployment
 	}
 	if worker.Environment["AOR_LEASE_SIGNING_KEY_REF"] != "secret://lease_signing_key" || !containsString(worker.Secrets, "lease_signing_key") {
 		return ErrInvalidDeployment
 	}
-	if runtimeImage.User == "" || runtimeImage.User == "0" || runtimeImage.User == "root" {
-		return ErrInvalidDeployment
-	}
-	if !strings.Contains(worker.User, "AOR_SANDBOX_ENGINE_UID") || !strings.Contains(worker.User, "AOR_SANDBOX_ENGINE_GID") || !strings.Contains(preflight.User, "AOR_SANDBOX_ENGINE_UID") || !strings.Contains(preflight.User, "AOR_SANDBOX_ENGINE_GID") {
-		return ErrInvalidDeployment
-	}
-	if !containsString(worker.CapDrop, "ALL") || !containsString(preflight.CapDrop, "ALL") || !containsString(runtimeImage.CapDrop, "ALL") || !containsString(worker.SecurityOpt, "no-new-privileges:true") || !containsString(preflight.SecurityOpt, "no-new-privileges:true") || !containsString(runtimeImage.SecurityOpt, "no-new-privileges:true") {
-		return ErrInvalidDeployment
-	}
-	if !hasVolume(worker.Volumes, "AOR_SANDBOX_ENGINE_SOCKET", "/run/aor-sandbox/engine.sock") || !hasVolume(preflight.Volumes, "AOR_SANDBOX_ENGINE_SOCKET", "/run/aor-sandbox/engine.sock") || !hasVolume(preflight.Volumes, "sandbox-preflight.sh", "/usr/local/bin/aor-sandbox-preflight") || !hasSharedSandboxRoot(worker.Volumes, worker.Environment["AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON"]) {
-		return ErrInvalidDeployment
-	}
-	imageReference := worker.Environment["AOR_SANDBOX_IMAGE_REFERENCE"]
-	if !isImmutableSHA256Reference(imageReference) || !isImmutableSHA256Reference(preflight.Image) || imageReference != preflight.Environment["AOR_SANDBOX_IMAGE_REFERENCE"] || imageReference != runtimeImage.Image || worker.Environment["AOR_SANDBOX_ENGINE_ENDPOINT"] != "unix:///run/aor-sandbox/engine.sock" || preflight.Environment["AOR_SANDBOX_ENGINE_ENDPOINT"] != "unix:///run/aor-sandbox/engine.sock" {
-		return ErrInvalidDeployment
-	}
-	workerSeccomp := worker.Environment["AOR_SANDBOX_SECCOMP_PROFILE"]
-	workerMandatory := worker.Environment["AOR_SANDBOX_MANDATORY_POLICY"]
-	if workerSeccomp == "" || strings.EqualFold(workerSeccomp, "unconfined") || workerSeccomp != preflight.Environment["AOR_SANDBOX_SECCOMP_PROFILE"] || workerMandatory == "" || strings.Contains(strings.ToLower(workerMandatory), "unconfined") || workerMandatory != preflight.Environment["AOR_SANDBOX_MANDATORY_POLICY"] {
+	if !hasReadOnlyVolume(worker.Volumes, "AOR_KNOWLEDGE_HOST_PATH", "/var/lib/aor/knowledge") || !hasVolume(worker.Volumes, "repository-data", "/var/lib/aor/repositories") {
 		return ErrInvalidDeployment
 	}
 	for name := range document.Secrets {
@@ -202,16 +188,19 @@ func ValidateCompose(input []byte) error {
 	return nil
 }
 
-func hasSharedSandboxRoot(volumes []string, rootsJSON string) bool {
-	if !strings.Contains(rootsJSON, "AOR_SANDBOX_SHARED_ROOT") {
-		return false
+// Compose uses extension tags such as !override to alter merge behavior. They
+// do not change the service fields this validator inspects, so preserve the
+// parsed value while removing only the tag before decoding into our view.
+func clearComposeExtensionTags(node *yaml.Node) {
+	if node == nil {
+		return
 	}
-	for _, volume := range volumes {
-		if strings.Count(volume, "AOR_SANDBOX_SHARED_ROOT") >= 2 {
-			return true
-		}
+	if strings.HasPrefix(node.Tag, "!") && !strings.HasPrefix(node.Tag, "!!") {
+		node.Tag = ""
 	}
-	return false
+	for index := range node.Content {
+		clearComposeExtensionTags(node.Content[index])
+	}
 }
 
 func isImmutableSHA256Reference(value string) bool {

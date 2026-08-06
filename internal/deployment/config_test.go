@@ -24,11 +24,8 @@ func TestDeploymentProfilesFailClosed(t *testing.T) {
 		"AOR_OIDC_JWKS_URL: http://identity:5556/dex/keys", "AOR_OIDC_DEFAULT_ROLE: USER",
 		"AOR_MODEL_GATEWAY_OAUTH_CLIENT_SECRET_REF: secret://aor_server_oauth_client_secret", "AOR_OIDC_SERVICE_SUBJECTS_JSON",
 		"AOR_GOAL_PLAN_ROUTES_JSON", "supportsJsonSchema\":true",
-		"AOR_OPA_URL: http://opa:8181",
-		"aor-sandbox-runtime:", "aor-sandbox-preflight:", "target: worker-runtime",
-		"AOR_SANDBOX_ENGINE_ENDPOINT: unix:///run/aor-sandbox/engine.sock", "apparmor=aor-sandbox",
-		"sandbox-preflight.sh", "AOR_SANDBOX_ENGINE_SOCKET", "network_mode: none",
-		"AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON", "AOR_SANDBOX_SHARED_ROOT",
+		"AOR_OPA_URL: http://opa:8181", "target: worker-runtime", "cap_drop: [ALL]",
+		"security_opt: [no-new-privileges:true]", "AOR_EXECUTOR_ROUTE_JSON", "AOR_MODULE_AUDITOR_ROUTE_JSON",
 		"AOR_LEASE_SIGNING_KEY_REF: secret://lease_signing_key",
 		"aor-curator:", "AOR_SERVER_MODE: CONTROL", "AOR_SERVER_MODE: KNOWLEDGE_CURATOR", "AOR_KNOWLEDGE_CURATOR_URL: http://aor-curator:8080",
 		"otel-collector:", "otel/opentelemetry-collector-contrib:0.157.0@sha256:", "otel-collector.compose.yaml:/etc/otelcol-contrib/config.yaml:ro",
@@ -185,7 +182,7 @@ func TestDeploymentRejectsPrivilegedAndWrongWindowsProfiles(t *testing.T) {
 	}
 }
 
-func TestComposeSandboxRuntimeCannotDowngradeIsolation(t *testing.T) {
+func TestComposeWorkerCannotDowngradeIsolation(t *testing.T) {
 	compose, err := os.ReadFile("../../deploy/compose/docker-compose.yml")
 	if err != nil {
 		t.Fatal(err)
@@ -195,13 +192,9 @@ func TestComposeSandboxRuntimeCannotDowngradeIsolation(t *testing.T) {
 		new string
 	}{
 		{old: "target: worker-runtime", new: "target: runtime"},
-		{old: "user: \"65532:65532\"", new: "user: root"},
-		{old: "golang:1.26.5-alpine3.23@sha256:622e56dbc11a8cfe87cafa2331e9a201877271cbff918af53d3be315f3da88cc", new: "golang:1.26.5-alpine3.23"},
-		{old: "docker:29.6.1-cli@sha256:862099ada15c669000bef53aa4cb9d821262829f45b0dda2159ccb276443043b", new: "docker:29.6.1-cli"},
-		{old: "AOR_SANDBOX_SECCOMP_PROFILE: builtin", new: "AOR_SANDBOX_SECCOMP_PROFILE: unconfined"},
-		{old: "AOR_SANDBOX_MANDATORY_POLICY: apparmor=aor-sandbox", new: "AOR_SANDBOX_MANDATORY_POLICY: apparmor=unconfined"},
-		{old: "${AOR_SANDBOX_ENGINE_SOCKET:?Set AOR_SANDBOX_ENGINE_SOCKET to the rootless engine socket}:/run/aor-sandbox/engine.sock", new: "/var/run/docker.sock:/run/aor-sandbox/engine.sock"},
-		{old: "AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON: '[\"${AOR_SANDBOX_SHARED_ROOT:?Set AOR_SANDBOX_SHARED_ROOT to an absolute host path shared with the rootless engine}\"]'", new: "AOR_SANDBOX_ALLOWED_MOUNT_ROOTS_JSON: '[\"/\"]'"},
+		{old: "cap_drop: [ALL]", new: "cap_drop: []"},
+		{old: "security_opt: [no-new-privileges:true]", new: "security_opt: []"},
+		{old: "read_only: true", new: "read_only: false"},
 	} {
 		candidate := strings.Replace(string(compose), replacement.old, replacement.new, 1)
 		if candidate == string(compose) {
