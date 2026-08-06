@@ -595,7 +595,7 @@ func (s *Service) validateLease(ctx context.Context, validation LeaseValidation)
 		return err
 	}
 	lease := validation.Proof
-	if lease.ID == "" || validation.ExecutionLeaseID == "" || lease.FencingToken < 1 || lease.ExpiresAt.IsZero() || !s.clock().Before(lease.ExpiresAt) || validation.Action == "" || validation.TenantID == "" || validation.ProjectID == "" || validation.TaskID == "" || validation.AttemptSeriesID == "" || validation.Attempt < 1 || validation.Attempt > 3 || validation.ModuleSpecRef.Validate() != nil || validation.AgentInstanceID == "" || validation.Role != "EXECUTOR" || validation.ResourcePath == "" || !strings.HasPrefix(validation.ParameterDigest, "sha256:") {
+	if lease.ID == "" || validation.ExecutionLeaseID == "" || lease.FencingToken < 1 || lease.ExpiresAt.IsZero() || validation.Action == "" || validation.TenantID == "" || validation.ProjectID == "" || validation.TaskID == "" || validation.AttemptSeriesID == "" || validation.Attempt < 1 || validation.Attempt > 3 || validation.ModuleSpecRef.Validate() != nil || validation.AgentInstanceID == "" || validation.Role != "EXECUTOR" || validation.ResourcePath == "" || !strings.HasPrefix(validation.ParameterDigest, "sha256:") {
 		return ErrLeaseStale
 	}
 	if s.leases == nil {

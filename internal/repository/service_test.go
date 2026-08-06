@@ -41,7 +41,7 @@ func TestNewWorkspaceIDReturnsDistinctTenantScopedUUIDv7Values(t *testing.T) {
 }
 
 func (testLeaseValidator) Validate(_ context.Context, validation LeaseValidation) error {
-	if validation.Proof.ID == "" || validation.Proof.FencingToken < 1 || validation.TenantID == "" || validation.ProjectID == "" || validation.TaskID == "" || validation.AttemptSeriesID == "" || validation.ModuleSpecRef.Validate() != nil || validation.AgentInstanceID == "" || validation.Role != "EXECUTOR" || validation.Action == "" || validation.ResourcePath == "" || !strings.HasPrefix(validation.ParameterDigest, "sha256:") {
+	if validation.Proof.ID == "" || validation.Proof.FencingToken < 1 || !time.Now().Before(validation.Proof.ExpiresAt) || validation.TenantID == "" || validation.ProjectID == "" || validation.TaskID == "" || validation.AttemptSeriesID == "" || validation.ModuleSpecRef.Validate() != nil || validation.AgentInstanceID == "" || validation.Role != "EXECUTOR" || validation.Action == "" || validation.ResourcePath == "" || !strings.HasPrefix(validation.ParameterDigest, "sha256:") {
 		return ErrLeaseStale
 	}
 	return nil
@@ -65,6 +65,23 @@ func (validator *revokingLeaseValidator) arm(failAt int) {
 	validator.calls = 0
 	validator.failAt = failAt
 	validator.mu.Unlock()
+}
+
+func TestServiceDefersLeaseExpiryToAuthoritativeValidator(t *testing.T) {
+	module := testModule()
+	service := &Service{leases: testLeaseValidator{}, clock: func() time.Time { return time.Now().Add(48 * time.Hour) }}
+	validation := LeaseValidation{
+		Proof:            LeaseProof{ID: "lease-1", FencingToken: 1, ExpiresAt: time.Now().Add(24 * time.Hour)},
+		ExecutionLeaseID: "lease-1", Action: LeaseActionWriteFile,
+		TenantID: "tenant-1", ProjectID: "project-1", TaskID: "task-1",
+		AttemptSeriesID: "series-1", Attempt: 1,
+		ModuleSpecRef:   contracts.SpecRef{Version: module.ModuleSpecVersion, SHA256: module.SHA256},
+		AgentInstanceID: "agent-1", Role: "EXECUTOR", ResourcePath: "owned/file.go",
+		ParameterDigest: DigestBytes([]byte("parameters")),
+	}
+	if err := service.validateLease(context.Background(), validation); err != nil {
+		t.Fatalf("valid authoritative lease rejected by local clock skew: %v", err)
+	}
 }
 
 func (testSubmissionSigner) Sign(_ context.Context, payload []byte) (*contracts.Signature, error) {
@@ -159,10 +176,10 @@ func TestServiceRejectsStaleLeaseAndSymlinkEscape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := service.WriteFile(context.Background(), WriteRequest{WorkspaceID: workspace.ID, Path: "owned/x.txt", Content: []byte("x"), Lease: LeaseProof{ID: lease.ID, FencingToken: 1, ExpiresAt: time.Now().Add(-time.Second)}}); err != ErrLeaseStale {
+	if err := service.WriteFile(context.Background(), WriteRequest{WorkspaceID: workspace.ID, Path: "owned/x.txt", Content: []byte("x"), Lease: LeaseProof{ID: lease.ID, FencingToken: 1, ExpiresAt: time.Now().Add(-time.Second)}}); !errors.Is(err, ErrLeaseStale) {
 		t.Fatalf("expired lease error = %v", err)
 	}
-	if err := service.WriteFile(context.Background(), WriteRequest{WorkspaceID: workspace.ID, Path: "owned/x.txt", Content: []byte("x"), Lease: LeaseProof{ID: "other-lease", FencingToken: 1, ExpiresAt: time.Now().Add(time.Hour)}}); err != ErrLeaseStale {
+	if err := service.WriteFile(context.Background(), WriteRequest{WorkspaceID: workspace.ID, Path: "owned/x.txt", Content: []byte("x"), Lease: LeaseProof{ID: "other-lease", FencingToken: 1, ExpiresAt: time.Now().Add(time.Hour)}}); !errors.Is(err, ErrLeaseStale) {
 		t.Fatalf("cross-lease write error = %v", err)
 	}
 	outside := filepath.Join(t.TempDir(), "outside.txt")
