@@ -241,7 +241,7 @@ func provenanceFixture(manifest Manifest) []byte {
 
 func releaseEvidenceFixture(t *testing.T, manifest Manifest, privateKey ed25519.PrivateKey) []byte {
 	t.Helper()
-	evidence := map[string]any{"evidenceVersion": "1.0", "specVersion": "2.0.0", "releaseVersion": manifest.Version, "sourceCommit": manifest.SourceCommit, "buildDigest": ArtifactDigest([]byte("build")), "startedAt": time.Date(2026, 8, 4, 0, 0, 0, 0, time.UTC).Format(time.RFC3339), "completedAt": time.Date(2026, 8, 4, 0, 1, 0, 0, time.UTC).Format(time.RFC3339), "environment": "production", "target": "https://preprod.example.invalid", "results": []map[string]any{{"requirementId": "AOR-ACC-050", "status": "PASS", "tool": "aor-conformance", "toolVersion": "2.0.0"}}, "exceptions": []string{}, "evidenceDigest": ""}
+	evidence := map[string]any{"evidenceVersion": "1.0", "specVersion": "2.0.0", "releaseVersion": manifest.Version, "sourceCommit": manifest.SourceCommit, "buildDigest": ArtifactDigest([]byte("build")), "startedAt": time.Date(2026, 8, 4, 0, 0, 0, 0, time.UTC).Format(time.RFC3339), "completedAt": time.Date(2026, 8, 4, 0, 1, 0, 0, time.UTC).Format(time.RFC3339), "environment": "production", "target": "https://preprod.example.invalid", "results": []map[string]any{{"requirementId": "AOR-ACC-050", "status": "PASS", "evidenceUris": []string{"artifact://conformance/supply-chain"}, "tool": "aor-conformance", "toolVersion": "2.0.0"}}, "exceptions": []string{}, "uncoveredRequirements": []string{}, "evidenceDigest": ""}
 	digest, err := canonicaljson.DigestObjectWithoutFields(mustJSON(evidence), "evidenceDigest", "signature")
 	if err != nil {
 		t.Fatal(err)

@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/akimisaka/aor/internal/bootstrap"
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 )
 
@@ -139,13 +140,17 @@ func (r *Runner) runExternalDriver(ctx context.Context, root string, request Req
 	if err != nil {
 		return nil, err
 	}
+	expected, err := externalRequirementsForGroups(root, groups, request.Groups)
+	if err != nil {
+		return nil, err
+	}
 	if err := verifyExternalSignature(ctx, config, manifestPayload, manifest.Signature); err != nil {
 		return nil, fmt.Errorf("driver manifest signature: %w", err)
 	}
 	if request.Profile == "production" && manifest.Signature.Type != "Ed25519" {
 		return nil, errors.New("production driver manifests require an Ed25519 signature")
 	}
-	if err := validateExternalManifest(manifest, request, buildDigest, groups); err != nil {
+	if err := validateExternalManifest(manifest, request, buildDigest, groups, expected); err != nil {
 		return nil, err
 	}
 	corpusPath, err := resolveExternalPath(root, manifest.CorpusPath, false)
@@ -260,7 +265,7 @@ func (r *Runner) runExternalDriver(ctx context.Context, root string, request Req
 	if err != nil {
 		return nil, err
 	}
-	if err := validateExternalOutput(ctx, driverOutput, resultPayload, config, request.Profile, manifest, manifestDigest, buildDigest, runID, groups); err != nil {
+	if err := validateExternalOutput(ctx, driverOutput, resultPayload, config, request.Profile, manifest, manifestDigest, buildDigest, runID, groups, expected); err != nil {
 		return nil, err
 	}
 	resultRef, err := writeExternalRaw(outputDirectory, filepath.Join("external", runID, "driver-result.json"), outputBytes)
@@ -277,7 +282,7 @@ func (r *Runner) runExternalDriver(ctx context.Context, root string, request Req
 		return nil, errors.New("driver changed the evidence directory")
 	}
 	for _, item := range driverOutput.Results {
-		refs, err := copyExternalEvidence(outputDirectory, resolvedEvidenceDirectory, runID, item.Group, item.Evidence)
+		refs, err := copyExternalEvidence(outputDirectory, resolvedEvidenceDirectory, runID, item.Group, item.RequirementID, item.Evidence)
 		if err != nil {
 			return nil, err
 		}
@@ -287,7 +292,7 @@ func (r *Runner) runExternalDriver(ctx context.Context, root string, request Req
 	return result, nil
 }
 
-func validateExternalManifest(manifest ExternalDriverManifest, request Request, buildDigest string, groups []string) error {
+func validateExternalManifest(manifest ExternalDriverManifest, request Request, buildDigest string, groups []string, expected map[string][]string) error {
 	if manifest.ProtocolVersion != externalDriverProtocolVersion || strings.TrimSpace(manifest.Tool) == "" || strings.TrimSpace(manifest.ToolVersion) == "" || strings.ContainsAny(manifest.Tool, "\r\n") || strings.ContainsAny(manifest.ToolVersion, "\r\n") {
 		return errors.New("driver manifest protocol or tool identity is invalid")
 	}
@@ -323,14 +328,14 @@ func validateExternalManifest(manifest ExternalDriverManifest, request Request, 
 		return errors.New("driver manifest groups do not match the requested external groups")
 	}
 	for _, group := range got {
-		if len(externalRequirementsForGroup(group)) == 0 {
+		if len(expected[group]) == 0 {
 			return errors.New("driver manifest contains a non-external group")
 		}
 	}
 	return nil
 }
 
-func validateExternalOutput(ctx context.Context, output ExternalDriverOutput, payload []byte, config *ExternalDriverConfig, profile string, manifest ExternalDriverManifest, manifestDigest, buildDigest, runID string, groups []string) error {
+func validateExternalOutput(ctx context.Context, output ExternalDriverOutput, payload []byte, config *ExternalDriverConfig, profile string, manifest ExternalDriverManifest, manifestDigest, buildDigest, runID string, groups []string, expected map[string][]string) error {
 	if output.ProtocolVersion != externalDriverProtocolVersion || output.ManifestSHA256 != manifestDigest || output.Target != manifest.Target || output.SpecVersion != manifest.SpecVersion || output.ReleaseVersion != manifest.ReleaseVersion || output.SourceCommit != manifest.SourceCommit || output.BuildDigest != buildDigest || output.TenantID != manifest.TenantID || output.Namespace != manifest.Namespace || output.RunID != runID {
 		return errors.New("driver result is not bound to the signed target, scope, build, or run")
 	}
@@ -352,7 +357,7 @@ func validateExternalOutput(ctx context.Context, output ExternalDriverOutput, pa
 	wanted := make(map[string]map[string]struct{}, len(groups))
 	expectedResults := 0
 	for _, group := range groups {
-		requirements := externalRequirementsForGroup(group)
+		requirements := expected[group]
 		allowed := make(map[string]struct{}, len(requirements))
 		for _, requirement := range requirements {
 			allowed[requirement] = struct{}{}
@@ -401,8 +406,10 @@ func externalRequirementsForGroup(group string) []string {
 		return []string{"AOR-ACC-043"}
 	case "authn":
 		return []string{"AOR-ACC-041"}
-	case "authz", "tool-broker":
+	case "authz":
 		return []string{"AOR-ACC-042"}
+	case "tool-broker":
+		return []string{"AOR-ACC-044"}
 	case "sandbox-linux":
 		return []string{"AOR-ACC-054"}
 	case "sandbox-windows":
@@ -432,6 +439,58 @@ func externalRequirementsForGroup(group string) []string {
 	}
 }
 
+func externalRequirementsForGroups(root string, groups, requestedGroups []string) (map[string][]string, error) {
+	result := make(map[string][]string)
+	owned := make(map[string]string)
+	fullRequested := false
+	external := make(map[string]struct{}, len(groups))
+	for _, group := range groups {
+		external[group] = struct{}{}
+		if group == "full" {
+			fullRequested = true
+		}
+	}
+	for _, group := range requestedGroups {
+		if group == "full" {
+			continue
+		}
+		requirements := requirementIDsForGroup(group)
+		if len(requirements) == 0 {
+			return nil, errors.New("conformance group has no requirement ownership")
+		}
+		if _, isExternal := external[group]; isExternal {
+			if len(externalRequirementsForGroup(group)) == 0 {
+				return nil, errors.New("external driver contains a non-external group")
+			}
+			result[group] = append([]string(nil), requirements...)
+		}
+		for _, requirement := range requirements {
+			if previous, exists := owned[requirement]; exists {
+				return nil, fmt.Errorf("requirement %s is owned by both %s and %s", requirement, previous, group)
+			}
+			owned[requirement] = group
+		}
+	}
+	if !fullRequested {
+		return result, nil
+	}
+	spec, err := os.ReadFile(filepath.Join(root, "SPEC.md"))
+	if err != nil {
+		return nil, fmt.Errorf("full external group requires SPEC.md: %w", err)
+	}
+	for _, requirement := range bootstrap.DiscoverRequirementIDs(spec) {
+		if _, exists := owned[requirement]; exists {
+			continue
+		}
+		result["full"] = append(result["full"], requirement)
+		owned[requirement] = "full"
+	}
+	if len(result["full"]) == 0 {
+		return nil, errors.New("full external group has no uncovered requirement")
+	}
+	return result, nil
+}
+
 func externalRequirementForGroup(group string) (string, bool) {
 	requirements := externalRequirementsForGroup(group)
 	if len(requirements) != 1 {
@@ -443,7 +502,7 @@ func externalRequirementForGroup(group string) (string, bool) {
 func requestedExternalGroups(groups []string) []string {
 	result := make([]string, 0, len(groups))
 	for _, group := range groups {
-		if len(externalRequirementsForGroup(group)) > 0 {
+		if group == "full" || len(externalRequirementsForGroup(group)) > 0 {
 			result = append(result, group)
 		}
 	}
@@ -728,7 +787,7 @@ func (b *externalLimitedBuffer) Overflowed() bool {
 	return b.overflow
 }
 
-func copyExternalEvidence(outputDirectory, evidenceDirectory, runID, group string, evidence []ExternalDriverEvidence) ([]string, error) {
+func copyExternalEvidence(outputDirectory, evidenceDirectory, runID, group, requirementID string, evidence []ExternalDriverEvidence) ([]string, error) {
 	if len(evidence) > maxExternalEvidenceReferences {
 		return nil, errors.New("driver evidence reference count exceeds the limit")
 	}
@@ -765,7 +824,7 @@ func copyExternalEvidence(outputDirectory, evidenceDirectory, runID, group strin
 		if totalBytes > maxExternalDriverOutputBytes*8 {
 			return nil, errors.New("driver evidence exceeds the aggregate limit")
 		}
-		name := fmt.Sprintf("%s/%03d-%s", filepath.ToSlash(filepath.Join("external", runID, group)), index, filepath.Base(filepath.FromSlash(item.Path)))
+		name := fmt.Sprintf("%s/%03d-%s", filepath.ToSlash(filepath.Join("external", runID, group, requirementID)), index, filepath.Base(filepath.FromSlash(item.Path)))
 		ref, err := writeExternalRaw(outputDirectory, name, value)
 		if err != nil {
 			return nil, err

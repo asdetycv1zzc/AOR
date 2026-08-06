@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/akimisaka/aor/internal/bootstrap"
 )
 
 func TestExternalDriverBindsSignedManifestScopeAndRawEvidence(t *testing.T) {
@@ -128,6 +130,91 @@ func TestExternalGroupRequirementsCoverReliabilityAndPerformanceGates(t *testing
 	performance := externalRequirementsForGroup("performance")
 	if len(performance) != 9 || performance[0] != "AOR-ACC-066" || performance[len(performance)-1] != "AOR-ACC-075" {
 		t.Fatalf("performance requirements = %#v", performance)
+	}
+}
+
+func TestFullExternalGroupCompletesCoverageWithoutDuplicateOwnership(t *testing.T) {
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	externalGroups := requestedExternalGroups(productionGroups)
+	expected, err := externalRequirementsForGroups(root, externalGroups, productionGroups)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owners := make(map[string]string)
+	for _, group := range productionGroups {
+		requirements, external := expected[group]
+		if !external {
+			requirements = requirementIDsForGroup(group)
+		}
+		for _, requirement := range requirements {
+			if previous, exists := owners[requirement]; exists {
+				t.Fatalf("requirement %s owned by %s and %s", requirement, previous, group)
+			}
+			owners[requirement] = group
+		}
+	}
+	spec, err := os.ReadFile(filepath.Join(root, "SPEC.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requirements := bootstrap.DiscoverRequirementIDs(spec)
+	if len(owners) != len(requirements) {
+		t.Fatalf("owned requirements = %d, SPEC requirements = %d", len(owners), len(requirements))
+	}
+	for _, requirement := range requirements {
+		if owners[requirement] == "" {
+			t.Fatalf("requirement %s has no conformance owner", requirement)
+		}
+	}
+	if owners["AOR-ACC-042"] != "authz" || owners["AOR-ACC-044"] != "tool-broker" {
+		t.Fatalf("authorization ownership = ACC-042:%s ACC-044:%s", owners["AOR-ACC-042"], owners["AOR-ACC-044"])
+	}
+}
+
+func TestExternalEvidenceCopiesAreBoundToRequirement(t *testing.T) {
+	outputDirectory := t.TempDir()
+	evidenceDirectory := t.TempDir()
+	for _, fixture := range []struct {
+		path    string
+		content string
+	}{
+		{path: "one/trace.json", content: "first"},
+		{path: "two/trace.json", content: "second"},
+	} {
+		path := filepath.Join(evidenceDirectory, filepath.FromSlash(fixture.path))
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(fixture.content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := copyExternalEvidence(outputDirectory, evidenceDirectory, "run-1", "chaos", "AOR-ACC-056", []ExternalDriverEvidence{{Path: "one/trace.json", SHA256: digestBytes([]byte("first")), Kind: "trace"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := copyExternalEvidence(outputDirectory, evidenceDirectory, "run-1", "chaos", "AOR-ACC-057", []ExternalDriverEvidence{{Path: "two/trace.json", SHA256: digestBytes([]byte("second")), Kind: "trace"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 1 || len(second) != 1 || first[0] == second[0] {
+		t.Fatalf("evidence references collided: first=%#v second=%#v", first, second)
+	}
+	firstPath := filepath.Join(outputDirectory, "raw", "external", "run-1", "chaos", "AOR-ACC-056", "000-trace.json")
+	secondPath := filepath.Join(outputDirectory, "raw", "external", "run-1", "chaos", "AOR-ACC-057", "000-trace.json")
+	firstValue, err := os.ReadFile(firstPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondValue, err := os.ReadFile(secondPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(firstValue) != "first" || string(secondValue) != "second" {
+		t.Fatalf("copied evidence was overwritten: first=%q second=%q", firstValue, secondValue)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -51,6 +52,26 @@ func TestTestProfileRecordsExternalExceptionsWithoutBlockingLocalEvidence(t *tes
 	}
 	if evidence.Results[0].Status != "INCONCLUSIVE" {
 		t.Fatalf("unexecuted environment gate status = %s", evidence.Results[0].Status)
+	}
+}
+
+func TestRequirementCoverageListsMissingAndDuplicateResults(t *testing.T) {
+	root := t.TempDir()
+	spec := []byte("**AOR-INV-001**: first\n**AOR-ACC-001**: second\n")
+	if err := os.WriteFile(filepath.Join(root, "SPEC.md"), spec, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result := RequirementResult{RequirementID: "AOR-INV-001", Status: "PASS", EvidenceURIs: []string{"artifact://test"}, Tool: "test", ToolVersion: "1"}
+	uncovered, exceptions, err := requirementCoverage(root, []RequirementResult{result, result})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(uncovered) != 1 || uncovered[0] != "AOR-ACC-001" {
+		t.Fatalf("uncovered requirements = %#v", uncovered)
+	}
+	joined := strings.Join(exceptions, "\n")
+	if !strings.Contains(joined, "duplicate requirement result: AOR-INV-001") {
+		t.Fatalf("coverage exceptions = %#v", exceptions)
 	}
 }
 

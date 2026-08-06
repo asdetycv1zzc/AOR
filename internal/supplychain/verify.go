@@ -593,9 +593,10 @@ func validateReleaseEvidence(value []byte, manifest Manifest, keys Keyring) erro
 			Tool          string   `json:"tool"`
 			ToolVersion   string   `json:"toolVersion"`
 		} `json:"results"`
-		Exceptions     []string `json:"exceptions"`
-		EvidenceDigest string   `json:"evidenceDigest"`
-		Signature      struct {
+		Exceptions            []string `json:"exceptions"`
+		UncoveredRequirements []string `json:"uncoveredRequirements"`
+		EvidenceDigest        string   `json:"evidenceDigest"`
+		Signature             struct {
 			Type  string `json:"type"`
 			KID   string `json:"kid"`
 			Value string `json:"value"`
@@ -604,13 +605,23 @@ func validateReleaseEvidence(value []byte, manifest Manifest, keys Keyring) erro
 	if err := decodeStrict(value, &document); err != nil {
 		return err
 	}
-	if document.EvidenceVersion == "" || document.SpecVersion == "" || document.ReleaseVersion != manifest.Version || document.SourceCommit != manifest.SourceCommit || !digestPattern.MatchString(document.BuildDigest) || document.Environment != "production" || len(document.Results) == 0 || len(document.Exceptions) != 0 || !digestPattern.MatchString(document.EvidenceDigest) || document.Signature.Type != "Ed25519" || document.Signature.KID == "" || document.Signature.Value == "" {
+	if document.EvidenceVersion == "" || document.SpecVersion == "" || document.ReleaseVersion != manifest.Version || document.SourceCommit != manifest.SourceCommit || !digestPattern.MatchString(document.BuildDigest) || document.Environment != "production" || len(document.Results) == 0 || len(document.Exceptions) != 0 || document.UncoveredRequirements == nil || len(document.UncoveredRequirements) != 0 || !digestPattern.MatchString(document.EvidenceDigest) || document.Signature.Type != "Ed25519" || document.Signature.KID == "" || document.Signature.Value == "" {
 		return errors.New("release evidence is not a signed production PASS report for this release")
 	}
+	seenRequirements := make(map[string]struct{}, len(document.Results))
 	for _, result := range document.Results {
-		if result.RequirementID == "" || result.Status != "PASS" {
-			return errors.New("release evidence contains a non-PASS result")
+		if result.RequirementID == "" || result.Status != "PASS" || strings.TrimSpace(result.Tool) == "" || strings.TrimSpace(result.ToolVersion) == "" || len(result.EvidenceURIs) == 0 {
+			return errors.New("release evidence contains an invalid or non-PASS result")
 		}
+		for _, reference := range result.EvidenceURIs {
+			if strings.TrimSpace(reference) == "" {
+				return errors.New("release evidence contains an invalid evidence reference")
+			}
+		}
+		if _, exists := seenRequirements[result.RequirementID]; exists {
+			return errors.New("release evidence contains duplicate requirement results")
+		}
+		seenRequirements[result.RequirementID] = struct{}{}
 	}
 	computed, err := canonicaljson.DigestObjectWithoutFields(value, "evidenceDigest", "signature")
 	if err != nil || computed != document.EvidenceDigest {

@@ -40,19 +40,20 @@ type RequirementResult struct {
 }
 
 type ReleaseEvidence struct {
-	EvidenceVersion string              `json:"evidenceVersion"`
-	SpecVersion     string              `json:"specVersion"`
-	ReleaseVersion  string              `json:"releaseVersion"`
-	SourceCommit    string              `json:"sourceCommit"`
-	BuildDigest     string              `json:"buildDigest"`
-	StartedAt       string              `json:"startedAt"`
-	CompletedAt     string              `json:"completedAt"`
-	Environment     string              `json:"environment"`
-	Target          string              `json:"target,omitempty"`
-	Results         []RequirementResult `json:"results"`
-	Exceptions      []string            `json:"exceptions"`
-	EvidenceDigest  string              `json:"evidenceDigest"`
-	Signature       *Signature          `json:"signature,omitempty"`
+	EvidenceVersion       string              `json:"evidenceVersion"`
+	SpecVersion           string              `json:"specVersion"`
+	ReleaseVersion        string              `json:"releaseVersion"`
+	SourceCommit          string              `json:"sourceCommit"`
+	BuildDigest           string              `json:"buildDigest"`
+	StartedAt             string              `json:"startedAt"`
+	CompletedAt           string              `json:"completedAt"`
+	Environment           string              `json:"environment"`
+	Target                string              `json:"target,omitempty"`
+	Results               []RequirementResult `json:"results"`
+	Exceptions            []string            `json:"exceptions"`
+	UncoveredRequirements []string            `json:"uncoveredRequirements"`
+	EvidenceDigest        string              `json:"evidenceDigest"`
+	Signature             *Signature          `json:"signature,omitempty"`
 }
 
 type Signature struct {
@@ -146,7 +147,7 @@ func (r *Runner) Run(ctx context.Context, request Request) (ReleaseEvidence, err
 	if err != nil {
 		return ReleaseEvidence{}, err
 	}
-	evidence := ReleaseEvidence{EvidenceVersion: "1.0", SpecVersion: request.SpecVersion, ReleaseVersion: request.ReleaseVersion, SourceCommit: request.SourceCommit, BuildDigest: build, StartedAt: started.Format(time.RFC3339), Environment: request.Profile, Target: request.Target, Results: []RequirementResult{}, Exceptions: []string{}}
+	evidence := ReleaseEvidence{EvidenceVersion: "1.0", SpecVersion: request.SpecVersion, ReleaseVersion: request.ReleaseVersion, SourceCommit: request.SourceCommit, BuildDigest: build, StartedAt: started.Format(time.RFC3339), Environment: request.Profile, Target: request.Target, Results: []RequirementResult{}, Exceptions: []string{}, UncoveredRequirements: []string{}}
 	hardFailure := false
 	targetEvidence := []string{}
 	if request.Target != "" {
@@ -218,6 +219,19 @@ func (r *Runner) Run(ctx context.Context, request Request) (ReleaseEvidence, err
 	sort.Slice(evidence.Results, func(left, right int) bool {
 		return evidence.Results[left].RequirementID < evidence.Results[right].RequirementID
 	})
+	uncovered, coverageExceptions, coverageErr := requirementCoverage(root, evidence.Results)
+	if coverageErr != nil {
+		evidence.Exceptions = append(evidence.Exceptions, "requirement coverage: "+coverageErr.Error())
+		if request.Profile != "test" {
+			hardFailure = true
+		}
+	} else {
+		evidence.UncoveredRequirements = uncovered
+		evidence.Exceptions = append(evidence.Exceptions, coverageExceptions...)
+		if request.Profile == "production" && (len(uncovered) > 0 || len(coverageExceptions) > 0) {
+			hardFailure = true
+		}
+	}
 	evidence.CompletedAt = r.clock().UTC().Format(time.RFC3339)
 	if request.Profile == "production" && request.Signer == nil {
 		evidence.Exceptions = append(evidence.Exceptions, "release signer is required for production")
@@ -289,8 +303,10 @@ func environmentRequirement(group string) string {
 	switch group {
 	case "authn":
 		return "AOR-ACC-041"
-	case "authz", "tool-broker":
+	case "authz":
 		return "AOR-ACC-042"
+	case "tool-broker":
+		return "AOR-ACC-044"
 	case "sandbox-linux":
 		return "AOR-ACC-054"
 	case "sandbox-windows":
@@ -316,6 +332,82 @@ func environmentRequirement(group string) string {
 	default:
 		return "AOR-ACC-043"
 	}
+}
+
+func requirementIDsForGroup(group string) []string {
+	if requirements := externalRequirementsForGroup(group); len(requirements) > 0 {
+		return requirements
+	}
+	switch group {
+	case "contracts":
+		return []string{"AOR-ACC-025"}
+	case "state-machine":
+		return []string{"AOR-INV-001"}
+	case "idempotency":
+		return []string{"AOR-ACC-023"}
+	case "a2a":
+		return []string{"AOR-ACC-021"}
+	case "aop":
+		return []string{"AOR-ACC-022"}
+	case "mcp":
+		return []string{"AOR-ACC-028"}
+	default:
+		return nil
+	}
+}
+
+func requirementCoverage(root string, results []RequirementResult) ([]string, []string, error) {
+	spec, err := os.ReadFile(filepath.Join(root, "SPEC.md"))
+	if err != nil {
+		return nil, nil, err
+	}
+	expected := bootstrap.DiscoverRequirementIDs(spec)
+	if len(expected) == 0 {
+		return nil, nil, errors.New("SPEC.md contains no discoverable requirements")
+	}
+	expectedSet := make(map[string]struct{}, len(expected))
+	for _, requirement := range expected {
+		expectedSet[requirement] = struct{}{}
+	}
+	seen := make(map[string]int, len(results))
+	var exceptions []string
+	for _, result := range results {
+		if !validRequirementResult(result) {
+			exceptions = append(exceptions, "invalid requirement result: "+result.RequirementID)
+			continue
+		}
+		seen[result.RequirementID]++
+		if _, exists := expectedSet[result.RequirementID]; !exists {
+			exceptions = append(exceptions, "unexpected requirement result: "+result.RequirementID)
+		}
+	}
+	uncovered := make([]string, 0)
+	for _, requirement := range expected {
+		if seen[requirement] == 0 {
+			uncovered = append(uncovered, requirement)
+		}
+		if seen[requirement] > 1 {
+			exceptions = append(exceptions, "duplicate requirement result: "+requirement)
+		}
+	}
+	sort.Strings(uncovered)
+	sort.Strings(exceptions)
+	return uncovered, exceptions, nil
+}
+
+func validRequirementResult(result RequirementResult) bool {
+	if result.RequirementID == "" || strings.TrimSpace(result.Tool) == "" || strings.TrimSpace(result.ToolVersion) == "" || len(result.EvidenceURIs) == 0 {
+		return false
+	}
+	if result.Status != "PASS" && result.Status != "FAIL" && result.Status != "INCONCLUSIVE" {
+		return false
+	}
+	for _, reference := range result.EvidenceURIs {
+		if strings.TrimSpace(reference) == "" {
+			return false
+		}
+	}
+	return true
 }
 
 func conformanceRequirement(group string) string {
@@ -382,6 +474,25 @@ func Verify(ctx context.Context, evidence ReleaseEvidence, signer Signer) error 
 		return ErrGateFailed
 	}
 	if evidence.Environment == "production" && (evidence.Signature == nil || !productionSignatureType(evidence.Signature.Type)) {
+		return ErrGateFailed
+	}
+	if evidence.Environment == "production" && len(evidence.Results) == 0 {
+		return ErrGateFailed
+	}
+	seenRequirements := make(map[string]struct{}, len(evidence.Results))
+	for _, result := range evidence.Results {
+		if !validRequirementResult(result) {
+			return ErrGateFailed
+		}
+		if _, exists := seenRequirements[result.RequirementID]; exists {
+			return ErrGateFailed
+		}
+		seenRequirements[result.RequirementID] = struct{}{}
+		if evidence.Environment == "production" && result.Status != "PASS" {
+			return ErrGateFailed
+		}
+	}
+	if evidence.Environment == "production" && (len(evidence.Exceptions) != 0 || len(evidence.UncoveredRequirements) != 0) {
 		return ErrGateFailed
 	}
 	digest := evidence.EvidenceDigest
