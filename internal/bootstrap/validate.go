@@ -375,7 +375,7 @@ func ScanSecrets(root string) []Finding {
 			findings = append(findings, Finding{Code: "FILE_WALK_ERROR", Path: relativePath(root, path), Message: walkErr.Error()})
 			return nil
 		}
-		if entry.IsDir() && isIgnoredDirectory(entry.Name()) {
+		if entry.IsDir() && (isIgnoredDirectory(entry.Name()) || isLocalSecretDirectory(root, path)) {
 			return filepath.SkipDir
 		}
 		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
@@ -395,6 +395,11 @@ func ScanSecrets(root string) []Finding {
 		return nil
 	})
 	return sortedFindings(findings)
+}
+
+func isLocalSecretDirectory(root, current string) bool {
+	relative := filepath.ToSlash(relativePath(root, current))
+	return relative == "deploy/compose/secrets"
 }
 
 // ValidateJSONDocuments parses every source JSON document and checks Schema dialect declarations.

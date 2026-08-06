@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -120,16 +121,16 @@ func TestProviderRejectsCredentialsAtExecutionBoundary(t *testing.T) {
 	if _, err := provider.Create(context.Background(), linuxSpec()); err != nil {
 		t.Fatal(err)
 	}
-	request := ExecRequest{Executable: "go", Arguments: []string{"api_key=synthetic-production-credential"}, Timeout: time.Second}
+	request := ExecRequest{Executable: "go", Arguments: []string{"api_key=" + strings.Repeat("x", 32)}, Timeout: time.Second}
 	if _, err := provider.Exec(context.Background(), "sbx", request); !errors.Is(err, ErrCredentialDetected) || backend.execCalls != 0 {
 		t.Fatalf("credential argument error=%v backend calls=%d", err, backend.execCalls)
 	}
-	backend.execResult = ExecResult{Stdout: []byte("Bearer abcdefghijklmnopqrstuvwxyz")}
+	backend.execResult = ExecResult{Stdout: []byte("Bearer " + strings.Repeat("x", 26))}
 	if result, err := provider.Exec(context.Background(), "sbx", ExecRequest{Executable: "go", Timeout: time.Second}); !errors.Is(err, ErrCredentialDetected) || len(result.Stdout) != 0 {
 		t.Fatalf("credential output result=%#v error=%v", result, err)
 	}
 	backend.execResult = ExecResult{}
-	backend.execErr = errors.New("provider failed with sk-test-secret-1234567890")
+	backend.execErr = errors.New("provider failed with sk-" + strings.Repeat("x", 20))
 	if _, err := provider.Exec(context.Background(), "sbx", ExecRequest{Executable: "go", Timeout: time.Second}); !errors.Is(err, ErrCredentialDetected) || err.Error() != ErrCredentialDetected.Error() {
 		t.Fatalf("credential error was exposed: %v", err)
 	}

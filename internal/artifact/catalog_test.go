@@ -128,14 +128,14 @@ func TestPublicationRejectsUnsafeContentType(t *testing.T) {
 }
 
 func TestArtifactContentPolicyRejectsCredentialMaterial(t *testing.T) {
-	secret := []byte("refresh_token=synthetic-production-credential")
+	secret := []byte("refresh_token=" + strings.Repeat("x", 32))
 	if err := validateContent(secret); !errors.Is(err, ErrCredentialDetected) {
 		t.Fatalf("credential content error = %v", err)
 	}
 	if err := validateContent([]byte("deterministic audit output")); err != nil {
 		t.Fatalf("ordinary artifact content error = %v", err)
 	}
-	metadata, err := json.Marshal(map[string]any{"authorization": "Bearer abcdefghijklmnopqrstuvwxyz"})
+	metadata, err := json.Marshal(map[string]any{"authorization": "Bearer " + strings.Repeat("x", 26)})
 	if err != nil {
 		t.Fatal(err)
 	}

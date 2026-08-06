@@ -146,6 +146,21 @@ func TestScanSecretsIgnoresGitAndBuildOutput(t *testing.T) {
 	}
 }
 
+func TestScanSecretsIgnoresLocalComposeSecrets(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, "deploy", "compose", "secrets")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	value := "sk-" + strings.Repeat("a", 32)
+	if err := os.WriteFile(filepath.Join(directory, "model_provider_key"), []byte(value), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if findings := ScanSecrets(root); len(findings) != 0 {
+		t.Fatalf("expected local secret files to be ignored, got %#v", findings)
+	}
+}
+
 func TestValidateADRSections(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "adr")

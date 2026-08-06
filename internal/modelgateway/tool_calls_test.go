@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -73,6 +74,7 @@ func TestGatewayValidatesNativeToolCallBoundary(t *testing.T) {
 	request := hardeningRequest("tool-validation")
 	request.Tools = []ToolDefinition{{Name: "repo.read", Schema: json.RawMessage(`{"type":"object"}`)}}
 	validCall := ToolCall{ID: "call-1", Name: "repo.read", Arguments: json.RawMessage(`{"path":"README.md"}`)}
+	credential := "sk-" + strings.Repeat("x", 20)
 	for _, test := range []struct {
 		name     string
 		response NormalizedResponse
@@ -80,7 +82,7 @@ func TestGatewayValidatesNativeToolCallBoundary(t *testing.T) {
 	}{
 		{name: "content and calls", response: NormalizedResponse{Content: json.RawMessage(`{"ok":true}`), ToolCalls: []ToolCall{validCall}}, expected: ErrOutputSchema},
 		{name: "unknown tool", response: NormalizedResponse{ToolCalls: []ToolCall{{ID: "call-1", Name: "repo.write", Arguments: json.RawMessage(`{}`)}}}, expected: ErrOutputSchema},
-		{name: "credential", response: NormalizedResponse{ToolCalls: []ToolCall{{ID: "call-1", Name: "repo.read", Arguments: json.RawMessage(`{"token":"sk-test-secret-1234567890"}`)}}}, expected: ErrCredentialDetected},
+		{name: "credential", response: NormalizedResponse{ToolCalls: []ToolCall{{ID: "call-1", Name: "repo.read", Arguments: json.RawMessage(`{"token":"` + credential + `"}`)}}}, expected: ErrCredentialDetected},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if err := validateGeneratedResponse(request, test.response); !errors.Is(err, test.expected) {

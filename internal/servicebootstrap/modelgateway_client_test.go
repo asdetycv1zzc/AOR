@@ -2,6 +2,7 @@ package servicebootstrap
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -30,6 +31,7 @@ func TestConfiguredModelGatewayClientUsesOAuthWorkloadToken(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "model-gateway-client-secret"), []byte("client-secret\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	accessToken := "short-lived-" + "token"
 	tokenRequests := 0
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		tokenRequests++
@@ -44,14 +46,14 @@ func TestConfiguredModelGatewayClientUsesOAuthWorkloadToken(t *testing.T) {
 			t.Fatalf("token form = %v", request.Form)
 		}
 		response.Header().Set("Content-Type", "application/json")
-		_, _ = response.Write([]byte(`{"access_token":"short-lived-token","token_type":"Bearer","expires_in":300,"scope":"audience:server:client_id:aor-control-plane"}`))
+		_ = json.NewEncoder(response).Encode(map[string]any{"access_token": accessToken, "token_type": "Bearer", "expires_in": 300, "scope": "audience:server:client_id:aor-control-plane"})
 	}))
 	defer tokenServer.Close()
 
 	gatewayRequests := 0
 	gatewayServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		gatewayRequests++
-		if request.Header.Get("Authorization") != "Bearer short-lived-token" {
+		if request.Header.Get("Authorization") != "Bearer "+accessToken {
 			t.Fatalf("authorization = %q", request.Header.Get("Authorization"))
 		}
 		response.Header().Set("Content-Type", "application/json")

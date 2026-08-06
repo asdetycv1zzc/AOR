@@ -38,7 +38,7 @@ jobs:
         env:
           POSTGRES_DB: aor
           POSTGRES_USER: aor
-          POSTGRES_PASSWORD: integration-admin
+          POSTGRES_PASSWORD: test
         ports:
           - 5432:5432
         options: >-
@@ -58,8 +58,8 @@ jobs:
           cache: false
       - name: Apply PostgreSQL migrations
         env:
-          PGPASSWORD: integration-admin
-          AOR_APP_PASSWORD: integration-app
+          PGPASSWORD: test
+          AOR_APP_PASSWORD: test
         run: |
           docker run --rm --network host \
             -e PGPASSWORD -e AOR_APP_PASSWORD \
@@ -69,8 +69,8 @@ jobs:
       - name: Enforce durable PostgreSQL reconciliation
         env:
           GOCACHE: ${{ github.workspace }}/.cache/go-build-postgres-reconciliation
-          AOR_TEST_POSTGRES_DSN: host=127.0.0.1 port=5432 dbname=aor user=aor password=integration-admin sslmode=disable
-          AOR_TEST_POSTGRES_APP_DSN: host=127.0.0.1 port=5432 dbname=aor user=aor_app password=integration-app sslmode=disable
+          AOR_TEST_POSTGRES_DSN: host=127.0.0.1 port=5432 dbname=aor user=aor password=test sslmode=disable
+          AOR_TEST_POSTGRES_APP_DSN: host=127.0.0.1 port=5432 dbname=aor user=aor_app password=test sslmode=disable
         run: make postgres-reconciliation
 
   cross-platform:

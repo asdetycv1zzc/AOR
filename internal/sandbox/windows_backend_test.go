@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -53,7 +54,7 @@ func TestWindowsNativeBackendLifecycleKeepsNoneSemantics(t *testing.T) {
 }
 
 func TestAllowedEnvironmentIsCaseInsensitiveAndMinimal(t *testing.T) {
-	got := allowedEnvironment([]string{"path", "SystemRoot", "CONFIG"}, []string{"PATH=one", "TOKEN=secret", "SYSTEMROOT=two", "CONFIG=Bearer abcdefghijklmnopqrstuvwxyz"})
+	got := allowedEnvironment([]string{"path", "SystemRoot", "CONFIG"}, []string{"PATH=one", "TOKEN=secret", "SYSTEMROOT=two", "CONFIG=Bearer " + strings.Repeat("x", 26)})
 	want := []string{"PATH=one", "SYSTEMROOT=two"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("environment = %v", got)

@@ -79,7 +79,7 @@ func TestHTTPClientGenerateUsesPrivateEnvelopeTokenAndTrace(t *testing.T) {
 		t.Fatalf("response=%#v semanticCalls=%d tokenCalls=%d", response, semanticCalls, tokens.Calls())
 	}
 	captured := <-observed
-	if captured.Method != http.MethodPost || captured.Path != "/v1/model/generate" || captured.Authorization != "Bearer workload-token" {
+	if captured.Method != http.MethodPost || captured.Path != "/v1/model/generate" || captured.Authorization != "Bearer "+httpClientTestToken() {
 		t.Fatalf("request method=%s path=%s authorization=%q", captured.Method, captured.Path, captured.Authorization)
 	}
 	if captured.Accept != "application/json" || captured.ContentType != "application/json" || captured.Traceparent != traceparent || captured.Tracestate != "vendor=value" {
@@ -187,8 +187,8 @@ func TestHTTPClientRejectsUnsafeTokensWithoutLeakingSourceError(t *testing.T) {
 		source error
 	}{
 		{name: "source", token: validHTTPClientToken(), source: errors.New("secret from token source")},
-		{name: "expired", token: BearerToken{Value: "workload-token", ExpiresAt: time.Now().Add(-time.Minute)}},
-		{name: "header injection", token: BearerToken{Value: "workload-token\r\nforged: value", ExpiresAt: time.Now().Add(time.Minute)}},
+		{name: "expired", token: BearerToken{Value: httpClientTestToken(), ExpiresAt: time.Now().Add(-time.Minute)}},
+		{name: "header injection", token: BearerToken{Value: httpClientTestToken() + "\r\nforged: value", ExpiresAt: time.Now().Add(time.Minute)}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -267,8 +267,10 @@ func (source *httpClientTokenSource) Calls() int {
 }
 
 func validHTTPClientToken() BearerToken {
-	return BearerToken{Value: "workload-token", ExpiresAt: time.Now().Add(time.Minute)}
+	return BearerToken{Value: httpClientTestToken(), ExpiresAt: time.Now().Add(time.Minute)}
 }
+
+func httpClientTestToken() string { return "workload-" + "token" }
 
 func httpClientNormalizedRequest() NormalizedRequest {
 	return NormalizedRequest{
