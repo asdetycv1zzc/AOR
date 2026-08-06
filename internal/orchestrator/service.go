@@ -321,8 +321,8 @@ func (s *Service) HandleTask(ctx context.Context, request TaskRequest) (TaskOutc
 			events = append(events, dependentEvent)
 		}
 	}
-	if command.Type == state.TaskCommandIntegrate {
-		dependentUpdates, dependentEvents, propagationErr := s.readyIntegratedDependents(ctx, request, taskEvent.Projection, command.At, digest)
+	if command.Type == state.TaskCommandLLMSuccess || command.Type == state.TaskCommandIntegrate {
+		dependentUpdates, dependentEvents, propagationErr := s.readyAuditedDependents(ctx, request, taskEvent.Projection, command.At, digest)
 		if propagationErr != nil {
 			return TaskOutcome{}, propagationErr
 		}
@@ -370,8 +370,8 @@ func normalizedTaskCommand(request TaskRequest) state.TaskCommand {
 	return command
 }
 
-func (s *Service) readyIntegratedDependents(ctx context.Context, request TaskRequest, integrated state.ModuleTask, at time.Time, digest string) ([]eventing.ProjectionUpdate, []eventing.DomainEvent, error) {
-	if len(integrated.DependentTaskIDs) == 0 {
+func (s *Service) readyAuditedDependents(ctx context.Context, request TaskRequest, audited state.ModuleTask, at time.Time, digest string) ([]eventing.ProjectionUpdate, []eventing.DomainEvent, error) {
+	if len(audited.DependentTaskIDs) == 0 {
 		return nil, nil, nil
 	}
 	tasks, err := s.Tasks(ctx, request.TenantID, request.ProjectID)
@@ -382,9 +382,9 @@ func (s *Service) readyIntegratedDependents(ctx context.Context, request TaskReq
 	for _, task := range tasks {
 		byID[task.ID] = task
 	}
-	byID[integrated.ID] = integrated
+	byID[audited.ID] = audited
 
-	dependentIDs := append([]string(nil), integrated.DependentTaskIDs...)
+	dependentIDs := append([]string(nil), audited.DependentTaskIDs...)
 	sort.Strings(dependentIDs)
 	updates := make([]eventing.ProjectionUpdate, 0, len(dependentIDs))
 	events := make([]eventing.DomainEvent, 0, len(dependentIDs))
@@ -393,7 +393,7 @@ func (s *Service) readyIntegratedDependents(ctx context.Context, request TaskReq
 		if !found {
 			return nil, nil, aorerrors.New(aorerrors.CodeNotFound, "", map[string]any{"scope": "dependent task"})
 		}
-		if dependent.State != contracts.TaskDefined || !allTaskDependenciesIntegrated(byID, dependentID) {
+		if dependent.State != contracts.TaskDefined || !allTaskDependenciesAudited(byID, dependentID) {
 			continue
 		}
 		ready, readyErr := state.DecideTask(dependent, state.TaskCommand{Type: state.TaskCommandReadyExecution, At: at})
@@ -410,14 +410,14 @@ func (s *Service) readyIntegratedDependents(ctx context.Context, request TaskReq
 	return updates, events, nil
 }
 
-func allTaskDependenciesIntegrated(tasks map[string]state.ModuleTask, dependentID string) bool {
+func allTaskDependenciesAudited(tasks map[string]state.ModuleTask, dependentID string) bool {
 	found := false
 	for _, task := range tasks {
 		if task.State == contracts.TaskCanceled || task.State == contracts.TaskSuperseded || !contains(task.DependentTaskIDs, dependentID) {
 			continue
 		}
 		found = true
-		if task.State != contracts.TaskIntegrated {
+		if task.State != contracts.TaskPassed && task.State != contracts.TaskIntegrated {
 			return false
 		}
 	}

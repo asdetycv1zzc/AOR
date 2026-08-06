@@ -199,12 +199,12 @@ func TestServiceExecutesReadyTaskThroughRepositorySubmission(t *testing.T) {
 	}
 }
 
-func TestServiceRejectsUnintegratedDeclaredDependencyBeforeAssignment(t *testing.T) {
+func TestServiceRejectsUnauditedDeclaredDependencyBeforeAssignment(t *testing.T) {
 	project, task, module := executionTestScope(contracts.TaskReadyExecution)
 	module.Dependencies = []string{"module-dependency"}
 	dependency := state.ModuleTask{
 		TenantID: task.TenantID, ProjectID: task.ProjectID, ID: "task-dependency", ModuleID: "module-dependency",
-		State: contracts.TaskPassed, ModuleSpecRef: task.ModuleSpecRef, AttemptSeriesID: "series-dependency",
+		State: contracts.TaskLLMAudit, ModuleSpecRef: task.ModuleSpecRef, AttemptSeriesID: "series-dependency",
 		DependentTaskIDs: []string{task.ID},
 	}
 	tasks := &testTaskAuthority{project: project, task: task, tasks: []state.ModuleTask{task, dependency}}
@@ -214,6 +214,18 @@ func TestServiceRejectsUnintegratedDeclaredDependencyBeforeAssignment(t *testing
 	_, err := service.Execute(context.Background(), executionTestRequest())
 	if !errors.Is(err, ErrDependencyNotReady) || assignments.calls != 0 || tasks.leaseCalls != 0 {
 		t.Fatalf("err=%v assignments=%d leases=%d", err, assignments.calls, tasks.leaseCalls)
+	}
+}
+
+func TestValidateDependenciesAcceptsAuditedDependency(t *testing.T) {
+	_, task, module := executionTestScope(contracts.TaskReadyExecution)
+	module.Dependencies = []string{"module-dependency"}
+	dependency := state.ModuleTask{
+		TenantID: task.TenantID, ProjectID: task.ProjectID, ID: "task-dependency", ModuleID: "module-dependency",
+		State: contracts.TaskPassed, DependentTaskIDs: []string{task.ID},
+	}
+	if err := validateDependencies(task, module, []state.ModuleTask{task, dependency}); err != nil {
+		t.Fatal(err)
 	}
 }
 

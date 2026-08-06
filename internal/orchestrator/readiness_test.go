@@ -10,13 +10,10 @@ import (
 	"github.com/akimisaka/aor/pkg/contracts"
 )
 
-func TestIntegrationReadiesDependentOnlyAfterEveryUpstreamIsIntegrated(t *testing.T) {
+func TestAuditPassReadiesDependentOnlyAfterEveryUpstreamPasses(t *testing.T) {
 	store, service, tasks := publishedDependencyPlan(t)
 	left := passTask(t, service, tasks["task_left"], "left")
-	right := passTask(t, service, tasks["task_right"], "right")
-
-	left = integrateTask(t, service, left, "integrate_left")
-	if left.State != contracts.TaskIntegrated {
+	if left.State != contracts.TaskPassed {
 		t.Fatalf("left state = %s", left.State)
 	}
 	dependent := findTask(t, service, store, "task_dependent")
@@ -24,24 +21,25 @@ func TestIntegrationReadiesDependentOnlyAfterEveryUpstreamIsIntegrated(t *testin
 		t.Fatalf("dependent state after first upstream = %s", dependent.State)
 	}
 
-	request := integrationTaskRequest(right, "integrate_right")
+	right := advanceTaskToLLMAudit(t, service, tasks["task_right"], "right")
+	request := auditPassTaskRequest(right, "right_llm")
 	store.FailNext(eventing.FailureBeforeCommit)
 	if _, err := service.HandleTask(context.Background(), request); !errors.Is(err, eventing.ErrInjectedFailure) {
-		t.Fatalf("failed integration error = %v", err)
+		t.Fatalf("failed audit pass error = %v", err)
 	}
-	if storedRight := findTask(t, service, store, right.ID); storedRight.State != contracts.TaskPassed {
-		t.Fatalf("failed integration changed upstream = %#v", storedRight)
+	if storedRight := findTask(t, service, store, right.ID); storedRight.State != contracts.TaskLLMAudit {
+		t.Fatalf("failed audit pass changed upstream = %#v", storedRight)
 	}
 	if dependent = findTask(t, service, store, dependent.ID); dependent.State != contracts.TaskDefined {
-		t.Fatalf("failed integration changed dependent = %#v", dependent)
+		t.Fatalf("failed audit pass changed dependent = %#v", dependent)
 	}
 
 	outcome, err := service.HandleTask(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if outcome.Task.State != contracts.TaskIntegrated || len(outcome.Events) != 2 {
-		t.Fatalf("final integration outcome = %#v", outcome)
+	if outcome.Task.State != contracts.TaskPassed || len(outcome.Events) != 2 {
+		t.Fatalf("final audit pass outcome = %#v", outcome)
 	}
 	dependent = findTask(t, service, store, "task_dependent")
 	if dependent.State != contracts.TaskReadyExecution || dependent.Version != 4 {
@@ -49,7 +47,7 @@ func TestIntegrationReadiesDependentOnlyAfterEveryUpstreamIsIntegrated(t *testin
 	}
 }
 
-func TestIntegrationPreservesNonDefinedDependentState(t *testing.T) {
+func TestAuditPassPreservesNonDefinedDependentState(t *testing.T) {
 	tests := []struct {
 		name    string
 		prepare func(*testing.T, *Service, state.ModuleTask) state.ModuleTask
@@ -78,10 +76,8 @@ func TestIntegrationPreservesNonDefinedDependentState(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			store, service, tasks := publishedDependencyPlan(t)
 			dependent := test.prepare(t, service, tasks["task_dependent"])
-			left := passTask(t, service, tasks["task_left"], test.name+"_left")
-			right := passTask(t, service, tasks["task_right"], test.name+"_right")
-			integrateTask(t, service, left, test.name+"_integrate_left")
-			integrateTask(t, service, right, test.name+"_integrate_right")
+			passTask(t, service, tasks["task_left"], test.name+"_left")
+			passTask(t, service, tasks["task_right"], test.name+"_right")
 
 			stored := findTask(t, service, store, dependent.ID)
 			if stored.State != test.want || stored.Version != dependent.Version {
@@ -120,31 +116,22 @@ func publishedDependencyPlan(t *testing.T) (*eventing.MemoryStore, *Service, map
 
 func passTask(t *testing.T, service *Service, task state.ModuleTask, key string) state.ModuleTask {
 	t.Helper()
-	task = taskCommand(t, service, task, key+"_lease", state.TaskCommand{Type: state.TaskCommandLeaseExecution, FencingToken: 1})
-	task = taskCommand(t, service, task, key+"_submit", state.TaskCommand{Type: state.TaskCommandSubmit, FencingToken: 1, ModuleSpecRef: task.ModuleSpecRef, AttemptSeriesID: task.AttemptSeriesID})
-	task = taskCommand(t, service, task, key+"_audit", state.TaskCommand{Type: state.TaskCommandStartAudit, SubmissionValidated: true, AuditEvidenceSHA256: validRef().SHA256})
-	task = taskCommand(t, service, task, key+"_deterministic", state.TaskCommand{Type: state.TaskCommandDeterministicSuccess, AuditEvidenceSHA256: validRef().SHA256})
+	task = advanceTaskToLLMAudit(t, service, task, key)
 	return taskCommand(t, service, task, key+"_llm", state.TaskCommand{Type: state.TaskCommandLLMSuccess, FreshAuditor: true, BlindAuditContext: true, NoBlockingFindings: true, AuditEvidenceSHA256: validRef().SHA256})
 }
 
-func integrateTask(t *testing.T, service *Service, task state.ModuleTask, key string) state.ModuleTask {
+func advanceTaskToLLMAudit(t *testing.T, service *Service, task state.ModuleTask, key string) state.ModuleTask {
 	t.Helper()
-	return integrateTaskOutcome(t, service, task, key).Task
+	task = taskCommand(t, service, task, key+"_lease", state.TaskCommand{Type: state.TaskCommandLeaseExecution, FencingToken: 1})
+	task = taskCommand(t, service, task, key+"_submit", state.TaskCommand{Type: state.TaskCommandSubmit, FencingToken: 1, ModuleSpecRef: task.ModuleSpecRef, AttemptSeriesID: task.AttemptSeriesID})
+	task = taskCommand(t, service, task, key+"_audit", state.TaskCommand{Type: state.TaskCommandStartAudit, SubmissionValidated: true, AuditEvidenceSHA256: validRef().SHA256})
+	return taskCommand(t, service, task, key+"_deterministic", state.TaskCommand{Type: state.TaskCommandDeterministicSuccess, AuditEvidenceSHA256: validRef().SHA256})
 }
 
-func integrateTaskOutcome(t *testing.T, service *Service, task state.ModuleTask, key string) TaskOutcome {
-	t.Helper()
-	outcome, err := service.HandleTask(context.Background(), integrationTaskRequest(task, key))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return outcome
-}
-
-func integrationTaskRequest(task state.ModuleTask, key string) TaskRequest {
+func auditPassTaskRequest(task state.ModuleTask, key string) TaskRequest {
 	return TaskRequest{
-		TenantID: task.TenantID, ProjectID: task.ProjectID, TaskID: task.ID, PrincipalID: "agt_integrator", IdempotencyKey: key, ExpectedVersion: task.Version,
-		Command: state.TaskCommand{Type: state.TaskCommandIntegrate, DependenciesSatisfied: true, MergeGatePassed: true, AuditEvidenceSHA256: validRef().SHA256},
+		TenantID: task.TenantID, ProjectID: task.ProjectID, TaskID: task.ID, PrincipalID: "agt_auditor", IdempotencyKey: key, ExpectedVersion: task.Version,
+		Command: state.TaskCommand{Type: state.TaskCommandLLMSuccess, FreshAuditor: true, BlindAuditContext: true, NoBlockingFindings: true, AuditEvidenceSHA256: validRef().SHA256},
 	}
 }
 

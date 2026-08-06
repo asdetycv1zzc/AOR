@@ -21,7 +21,7 @@ var (
 	ErrInvalidRequest       = errors.New("invalid execution request")
 	ErrExecutionUnavailable = errors.New("execution dependency unavailable")
 	ErrTaskNotReady         = errors.New("module task is not ready for execution")
-	ErrDependencyNotReady   = errors.New("module dependency is not integrated")
+	ErrDependencyNotReady   = errors.New("module dependency has not passed audit")
 	ErrAssignmentInvalid    = errors.New("executor assignment is invalid")
 	ErrPreparationInvalid   = errors.New("executor runtime preparation is invalid")
 	ErrSubmissionInvalid    = errors.New("repository submission is invalid")
@@ -484,7 +484,7 @@ func validateDependencies(task state.ModuleTask, module contracts.ModuleSpec, ta
 	}
 	for dependency := range declared {
 		candidate, found := byModule[dependency]
-		if !found || candidate.State != contracts.TaskIntegrated || !contains(candidate.DependentTaskIDs, task.ID) {
+		if !found || candidate.State != contracts.TaskPassed && candidate.State != contracts.TaskIntegrated || !contains(candidate.DependentTaskIDs, task.ID) {
 			return ErrDependencyNotReady
 		}
 	}
