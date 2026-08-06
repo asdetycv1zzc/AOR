@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 )
@@ -97,6 +98,29 @@ func wrappedReplayState(event DomainEvent) (json.RawMessage, bool) {
 func rawReplayStateMatches(event DomainEvent, state json.RawMessage) bool {
 	if !jsonObject(state) {
 		return false
+	}
+	if event.AggregateType == "budget" {
+		var budget struct {
+			TenantID         string `json:"tenantId"`
+			ProjectID        string `json:"projectId"`
+			AccountID        string `json:"accountId"`
+			PrincipalID      string `json:"principalId"`
+			PreviousVersion  int64  `json:"previousVersion"`
+			AggregateVersion int64  `json:"aggregateVersion"`
+			Version          int64  `json:"version"`
+			HardLimit        int64  `json:"hardLimitMinor"`
+			SoftLimit        int64  `json:"softLimitMinor"`
+			Currency         string `json:"currency"`
+			Reason           string `json:"reason"`
+		}
+		if event.Type != "io.aor.budget.adjusted.v1" || json.Unmarshal(state, &budget) != nil {
+			return false
+		}
+		return budget.TenantID == event.TenantID && budget.ProjectID == event.ProjectID && budget.AccountID == event.AggregateID &&
+			budget.PrincipalID != "" && strings.TrimSpace(budget.PrincipalID) == budget.PrincipalID &&
+			budget.PreviousVersion >= 1 && budget.AggregateVersion == event.AggregateVersion && budget.Version == event.AggregateVersion &&
+			budget.PreviousVersion+1 == budget.Version && budget.HardLimit >= 0 && budget.SoftLimit >= 0 && budget.SoftLimit <= budget.HardLimit &&
+			len(budget.Currency) == 3 && budget.Currency == strings.ToUpper(budget.Currency) && budget.Reason != "" && strings.TrimSpace(budget.Reason) == budget.Reason
 	}
 	var identity struct {
 		TenantID   string `json:"tenantId"`

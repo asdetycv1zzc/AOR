@@ -283,6 +283,23 @@ func persistBudgetAdjustment(ctx context.Context, tx *sql.Tx, occurredAt time.Ti
 	if err != nil {
 		return err
 	}
+	projectionResult, err := tx.ExecContext(ctx, `
+INSERT INTO aggregate_projections
+  (tenant_id, project_id, aggregate_type, aggregate_id, aggregate_version, schema_version, state_jsonb, updated_at)
+VALUES ($1::uuid, $2::uuid, 'budget', $3, $4, 1, $5::jsonb, $6)
+ON CONFLICT (tenant_id, aggregate_type, aggregate_id) DO UPDATE
+SET project_id = EXCLUDED.project_id, aggregate_version = EXCLUDED.aggregate_version,
+    schema_version = EXCLUDED.schema_version, state_jsonb = EXCLUDED.state_jsonb, updated_at = EXCLUDED.updated_at
+WHERE aggregate_projections.aggregate_version < EXCLUDED.aggregate_version`,
+		adjustment.TenantID, adjustment.ProjectID, result.Account.ID, result.Account.Version, payload, occurredAt)
+	if err != nil {
+		return err
+	}
+	if rows, err := projectionResult.RowsAffected(); err != nil {
+		return err
+	} else if rows != 1 {
+		return ErrBudgetVersionConflict
+	}
 	metadata, err := json.Marshal(map[string]string{
 		"correlationId": "corr_" + strings.TrimPrefix(requestDigest, "sha256:"),
 		"traceparent":   adjustment.Traceparent, "tracestate": adjustment.Tracestate,
@@ -294,8 +311,9 @@ func persistBudgetAdjustment(ctx context.Context, tx *sql.Tx, occurredAt time.Ti
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO domain_events
   (event_id, tenant_id, project_id, aggregate_type, aggregate_id, aggregate_version,
-   event_type, schema_version, payload_jsonb, payload_sha256, metadata_jsonb, created_at)
-VALUES ($1::uuid, $2::uuid, $3::uuid, 'budget', $4, $5, $6, 1, $7::jsonb, $8, $9::jsonb, $10)`,
+   event_type, schema_version, payload_jsonb, payload_sha256, replay_state_jsonb, replay_state_sha256,
+   metadata_jsonb, created_at)
+VALUES ($1::uuid, $2::uuid, $3::uuid, 'budget', $4, $5, $6, 1, $7::jsonb, $8, $7::jsonb, $8, $9::jsonb, $10)`,
 		eventID.String(), adjustment.TenantID, adjustment.ProjectID, result.Account.ID, result.Account.Version,
 		budgetAdjustedEventType, payload, payloadDigest, metadata, occurredAt); err != nil {
 		return err

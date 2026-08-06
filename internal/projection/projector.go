@@ -56,19 +56,30 @@ func New(reducers map[string]Reducer) *Projector {
 func (p *Projector) Apply(event eventing.DomainEvent) ([]eventing.DomainEvent, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if event.AggregateType == "budget" && len(event.ReplayState) == 0 {
+		digest, digestErr := canonicaljson.Digest(event.Payload)
+		if digestErr != nil {
+			return nil, digestErr
+		}
+		event.ReplayState = cloneJSON(event.Payload)
+		event.ReplayStateSHA256 = digest
+	}
 	fingerprint, err := validateEvent(event)
 	if err != nil {
 		return nil, err
-	}
-	reducer := p.reducers[event.AggregateType]
-	if reducer == nil {
-		return nil, fmt.Errorf("no reducer for aggregate type %q", event.AggregateType)
 	}
 	if prior, exists := p.eventIDs[event.EventID]; exists {
 		if prior == fingerprint {
 			return nil, nil
 		}
 		return nil, aorerrors.New(aorerrors.CodeConflict, event.CorrelationID, map[string]any{"scope": "eventId"})
+	}
+	if event.AggregateType == "budget" {
+		return p.applyBudgetSnapshotLocked(event, fingerprint)
+	}
+	reducer := p.reducers[event.AggregateType]
+	if reducer == nil {
+		return nil, fmt.Errorf("no reducer for aggregate type %q", event.AggregateType)
 	}
 	key := aggregateKey(event.TenantID, event.AggregateType, event.AggregateID)
 	current := p.streams[key]
@@ -121,6 +132,56 @@ func (p *Projector) Apply(event eventing.DomainEvent) ([]eventing.DomainEvent, e
 		applied = append(applied, cloneEvent(next))
 	}
 	return applied, nil
+}
+
+// Budget account versions also advance for reservations and settlements that
+// are intentionally not domain events. Budget adjustment events therefore
+// carry complete snapshots and may contain version gaps; the newest verified
+// snapshot is authoritative for this aggregate type.
+func (p *Projector) applyBudgetSnapshotLocked(event eventing.DomainEvent, fingerprint eventFingerprint) ([]eventing.DomainEvent, error) {
+	if event.Type != "io.aor.budget.adjusted.v1" || len(event.ReplayState) == 0 {
+		return nil, fmt.Errorf("budget event has no authoritative snapshot")
+	}
+	if _, err := AuthoritativeStateReducer(nil, event); err != nil {
+		return nil, err
+	}
+	var snapshot struct {
+		TenantID         string `json:"tenantId"`
+		ProjectID        string `json:"projectId"`
+		AccountID        string `json:"accountId"`
+		PrincipalID      string `json:"principalId"`
+		PreviousVersion  int64  `json:"previousVersion"`
+		AggregateVersion int64  `json:"aggregateVersion"`
+		Version          int64  `json:"version"`
+		HardLimit        int64  `json:"hardLimitMinor"`
+		SoftLimit        int64  `json:"softLimitMinor"`
+		Currency         string `json:"currency"`
+		Reason           string `json:"reason"`
+	}
+	if json.Unmarshal(event.ReplayState, &snapshot) != nil || snapshot.TenantID != event.TenantID || snapshot.ProjectID != event.ProjectID || snapshot.AccountID != event.AggregateID || snapshot.PrincipalID == "" || snapshot.PreviousVersion < 1 || snapshot.AggregateVersion != event.AggregateVersion || snapshot.Version != event.AggregateVersion || snapshot.PreviousVersion+1 != snapshot.Version || snapshot.HardLimit < 0 || snapshot.SoftLimit < 0 || snapshot.SoftLimit > snapshot.HardLimit || len(snapshot.Currency) != 3 || snapshot.Currency[0] < 'A' || snapshot.Currency[0] > 'Z' || snapshot.Currency[1] < 'A' || snapshot.Currency[1] > 'Z' || snapshot.Currency[2] < 'A' || snapshot.Currency[2] > 'Z' || snapshot.Reason == "" {
+		return nil, fmt.Errorf("budget event snapshot identity is invalid")
+	}
+	key := aggregateKey(event.TenantID, event.AggregateType, event.AggregateID)
+	current := p.streams[key]
+	if current == nil {
+		current = &stream{pending: make(map[int64]eventing.DomainEvent), applied: make(map[int64]eventFingerprint)}
+		p.streams[key] = current
+	}
+	if prior, exists := current.applied[event.AggregateVersion]; exists {
+		if prior == fingerprint {
+			p.eventIDs[event.EventID] = fingerprint
+			return nil, nil
+		}
+		return nil, aorerrors.New(aorerrors.CodeConflict, event.CorrelationID, map[string]any{"scope": "aggregateVersion"})
+	}
+	p.eventIDs[event.EventID] = fingerprint
+	current.applied[event.AggregateVersion] = fingerprint
+	if event.AggregateVersion <= current.version {
+		return nil, nil
+	}
+	current.version = event.AggregateVersion
+	current.state = cloneJSON(event.ReplayState)
+	return []eventing.DomainEvent{cloneEvent(event)}, nil
 }
 
 func (p *Projector) Snapshot(tenantID, aggregateType, aggregateID string) (Snapshot, bool) {

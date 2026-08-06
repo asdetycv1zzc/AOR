@@ -49,3 +49,16 @@ func TestDeriveReplayStateRejectsUnknownLegacyAggregate(t *testing.T) {
 		t.Fatalf("unknown legacy aggregate error=%v", err)
 	}
 }
+
+func TestDeriveReplayStateSupportsBudgetAdjustmentSnapshots(t *testing.T) {
+	state := json.RawMessage(`{"tenantId":"tenant-1","projectId":"project-1","accountId":"account-1","principalId":"admin","previousVersion":4,"aggregateVersion":5,"version":5,"hardLimitMinor":200,"softLimitMinor":150,"currency":"USD","reason":"approved"}`)
+	event := DomainEvent{EventID: "event-budget", TenantID: "tenant-1", ProjectID: "project-1", AggregateType: "budget", AggregateID: "account-1", AggregateVersion: 5, Type: "io.aor.budget.adjusted.v1", Payload: state}
+	derived, err := deriveReplayState(event, nil)
+	if err != nil || string(derived.ReplayState) != string(state) || derived.ReplayStateSHA256 == "" {
+		t.Fatalf("budget replay state = %#v error=%v", derived, err)
+	}
+	event.AggregateVersion = 6
+	if _, err := deriveReplayState(event, nil); !errors.Is(err, ErrReplayStateUnavailable) {
+		t.Fatalf("mismatched budget version error=%v", err)
+	}
+}

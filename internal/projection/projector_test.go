@@ -3,6 +3,7 @@ package projection
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -108,6 +109,28 @@ func TestProjectorRejectsConflictingVersion(t *testing.T) {
 	}
 }
 
+func TestProjectorAcceptsBudgetSnapshotVersionGaps(t *testing.T) {
+	projector := New(nil)
+	second := budgetProjectionEvent(5, 4, 200)
+	first := budgetProjectionEvent(2, 1, 150)
+	if _, err := projector.Apply(second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := projector.Apply(first); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, found := projector.Snapshot("tenant_1", "budget", "account-1")
+	if !found || snapshot.Version != 5 || string(snapshot.State) != string(second.ReplayState) {
+		t.Fatalf("budget snapshot = %#v, %v", snapshot, found)
+	}
+	conflict := budgetProjectionEvent(5, 4, 250)
+	_, err := projector.Apply(conflict)
+	var typed *aorerrors.Error
+	if !errors.As(err, &typed) || typed.Code != aorerrors.CodeConflict {
+		t.Fatalf("budget version conflict = %v", err)
+	}
+}
+
 func replaceReducer(_ json.RawMessage, event eventing.DomainEvent) (json.RawMessage, error) {
 	return append(json.RawMessage(nil), event.Payload...), nil
 }
@@ -134,4 +157,10 @@ func projectionEventVersion(version int64) eventing.DomainEvent {
 		EventID: "evt_buffer_" + time.Unix(version, 0).UTC().Format(time.RFC3339), TenantID: "tenant_1", ProjectID: "prj_1", AggregateType: "project", AggregateID: "prj_1", AggregateVersion: version,
 		Type: "io.aor.project.changed.v1", Payload: payload, PayloadSHA256: digest, OccurredAt: time.Unix(version, 0).UTC(),
 	}
+}
+
+func budgetProjectionEvent(version, previous, hardLimit int64) eventing.DomainEvent {
+	payload := json.RawMessage(fmt.Sprintf(`{"tenantId":"tenant_1","projectId":"prj_1","accountId":"account-1","principalId":"admin","previousVersion":%d,"aggregateVersion":%d,"version":%d,"hardLimitMinor":%d,"softLimitMinor":%d,"currency":"USD","reason":"approved"}`, previous, version, version, hardLimit, hardLimit-1))
+	digest, _ := canonicaljson.Digest(payload)
+	return eventing.DomainEvent{EventID: fmt.Sprintf("budget-%d-%d", version, hardLimit), TenantID: "tenant_1", ProjectID: "prj_1", AggregateType: "budget", AggregateID: "account-1", AggregateVersion: version, Type: "io.aor.budget.adjusted.v1", Payload: payload, PayloadSHA256: digest, ReplayState: append(json.RawMessage(nil), payload...), ReplayStateSHA256: digest, OccurredAt: time.Unix(version, 0).UTC()}
 }
