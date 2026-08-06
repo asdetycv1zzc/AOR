@@ -6,6 +6,8 @@ AOR is a deterministic control plane for versioned, auditable multi-agent softwa
 
 The repository is under active implementation. It is not production ready until the signed Phase 7 acceptance, security-gate, and launch evidence is present.
 
+The Compose `TEST` profile is the classroom core path: Goal negotiation, Plan, Execution, deterministic module tests, and blind module audit. When every active module passes, the project projection contains `coreSummary.status=COMPLETED`; the production Integration and Global Audit gates remain separate.
+
 ## Prerequisites
 
 - Go `1.26.5`
@@ -20,6 +22,8 @@ Windows workers intentionally provide native-process execution with `isolationLe
 ```bash
 make verify
 ```
+
+The TEST worker runs the fixed argv from `AOR_MODULE_TEST_COMMAND_JSON` (Compose defaults to `go test -p=1 ./...`) against an immutable submission checkout. It does not provide a security boundary for untrusted code.
 
 ## Entry Points
 

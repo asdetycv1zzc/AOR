@@ -716,6 +716,9 @@ services:
       AOR_MODULE_AUDITOR_ROUTE_JSON: >-
         {"provider":"deepseek-audit","model":"${AOR_DEEPSEEK_MODEL:-deepseek-v4-flash}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3}
       AOR_EXECUTOR_MAX_TOOL_ROUNDS: "8"
+      AOR_MODULE_TEST_COMMAND_JSON: >-
+        ["/usr/local/go/bin/go","test","-p=1","./..."]
+      AOR_MODULE_TEST_TIMEOUT_SECONDS: "300"
       AOR_INTEGRATION_WORK_ROOT: /tmp/aor-integration
       AOR_INTEGRATION_DEPENDENCY_CACHE: /go/pkg/mod
       AOR_INTEGRATION_CHECKS_JSON: >-

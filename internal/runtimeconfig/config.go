@@ -125,8 +125,10 @@ type GoalPlanConfig struct {
 }
 
 type ExecutionConfig struct {
-	Route         GoalPlanRouteConfig
-	MaxToolRounds int
+	Route                    GoalPlanRouteConfig
+	MaxToolRounds            int
+	ModuleTestCommand        []string
+	ModuleTestTimeoutSeconds int
 }
 
 type IntegrationConfig struct {
@@ -213,6 +215,9 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 			WorkRoot:        strictValue(lookup, "AOR_INTEGRATION_WORK_ROOT", ""),
 			DependencyCache: strictValue(lookup, "AOR_INTEGRATION_DEPENDENCY_CACHE", ""),
 		},
+		Execution: ExecutionConfig{
+			ModuleTestCommand: []string{"/usr/local/go/bin/go", "test", "-p=1", "./..."},
+		},
 		Database: DatabaseConfig{
 			Host:        value(lookup, "AOR_DATABASE_HOST", "postgres"),
 			Name:        value(lookup, "AOR_DATABASE_NAME", "aor"),
@@ -294,6 +299,10 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	config.Execution.ModuleTestTimeoutSeconds, err = integer(lookup, "AOR_MODULE_TEST_TIMEOUT_SECONDS", 300, 1, 900)
+	if err != nil {
+		return Config{}, err
+	}
 	config.ModelGatewayClient.Scopes, err = oauthScopes(lookup, "AOR_MODEL_GATEWAY_OAUTH_SCOPES")
 	if err != nil {
 		return Config{}, err
@@ -357,6 +366,15 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 		}
 		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 			return Config{}, configurationError("AOR_EXECUTOR_ROUTE_JSON")
+		}
+	}
+	if raw, found := lookup("AOR_MODULE_TEST_COMMAND_JSON"); found && strings.TrimSpace(raw) != "" {
+		decoder := json.NewDecoder(strings.NewReader(raw))
+		if err := decoder.Decode(&config.Execution.ModuleTestCommand); err != nil {
+			return Config{}, configurationError("AOR_MODULE_TEST_COMMAND_JSON")
+		}
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			return Config{}, configurationError("AOR_MODULE_TEST_COMMAND_JSON")
 		}
 	}
 	if raw, found := lookup("AOR_GLOBAL_AUDITOR_ROUTE_JSON"); found && strings.TrimSpace(raw) != "" {
@@ -469,6 +487,9 @@ func (config Config) Validate() error {
 	}
 	if config.Component == "aor-worker" {
 		if !validSecretReference(config.LeaseSigningKeyRef) || !validDeploymentProfile(config.DeploymentProfile) || !validKnowledgeRoot(config.KnowledgeRoot) || !validKnowledgeRoot(config.RepositoryRoot) || !validURL(config.Services.API, "http", "https") || !validURL(config.Services.ModelGateway, "http", "https") || !validURL(config.Services.ToolBroker, "http", "https") || !validGoalPlanRoute(config.Execution.Route) || config.Execution.MaxToolRounds < 2 || config.Execution.MaxToolRounds > 8 {
+			return ErrInvalidConfiguration
+		}
+		if !validModuleTestCommand(config.Execution.ModuleTestCommand) || config.Execution.ModuleTestTimeoutSeconds < 1 || config.Execution.ModuleTestTimeoutSeconds > 900 {
 			return ErrInvalidConfiguration
 		}
 		if globalAuditRouteConfigured(config.GlobalAuditRoute) && !validGoalPlanRoute(config.GlobalAuditRoute) {
@@ -970,6 +991,21 @@ func validSandboxHoldCommand(command []string) bool {
 		return false
 	}
 	for _, argument := range command {
+		if argument == "" || len(argument) > 4096 || strings.ContainsAny(argument, "\r\n\x00") {
+			return false
+		}
+	}
+	return true
+}
+
+func validModuleTestCommand(command []string) bool {
+	if len(command) == 0 || len(command) > 64 || !validIntegrationExecutable(command[0]) {
+		return false
+	}
+	if oneOf(strings.ToLower(filepath.Base(command[0])), "sh", "bash", "dash", "zsh", "fish", "cmd", "cmd.exe", "powershell", "powershell.exe") {
+		return false
+	}
+	for _, argument := range command[1:] {
 		if argument == "" || len(argument) > 4096 || strings.ContainsAny(argument, "\r\n\x00") {
 			return false
 		}

@@ -649,7 +649,15 @@ func configuredModuleAudit(config runtimeconfig.Config, clients *runtimeclient.C
 	if err != nil {
 		return nil, err
 	}
-	pipeline, err := audit.NewPersistentPipeline(nil, auditors, signer, evidence, pipelineArtifacts, runs, "1.0.0", time.Now)
+	var checks []audit.Check
+	if local {
+		moduleTest, testErr := audit.NewModuleTestCheck(config.RepositoryRoot, config.Integration.WorkRoot, config.Execution.ModuleTestCommand, time.Duration(config.Execution.ModuleTestTimeoutSeconds)*time.Second)
+		if testErr != nil {
+			return nil, testErr
+		}
+		checks = append(audit.DefaultChecks(), moduleTest)
+	}
+	pipeline, err := audit.NewPersistentPipeline(checks, auditors, signer, evidence, pipelineArtifacts, runs, "1.0.0", time.Now)
 	if err != nil {
 		return nil, err
 	}
