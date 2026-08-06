@@ -542,7 +542,7 @@ SELECT
   AND EXISTS (
     SELECT 1 FROM budget_accounts
     WHERE tenant_id = $1::uuid AND id = $6
-      AND scope_type = 'PROJECT' AND scope_id = $2
+      AND scope_type = 'PROJECT' AND scope_id = $2::text
       AND hard_limit_micros >= spent_micros + reserved_micros
       AND hard_limit_micros - spent_micros - reserved_micros > 0
       AND period_start <= clock_timestamp()
