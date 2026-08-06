@@ -64,6 +64,31 @@ func TestGatewayDeduplicatesConcurrentAndRestartedRequestIDs(t *testing.T) {
 	}
 }
 
+func TestGatewayRevalidatesDurableReplayWithCurrentSemanticPolicy(t *testing.T) {
+	gateway, adapter, ledger := newHardeningGateway(t, GatewayConfig{})
+	request := hardeningRequest("replay-semantic-policy")
+	request.ResponseSchema = json.RawMessage(`{"type":"object","required":["ok"],"properties":{"ok":{"type":"boolean"}}}`)
+	request.ResponseSemanticValidator = func(json.RawMessage) error { return nil }
+	options := GenerateOptions{Provider: "primary", AccountID: "account", ReservationID: "replay-semantic-reservation", MaxAttempts: 1}
+
+	if _, err := gateway.Generate(context.Background(), request, options); err != nil {
+		t.Fatal(err)
+	}
+	request.ResponseSemanticValidator = func(json.RawMessage) error {
+		return errors.New("current semantic policy rejects replay")
+	}
+	if _, err := gateway.Generate(context.Background(), request, options); !errors.Is(err, ErrOutputSchema) {
+		t.Fatalf("replay semantic validation error = %v", err)
+	}
+	if adapter.Calls() != 1 {
+		t.Fatalf("provider calls = %d", adapter.Calls())
+	}
+	account, _ := ledger.Account("tenant", "account")
+	if account.SpentMicros != 3 || account.ReservedMicros != 0 {
+		t.Fatalf("account = %#v", account)
+	}
+}
+
 func TestGatewayClaimsExternalCallAcrossConcurrentInstances(t *testing.T) {
 	ledger := NewBudgetLedger(time.Now)
 	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "account", TenantID: "tenant", LimitMicros: 10_000}); err != nil {

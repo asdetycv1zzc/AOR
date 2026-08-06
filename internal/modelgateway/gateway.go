@@ -433,6 +433,13 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 		g.finishExecution(request, digest, execution, NormalizedResponse{}, loadErr)
 		return NormalizedResponse{}, loadErr
 	} else if found {
+		// Durable replays are untrusted persisted model output. Re-run the
+		// request's current output checks before returning a replay, including
+		// the process-local semantic validator.
+		if validationErr := validateGeneratedResponse(request, replay.Response); validationErr != nil {
+			g.finishExecution(request, digest, execution, NormalizedResponse{}, validationErr)
+			return NormalizedResponse{}, validationErr
+		}
 		g.finishExecution(request, digest, execution, replay.Response, nil)
 		return replay.Response, nil
 	}
