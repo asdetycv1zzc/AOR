@@ -25,7 +25,7 @@ type result struct {
 
 func main() {
 	if len(os.Args) < 2 {
-		fail("usage", []bootstrap.Finding{{Code: "INVALID_ARGUMENT", Message: "usage: aor-conformance <check> or run --profile <test|preproduction|production> --spec-version <version> [--target <url> --output <directory>]"}})
+		fail("usage", []bootstrap.Finding{{Code: "INVALID_ARGUMENT", Message: "usage: aor-conformance <check> or run --profile <test|preproduction|production> --spec-version <version> [--target <url> --output <directory> --driver-manifest <file> --driver-public-key <file>]"}})
 	}
 	root, err := os.Getwd()
 	if err != nil {
@@ -90,6 +90,8 @@ func runConformance(root string, arguments []string) {
 	specVersion := "2.0.0"
 	target := ""
 	output := ""
+	driverManifest := os.Getenv("AOR_CONFORMANCE_DRIVER_MANIFEST")
+	driverPublicKey := os.Getenv("AOR_CONFORMANCE_DRIVER_PUBLIC_KEY_FILE")
 	releaseVersion := version.Version
 	sourceCommit := version.Commit
 	groups := []string{}
@@ -111,6 +113,10 @@ func runConformance(root string, arguments []string) {
 			sourceCommit = value
 		case "--output":
 			output = value
+		case "--driver-manifest":
+			driverManifest = value
+		case "--driver-public-key":
+			driverPublicKey = value
 		case "--groups":
 			groups = strings.Split(value, ",")
 		default:
@@ -123,7 +129,11 @@ func runConformance(root string, arguments []string) {
 		fail("run", []bootstrap.Finding{{Code: "SIGNER_INVALID", Message: signerErr.Error()}})
 	}
 	runner := aorconformance.NewRunner(nil)
-	evidence, err := runner.Run(context.Background(), aorconformance.Request{Root: root, Target: target, Profile: profile, SpecVersion: specVersion, ReleaseVersion: releaseVersion, SourceCommit: sourceCommit, OutputDir: output, Groups: groups, Signer: signer})
+	var externalDriver *aorconformance.ExternalDriverConfig
+	if driverManifest != "" {
+		externalDriver = &aorconformance.ExternalDriverConfig{ManifestPath: driverManifest, PublicKeyPath: driverPublicKey}
+	}
+	evidence, err := runner.Run(context.Background(), aorconformance.Request{Root: root, Target: target, Profile: profile, SpecVersion: specVersion, ReleaseVersion: releaseVersion, SourceCommit: sourceCommit, OutputDir: output, Groups: groups, Signer: signer, ExternalDriver: externalDriver})
 	encoded, marshalErr := json.Marshal(result{Check: "run", Status: "PASS"})
 	if marshalErr != nil {
 		os.Exit(2)

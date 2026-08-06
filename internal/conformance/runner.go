@@ -76,6 +76,7 @@ type Request struct {
 	OutputDir      string
 	Groups         []string
 	Signer         Signer
+	ExternalDriver *ExternalDriverConfig
 	Clock          func() time.Time
 }
 
@@ -155,6 +156,15 @@ func (r *Runner) Run(ctx context.Context, request Request) (ReleaseEvidence, err
 			hardFailure = true
 		}
 	}
+	externalGroups := requestedExternalGroups(request.Groups)
+	var externalRun *externalDriverRun
+	if request.ExternalDriver != nil && len(externalGroups) > 0 {
+		externalRun, err = r.runExternalDriver(ctx, root, request, build, externalGroups)
+		if err != nil {
+			evidence.Exceptions = append(evidence.Exceptions, "external driver: "+err.Error())
+			hardFailure = true
+		}
+	}
 	if request.Profile == "production" {
 		spec, specErr := os.ReadFile(filepath.Join(root, "SPEC.md"))
 		catalog, catalogErr := os.ReadFile(filepath.Join(root, "conformance", "requirements.yaml"))
@@ -170,6 +180,17 @@ func (r *Runner) Run(ctx context.Context, request Request) (ReleaseEvidence, err
 	}
 	for _, group := range request.Groups {
 		results, gateErr, environmentGate := runGroup(ctx, root, group)
+		if environmentGate && externalRun != nil {
+			if externalResult, ok := externalRun.results[group]; ok {
+				results = []RequirementResult{externalResult}
+				environmentGate = externalResult.Status == "INCONCLUSIVE"
+				if externalResult.Status == "FAIL" {
+					gateErr = ErrGateFailed
+				} else if externalResult.Status == "INCONCLUSIVE" && request.Profile != "test" {
+					gateErr = ErrEnvironmentGate
+				}
+			}
+		}
 		for index := range results {
 			results[index].EvidenceURIs = append(results[index].EvidenceURIs, targetEvidence...)
 		}
