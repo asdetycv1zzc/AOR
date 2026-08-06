@@ -47,6 +47,7 @@
     "io.aor.module.superseded.v1": "https://schemas.aor.local/events/module-superseded.v1.schema.json",
     "io.aor.module.integrated.v1": "https://schemas.aor.local/events/module-integrated.v1.schema.json",
     "io.aor.artifact.spec-stored.v1": "https://schemas.aor.local/events/artifact-spec-stored.v1.schema.json",
+    "io.aor.integration.summary-published.v1": "https://schemas.aor.local/events/integration-summary-published.v1.schema.json",
     "io.aor.approval.committed.v1": "https://schemas.aor.local/events/approval-committed.v1.schema.json",
     "io.aor.budget.adjusted.v1": "https://schemas.aor.local/events/budget-adjusted.v1.schema.json",
     "io.aor.knowledge.updated.v1": "https://schemas.aor.local/events/knowledge-updated.v1.schema.json",

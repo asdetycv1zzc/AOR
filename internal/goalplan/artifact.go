@@ -11,6 +11,7 @@ import (
 
 	"github.com/akimisaka/aor/internal/eventing"
 	"github.com/akimisaka/aor/internal/idempotency"
+	"github.com/akimisaka/aor/internal/observability"
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 	"github.com/akimisaka/aor/pkg/contracts"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
@@ -94,15 +95,20 @@ func (s *EventArtifactStore) Put(ctx context.Context, artifact SpecArtifact) (Sp
 		return SpecArtifact{}, err
 	}
 	payload, err := json.Marshal(struct {
-		TenantID       string       `json:"tenantId"`
-		ProjectID      string       `json:"projectId"`
-		Kind           ArtifactKind `json:"kind"`
-		SpecID         string       `json:"specId"`
-		Version        int          `json:"version"`
-		ContentSHA256  string       `json:"contentSha256"`
-		ArtifactSHA256 string       `json:"artifactSha256"`
-		URI            string       `json:"uri"`
-	}{artifact.TenantID, artifact.ProjectID, artifact.Kind, artifact.SpecID, artifact.Version, artifact.ContentSHA256, artifact.ArtifactSHA256, artifact.URI})
+		TenantID         string       `json:"tenantId"`
+		ProjectID        string       `json:"projectId"`
+		AggregateVersion int64        `json:"aggregateVersion"`
+		Kind             ArtifactKind `json:"kind"`
+		SpecID           string       `json:"specId"`
+		Version          int          `json:"version"`
+		ContentSHA256    string       `json:"contentSha256"`
+		ArtifactSHA256   string       `json:"artifactSha256"`
+		URI              string       `json:"uri"`
+	}{
+		TenantID: artifact.TenantID, ProjectID: artifact.ProjectID, AggregateVersion: 1,
+		Kind: artifact.Kind, SpecID: artifact.SpecID, Version: artifact.Version,
+		ContentSHA256: artifact.ContentSHA256, ArtifactSHA256: artifact.ArtifactSHA256, URI: artifact.URI,
+	})
 	if err != nil {
 		return SpecArtifact{}, err
 	}
@@ -110,10 +116,19 @@ func (s *EventArtifactStore) Put(ctx context.Context, artifact SpecArtifact) (Sp
 	if err != nil {
 		return SpecArtifact{}, err
 	}
+	traceparent, tracestate, err := artifactEventTrace(ctx)
+	if err != nil {
+		return SpecArtifact{}, err
+	}
+	agentRunID, agentRunReason := artifact.SourceRunID, ""
+	if agentRunID == "" {
+		agentRunReason = "NOT_CREATED"
+	}
 	event := eventing.DomainEvent{
 		EventID: eventID.String(), TenantID: artifact.TenantID, ProjectID: artifact.ProjectID, AggregateType: "spec_artifact", AggregateID: aggregateID,
 		AggregateVersion: 1, Type: "io.aor.artifact.spec-stored.v1", Payload: payload, PayloadSHA256: mustArtifactDigest(payload),
 		OccurredAt: artifact.CreatedAt, CorrelationID: "corr_" + artifact.ArtifactSHA256[len("sha256:"):len("sha256:")+32],
+		Traceparent: traceparent, Tracestate: tracestate, TaskIDReason: "NOT_CREATED", AgentRunID: agentRunID, AgentRunReason: agentRunReason,
 	}
 	transaction, err := s.store.Execute(ctx, eventing.TransactionRequest{
 		TenantID: artifact.TenantID, PrincipalID: artifact.CreatedBy, IdempotencyKey: "store:" + aggregateID + ":" + artifact.ArtifactSHA256,
@@ -129,6 +144,22 @@ func (s *EventArtifactStore) Put(ctx context.Context, artifact SpecArtifact) (Sp
 		return SpecArtifact{}, err
 	}
 	return cloneArtifact(stored), nil
+}
+
+func artifactEventTrace(ctx context.Context) (string, string, error) {
+	trace, found := observability.TraceFromContext(ctx)
+	if !found {
+		var err error
+		trace, err = observability.NewRootTraceContext(false)
+		if err != nil {
+			return "", "", err
+		}
+	}
+	traceparent, err := trace.TraceParent()
+	if err != nil {
+		return "", "", err
+	}
+	return traceparent, trace.TraceState, nil
 }
 
 func (s *EventArtifactStore) Get(ctx context.Context, tenantID, projectID string, kind ArtifactKind, specID string, version int) (SpecArtifact, bool, error) {

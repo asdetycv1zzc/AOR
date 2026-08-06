@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/akimisaka/aor/internal/eventing"
+	"github.com/akimisaka/aor/internal/observability"
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 	"github.com/google/uuid"
 )
@@ -36,6 +37,10 @@ func (store *EventSummaryStore) Publish(ctx context.Context, summary PlanSupervi
 	if err != nil {
 		return err
 	}
+	resultDigest, err := canonicaljson.Digest(encoded)
+	if err != nil {
+		return err
+	}
 	projection, found, err := store.store.Load(ctx, summary.TenantID, integrationSummaryAggregate, summary.IntegrationID)
 	if err != nil {
 		return err
@@ -53,21 +58,37 @@ func (store *EventSummaryStore) Publish(ctx context.Context, summary PlanSupervi
 	if found {
 		expectedVersion = projection.Version
 	}
-	payloadDigest, err := canonicaljson.Digest(encoded)
-	if err != nil {
-		return err
-	}
 	eventID, err := uuid.NewV7()
 	if err != nil {
 		return err
 	}
 	occurredAt := store.clock().UTC()
 	correlation := "corr_" + summary.SummarySHA256[len("sha256:"):len("sha256:")+32]
+	eventPayload, err := json.Marshal(struct {
+		PlanSupervisorSummary
+		AggregateVersion int64 `json:"aggregateVersion"`
+	}{PlanSupervisorSummary: summary, AggregateVersion: expectedVersion + 1})
+	if err != nil {
+		return err
+	}
+	payloadDigest, err := canonicaljson.Digest(eventPayload)
+	if err != nil {
+		return err
+	}
+	traceparent, tracestate, err := summaryEventTrace(ctx)
+	if err != nil {
+		return err
+	}
+	taskID, taskIDReason := summary.OwnerTaskID, ""
+	if taskID == "" {
+		taskIDReason = "NOT_CREATED"
+	}
 	event := eventing.DomainEvent{
 		EventID: eventID.String(), TenantID: summary.TenantID, ProjectID: summary.ProjectID,
 		AggregateType: integrationSummaryAggregate, AggregateID: summary.IntegrationID, AggregateVersion: expectedVersion + 1,
-		Type: "io.aor.integration.summary-published.v1", Payload: encoded, PayloadSHA256: payloadDigest,
-		OccurredAt: occurredAt, CorrelationID: correlation,
+		Type: "io.aor.integration.summary-published.v1", Payload: eventPayload, PayloadSHA256: payloadDigest,
+		OccurredAt: occurredAt, CorrelationID: correlation, Traceparent: traceparent, Tracestate: tracestate,
+		TaskID: taskID, TaskIDReason: taskIDReason, AgentRunReason: "NOT_APPLICABLE",
 	}
 	_, err = store.store.Execute(ctx, eventing.TransactionRequest{
 		TenantID: summary.TenantID, PrincipalID: "service-integration",
@@ -77,7 +98,7 @@ func (store *EventSummaryStore) Publish(ctx context.Context, summary PlanSupervi
 			TenantID: summary.TenantID, ProjectID: summary.ProjectID, AggregateType: integrationSummaryAggregate,
 			AggregateID: summary.IntegrationID, ExpectedVersion: expectedVersion, NextVersion: expectedVersion + 1, State: encoded,
 		}},
-		Events: []eventing.DomainEvent{event}, Result: encoded, ResultSHA256: payloadDigest,
+		Events: []eventing.DomainEvent{event}, Result: encoded, ResultSHA256: resultDigest,
 	})
 	if err == nil {
 		return nil
@@ -90,6 +111,22 @@ func (store *EventSummaryStore) Publish(ctx context.Context, summary PlanSupervi
 		}
 	}
 	return errors.Join(err, loadErr)
+}
+
+func summaryEventTrace(ctx context.Context) (string, string, error) {
+	trace, found := observability.TraceFromContext(ctx)
+	if !found {
+		var err error
+		trace, err = observability.NewRootTraceContext(false)
+		if err != nil {
+			return "", "", err
+		}
+	}
+	traceparent, err := trace.TraceParent()
+	if err != nil {
+		return "", "", err
+	}
+	return traceparent, trace.TraceState, nil
 }
 
 func validPlanSupervisorSummary(summary PlanSupervisorSummary) bool {

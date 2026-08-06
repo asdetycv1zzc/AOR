@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/akimisaka/aor/internal/eventing"
+	"github.com/akimisaka/aor/internal/observability"
 	"github.com/google/uuid"
 )
 
@@ -17,7 +18,14 @@ func TestEventArtifactStoreIsImmutableScopedAndIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	artifact := SpecArtifact{TenantID: "tenant_1", ProjectID: "prj_1", Kind: ArtifactGoalDraft, SpecID: "goal_1", Version: 1, Content: []byte(`{"value":1}`), CreatedBy: "agt_goal"}
-	first, err := store.Put(context.Background(), artifact)
+	trace := observability.TraceContext{
+		TraceID: "0123456789abcdef0123456789abcdef", SpanID: "0123456789abcdef", TraceFlags: 1, TraceState: "aor=test",
+	}
+	ctx, err := observability.ContextWithTrace(context.Background(), trace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.Put(ctx, artifact)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,6 +59,20 @@ func TestEventArtifactStoreIsImmutableScopedAndIdempotent(t *testing.T) {
 	eventID, err := uuid.Parse(snapshot.Events[0].EventID)
 	if err != nil || eventID.Version() != uuid.Version(7) {
 		t.Fatalf("event ID = %q, %v", snapshot.Events[0].EventID, err)
+	}
+	external, err := eventing.Externalize(snapshot.Events[0], eventing.CloudEventOptions{Source: "urn:aor:test:goal-plan"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	traceparent, err := trace.TraceParent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if external.Traceparent != traceparent || external.Tracestate != trace.TraceState || external.ProjectID != artifact.ProjectID {
+		t.Fatalf("event trace and project correlation = %#v", external)
+	}
+	if external.TaskIDReason != "NOT_CREATED" || external.AgentRunReason != "NOT_CREATED" {
+		t.Fatalf("event scoped correlation = %#v", external)
 	}
 }
 
