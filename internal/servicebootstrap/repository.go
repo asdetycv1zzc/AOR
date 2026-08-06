@@ -607,7 +607,7 @@ SELECT EXISTS (
    AND submission.attempt_series_id = task.active_attempt_series_id
    AND submission.attempt = task.attempt_count
   WHERE task.tenant_id = $1::uuid AND task.project_id = $2::uuid AND task.id = $3::uuid
-    AND task.state = 'LLM_AUDIT' AND submission.head_commit = $4
+    AND task.state = 'LLM_AUDIT' AND $4 IN (submission.base_commit, submission.head_commit)
 )`, claim.TenantID, claim.ProjectID, claim.TaskID, commit).Scan(&allowed)
 	if err != nil || !allowed {
 		return repository.ErrLeaseStale
