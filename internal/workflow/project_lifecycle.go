@@ -224,7 +224,7 @@ func applyProjectLifecycleEvent(snapshot *ProjectLifecycleSnapshot, event Projec
 		if current == contracts.ProjectPlanning {
 			expected = contracts.ProjectExecuting
 		}
-	case "io.aor.plan.core-summary-published.v1":
+	case "io.aor.plan.core-progress-recorded.v1", "io.aor.plan.core-summary-published.v1":
 		if current == contracts.ProjectExecuting {
 			expected = contracts.ProjectExecuting
 		}

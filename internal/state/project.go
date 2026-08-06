@@ -176,6 +176,7 @@ const (
 	ProjectCommandRequestGoalChange    ProjectCommandType = "REQUEST_GOAL_CHANGE"
 	ProjectCommandSupersedeGoal        ProjectCommandType = "SUPERSEDE_GOAL"
 	ProjectCommandPublishPlan          ProjectCommandType = "PUBLISH_PLAN"
+	ProjectCommandRecordCoreProgress   ProjectCommandType = "RECORD_CORE_PROGRESS"
 	ProjectCommandPublishCoreSummary   ProjectCommandType = "PUBLISH_CORE_SUMMARY"
 	ProjectCommandBeginIntegration     ProjectCommandType = "BEGIN_INTEGRATION"
 	ProjectCommandBeginGlobalAudit     ProjectCommandType = "BEGIN_GLOBAL_AUDIT"
@@ -396,6 +397,11 @@ func DecideProject(current Project, command ProjectCommand) (ProjectEvent, *aore
 		next.CoreSummary = nil
 		next.State = contracts.ProjectExecuting
 		eventType = "io.aor.plan.published.v1"
+	case ProjectCommandRecordCoreProgress:
+		if current.State != contracts.ProjectExecuting || current.CoreSummary != nil {
+			return ProjectEvent{}, transitionProject(command, current.State)
+		}
+		eventType = "io.aor.plan.core-progress-recorded.v1"
 	case ProjectCommandPublishCoreSummary:
 		if current.State != contracts.ProjectExecuting || current.CoreSummary != nil || command.CoreSummary == nil || !command.CoreSummary.validFor(current) {
 			return ProjectEvent{}, transitionProject(command, current.State)

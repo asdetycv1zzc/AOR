@@ -190,6 +190,15 @@ func (s *Service) HandleProject(ctx context.Context, request ProjectRequest) (Pr
 }
 
 func (s *Service) HandleTask(ctx context.Context, request TaskRequest) (TaskOutcome, error) {
+	for {
+		outcome, err := s.handleTaskOnce(ctx, request)
+		if err == nil || !s.retryCorePassConflict(ctx, request, err) {
+			return outcome, err
+		}
+	}
+}
+
+func (s *Service) handleTaskOnce(ctx context.Context, request TaskRequest) (TaskOutcome, error) {
 	if err := validateRequest(request.TenantID, request.ProjectID, request.PrincipalID, request.IdempotencyKey, request.ExpectedVersion); err != nil || request.TaskID == "" {
 		if err != nil {
 			return TaskOutcome{}, err
