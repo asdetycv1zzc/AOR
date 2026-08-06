@@ -400,6 +400,18 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 		writeMethodNotAllowed(response, request)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "result" {
+		if !validProjectID(projectID) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		if request.Method == http.MethodGet {
+			handler.getProjectResult(response, request, principal, projectID)
+			return
+		}
+		writeMethodNotAllowed(response, request)
+		return
+	}
 	if len(parts) == 2 && parts[1] == "events" {
 		if !validProjectID(projectID) {
 			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
