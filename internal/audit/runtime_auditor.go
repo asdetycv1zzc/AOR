@@ -54,6 +54,7 @@ type ModuleAuditRuntime interface {
 	Queue(string) error
 	AssignLease(context.Context, string, agentruntime.AgentLease) error
 	Start(context.Context, string) error
+	Heartbeat(context.Context, string) error
 	RunToolLoop(context.Context, string, agentruntime.ModelCall, int) (modelgateway.NormalizedResponse, error)
 	Complete(context.Context, string, agentruntime.AgentOutput) (agentruntime.AcceptedResult, error)
 	AcceptedResult(string) (agentruntime.AcceptedResult, bool)
@@ -272,9 +273,40 @@ func (auditor *runtimeAuditor) execute(ctx context.Context, prepared preparedMod
 	if err := auditor.factory.runtime.Start(ctx, runID); err != nil {
 		return fail(err)
 	}
-	response, err := auditor.factory.runtime.RunToolLoop(ctx, runID, prepared.modelCall, auditor.factory.maxRounds)
+	runContext, cancelRun := context.WithCancel(ctx)
+	heartbeatDone := make(chan error, 1)
+	go func() {
+		ticker := time.NewTicker(time.Duration(agentruntime.DefaultHeartbeatSeconds) * time.Second / 2)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-runContext.Done():
+				heartbeatDone <- nil
+				return
+			case <-ticker.C:
+				heartbeatContext, cancel := context.WithTimeout(runContext, 10*time.Second)
+				heartbeatErr := auditor.factory.runtime.Heartbeat(heartbeatContext, runID)
+				cancel()
+				if heartbeatErr != nil {
+					if runContext.Err() != nil {
+						heartbeatDone <- nil
+						return
+					}
+					heartbeatDone <- heartbeatErr
+					cancelRun()
+					return
+				}
+			}
+		}
+	}()
+	response, err := auditor.factory.runtime.RunToolLoop(runContext, runID, prepared.modelCall, auditor.factory.maxRounds)
+	cancelRun()
+	heartbeatErr := <-heartbeatDone
 	if err != nil {
 		return fail(err)
+	}
+	if heartbeatErr != nil {
+		return fail(heartbeatErr)
 	}
 	if response.RequestID != prepared.modelCall.RequestID || response.ModelVersion != prepared.modelCall.Model || len(response.Content) == 0 || len(response.ToolCalls) != 0 {
 		return fail(ErrRuntimeAuditorOutput)
