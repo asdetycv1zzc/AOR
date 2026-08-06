@@ -168,6 +168,8 @@ func validAuditCommitValidation(validation orchestrator.CommitValidation) bool {
 		return validation.Task.State == contracts.TaskLLMAudit && exactClaims(validation.Claims, "fresh_auditor", "blind_audit_context", "no_blocking_findings")
 	case state.TaskCommandLLMFailure:
 		return validation.Task.State == contracts.TaskLLMAudit && exactClaims(validation.Claims, "fresh_auditor", "blind_audit_context")
+	case state.TaskCommandQueueRework:
+		return validation.Task.State == contracts.TaskReworkRequired && len(validation.Claims) == 0
 	default:
 		return false
 	}
@@ -186,6 +188,8 @@ func validAuditStateCommand(command state.TaskCommand) bool {
 		return !command.SubmissionValidated && command.FreshAuditor && command.BlindAuditContext && command.NoBlockingFindings
 	case state.TaskCommandLLMFailure:
 		return !command.SubmissionValidated && command.FreshAuditor && command.BlindAuditContext && !command.NoBlockingFindings
+	case state.TaskCommandQueueRework:
+		return !command.SubmissionValidated && !command.FreshAuditor && !command.BlindAuditContext && !command.NoBlockingFindings
 	default:
 		return false
 	}

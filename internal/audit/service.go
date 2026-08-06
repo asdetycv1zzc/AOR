@@ -264,6 +264,13 @@ func (service *ModuleAuditService) finishEvidence(ctx context.Context, request M
 	if !found {
 		return ModuleAuditResult{}, ErrTaskNotAuditable
 	}
+	if auditFailureOutcome(outcome) && current.State == contracts.TaskReworkRequired {
+		current, queueDuplicate, queueErr := service.queueRework(ctx, request, current, checkpoint.Facts.PolicyDigest, bundle.ManifestSHA256)
+		if queueErr != nil {
+			return ModuleAuditResult{}, queueErr
+		}
+		return ModuleAuditResult{Task: current, Evidence: cloneBundle(bundle), Duplicate: duplicate || queueDuplicate}, nil
+	}
 	if auditOutcomeReached(current, outcome) {
 		return ModuleAuditResult{Task: current, Evidence: cloneBundle(bundle), Duplicate: true}, nil
 	}
@@ -280,7 +287,23 @@ func (service *ModuleAuditService) finishEvidence(ctx context.Context, request M
 	if err != nil {
 		return ModuleAuditResult{}, err
 	}
+	if auditFailureOutcome(outcome) && current.State == contracts.TaskReworkRequired {
+		var queueDuplicate bool
+		current, queueDuplicate, err = service.queueRework(ctx, request, current, checkpoint.Facts.PolicyDigest, bundle.ManifestSHA256)
+		if err != nil {
+			return ModuleAuditResult{}, err
+		}
+		commandDuplicate = commandDuplicate || queueDuplicate
+	}
 	return ModuleAuditResult{Task: current, Evidence: cloneBundle(bundle), Duplicate: duplicate || commandDuplicate}, nil
+}
+
+func (service *ModuleAuditService) queueRework(ctx context.Context, request ModuleAuditRequest, task state.ModuleTask, policyDigest, evidenceSHA256 string) (state.ModuleTask, bool, error) {
+	return service.commitOrObserve(ctx, request, task, policyDigest, state.TaskCommand{
+		Type: state.TaskCommandQueueRework, AuditEvidenceSHA256: evidenceSHA256,
+	}, func(value state.ModuleTask) bool {
+		return reworkExecutionStarted(value)
+	})
 }
 
 func (service *ModuleAuditService) commitOrObserve(ctx context.Context, request ModuleAuditRequest, task state.ModuleTask, policyDigest string, command state.TaskCommand, reached func(state.ModuleTask) bool) (state.ModuleTask, bool, error) {
@@ -361,10 +384,18 @@ func auditOutcomeReached(task state.ModuleTask, outcome string) bool {
 	case outcomeLLMSuccess:
 		return task.State == contracts.TaskPassed || task.State == contracts.TaskIntegrated
 	case outcomeDeterministicFail, outcomeLLMFailure:
-		return task.State == contracts.TaskReworkRequired || task.State == contracts.TaskBlockedUserDecision
+		return task.State == contracts.TaskReworkRequired || reworkExecutionStarted(task) || task.State == contracts.TaskBlockedUserDecision
 	default:
 		return false
 	}
+}
+
+func reworkExecutionStarted(task state.ModuleTask) bool {
+	return task.State == contracts.TaskReadyExecution || task.State == contracts.TaskExecuting
+}
+
+func auditFailureOutcome(outcome string) bool {
+	return outcome == outcomeDeterministicFail || outcome == outcomeLLMFailure
 }
 
 func checkpointMatchesTask(checkpoint Coordination, task state.ModuleTask) bool {

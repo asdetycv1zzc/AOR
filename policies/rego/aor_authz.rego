@@ -168,6 +168,11 @@ audit_service_state_valid if {
 	input.task.state == "LLM_AUDIT"
 }
 
+audit_service_state_valid if {
+	input.resource.attributes.command == "QUEUE_REWORK"
+	input.task.state == "REWORK_REQUIRED"
+}
+
 audit_service_control_allowed if {
 	valid_task_scope
 	input.action == "task.command"
