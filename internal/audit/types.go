@@ -64,6 +64,7 @@ type DeterministicInput struct {
 	SubmissionID       string
 	Manifest           contracts.SubmissionManifest
 	ModuleSpecRef      contracts.SpecRef
+	ModuleSpec         *contracts.ModuleSpec
 	AllowedPaths       []string
 	ForbiddenPaths     []string
 	RequiredCriteria   []string
@@ -82,6 +83,7 @@ type BlindAuditInput struct {
 	AttemptSeriesID     string
 	Attempt             int
 	ModuleSpecRef       contracts.SpecRef
+	ModuleSpec          *contracts.ModuleSpec
 	BaseCommit          string
 	SubmissionCommit    string
 	ChangedFiles        []string

@@ -215,6 +215,7 @@ func (source *AuthoritativeInputSource) Load(ctx context.Context, request InputR
 		TenantID: request.Task.TenantID, AuditRunID: request.AuditRunID,
 		SubmissionID: submission.ID, Manifest: submission.Manifest,
 		ModuleSpecRef:    request.Task.ModuleSpecRef,
+		ModuleSpec:       cloneModuleSpec(module),
 		AllowedPaths:     append([]string(nil), module.AllowedPaths...),
 		ForbiddenPaths:   append([]string(nil), module.ForbiddenPaths...),
 		RequiredCriteria: append([]string(nil), module.AcceptanceCriteria...),
@@ -328,6 +329,7 @@ func deterministicInputDigest(input DeterministicInput) (string, error) {
 		SubmissionID       string                       `json:"submissionId"`
 		Manifest           contracts.SubmissionManifest `json:"manifest"`
 		ModuleSpecRef      contracts.SpecRef            `json:"moduleSpecRef"`
+		ModuleSpec         *contracts.ModuleSpec        `json:"moduleSpec"`
 		AllowedPaths       []string                     `json:"allowedPaths"`
 		ForbiddenPaths     []string                     `json:"forbiddenPaths"`
 		RequiredCriteria   []string                     `json:"requiredCriteria"`
@@ -337,7 +339,7 @@ func deterministicInputDigest(input DeterministicInput) (string, error) {
 		Isolation          contracts.IsolationLevel     `json:"isolation"`
 		SandboxAttestation string                       `json:"sandboxAttestation"`
 	}{
-		input.TenantID, input.AuditRunID, input.SubmissionID, input.Manifest, input.ModuleSpecRef,
+		input.TenantID, input.AuditRunID, input.SubmissionID, input.Manifest, input.ModuleSpecRef, input.ModuleSpec,
 		input.AllowedPaths, input.ForbiddenPaths, input.RequiredCriteria, input.TestRequirements, input.PolicyDigest,
 		input.Platform, input.Isolation, input.SandboxAttestation,
 	})
@@ -345,6 +347,27 @@ func deterministicInputDigest(input DeterministicInput) (string, error) {
 		return "", err
 	}
 	return canonicaljson.Digest(encoded)
+}
+
+func cloneModuleSpec(module contracts.ModuleSpec) *contracts.ModuleSpec {
+	clone := module
+	clone.Responsibilities = append([]string(nil), module.Responsibilities...)
+	clone.NonResponsibilities = append([]string(nil), module.NonResponsibilities...)
+	clone.Inputs = append([]string(nil), module.Inputs...)
+	clone.Outputs = append([]string(nil), module.Outputs...)
+	clone.Interfaces = append([]string(nil), module.Interfaces...)
+	clone.DataOwnership = append([]string(nil), module.DataOwnership...)
+	clone.Dependencies = append([]string(nil), module.Dependencies...)
+	clone.AllowedPaths = append([]string(nil), module.AllowedPaths...)
+	clone.ForbiddenPaths = append([]string(nil), module.ForbiddenPaths...)
+	clone.NetworkPolicy.Destinations = append([]string(nil), module.NetworkPolicy.Destinations...)
+	clone.ToolCapabilities = append([]string(nil), module.ToolCapabilities...)
+	clone.KnowledgeRefs = append([]string(nil), module.KnowledgeRefs...)
+	clone.AcceptanceCriteria = append([]string(nil), module.AcceptanceCriteria...)
+	clone.TestRequirements = append([]string(nil), module.TestRequirements...)
+	clone.ObservabilityRequirements = append([]string(nil), module.ObservabilityRequirements...)
+	clone.SecurityRequirements = append([]string(nil), module.SecurityRequirements...)
+	return &clone
 }
 
 var _ InputSource = (*AuthoritativeInputSource)(nil)

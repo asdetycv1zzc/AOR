@@ -319,15 +319,14 @@ func (auditor *runtimeAuditor) execute(ctx context.Context, prepared preparedMod
 }
 
 func moduleAuditContextItems(input BlindAuditInput, refs ModuleAuditReferences) ([]agentruntime.ContextItem, error) {
+	if input.ModuleSpec == nil || input.ModuleSpec.ModuleSpecVersion != input.ModuleSpecRef.Version || input.ModuleSpec.SHA256 != input.ModuleSpecRef.SHA256 {
+		return nil, ErrBlindContext
+	}
 	goal, err := json.Marshal(refs.GoalSpec)
 	if err != nil {
 		return nil, err
 	}
-	module, err := json.Marshal(struct {
-		ModuleSpecRef      contracts.SpecRef `json:"moduleSpecRef"`
-		AcceptanceCriteria []string          `json:"acceptanceCriteria"`
-		TestRequirements   []string          `json:"testRequirements"`
-	}{input.ModuleSpecRef, append([]string(nil), input.RequiredCriteria...), append([]string(nil), input.TestRequirements...)})
+	module, err := json.Marshal(input.ModuleSpec)
 	if err != nil {
 		return nil, err
 	}

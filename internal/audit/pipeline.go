@@ -9,6 +9,7 @@ import (
 	"math"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -133,7 +134,7 @@ func (p *Pipeline) run(ctx context.Context, input DeterministicInput, gate func(
 				return AuditResult{Bundle: bundle, Deterministic: checks, Verdict: "INCONCLUSIVE"}, err
 			}
 		}
-		blind := BlindAuditInput{AuditRunID: input.AuditRunID, TenantID: input.TenantID, ProjectID: input.Manifest.ProjectID, TaskID: input.Manifest.ModuleTaskID, AttemptSeriesID: input.Manifest.AttemptSeriesID, Attempt: input.Manifest.Attempt, ModuleSpecRef: input.ModuleSpecRef, BaseCommit: input.Manifest.BaseCommit, SubmissionCommit: input.Manifest.HeadCommit, ChangedFiles: append([]string(nil), input.Manifest.ChangedFiles...), RequiredCriteria: append([]string(nil), input.RequiredCriteria...), TestRequirements: append([]string(nil), input.TestRequirements...), DeterministicChecks: append([]contracts.EvidenceCheck(nil), checks...)}
+		blind := BlindAuditInput{AuditRunID: input.AuditRunID, TenantID: input.TenantID, ProjectID: input.Manifest.ProjectID, TaskID: input.Manifest.ModuleTaskID, AttemptSeriesID: input.Manifest.AttemptSeriesID, Attempt: input.Manifest.Attempt, ModuleSpecRef: input.ModuleSpecRef, ModuleSpec: cloneOptionalModuleSpec(input.ModuleSpec), BaseCommit: input.Manifest.BaseCommit, SubmissionCommit: input.Manifest.HeadCommit, ChangedFiles: append([]string(nil), input.Manifest.ChangedFiles...), RequiredCriteria: append([]string(nil), input.RequiredCriteria...), TestRequirements: append([]string(nil), input.TestRequirements...), DeterministicChecks: append([]contracts.EvidenceCheck(nil), checks...)}
 		if p.auditors == nil {
 			return AuditResult{Bundle: bundle, Deterministic: checks, Verdict: "INCONCLUSIVE"}, ErrAuditorUnavailable
 		}
@@ -338,11 +339,17 @@ func validateInput(input DeterministicInput) error {
 	if strings.TrimSpace(input.TenantID) == "" || input.Manifest.Validate() != nil || input.ModuleSpecRef.Validate() != nil || input.Manifest.ModuleSpecRef != input.ModuleSpecRef || !digestPattern.MatchString(input.PolicyDigest) || !contractsPlatformIsolation(input.Platform, input.Isolation) || input.SandboxAttestation == "" || !validRequiredCriteria(input.RequiredCriteria) {
 		return ErrInvalidInput
 	}
+	if input.ModuleSpec != nil && (input.ModuleSpec.Validate() != nil || input.ModuleSpec.ModuleSpecVersion != input.ModuleSpecRef.Version || input.ModuleSpec.SHA256 != input.ModuleSpecRef.SHA256 || !slices.Equal(input.ModuleSpec.AcceptanceCriteria, input.RequiredCriteria) || !slices.Equal(input.ModuleSpec.TestRequirements, input.TestRequirements)) {
+		return ErrInvalidInput
+	}
 	return nil
 }
 
 func validateBlindInput(input BlindAuditInput) error {
 	if input.ProjectID == "" || input.TaskID == "" || input.Attempt < 1 || input.Attempt > 3 || input.ModuleSpecRef.Validate() != nil || !commitID(input.BaseCommit) || !commitID(input.SubmissionCommit) || input.BaseCommit == input.SubmissionCommit || len(input.ChangedFiles) > 4096 || !validRequiredCriteria(input.RequiredCriteria) {
+		return ErrBlindContext
+	}
+	if input.ModuleSpec != nil && (input.ModuleSpec.Validate() != nil || input.ModuleSpec.ModuleSpecVersion != input.ModuleSpecRef.Version || input.ModuleSpec.SHA256 != input.ModuleSpecRef.SHA256 || !slices.Equal(input.ModuleSpec.AcceptanceCriteria, input.RequiredCriteria) || !slices.Equal(input.ModuleSpec.TestRequirements, input.TestRequirements)) {
 		return ErrBlindContext
 	}
 	for _, name := range input.ChangedFiles {
@@ -554,7 +561,15 @@ func cloneDeterministicInput(input DeterministicInput) DeterministicInput {
 	input.ForbiddenPaths = append([]string(nil), input.ForbiddenPaths...)
 	input.RequiredCriteria = append([]string(nil), input.RequiredCriteria...)
 	input.TestRequirements = append([]string(nil), input.TestRequirements...)
+	input.ModuleSpec = cloneOptionalModuleSpec(input.ModuleSpec)
 	return input
+}
+
+func cloneOptionalModuleSpec(module *contracts.ModuleSpec) *contracts.ModuleSpec {
+	if module == nil {
+		return nil
+	}
+	return cloneModuleSpec(*module)
 }
 
 func CheckOrder(checks []Check) []string {
