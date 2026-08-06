@@ -365,7 +365,7 @@ func (authority *repositoryExecutionAuthority) claimForRoles(ctx context.Context
 	}
 	expiresAt, err := time.Parse(time.RFC3339, claim.Lease.ExpiresAt)
 	now := authority.clock().UTC()
-	if err != nil || claim.Lease.ID == "" || claim.Lease.FencingToken < 1 || !now.Before(expiresAt) {
+	if err != nil || claim.Lease.ID == "" || claim.Lease.FencingToken < 1 || now.IsZero() {
 		return toolbroker.LeaseValidation{}, repository.LeaseProof{}, repository.ErrLeaseStale
 	}
 	claim.At = now

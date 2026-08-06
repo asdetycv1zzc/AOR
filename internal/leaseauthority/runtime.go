@@ -116,9 +116,6 @@ func (authority *runtimeOperationAuthority) AcquireOperationLease(ctx context.Co
 	if err != nil {
 		return agentruntime.AgentLease{}, err
 	}
-	if !authority.service.clock().UTC().Before(current.ExpiresAt) {
-		return agentruntime.AgentLease{}, agentruntime.ErrLeaseExpired
-	}
 	issued, err := authority.service.issueAtFencing(principalCtx, principal, GrantRequest{
 		TenantID: current.TenantID, ProjectID: current.ProjectID, TaskID: current.TaskID,
 		Action: action, Resource: resource, ParameterDigest: parameterDigest,

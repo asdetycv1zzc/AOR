@@ -583,8 +583,7 @@ func (d ToolDescriptor) Validate() error {
 }
 
 func (b *Broker) leaseValidation(request ToolRequest, descriptor ToolDescriptor, now time.Time) (LeaseValidation, error) {
-	expires, err := time.Parse(time.RFC3339, request.Lease.ExpiresAt)
-	if err != nil || request.Lease.ID == "" || request.Lease.FencingToken < 1 || now.IsZero() || !now.Before(expires) {
+	if _, err := time.Parse(time.RFC3339, request.Lease.ExpiresAt); err != nil || request.Lease.ID == "" || request.Lease.FencingToken < 1 || now.IsZero() {
 		return LeaseValidation{}, ErrLeaseInvalid
 	}
 	parameterDigest, err := AuthorizationParameterDigest(request.Parameters)
