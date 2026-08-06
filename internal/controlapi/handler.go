@@ -54,6 +54,7 @@ type Config struct {
 	Eraser               ProjectEraser
 	Leases               LeaseAuthority
 	GoalPlan             GoalPlanServices
+	ClassroomCore        bool
 	Clock                func() time.Time
 }
 
@@ -291,7 +292,7 @@ func New(config Config) (*Handler, error) {
 		return nil, err
 	}
 	handler := &Handler{
-		orchestrator:         orchestrator.NewWithBoundary(config.Store, config.Clock, boundary),
+		orchestrator:         orchestrator.NewWithBoundaryAndMode(config.Store, config.Clock, boundary, config.ClassroomCore),
 		store:                config.Store,
 		authenticator:        config.Authenticator,
 		authorizer:           config.Authorizer,

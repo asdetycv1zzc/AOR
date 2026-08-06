@@ -206,7 +206,7 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 		KnowledgeCurator: knowledgeCurator, KnowledgeCuratorURL: config.KnowledgeCuratorURL,
 		DecisionReportSigner: decisionReportSigner,
 		Eraser:               artifactProjectEraser{catalog: artifactCatalog}, Leases: leaseService,
-		GoalPlan: projectAgents.goalPlan, Clock: time.Now,
+		GoalPlan: projectAgents.goalPlan, ClassroomCore: config.DeploymentProfile == "TEST", Clock: time.Now,
 	})
 	if err != nil {
 		return nil, err

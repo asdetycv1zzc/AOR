@@ -164,6 +164,11 @@ func cloneBoundaryProject(value state.Project) state.Project {
 		plan := *value.Plan
 		value.Plan = &plan
 	}
+	if value.CoreSummary != nil {
+		summary := *value.CoreSummary
+		summary.Modules = append([]state.CoreModuleOutcome(nil), value.CoreSummary.Modules...)
+		value.CoreSummary = &summary
+	}
 	if value.Deletion != nil {
 		deletion := *value.Deletion
 		deletion.StartedAt = cloneTimePointer(value.Deletion.StartedAt)

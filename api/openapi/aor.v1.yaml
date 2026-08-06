@@ -767,12 +767,49 @@ components:
         goalAgentCount: {type: integer, minimum: 1, maximum: 2}
         goal: {type: object, additionalProperties: true}
         plan: {type: object, additionalProperties: true}
+        coreSummary: {$ref: '#/components/schemas/CoreSummary'}
         releaseApprovalRecordId: {type: string, minLength: 1, maxLength: 128}
         pausedFromState: {type: string}
         deletion: {$ref: '#/components/schemas/ProjectDeletion'}
         legalHolds:
           type: array
           items: {$ref: '#/components/schemas/ProjectLegalHold'}
+    CoreSummary:
+      type: object
+      additionalProperties: false
+      required: [summaryVersion, tenantId, projectId, status, goalSpecRef, planSpecRef, modules, summarySha256, createdAt]
+      properties:
+        summaryVersion: {type: integer, minimum: 1, maximum: 1}
+        tenantId: {type: string, format: uuid}
+        projectId: {type: string, format: uuid}
+        status: {enum: [COMPLETED]}
+        goalSpecRef: {$ref: '#/components/schemas/SpecReference'}
+        planSpecRef: {$ref: '#/components/schemas/SpecReference'}
+        modules:
+          type: array
+          minItems: 1
+          items: {$ref: '#/components/schemas/CoreModuleOutcome'}
+        summarySha256: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        createdAt: {type: string, format: date-time}
+    CoreModuleOutcome:
+      type: object
+      additionalProperties: false
+      required: [taskId, moduleId, state, version, moduleSpecRef, attempt, attemptSeriesId]
+      properties:
+        taskId: {type: string, format: uuid}
+        moduleId: {type: string, minLength: 1, maxLength: 128}
+        state: {enum: [PASSED]}
+        version: {type: integer, format: int64, minimum: 1}
+        moduleSpecRef: {$ref: '#/components/schemas/SpecReference'}
+        attempt: {type: integer, minimum: 1, maximum: 3}
+        attemptSeriesId: {type: string, format: uuid}
+    SpecReference:
+      type: object
+      additionalProperties: false
+      required: [version, sha256]
+      properties:
+        version: {type: integer, minimum: 1}
+        sha256: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
     ProjectDeletion:
       type: object
       additionalProperties: false

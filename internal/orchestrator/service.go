@@ -24,6 +24,7 @@ type Service struct {
 	store    eventing.Store
 	clock    Clock
 	boundary CommitBoundary
+	coreOnly bool
 }
 
 type ProjectRequest struct {
@@ -64,10 +65,14 @@ func New(store eventing.Store, clock Clock) *Service {
 }
 
 func NewWithBoundary(store eventing.Store, clock Clock, boundary CommitBoundary) *Service {
+	return NewWithBoundaryAndMode(store, clock, boundary, false)
+}
+
+func NewWithBoundaryAndMode(store eventing.Store, clock Clock, boundary CommitBoundary, coreOnly bool) *Service {
 	if boundary == nil {
 		boundary = unavailableBoundary{}
 	}
-	return &Service{store: store, clock: clock, boundary: boundary}
+	return &Service{store: store, clock: clock, boundary: boundary, coreOnly: coreOnly}
 }
 
 func (s *Service) HandleProject(ctx context.Context, request ProjectRequest) (ProjectOutcome, error) {
@@ -328,6 +333,14 @@ func (s *Service) HandleTask(ctx context.Context, request TaskRequest) (TaskOutc
 		}
 		updates = append(updates, dependentUpdates...)
 		events = append(events, dependentEvents...)
+	}
+	if command.Type == state.TaskCommandLLMSuccess {
+		coreUpdates, coreEvents, summaryErr := s.coreSummaryTransition(ctx, request, project, taskEvent.Projection, command.At, digest)
+		if summaryErr != nil {
+			return TaskOutcome{}, summaryErr
+		}
+		updates = append(updates, coreUpdates...)
+		events = append(events, coreEvents...)
 	}
 	applyEventTrace(ctx, digest, events)
 	if err := s.validateTaskCommit(ctx, request, project, current, command, digest); err != nil {

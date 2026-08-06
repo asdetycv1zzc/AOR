@@ -26,10 +26,50 @@ type Project struct {
 	GoalAgentCount          int                    `json:"goalAgentCount"`
 	Goal                    *GoalRecord            `json:"goal,omitempty"`
 	Plan                    *contracts.SpecRef     `json:"plan,omitempty"`
+	CoreSummary             *CoreSummary           `json:"coreSummary,omitempty"`
 	ReleaseApprovalRecordID string                 `json:"releaseApprovalRecordId,omitempty"`
 	PausedFromState         contracts.ProjectState `json:"pausedFromState,omitempty"`
 	Deletion                *ProjectDeletion       `json:"deletion,omitempty"`
 	LegalHolds              []ProjectLegalHold     `json:"legalHolds,omitempty"`
+}
+
+type CoreSummary struct {
+	SummaryVersion int                 `json:"summaryVersion"`
+	TenantID       string              `json:"tenantId"`
+	ProjectID      string              `json:"projectId"`
+	Status         string              `json:"status"`
+	GoalSpecRef    contracts.SpecRef   `json:"goalSpecRef"`
+	PlanSpecRef    contracts.SpecRef   `json:"planSpecRef"`
+	Modules        []CoreModuleOutcome `json:"modules"`
+	SummarySHA256  string              `json:"summarySha256"`
+	CreatedAt      time.Time           `json:"createdAt"`
+}
+
+type CoreModuleOutcome struct {
+	TaskID          string                    `json:"taskId"`
+	ModuleID        string                    `json:"moduleId"`
+	State           contracts.ModuleTaskState `json:"state"`
+	Version         int64                     `json:"version"`
+	ModuleSpecRef   contracts.SpecRef         `json:"moduleSpecRef"`
+	Attempt         int                       `json:"attempt"`
+	AttemptSeriesID string                    `json:"attemptSeriesId"`
+}
+
+func (summary CoreSummary) validFor(project Project) bool {
+	if summary.SummaryVersion != 1 || summary.TenantID != project.TenantID || summary.ProjectID != project.ID || summary.Status != "COMPLETED" || project.Goal == nil || project.Plan == nil || summary.GoalSpecRef != (contracts.SpecRef{Version: project.Goal.Version, SHA256: project.Goal.SHA256}) || summary.PlanSpecRef != *project.Plan || !validDigest(summary.SummarySHA256) || summary.CreatedAt.IsZero() || len(summary.Modules) == 0 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(summary.Modules))
+	for _, module := range summary.Modules {
+		if module.TaskID == "" || module.ModuleID == "" || module.State != contracts.TaskPassed || module.Version < 1 || module.Attempt < 1 || module.Attempt > 3 || module.AttemptSeriesID == "" || module.ModuleSpecRef.Validate() != nil {
+			return false
+		}
+		if _, duplicate := seen[module.TaskID]; duplicate {
+			return false
+		}
+		seen[module.TaskID] = struct{}{}
+	}
+	return true
 }
 
 type ProjectDeletionStatus string
@@ -136,6 +176,7 @@ const (
 	ProjectCommandRequestGoalChange    ProjectCommandType = "REQUEST_GOAL_CHANGE"
 	ProjectCommandSupersedeGoal        ProjectCommandType = "SUPERSEDE_GOAL"
 	ProjectCommandPublishPlan          ProjectCommandType = "PUBLISH_PLAN"
+	ProjectCommandPublishCoreSummary   ProjectCommandType = "PUBLISH_CORE_SUMMARY"
 	ProjectCommandBeginIntegration     ProjectCommandType = "BEGIN_INTEGRATION"
 	ProjectCommandBeginGlobalAudit     ProjectCommandType = "BEGIN_GLOBAL_AUDIT"
 	ProjectCommandReopenExecution      ProjectCommandType = "REOPEN_EXECUTION"
@@ -164,6 +205,7 @@ type ProjectCommand struct {
 	GoalSpec             *contracts.GoalSpec
 	GoalMessage          *GoalMessage
 	Plan                 *contracts.SpecRef
+	CoreSummary          *CoreSummary
 	GoalSpecRef          *contracts.SpecRef
 	DAG                  map[string][]string
 	Approval             *ApprovalBinding
@@ -314,6 +356,7 @@ func DecideProject(current Project, command ProjectCommand) (ProjectEvent, *aore
 		}
 		next.Goal.Status = contracts.GoalSuperseded
 		next.Plan = nil
+		next.CoreSummary = nil
 		next.ReleaseApprovalRecordID = ""
 		next.State = contracts.ProjectGoalNegotiating
 		eventType = "io.aor.goal.change-requested.v1"
@@ -331,6 +374,7 @@ func DecideProject(current Project, command ProjectCommand) (ProjectEvent, *aore
 		goal.ApprovalRecordID = ""
 		next.Goal = &goal
 		next.Plan = nil
+		next.CoreSummary = nil
 		next.ReleaseApprovalRecordID = ""
 		next.State = contracts.ProjectGoalNegotiating
 		eventType = "io.aor.goal.superseded.v1"
@@ -349,8 +393,15 @@ func DecideProject(current Project, command ProjectCommand) (ProjectEvent, *aore
 		}
 		plan := *command.Plan
 		next.Plan = &plan
+		next.CoreSummary = nil
 		next.State = contracts.ProjectExecuting
 		eventType = "io.aor.plan.published.v1"
+	case ProjectCommandPublishCoreSummary:
+		if current.State != contracts.ProjectExecuting || current.CoreSummary != nil || command.CoreSummary == nil || !command.CoreSummary.validFor(current) {
+			return ProjectEvent{}, transitionProject(command, current.State)
+		}
+		next.CoreSummary = cloneCoreSummary(command.CoreSummary)
+		eventType = "io.aor.plan.core-summary-published.v1"
 	case ProjectCommandBeginIntegration:
 		if current.State != contracts.ProjectExecuting || command.Guard == nil || !command.Guard.AllTasksPassed || !validDigest(command.Guard.EvidenceSHA256) {
 			return ProjectEvent{}, transitionProject(command, current.State)
@@ -591,6 +642,9 @@ func cloneProject(project Project) Project {
 		plan := *project.Plan
 		next.Plan = &plan
 	}
+	if project.CoreSummary != nil {
+		next.CoreSummary = cloneCoreSummary(project.CoreSummary)
+	}
 	if project.Deletion != nil {
 		deletion := *project.Deletion
 		deletion.StartedAt = cloneTimePointer(project.Deletion.StartedAt)
@@ -603,6 +657,15 @@ func cloneProject(project Project) Project {
 		next.LegalHolds[index].ReleasedAt = cloneTimePointer(next.LegalHolds[index].ReleasedAt)
 	}
 	return next
+}
+
+func cloneCoreSummary(value *CoreSummary) *CoreSummary {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	cloned.Modules = append([]CoreModuleOutcome(nil), value.Modules...)
+	return &cloned
 }
 
 func projectLifecycleCommand(command ProjectCommandType) bool {
