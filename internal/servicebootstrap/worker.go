@@ -69,6 +69,7 @@ type sandboxActivityEffect struct {
 type executionActivityInput struct {
 	Action      string `json:"action"`
 	ExecutionID string `json:"executionId"`
+	Recovery    bool   `json:"recovery,omitempty"`
 }
 
 type globalAuditActivityInput struct {
