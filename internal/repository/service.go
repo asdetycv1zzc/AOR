@@ -324,7 +324,7 @@ func (s *Service) ReadFile(ctx context.Context, workspaceID, name string) ([]byt
 	if err != nil {
 		return nil, err
 	}
-	relative, err := ownedPath(workspace, name)
+	relative, err := readablePath(workspace, name)
 	if err != nil {
 		return nil, err
 	}
@@ -865,14 +865,9 @@ func gitFromWithEnvironment(ctx context.Context, directory string, environment [
 }
 
 func ownedPath(workspace Workspace, candidate string) (string, error) {
-	relative, ok := cleanRelative(candidate)
-	if !ok || strings.EqualFold(relative, ".git") || len(relative) > len(".git/") && strings.EqualFold(relative[:len(".git/")], ".git/") {
-		return "", ErrPathDenied
-	}
-	for _, forbidden := range workspace.ForbiddenPaths {
-		if matchesPath(forbidden, relative) || matchesPath(strings.ToLower(forbidden), strings.ToLower(relative)) {
-			return "", ErrPathDenied
-		}
+	relative, err := readablePath(workspace, candidate)
+	if err != nil {
+		return "", err
 	}
 	if len(workspace.AllowedPaths) == 0 {
 		return "", ErrPathDenied
@@ -883,6 +878,19 @@ func ownedPath(workspace Workspace, candidate string) (string, error) {
 		}
 	}
 	return "", ErrPathDenied
+}
+
+func readablePath(workspace Workspace, candidate string) (string, error) {
+	relative, ok := cleanRelative(candidate)
+	if !ok || strings.EqualFold(relative, ".git") || len(relative) > len(".git/") && strings.EqualFold(relative[:len(".git/")], ".git/") {
+		return "", ErrPathDenied
+	}
+	for _, forbidden := range workspace.ForbiddenPaths {
+		if matchesPath(forbidden, relative) || matchesPath(strings.ToLower(forbidden), strings.ToLower(relative)) {
+			return "", ErrPathDenied
+		}
+	}
+	return relative, nil
 }
 
 func matchesPath(pattern, candidate string) bool {

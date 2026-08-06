@@ -213,6 +213,7 @@ func TestWorkspaceHidesForbiddenFilesAndKeepsGitMetadataOutsideMount(t *testing.
 		t.Fatal(err)
 	}
 	writeTestFile(t, source, "owned/main.go", "package owned\n")
+	writeTestFile(t, source, "shared/interface.go", "package shared\n")
 	writeTestFile(t, source, "hidden-tests/exploit_test.go", "package hidden\n")
 	writeTestFile(t, source, "audit/private-policy.rego", "package private\n")
 	if _, err := runGit(source, "add", "."); err != nil {
@@ -263,6 +264,10 @@ func TestWorkspaceHidesForbiddenFilesAndKeepsGitMetadataOutsideMount(t *testing.
 	}
 	if _, err := os.Stat(filepath.Join(workspace.Path, "owned", "main.go")); err != nil {
 		t.Fatalf("owned file is unavailable: %v", err)
+	}
+	content, err := service.ReadFile(context.Background(), workspace.ID, "shared/interface.go")
+	if err != nil || string(content) != "package shared\n" {
+		t.Fatalf("shared file read = %q error=%v", content, err)
 	}
 }
 
