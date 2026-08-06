@@ -44,19 +44,23 @@ mkdir -p "${AOR_SANDBOX_SHARED_ROOT}"
 
 ## Secrets
 
-Generate the ignored local infrastructure secrets, then provide the two model
-provider credentials used by the multi-provider workflow:
+Generate the ignored local infrastructure secrets. This is sufficient to start
+the dependency stage; model-provider credentials are checked only before AOR is
+built and started:
 
 ```bash
 mkdir -p deploy/compose/secrets
 chmod 700 deploy/compose/secrets
 umask 077
 make compose-init-secrets
+make compose-deps-up
+
 # Write actual credentials issued by each provider, one value per file.
 # Do not generate placeholders: Compose checks that both files are nonempty.
 ${EDITOR:-vi} deploy/compose/secrets/model_provider_openai_key
 ${EDITOR:-vi} deploy/compose/secrets/model_provider_deepseek_key
 chmod 0444 deploy/compose/secrets/model_provider_openai_key deploy/compose/secrets/model_provider_deepseek_key
+make compose-aor-up
 ```
 
 `compose-init-secrets` creates only local infrastructure values; it never creates or changes provider credentials. The local Compose engine exposes file-backed secrets as read-only bind mounts, so the source files use mode `0444` for the containers' distinct non-root UIDs; the containing `secrets/` directory remains mode `0700` and prevents other host users from traversing to them. The secret values are not committed or placed in AOR container environment variables. PostgreSQL migrations use the admin-only `postgres_password` to apply schema changes and configure the least-privilege `aor_app` runtime role; API, Model Gateway, Tool Broker, and worker use `secret://postgres_app_password`. AOR refers to mounted files only through `secret://` references. API, Tool Broker, and worker use the MinIO root access and secret files for local S3 access; the Model Gateway uses one mounted file for each provider family and the independent `model_replay_key` to encrypt bounded idempotency responses at rest. The Tool Broker and worker use the independent `lease_signing_key` for persistent capability leases. Dex, the API, and the worker share `aor_server_oauth_client_secret` through separate read-only mounts; the value is never placed in an AOR container environment variable.
@@ -69,7 +73,8 @@ The API and worker mount `/var/lib/aor/knowledge` as read-only. By default Compo
 
 ## Start
 
-From the repository root:
+From the repository root, the complete deployment remains one command when both
+provider credentials are already present:
 
 ```bash
 make compose-up
@@ -77,12 +82,12 @@ make compose-up
 
 The target performs these stages in order:
 
-1. Validate the Compose model and required secret files.
+1. Generate local infrastructure secrets and validate the Compose model.
 2. Pull all Compose dependency images, including the pinned Docker CLI and Linux sandbox runtime image.
 3. Validate the dedicated rootless OCI engine, pull the pinned runtime into it, and execute the hardened sandbox probe.
 4. Start PostgreSQL, Temporal, NATS, MinIO, OPA, Dex, and OpenTelemetry Collector, then wait for their health checks and initialization jobs.
 5. Apply every PostgreSQL migration listed in `migrations/postgres/manifest.json` in order; reruns detect the installed schema, rotate the fixed `aor_app` password without revoking later grants, and keep permissions idempotent. The app password is supplied through the ignored secret file and is not printed.
-6. Build the AOR server image (shared by the API and curator), Model Gateway, Tool Broker, and worker serially from the current source. The worker image includes the Docker CLI needed to reach the preflighted rootless engine; it does not contain or start a daemon.
+6. Check both model-provider credentials, then build the AOR server image (shared by the API and curator), Model Gateway, Tool Broker, and worker serially from the current source. The worker image includes the Docker CLI needed to reach the preflighted rootless engine; it does not contain or start a daemon.
 7. Copy the worker build's downloaded Go modules into a content-keyed directory under the shared root and atomically publish the read-only cache path used by integration sandboxes.
 8. Start AOR only after every dependency, initializer, sandbox preflight, and cache initializer has completed successfully, then wait for every process readiness endpoint.
 

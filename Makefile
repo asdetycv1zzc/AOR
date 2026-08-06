@@ -1,4 +1,4 @@
-.PHONY: build test lint schema cross-language sdk backup-restore supply-chain release-tool release-package-check repository-check secret-scan security-corpus license-scan state-machine postgres-reconciliation verify compose-init-secrets compose-check compose-check-secrets compose-pull compose-deps-up compose-aor-up compose-up compose-ps
+.PHONY: build test lint schema cross-language sdk backup-restore supply-chain release-tool release-package-check repository-check secret-scan security-corpus license-scan state-machine postgres-reconciliation verify compose-init-secrets compose-check compose-check-secrets compose-check-infrastructure-secrets compose-check-provider-secrets compose-pull compose-deps-up compose-aor-up compose-up compose-ps
 
 GOCACHE ?= $(CURDIR)/.cache/go-build
 GOMODCACHE ?= $(CURDIR)/.cache/go-mod
@@ -84,22 +84,27 @@ compose-init-secrets:
 	test -s deploy/compose/secrets/aor_server_oauth_client_secret || (umask 077; openssl rand -hex 32 > deploy/compose/secrets/aor_server_oauth_client_secret)
 	chmod 0444 deploy/compose/secrets/postgres_password deploy/compose/secrets/postgres_app_password deploy/compose/secrets/minio_root_user deploy/compose/secrets/minio_root_password deploy/compose/secrets/model_replay_key deploy/compose/secrets/lease_signing_key deploy/compose/secrets/aor_server_oauth_client_secret
 
-compose-check-secrets: compose-init-secrets
+compose-check-infrastructure-secrets: compose-init-secrets
 	test -s deploy/compose/secrets/postgres_password
 	test -s deploy/compose/secrets/postgres_app_password
 	test -s deploy/compose/secrets/minio_root_user
 	test -s deploy/compose/secrets/minio_root_password
-	test -s deploy/compose/secrets/model_provider_openai_key
-	test -s deploy/compose/secrets/model_provider_deepseek_key
 	test -s deploy/compose/secrets/model_replay_key
 	test "$$(wc -c < deploy/compose/secrets/model_replay_key)" -eq 32
 	test -s deploy/compose/secrets/lease_signing_key
 	test -s deploy/compose/secrets/aor_server_oauth_client_secret
 
+compose-check-provider-secrets:
+	test -s deploy/compose/secrets/model_provider_openai_key
+	test -s deploy/compose/secrets/model_provider_deepseek_key
+
+compose-check-secrets: compose-check-infrastructure-secrets compose-check-provider-secrets
+
 compose-check: compose-check-secrets
 	$(COMPOSE) config --quiet
 
-compose-pull: compose-check
+compose-pull: compose-check-infrastructure-secrets
+	$(COMPOSE) config --quiet
 	$(COMPOSE) --profile aor pull $(COMPOSE_DEPENDENCIES) $(COMPOSE_INITIALIZERS) $(COMPOSE_SANDBOX)
 
 compose-deps-up: compose-pull
@@ -116,6 +121,7 @@ compose-deps-up: compose-pull
 	$(COMPOSE) wait minio-init
 
 compose-aor-up: compose-deps-up
+	$(MAKE) compose-check-provider-secrets
 	$(COMPOSE) --profile aor build aor-api aor-curator
 	$(COMPOSE) --profile aor build aor-model-gateway
 	$(COMPOSE) --profile aor build aor-tool-broker
