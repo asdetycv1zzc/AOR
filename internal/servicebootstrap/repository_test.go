@@ -30,8 +30,25 @@ func TestRepositoryMCPToolsHaveExplicitBoundedPolicies(t *testing.T) {
 			t.Fatalf("invalid repository tool registration: %#v policy=%#v", tool, policy)
 		}
 		seen[tool.Name] = true
-		if policy.NetworkAccess != toolbroker.NetworkNone || len(policy.AllowedRoles) != 1 || policy.AllowedRoles[0] != "EXECUTOR" || policy.TimeoutSeconds <= 0 || policy.MaxOutputBytes <= 0 {
+		if policy.NetworkAccess != toolbroker.NetworkNone || policy.TimeoutSeconds <= 0 || policy.MaxOutputBytes <= 0 {
 			t.Fatalf("unsafe policy for %s: %#v", tool.Name, policy)
+		}
+		allowed := map[string]bool{"EXECUTOR": true}
+		if tool.Name == repositoryReadTool {
+			allowed["GLOBAL_AUDITOR"] = true
+			allowed["MODULE_AUDITOR"] = true
+		}
+		if len(policy.AllowedRoles) != len(allowed) {
+			t.Fatalf("unexpected roles for %s: %#v", tool.Name, policy.AllowedRoles)
+		}
+		for _, role := range policy.AllowedRoles {
+			if !allowed[role] {
+				t.Fatalf("unexpected role %q for %s", role, tool.Name)
+			}
+			delete(allowed, role)
+		}
+		if len(allowed) != 0 {
+			t.Fatalf("missing roles for %s: %#v", tool.Name, allowed)
 		}
 	}
 	if policies[string(repository.LeaseActionSubmit)].SideEffect != toolbroker.SideEffectIrreversible || policies[string(repository.LeaseActionSubmit)].RequiresApproval != toolbroker.ApprovalPolicy {
