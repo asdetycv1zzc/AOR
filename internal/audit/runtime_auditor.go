@@ -326,7 +326,8 @@ func moduleAuditContextItems(input BlindAuditInput, refs ModuleAuditReferences) 
 	module, err := json.Marshal(struct {
 		ModuleSpecRef      contracts.SpecRef `json:"moduleSpecRef"`
 		AcceptanceCriteria []string          `json:"acceptanceCriteria"`
-	}{input.ModuleSpecRef, append([]string(nil), input.RequiredCriteria...)})
+		TestRequirements   []string          `json:"testRequirements"`
+	}{input.ModuleSpecRef, append([]string(nil), input.RequiredCriteria...), append([]string(nil), input.TestRequirements...)})
 	if err != nil {
 		return nil, err
 	}
@@ -404,10 +405,10 @@ func moduleAuditParameterDigest(input BlindAuditInput, refs ModuleAuditReference
 		Attempt                                                                                int
 		ProjectVersion, TaskVersion                                                            int64
 		ModuleSpec, GoalSpec, PlanSpec                                                         contracts.SpecRef
-		Criteria                                                                               []string
+		Criteria, Tests                                                                        []string
 		PromptDigest, ContextDigest, ResponseDigest, ToolDigest                                string
 		Route                                                                                  goalplan.ModelRoute
-	}{input.AuditRunID, refs.TenantID, input.ProjectID, input.TaskID, input.AttemptSeriesID, input.BaseCommit, input.SubmissionCommit, input.Attempt, refs.ProjectVersion, refs.TaskVersion, input.ModuleSpecRef, refs.GoalSpec, refs.PlanSpec, append([]string(nil), input.RequiredCriteria...), bundle.SHA256, manifest.SHA256, responseDigest, agentruntime.DigestToolDefinitions(tools), route}
+	}{input.AuditRunID, refs.TenantID, input.ProjectID, input.TaskID, input.AttemptSeriesID, input.BaseCommit, input.SubmissionCommit, input.Attempt, refs.ProjectVersion, refs.TaskVersion, input.ModuleSpecRef, refs.GoalSpec, refs.PlanSpec, append([]string(nil), input.RequiredCriteria...), append([]string(nil), input.TestRequirements...), bundle.SHA256, manifest.SHA256, responseDigest, agentruntime.DigestToolDefinitions(tools), route}
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return "", err

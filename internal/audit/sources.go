@@ -218,6 +218,7 @@ func (source *AuthoritativeInputSource) Load(ctx context.Context, request InputR
 		AllowedPaths:     append([]string(nil), module.AllowedPaths...),
 		ForbiddenPaths:   append([]string(nil), module.ForbiddenPaths...),
 		RequiredCriteria: append([]string(nil), module.AcceptanceCriteria...),
+		TestRequirements: append([]string(nil), module.TestRequirements...),
 		PolicyDigest:     facts.PolicyDigest, Platform: facts.Platform, Isolation: facts.Isolation,
 		SandboxAttestation: facts.SandboxAttestation,
 	}
@@ -330,13 +331,14 @@ func deterministicInputDigest(input DeterministicInput) (string, error) {
 		AllowedPaths       []string                     `json:"allowedPaths"`
 		ForbiddenPaths     []string                     `json:"forbiddenPaths"`
 		RequiredCriteria   []string                     `json:"requiredCriteria"`
+		TestRequirements   []string                     `json:"testRequirements"`
 		PolicyDigest       string                       `json:"policyDigest"`
 		Platform           contracts.ExecutionPlatform  `json:"platform"`
 		Isolation          contracts.IsolationLevel     `json:"isolation"`
 		SandboxAttestation string                       `json:"sandboxAttestation"`
 	}{
 		input.TenantID, input.AuditRunID, input.SubmissionID, input.Manifest, input.ModuleSpecRef,
-		input.AllowedPaths, input.ForbiddenPaths, input.RequiredCriteria, input.PolicyDigest,
+		input.AllowedPaths, input.ForbiddenPaths, input.RequiredCriteria, input.TestRequirements, input.PolicyDigest,
 		input.Platform, input.Isolation, input.SandboxAttestation,
 	})
 	if err != nil {

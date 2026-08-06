@@ -133,7 +133,7 @@ func (p *Pipeline) run(ctx context.Context, input DeterministicInput, gate func(
 				return AuditResult{Bundle: bundle, Deterministic: checks, Verdict: "INCONCLUSIVE"}, err
 			}
 		}
-		blind := BlindAuditInput{AuditRunID: input.AuditRunID, TenantID: input.TenantID, ProjectID: input.Manifest.ProjectID, TaskID: input.Manifest.ModuleTaskID, AttemptSeriesID: input.Manifest.AttemptSeriesID, Attempt: input.Manifest.Attempt, ModuleSpecRef: input.ModuleSpecRef, BaseCommit: input.Manifest.BaseCommit, SubmissionCommit: input.Manifest.HeadCommit, ChangedFiles: append([]string(nil), input.Manifest.ChangedFiles...), RequiredCriteria: append([]string(nil), input.RequiredCriteria...), DeterministicChecks: append([]contracts.EvidenceCheck(nil), checks...)}
+		blind := BlindAuditInput{AuditRunID: input.AuditRunID, TenantID: input.TenantID, ProjectID: input.Manifest.ProjectID, TaskID: input.Manifest.ModuleTaskID, AttemptSeriesID: input.Manifest.AttemptSeriesID, Attempt: input.Manifest.Attempt, ModuleSpecRef: input.ModuleSpecRef, BaseCommit: input.Manifest.BaseCommit, SubmissionCommit: input.Manifest.HeadCommit, ChangedFiles: append([]string(nil), input.Manifest.ChangedFiles...), RequiredCriteria: append([]string(nil), input.RequiredCriteria...), TestRequirements: append([]string(nil), input.TestRequirements...), DeterministicChecks: append([]contracts.EvidenceCheck(nil), checks...)}
 		if p.auditors == nil {
 			return AuditResult{Bundle: bundle, Deterministic: checks, Verdict: "INCONCLUSIVE"}, ErrAuditorUnavailable
 		}
@@ -212,13 +212,14 @@ func deterministicGateDigest(input DeterministicInput, checks []contracts.Eviden
 		Isolation        contracts.IsolationLevel    `json:"isolation"`
 		Sandbox          string                      `json:"sandboxAttestation"`
 		RequiredCriteria []string                    `json:"requiredCriteria"`
+		TestRequirements []string                    `json:"testRequirements"`
 		Checks           []gateCheck                 `json:"checks"`
 		Findings         []contracts.AuditFinding    `json:"findings"`
 	}{
 		SubmissionID: input.SubmissionID, ManifestSHA256: input.Manifest.SHA256,
 		ModuleSpecRef: input.ModuleSpecRef, PolicyDigest: input.PolicyDigest,
 		Platform: input.Platform, Isolation: input.Isolation, Sandbox: input.SandboxAttestation,
-		RequiredCriteria: append([]string(nil), input.RequiredCriteria...), Checks: stableChecks,
+		RequiredCriteria: append([]string(nil), input.RequiredCriteria...), TestRequirements: append([]string(nil), input.TestRequirements...), Checks: stableChecks,
 		Findings: cloneFindings(findings),
 	})
 	if err != nil {
@@ -552,6 +553,7 @@ func cloneDeterministicInput(input DeterministicInput) DeterministicInput {
 	input.AllowedPaths = append([]string(nil), input.AllowedPaths...)
 	input.ForbiddenPaths = append([]string(nil), input.ForbiddenPaths...)
 	input.RequiredCriteria = append([]string(nil), input.RequiredCriteria...)
+	input.TestRequirements = append([]string(nil), input.TestRequirements...)
 	return input
 }
 

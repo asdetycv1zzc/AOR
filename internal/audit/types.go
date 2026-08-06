@@ -67,6 +67,7 @@ type DeterministicInput struct {
 	AllowedPaths       []string
 	ForbiddenPaths     []string
 	RequiredCriteria   []string
+	TestRequirements   []string
 	PolicyDigest       string
 	Platform           contracts.ExecutionPlatform
 	Isolation          contracts.IsolationLevel
@@ -85,6 +86,7 @@ type BlindAuditInput struct {
 	SubmissionCommit    string
 	ChangedFiles        []string
 	RequiredCriteria    []string
+	TestRequirements    []string
 	DeterministicChecks []contracts.EvidenceCheck
 	EvidenceBundle      contracts.EvidenceBundle
 }
