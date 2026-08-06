@@ -232,14 +232,16 @@ func (p *Planner) allocateAutomaticAssignments(ctx context.Context, request Plan
 			return nil, nil, err
 		}
 		for _, task := range tasks {
-			if task.ModuleID == "" || task.PlanningSpecRef != planRef || task.ID == "" || task.AttemptSeriesID == "" || task.State == contracts.TaskCanceled || task.State == contracts.TaskSuperseded {
+			if task.ModuleID == "" || task.PlanningSpecRef != planRef || task.ID == "" || task.State == contracts.TaskCanceled || task.State == contracts.TaskSuperseded {
 				continue
 			}
 			if _, exists := taskIDs[task.ModuleID]; exists {
 				return nil, nil, ErrInvalidRequest
 			}
 			taskIDs[task.ModuleID] = task.ID
-			seriesIDs[task.ModuleID] = task.AttemptSeriesID
+			if task.AttemptSeriesID != "" {
+				seriesIDs[task.ModuleID] = task.AttemptSeriesID
+			}
 		}
 	} else if request.ExpectedProjectVersion < 1 {
 		return nil, nil, ErrInvalidRequest
@@ -250,11 +252,13 @@ func (p *Planner) allocateAutomaticAssignments(ctx context.Context, request Plan
 			if err != nil {
 				return nil, nil, err
 			}
+			taskIDs[module.ModuleID] = taskID.String()
+		}
+		if seriesIDs[module.ModuleID] == "" {
 			seriesID, err := uuid.NewV7()
 			if err != nil {
 				return nil, nil, err
 			}
-			taskIDs[module.ModuleID] = taskID.String()
 			seriesIDs[module.ModuleID] = seriesID.String()
 		}
 	}

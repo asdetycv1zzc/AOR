@@ -142,6 +142,46 @@ func TestPlannerAutomaticallyAllocatesStableProductionTaskIdentities(t *testing.
 	}
 }
 
+func TestPlannerAutomaticRetryReusesPartiallyPlannedTasks(t *testing.T) {
+	planner, invoker, request := approvedPlanningHarness(t)
+	request.ModuleTaskIDs = nil
+	request.AttemptSeriesIDs = nil
+	request.ModuleSpecVersions = nil
+	failWorker := true
+	invoker.beforeModule = func(_ context.Context, invocation AgentInvocation) error {
+		if invocation.TaskID != "" && failWorker && len(invoker.invocations) == 3 {
+			failWorker = false
+			return errors.New("module planner unavailable")
+		}
+		return nil
+	}
+	if _, err := planner.BuildAndPublishAutomatic(context.Background(), request); err == nil {
+		t.Fatal("partial planning unexpectedly succeeded")
+	}
+	service := planner.projects.(*orchestrator.Service)
+	partial, err := service.Tasks(context.Background(), request.TenantID, request.ProjectID)
+	if err != nil || len(partial) != 2 {
+		t.Fatalf("partial tasks = %#v err=%v", partial, err)
+	}
+	partialIDs := make(map[string]string, len(partial))
+	for _, task := range partial {
+		partialIDs[task.ModuleID] = task.ID
+	}
+
+	result, err := planner.BuildAndPublishAutomatic(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Publication.Project.State != contracts.ProjectExecuting || len(result.Publication.Tasks) != 2 {
+		t.Fatalf("retry result = %#v", result.Publication)
+	}
+	for _, task := range result.Publication.Tasks {
+		if task.ID != partialIDs[task.ModuleID] || task.AttemptSeriesID == "" {
+			t.Fatalf("partial task identity changed: %#v", task)
+		}
+	}
+}
+
 func TestPlannerRejectsOverlappingModuleOwnershipBeforePublication(t *testing.T) {
 	planner, invoker, request := approvedPlanningHarness(t)
 	invoker.plan.Modules[1].OwnedPaths = []string{"internal/api/private"}
