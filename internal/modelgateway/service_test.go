@@ -141,11 +141,12 @@ func TestHTTPServiceCapabilitiesCancelAndStreaming(t *testing.T) {
 
 func TestHTTPServiceReconcilesAuthoritativeUsageIdempotently(t *testing.T) {
 	service, _, ledger := newHTTPService(t)
-	if _, err := ledger.Reserve(context.Background(), "tenant", "account", "reconcile-reservation", "reconcile-request", 100); err != nil {
+	reservation, err := ledger.Reserve(context.Background(), "tenant", "account", "reconcile-reservation", "reconcile-request", 100)
+	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	_, err := ledger.FinalizeModelCall(context.Background(), ModelCallFinalization{
+	_, err = ledger.FinalizeModelCall(context.Background(), ModelCallFinalization{
 		ReservationID: "reconcile-reservation", Disposition: ReservationDispositionReconcile,
 		Call: ModelCall{
 			TenantID: "tenant", RequestID: "reconcile-request", ProjectID: "project", TaskID: "task", AgentInstanceID: "agent",
@@ -173,7 +174,7 @@ func TestHTTPServiceReconcilesAuthoritativeUsageIdempotently(t *testing.T) {
 		if err := json.Unmarshal(writer.Body.Bytes(), &response); err != nil {
 			t.Fatal(err)
 		}
-		if response.RequestID != input.RequestID || response.ReservationID != input.ReservationID || response.State != ReservationSettled || response.ActualMicros != 5 {
+		if response.RequestID != input.RequestID || response.ReservationID != reservation.ID || response.State != ReservationSettled || response.ActualMicros != 5 {
 			t.Fatalf("attempt=%d response=%#v", attempt, response)
 		}
 	}
