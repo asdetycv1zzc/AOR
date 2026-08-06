@@ -8,6 +8,7 @@ import (
 
 	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/eventing"
+	"github.com/akimisaka/aor/internal/state"
 )
 
 type curatorRoundTripper func(*http.Request) (*http.Response, error)
@@ -23,6 +24,7 @@ func TestKnowledgeCuratorProxyRouteAllowlist(t *testing.T) {
 		method, path string
 		allowed      bool
 	}{
+		{method: http.MethodPost, path: "/v1/projects/" + projectID + "/knowledge:initialize", allowed: true},
 		{method: http.MethodPost, path: "/v1/projects/" + projectID + "/knowledge:propose-update", allowed: true},
 		{method: http.MethodGet, path: "/v1/projects/" + projectID + "/knowledge/updates/" + updateID, allowed: true},
 		{method: http.MethodPost, path: "/v1/projects/" + projectID + "/knowledge/updates/" + updateID + ":approve", allowed: true},
@@ -38,6 +40,40 @@ func TestKnowledgeCuratorProxyRouteAllowlist(t *testing.T) {
 		if got := isKnowledgeCuratorRequest(request); got != test.allowed {
 			t.Errorf("isKnowledgeCuratorRequest(%s %s) = %t, want %t", test.method, test.path, got, test.allowed)
 		}
+	}
+}
+
+func TestProjectKnowledgeInitializationUsesCuratorWriter(t *testing.T) {
+	project := state.Project{TenantID: testTenantID, ID: "22222222-2222-4222-8222-222222222222"}
+	type receivedRequest struct {
+		path, authorization, idempotencyKey, forwardedBy string
+	}
+	received := make(chan receivedRequest, 1)
+	transport := curatorRoundTripper(func(request *http.Request) (*http.Response, error) {
+		received <- receivedRequest{
+			path: request.URL.RequestURI(), authorization: request.Header.Get("Authorization"),
+			idempotencyKey: request.Header.Get("Idempotency-Key"), forwardedBy: request.Header.Get(curatorForwardedHeader),
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"version":1,"tenantId":"` + testTenantID + `","projectId":"` + project.ID + `","revision":"sha256:1111111111111111111111111111111111111111111111111111111111111111"}`)),
+		}, nil
+	})
+	handler := &Handler{
+		knowledgeCuratorURL:  "http://aor-curator:8080",
+		knowledgeCuratorHTTP: &http.Client{Transport: transport},
+	}
+	request, err := http.NewRequest(http.MethodPost, "http://aor-api/v1/projects", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+testBearer)
+	if err := handler.initializeProjectKnowledge(request, project); err != nil {
+		t.Fatal(err)
+	}
+	forwarded := <-received
+	if forwarded.path != "/v1/projects/"+project.ID+"/knowledge:initialize" || forwarded.authorization != "Bearer "+testBearer || forwarded.idempotencyKey != "knowledge-init-"+project.ID || forwarded.forwardedBy != "aor-api" {
+		t.Fatalf("forwarded request = %#v", forwarded)
 	}
 }
 

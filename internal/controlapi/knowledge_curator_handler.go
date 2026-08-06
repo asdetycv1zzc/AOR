@@ -17,6 +17,9 @@ func NewKnowledgeCuratorHandler(config Config) (http.Handler, error) {
 	if config.KnowledgeCurator == nil || config.KnowledgeCuratorURL != "" {
 		return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "knowledge curator api configuration"})
 	}
+	if _, ok := config.Knowledge.(KnowledgeInitializer); !ok {
+		return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "knowledge curator api configuration"})
+	}
 	domain, err := New(config)
 	if err != nil {
 		return nil, err

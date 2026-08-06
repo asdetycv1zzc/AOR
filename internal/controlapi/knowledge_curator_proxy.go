@@ -50,6 +50,9 @@ func isKnowledgeCuratorRequest(request *http.Request) bool {
 	if !ok {
 		return false
 	}
+	if len(parts) == 2 && parts[1] == "knowledge:initialize" {
+		return request.Method == http.MethodPost && validProjectID(parts[0])
+	}
 	if len(parts) == 2 && parts[1] == "knowledge:propose-update" {
 		return request.Method == http.MethodPost && validProjectID(parts[0])
 	}

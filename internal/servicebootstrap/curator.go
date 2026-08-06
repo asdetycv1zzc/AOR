@@ -60,7 +60,7 @@ func KnowledgeCuratorAPI(config runtimeconfig.Config, clients *runtimeclient.Cli
 	}
 	domain, err := controlapi.NewKnowledgeCuratorHandler(controlapi.Config{
 		Store: store, Authenticator: authenticator, Authorizer: authorizer,
-		KnowledgeCurator: agents.curator, Clock: time.Now,
+		Knowledge: service, KnowledgeCurator: agents.curator, Clock: time.Now,
 	})
 	if err != nil {
 		return nil, err

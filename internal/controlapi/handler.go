@@ -546,6 +546,18 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 		writeMethodNotAllowed(response, request)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "knowledge:initialize" {
+		if !validProjectID(projectID) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		if request.Method == http.MethodPost {
+			handler.initializeKnowledge(response, request, principal, projectID)
+			return
+		}
+		writeMethodNotAllowed(response, request)
+		return
+	}
 	if len(parts) == 2 && parts[1] == "knowledge:search" {
 		if !validProjectID(projectID) {
 			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
@@ -817,7 +829,7 @@ func (handler *Handler) createProject(response http.ResponseWriter, request *htt
 		writeError(response, request, normalizeBudgetError(err))
 		return
 	}
-	if err := handler.initializeProjectResources(request.Context(), principal, outcome.Project, bundles); err != nil {
+	if err := handler.initializeProjectResources(request, principal, outcome.Project, bundles); err != nil {
 		writeError(response, request, err)
 		return
 	}
@@ -878,14 +890,11 @@ func (handler *Handler) ensureProjectBudget(ctx context.Context, tenantID string
 	return nil
 }
 
-func (handler *Handler) initializeProjectResources(ctx context.Context, principal authn.Principal, project state.Project, bundles []agentruntime.PromptBundle) error {
-	initializer, ok := handler.knowledge.(KnowledgeInitializer)
-	if !ok {
-		return aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "knowledge initializer"})
+func (handler *Handler) initializeProjectResources(request *http.Request, principal authn.Principal, project state.Project, bundles []agentruntime.PromptBundle) error {
+	if err := handler.initializeProjectKnowledge(request, project); err != nil {
+		return err
 	}
-	if _, err := initializer.Initialize(ctx, principal.TenantID, project.ID, handler.clock().UTC()); err != nil {
-		return normalizeKnowledgeError(err)
-	}
+	ctx := request.Context()
 	publisher, ok := handler.artifacts.(artifact.Publisher)
 	if !ok {
 		return aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "prompt artifact publisher"})

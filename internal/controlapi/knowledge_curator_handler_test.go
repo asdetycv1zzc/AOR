@@ -17,6 +17,7 @@ func TestKnowledgeCuratorHandlerRejectsControlAndAdminRoutes(t *testing.T) {
 			ID: "admin-1", Type: authn.PrincipalUser, Role: authn.RoleBreakGlassAdmin, TenantID: testTenantID,
 		}},
 		Authorizer:       &recordingAuthorizer{},
+		Knowledge:        &testKnowledgeReader{},
 		KnowledgeCurator: &recordingKnowledgeCurator{record: knowledgecurator.Record{}},
 	})
 	if err != nil {
