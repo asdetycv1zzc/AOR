@@ -10,37 +10,17 @@ This profile starts the complete local dependency set before any AOR process:
 - Dex with a local OAuth 2.0/OIDC test issuer and rotating JWKS
 - OpenTelemetry Collector with separate application and audit OTLP ingress
 - Two independently configured model-provider families for the Model Gateway
-- A pinned Linux sandbox runtime image and a rootless OCI-engine preflight
-- A versioned Go module cache for network-denied integration sandboxes
+- The classroom TEST execution and audit path in the Worker container
 
 All upstream images are pinned by version and multi-platform manifest digest. Host ports bind to `127.0.0.1`; this profile is for development and test only.
 
 The local Collector applies the repository redaction and mandatory trace-sampling policies, then writes basic signal summaries to its container log. This keeps Compose self-contained without pretending to provide a durable or queryable observability backend; production deployments use `observability/otel-collector.yaml` with four independently configured exporter endpoints.
 
-This profile requires the Docker Compose plugin with `--wait` and `--wait-timeout` support; legacy `docker-compose` v1 is not supported. Docker bridge networking also requires IPv4 forwarding on Linux. The Docker host must report `net.ipv4.ip_forward = 1`; enabling it is a host-administration step and is intentionally not performed by this repository. Trusted local AOR image builds use host networking while downloading Go modules, while every runtime container remains on the isolated Compose bridge network.
+This profile requires the Docker Compose plugin with `--wait` and `--wait-timeout` support; legacy `docker-compose` v1 is not supported. Docker bridge networking normally requires IPv4 forwarding on Linux. The Docker host must report `net.ipv4.ip_forward = 1` for outbound provider calls; enabling it is a host-administration step and is intentionally not performed by this repository. Trusted local AOR image builds use host networking while downloading Go modules, while every runtime container remains on the isolated Compose bridge network.
 
-## Linux Sandbox Host Prerequisites
+## Classroom TEST Isolation
 
-The worker controls a dedicated rootless Docker Engine through its Unix socket. It is separate from the engine that runs the trusted Compose control-plane services. The rootful `/var/run/docker.sock` is rejected. The sandbox engine must report Linux, cgroups v2, rootless mode, the configured `runc` default runtime, CPU/memory/PID enforcement, and AppArmor or SELinux. These are host security prerequisites and this repository does not enable or simulate them.
-
-Load the supplied AppArmor profile on the Linux host before starting Compose:
-
-```bash
-sudo install -m 0644 deploy/compose/aor-sandbox.apparmor /etc/apparmor.d/aor-sandbox
-sudo apparmor_parser -r /etc/apparmor.d/aor-sandbox
-```
-
-Expose the dedicated engine socket to Compose with the numeric owner and socket group from the host. Run the Compose control plane with an engine that preserves host ownership on bind mounts:
-
-```bash
-export AOR_SANDBOX_ENGINE_SOCKET="${XDG_RUNTIME_DIR}/docker.sock"
-export AOR_SANDBOX_ENGINE_UID="$(id -u)"
-export AOR_SANDBOX_ENGINE_GID="$(stat -c %g "${AOR_SANDBOX_ENGINE_SOCKET}")"
-export AOR_SANDBOX_SHARED_ROOT="$(pwd)/.cache/sandbox-data"
-mkdir -p "${AOR_SANDBOX_SHARED_ROOT}"
-```
-
-`compose-check` fails immediately when these values are absent. `compose-deps-up` then runs `sandbox-preflight.sh`, which validates the engine before pulling the immutable runtime image into it, then creates and executes a disposable probe container using a non-root identity, read-only root filesystem, cgroups v2 limits, capability drop, `network=none`, built-in seccomp, and the `aor-sandbox` mandatory policy. Missing or downgraded host capabilities produce a specific error and prevent any AOR process from starting. After the worker image is built, a one-shot initializer publishes its downloaded Go modules under the shared root. Integration sandboxes mount the selected cache read-only and force `GOPROXY=off`, `GOSUMDB=off`, and `-mod=readonly`. The worker's access to the engine socket is a controller channel; that socket is never mounted into an Executor or Auditor container.
+The TEST profile runs the core Goal -> Plan -> Execution -> Audit path inside the Worker container. The Worker has no Docker socket, and no host sandbox engine or AppArmor setup is required. Its repository volume is the execution workspace and its knowledge volume is read-only; the container also drops all capabilities and uses a read-only root filesystem. Integration and GlobalAudit are disabled in this profile, so this is suitable for the classroom workflow but is not a production untrusted-code isolation boundary.
 
 ## Secrets
 
@@ -83,13 +63,11 @@ make compose-up
 The target performs these stages in order:
 
 1. Generate local infrastructure secrets and validate the Compose model.
-2. Pull all Compose dependency images, including the pinned Docker CLI and Linux sandbox runtime image.
-3. Validate the dedicated rootless OCI engine, pull the pinned runtime into it, and execute the hardened sandbox probe.
-4. Start PostgreSQL, Temporal, NATS, MinIO, OPA, Dex, and OpenTelemetry Collector, then wait for their health checks and initialization jobs.
-5. Apply every PostgreSQL migration listed in `migrations/postgres/manifest.json` in order; reruns detect the installed schema, rotate the fixed `aor_app` password without revoking later grants, and keep permissions idempotent. The app password is supplied through the ignored secret file and is not printed.
-6. Check both model-provider credentials, then build the AOR server image (shared by the API and curator), Model Gateway, Tool Broker, and worker serially from the current source. The worker image includes the Docker CLI needed to reach the preflighted rootless engine; it does not contain or start a daemon.
-7. Copy the worker build's downloaded Go modules into a content-keyed directory under the shared root and atomically publish the read-only cache path used by integration sandboxes.
-8. Start AOR only after every dependency, initializer, sandbox preflight, and cache initializer has completed successfully, then wait for every process readiness endpoint.
+2. Pull the pinned dependency images.
+3. Start PostgreSQL, Temporal, NATS, MinIO, OPA, Dex, and OpenTelemetry Collector, then wait for their health checks and initialization jobs.
+4. Apply the PostgreSQL migrations and run the idempotent initialization jobs.
+5. Check both model-provider credentials, then build the AOR server image (shared by the API and curator), Model Gateway, Tool Broker, and Worker from the current source.
+6. Start AOR only after every dependency and initializer has completed successfully, then wait for every process readiness endpoint.
 
 Individual stages are available as `make compose-pull`, `make compose-deps-up`, `make compose-aor-up`, and `make compose-ps`.
 
