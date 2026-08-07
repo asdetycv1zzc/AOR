@@ -161,6 +161,7 @@ type ProviderConfig struct {
 	BaseURL                    string   `json:"baseUrl"`
 	APIKeyRef                  string   `json:"apiKeyRef"`
 	Models                     []string `json:"models"`
+	ReasoningEffort            string   `json:"reasoningEffort,omitempty"`
 	InputMicrosPerToken        int64    `json:"inputMicrosPerToken"`
 	OutputMicrosPerToken       int64    `json:"outputMicrosPerToken"`
 	SupportsStreaming          bool     `json:"supportsStreaming"`
@@ -523,7 +524,7 @@ func validateProviders(providers []ProviderConfig) error {
 	ids := make(map[string]struct{}, len(providers))
 	families := make(map[string]struct{}, len(providers))
 	for _, provider := range providers {
-		if provider.ID == "" || provider.Provider == "" || !validURL(provider.BaseURL, "http", "https") || !validSecretReference(provider.APIKeyRef) || len(provider.Models) == 0 || provider.InputMicrosPerToken < 0 || provider.OutputMicrosPerToken < 0 || provider.MaxInputTokens <= 0 || provider.MaxOutputTokens <= 0 || len(provider.AllowedDataClassifications) == 0 || strings.TrimSpace(provider.RetentionPolicy) == "" || len(provider.DataResidency) == 0 || len(provider.Modalities) == 0 {
+		if provider.ID == "" || provider.Provider == "" || !validURL(provider.BaseURL, "http", "https") || !validSecretReference(provider.APIKeyRef) || len(provider.Models) == 0 || !oneOf(provider.ReasoningEffort, "", "none", "minimal", "low", "medium", "high", "xhigh") || provider.InputMicrosPerToken < 0 || provider.OutputMicrosPerToken < 0 || provider.MaxInputTokens <= 0 || provider.MaxOutputTokens <= 0 || len(provider.AllowedDataClassifications) == 0 || strings.TrimSpace(provider.RetentionPolicy) == "" || len(provider.DataResidency) == 0 || len(provider.Modalities) == 0 {
 			return ErrInvalidConfiguration
 		}
 		if _, duplicate := ids[provider.ID]; duplicate {

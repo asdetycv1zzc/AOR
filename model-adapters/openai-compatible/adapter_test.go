@@ -26,9 +26,10 @@ func TestGenerateUsesChatCompletionsWithoutCredentialLeakage(t *testing.T) {
 			t.Fatalf("authorization = %q", request.Header.Get("Authorization"))
 		}
 		var payload struct {
-			Model     string `json:"model"`
-			MaxTokens int    `json:"max_tokens"`
-			Tools     []struct {
+			Model           string `json:"model"`
+			MaxTokens       int    `json:"max_tokens"`
+			ReasoningEffort string `json:"reasoning_effort"`
+			Tools           []struct {
 				Type string `json:"type"`
 			} `json:"tools"`
 			ResponseFormat struct {
@@ -38,14 +39,14 @@ func TestGenerateUsesChatCompletionsWithoutCredentialLeakage(t *testing.T) {
 		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
 		}
-		if payload.Model != "gpt-test" || payload.MaxTokens != 16 || len(payload.Tools) != 1 || payload.Tools[0].Type != "function" || payload.ResponseFormat.Type != "json_schema" {
+		if payload.Model != "gpt-test" || payload.MaxTokens != 16 || payload.ReasoningEffort != "low" || len(payload.Tools) != 1 || payload.Tools[0].Type != "function" || payload.ResponseFormat.Type != "json_schema" {
 			t.Fatalf("payload = %#v", payload)
 		}
 		_, _ = writer.Write([]byte(`{"id":"chatcmpl-1","model":"gpt-test-2026-08","choices":[{"message":{"content":"{\"ok\":true}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":3,"total_tokens":14}}`))
 	}))
 	defer server.Close()
 
-	adapter := testAdapter(t, server.URL+"/v1/chat/completions", Config{})
+	adapter := testAdapter(t, server.URL+"/v1/chat/completions", Config{ReasoningEffort: "low"})
 	response, err := adapter.Generate(context.Background(), testRequest())
 	if err != nil {
 		t.Fatal(err)
@@ -353,6 +354,7 @@ func testAdapter(t *testing.T, endpoint string, overrides Config) *Adapter {
 	if overrides.MaxResponseBytes != 0 {
 		config.MaxResponseBytes = overrides.MaxResponseBytes
 	}
+	config.ReasoningEffort = overrides.ReasoningEffort
 	adapter, err := New(config)
 	if err != nil {
 		t.Fatal(err)

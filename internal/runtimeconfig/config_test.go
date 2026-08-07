@@ -393,14 +393,14 @@ func TestProviderCapabilityProfilePreservesExplicitFalse(t *testing.T) {
 	config, err := Load("aor-model-gateway", environment(map[string]string{
 		"AOR_DATABASE_PASSWORD_REF": "secret://postgres/password",
 		"AOR_MODEL_PROVIDERS_JSON": `[
-			{"id":"one","provider":"openai","baseUrl":"https://one.example","apiKeyRef":"secret://model/one","models":["m"],"supportsStreaming":false,"supportsToolCalls":false,"supportsJsonSchema":false,"supportsSeed":false,"supportsPromptCaching":false,"maxInputTokens":1024,"maxOutputTokens":256,"dataResidency":["US"],"retentionPolicy":"none","modalities":["text"]},
+			{"id":"one","provider":"openai","baseUrl":"https://one.example","apiKeyRef":"secret://model/one","models":["m"],"reasoningEffort":"low","supportsStreaming":false,"supportsToolCalls":false,"supportsJsonSchema":false,"supportsSeed":false,"supportsPromptCaching":false,"maxInputTokens":1024,"maxOutputTokens":256,"dataResidency":["US"],"retentionPolicy":"none","modalities":["text"]},
 			{"id":"two","provider":"deepseek","baseUrl":"https://two.example","apiKeyRef":"secret://model/two","models":["m"],"supportsStreaming":true,"supportsToolCalls":false,"supportsJsonSchema":false,"supportsSeed":false,"supportsPromptCaching":false,"maxInputTokens":1024,"maxOutputTokens":256,"dataResidency":["CN"],"retentionPolicy":"none","modalities":["text"]}
 		]`,
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.ModelGateway.Providers[0].SupportsStreaming || config.ModelGateway.Providers[0].SupportsToolCalls {
+	if config.ModelGateway.Providers[0].ReasoningEffort != "low" || config.ModelGateway.Providers[0].SupportsStreaming || config.ModelGateway.Providers[0].SupportsToolCalls {
 		t.Fatalf("explicit capability false was overwritten: %#v", config.ModelGateway.Providers[0])
 	}
 }

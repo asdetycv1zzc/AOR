@@ -34,6 +34,7 @@ type Config struct {
 	Endpoint            string
 	Credential          string
 	Models              map[string]modelgateway.ModelCapabilities
+	ReasoningEffort     string
 	HTTPClient          *http.Client
 	RequestTimeout      time.Duration
 	MaxRequestBytes     int64
@@ -46,6 +47,7 @@ type Adapter struct {
 	endpoint            string
 	credential          string
 	models              map[string]modelgateway.ModelCapabilities
+	reasoningEffort     string
 	client              *http.Client
 	timeout             time.Duration
 	maxRequestBytes     int64
@@ -58,7 +60,7 @@ type Adapter struct {
 
 func New(config Config) (*Adapter, error) {
 	endpoint, err := validateEndpoint(config.Endpoint)
-	if err != nil || config.Credential == "" || len(config.Models) == 0 {
+	if err != nil || config.Credential == "" || len(config.Models) == 0 || !validReasoningEffort(config.ReasoningEffort) {
 		return nil, modelgateway.ErrInvalidRequest
 	}
 	models := make(map[string]modelgateway.ModelCapabilities, len(config.Models))
@@ -98,7 +100,8 @@ func New(config Config) (*Adapter, error) {
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &Adapter{
 		endpoint: endpoint, credential: config.Credential, models: models, client: client,
-		timeout: config.RequestTimeout, maxRequestBytes: config.MaxRequestBytes,
+		reasoningEffort: config.ReasoningEffort,
+		timeout:         config.RequestTimeout, maxRequestBytes: config.MaxRequestBytes,
 		maxResponseBytes: config.MaxResponseBytes, maxStreamEventBytes: config.MaxStreamEventBytes,
 		active: make(map[string]*responseStream),
 	}, nil
@@ -316,7 +319,7 @@ func (a *Adapter) encodeRequest(request modelgateway.NormalizedRequest, stream b
 	if stream && requestUsesNativeTools(request) {
 		return nil, modelgateway.ErrProviderNotAllowed
 	}
-	value := chatRequest{Model: request.Model, MaxTokens: request.MaxOutputTokens, Temperature: request.Temperature, Stream: stream}
+	value := chatRequest{Model: request.Model, MaxTokens: request.MaxOutputTokens, Temperature: request.Temperature, ReasoningEffort: a.reasoningEffort, Stream: stream}
 	if stream {
 		value.StreamOptions = &chatStreamOptions{IncludeUsage: true}
 	}
@@ -548,15 +551,25 @@ func unknownFailure(cause error) error {
 }
 
 type chatRequest struct {
-	Model          string              `json:"model"`
-	Messages       []chatMessage       `json:"messages"`
-	Tools          []chatTool          `json:"tools,omitempty"`
-	ResponseFormat *chatResponseFormat `json:"response_format,omitempty"`
-	MaxTokens      int                 `json:"max_tokens"`
-	Temperature    float64             `json:"temperature"`
-	Seed           *int64              `json:"seed,omitempty"`
-	Stream         bool                `json:"stream,omitempty"`
-	StreamOptions  *chatStreamOptions  `json:"stream_options,omitempty"`
+	Model           string              `json:"model"`
+	Messages        []chatMessage       `json:"messages"`
+	Tools           []chatTool          `json:"tools,omitempty"`
+	ResponseFormat  *chatResponseFormat `json:"response_format,omitempty"`
+	MaxTokens       int                 `json:"max_tokens"`
+	Temperature     float64             `json:"temperature"`
+	ReasoningEffort string              `json:"reasoning_effort,omitempty"`
+	Seed            *int64              `json:"seed,omitempty"`
+	Stream          bool                `json:"stream,omitempty"`
+	StreamOptions   *chatStreamOptions  `json:"stream_options,omitempty"`
+}
+
+func validReasoningEffort(value string) bool {
+	switch value {
+	case "", "none", "minimal", "low", "medium", "high", "xhigh":
+		return true
+	default:
+		return false
+	}
 }
 
 type chatStreamOptions struct {

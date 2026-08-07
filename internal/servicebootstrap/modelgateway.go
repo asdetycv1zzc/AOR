@@ -185,7 +185,7 @@ func newConfiguredAdapter(provider runtimeconfig.ProviderConfig, credential []by
 		models[model] = capabilities
 	}
 	return openaicompatible.New(openaicompatible.Config{
-		Endpoint: endpoint, Credential: string(credential), Models: models, RequestTimeout: modelGatewayRequestTimeout,
+		Endpoint: endpoint, Credential: string(credential), Models: models, ReasoningEffort: provider.ReasoningEffort, RequestTimeout: modelGatewayRequestTimeout,
 	})
 }
 
