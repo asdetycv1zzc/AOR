@@ -11,6 +11,8 @@ import (
 	"github.com/akimisaka/aor/internal/toolbroker"
 )
 
+const terminalSubmissionTool = "repository.submission.commit"
+
 // RunToolLoop executes a bounded native tool conversation. Each model and tool
 // boundary retains the lease and slot checks enforced by Generate and InvokeTool.
 func (r *Runtime) RunToolLoop(ctx context.Context, runID string, call ModelCall, maxToolRounds int) (modelgateway.NormalizedResponse, error) {
@@ -64,6 +66,19 @@ func (r *Runtime) RunToolLoop(ctx context.Context, runID string, call ModelCall,
 			content, err := nativeToolResultContent(result)
 			if err != nil {
 				return modelgateway.NormalizedResponse{}, err
+			}
+			if nativeCall.Name == terminalSubmissionTool {
+				manifest, err := submissionManifestFromToolResult(content)
+				if err != nil {
+					return modelgateway.NormalizedResponse{}, err
+				}
+				if err := r.validateToolLoopOutput(runID, manifest); err != nil {
+					return modelgateway.NormalizedResponse{}, err
+				}
+				response.Content = manifest
+				response.ToolCalls = nil
+				response.FinishReason = "tool_result"
+				return response, nil
 			}
 			messages = append(messages, modelgateway.Message{Role: "tool", ToolCallID: nativeCall.ID, Content: content})
 		}
@@ -154,6 +169,19 @@ func nativeToolResultContent(result toolbroker.ToolResult) (string, error) {
 		return "", ErrToolResultInvalid
 	}
 	return string(result.Output), nil
+}
+
+func submissionManifestFromToolResult(content string) (json.RawMessage, error) {
+	var result struct {
+		StructuredContent struct {
+			Manifest json.RawMessage `json:"manifest"`
+		} `json:"structuredContent"`
+		IsError bool `json:"isError,omitempty"`
+	}
+	if json.Unmarshal([]byte(content), &result) != nil || result.IsError || len(result.StructuredContent.Manifest) == 0 || !json.Valid(result.StructuredContent.Manifest) {
+		return nil, ErrToolResultInvalid
+	}
+	return append(json.RawMessage(nil), result.StructuredContent.Manifest...), nil
 }
 
 func cloneToolCalls(values []modelgateway.ToolCall) []modelgateway.ToolCall {
