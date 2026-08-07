@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -134,8 +133,6 @@ type PlanningRecoveryScheduler struct {
 	source  PlanningRecoverySource
 	planner automaticPlanningService
 	running atomic.Bool
-	status  sync.RWMutex
-	lastErr error
 }
 
 func NewPlanningRecoveryScheduler(source PlanningRecoverySource, planner automaticPlanningService) (*PlanningRecoveryScheduler, error) {
@@ -176,9 +173,6 @@ func (scheduler *PlanningRecoveryScheduler) Run(ctx context.Context) error {
 	defer scheduler.running.Store(false)
 	for {
 		dispatchErr := scheduler.DispatchOnce(ctx)
-		scheduler.status.Lock()
-		scheduler.lastErr = dispatchErr
-		scheduler.status.Unlock()
 		wait := planningRecoveryPollInterval
 		if dispatchErr != nil {
 			wait = planningRecoveryFailureBackoff
@@ -199,9 +193,7 @@ func (scheduler *PlanningRecoveryScheduler) Ready() error {
 	if scheduler == nil || !scheduler.running.Load() {
 		return ErrPlanningRecoveryNotRunning
 	}
-	scheduler.status.RLock()
-	defer scheduler.status.RUnlock()
-	return scheduler.lastErr
+	return nil
 }
 
 func validPlanningRecoveryCandidate(candidate PlanningRecoveryCandidate) bool {
