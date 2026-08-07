@@ -3,12 +3,15 @@ package goalplan
 import (
 	"context"
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/akimisaka/aor/internal/agentruntime"
 	"github.com/akimisaka/aor/internal/modelgateway"
 	"github.com/akimisaka/aor/pkg/aop"
 )
+
+const maximumRuntimeInvocationAttempts = 3
 
 // RuntimeInvocation is the fully authorized, immutable input needed to execute
 // one Goal or Plan layer model call through Agent Runtime.
@@ -41,6 +44,7 @@ type runtimeExecutor interface {
 	Heartbeat(context.Context, string) error
 	Generate(context.Context, string, agentruntime.ModelCall) (modelgateway.NormalizedResponse, error)
 	Complete(context.Context, string, agentruntime.AgentOutput) (agentruntime.AcceptedResult, error)
+	Snapshot(string) (agentruntime.Snapshot, error)
 	AcceptedResult(string) (agentruntime.AcceptedResult, bool)
 	Fail(string) error
 }
@@ -56,6 +60,35 @@ func (invoker *RuntimeAgentInvoker) Invoke(ctx context.Context, request AgentInv
 	if invoker == nil || invoker.runtime == nil || invoker.prepare == nil || ctx == nil || !validAgentInvocation(request) {
 		return AgentRecord{}, ErrInvalidRequest
 	}
+	logicalInvocationID := request.InvocationID
+	for attempt := 0; attempt < maximumRuntimeInvocationAttempts; attempt++ {
+		candidate := request
+		if attempt > 0 {
+			candidate.InvocationID = stableRuntimeID("runtime-retry_", logicalInvocationID, strconv.Itoa(attempt))
+		}
+		snapshot, err := invoker.runtime.Snapshot(candidate.InvocationID)
+		if err == nil {
+			if !snapshotMatchesInvocation(snapshot, candidate) {
+				return AgentRecord{}, ErrInvalidRequest
+			}
+			switch snapshot.State {
+			case agentruntime.StateCompleted:
+				return invoker.completedRecord(candidate, snapshot.AgentInstanceID)
+			case agentruntime.StateFailed, agentruntime.StateExpired:
+				continue
+			default:
+				return AgentRecord{}, ErrInvalidRequest
+			}
+		}
+		if !errors.Is(err, agentruntime.ErrRunNotFound) {
+			return AgentRecord{}, err
+		}
+		return invoker.invokeNew(ctx, candidate)
+	}
+	return AgentRecord{}, ErrAgentOutput
+}
+
+func (invoker *RuntimeAgentInvoker) invokeNew(ctx context.Context, request AgentInvocation) (AgentRecord, error) {
 	prepared, err := invoker.prepare.Prepare(ctx, request)
 	if err != nil {
 		return AgentRecord{}, err
@@ -66,7 +99,11 @@ func (invoker *RuntimeAgentInvoker) Invoke(ctx context.Context, request AgentInv
 	runID := prepared.Declaration.RunID
 	if err := invoker.runtime.Declare(prepared.Declaration); err != nil {
 		if errors.Is(err, agentruntime.ErrRunExists) {
-			return invoker.completedRecord(request, prepared)
+			snapshot, snapshotErr := invoker.runtime.Snapshot(runID)
+			if snapshotErr == nil && snapshotMatchesInvocation(snapshot, request) && snapshot.State == agentruntime.StateCompleted {
+				return invoker.completedRecord(request, snapshot.AgentInstanceID)
+			}
+			return AgentRecord{}, ErrInvalidRequest
 		}
 		return AgentRecord{}, err
 	}
@@ -137,13 +174,19 @@ func (invoker *RuntimeAgentInvoker) generateWithHeartbeat(ctx context.Context, r
 	return response, err
 }
 
-func (invoker *RuntimeAgentInvoker) completedRecord(request AgentInvocation, prepared RuntimeInvocation) (AgentRecord, error) {
-	runID := prepared.Declaration.RunID
+func (invoker *RuntimeAgentInvoker) completedRecord(request AgentInvocation, agentInstanceID string) (AgentRecord, error) {
+	runID := request.InvocationID
 	accepted, found := invoker.runtime.AcceptedResult(runID)
 	if !found || accepted.RunID != runID || accepted.Intent != expectedRuntimeIntent(request) || len(accepted.Payload) == 0 {
 		return AgentRecord{}, ErrInvalidRequest
 	}
-	return AgentRecord{RunID: runID, AgentInstanceID: prepared.Declaration.AgentInstanceID, Role: request.Role, Payload: append([]byte(nil), accepted.Payload...)}, nil
+	return AgentRecord{RunID: runID, AgentInstanceID: agentInstanceID, Role: request.Role, Payload: append([]byte(nil), accepted.Payload...)}, nil
+}
+
+func snapshotMatchesInvocation(snapshot agentruntime.Snapshot, request AgentInvocation) bool {
+	return snapshot.RunID == request.InvocationID && snapshot.TenantID == request.TenantID &&
+		snapshot.ProjectID == request.ProjectID && snapshot.TaskID == request.TaskID &&
+		snapshot.AgentInstanceID == runtimeAgentID(request) && snapshot.Role == request.Role
 }
 
 func validAgentInvocation(request AgentInvocation) bool {

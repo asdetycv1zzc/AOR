@@ -163,7 +163,7 @@ const planDraftSchema = `{
         "responsibility": {"type": "string", "minLength": 1, "maxLength": 4096},
         "executionPlatform": {"enum": ["LINUX", "WINDOWS"]},
         "sandboxLevel": {"enum": ["CONTAINER", "NONE"]},
-        "ownedPaths": {"type": "array", "minItems": 1, "maxItems": 4096, "items": {"type": "string", "minLength": 1, "maxLength": 4096}},
+        "ownedPaths": {"type": "array", "minItems": 1, "maxItems": 4096, "items": {"type": "string", "minLength": 1, "maxLength": 4096, "not": {"enum": [".", ".."]}, "description": "Concrete repository-relative file or directory path. Never use '.', '..', an absolute path, or traversal; list root-level files individually."}},
         "forbiddenPaths": {"$ref": "#/$defs/strings"},
         "publicInterfaces": {"$ref": "#/$defs/strings"},
         "dependencies": {"type": "array", "maxItems": 1000, "items": {"type": "string", "minLength": 1, "maxLength": 128}},
