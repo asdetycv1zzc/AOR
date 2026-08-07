@@ -315,7 +315,7 @@ func TestGatewayDoesNotFallbackAfterKnownNonRetryableFailure(t *testing.T) {
 	}
 }
 
-func TestGatewayDoesNotFallbackToDifferentLogicalModel(t *testing.T) {
+func TestGatewayFallsBackToPolicyApprovedDifferentModel(t *testing.T) {
 	ledger := NewBudgetLedger(time.Now)
 	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "account", TenantID: "tenant", LimitMicros: 10_000}); err != nil {
 		t.Fatal(err)
@@ -333,11 +333,16 @@ func TestGatewayDoesNotFallbackToDifferentLogicalModel(t *testing.T) {
 	}
 	request := hardeningRequest("different-model-fallback")
 	request.ProviderPolicy = "strict"
-	if _, err := gateway.Generate(context.Background(), request, GenerateOptions{Provider: "primary", AccountID: "account", ReservationID: "different-model-reservation", MaxAttempts: 1}); err == nil {
-		t.Fatal("different logical model fallback succeeded")
+	response, err := gateway.Generate(context.Background(), request, GenerateOptions{Provider: "primary", AccountID: "account", ReservationID: "different-model-reservation", MaxAttempts: 1})
+	if err != nil || string(response.Content) != `{"ok":true}` {
+		t.Fatalf("response=%#v error=%v", response, err)
 	}
-	if primary.Calls() != 1 || fallback.Calls() != 0 {
+	if primary.Calls() != 1 || fallback.Calls() != 1 {
 		t.Fatalf("primary calls=%d fallback calls=%d", primary.Calls(), fallback.Calls())
+	}
+	call, found := ledger.ModelCall("tenant", request.RequestID)
+	if !found || call.Provider != "fallback" || call.LogicalModel != request.Model {
+		t.Fatalf("model call=%#v found=%t", call, found)
 	}
 }
 

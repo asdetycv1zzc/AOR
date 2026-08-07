@@ -619,9 +619,6 @@ func (g *Gateway) providerCandidates(request NormalizedRequest, options Generate
 		return nil, err
 	}
 	for _, candidate := range policy.Candidates {
-		if candidate.Model != "" && candidate.Model != request.Model {
-			continue
-		}
 		if err := appendCandidate(candidate); err != nil {
 			return nil, err
 		}
