@@ -27,11 +27,11 @@ func TestDeploymentProfilesFailClosed(t *testing.T) {
 		"AOR_OPA_URL: http://opa:8181", "target: worker-runtime", "cap_drop: [ALL]",
 		"security_opt: [no-new-privileges:true]", "AOR_EXECUTOR_ROUTE_JSON", "AOR_MODULE_AUDITOR_ROUTE_JSON",
 		"AOR_LEASE_SIGNING_KEY_REF: secret://lease_signing_key",
-		"aor-curator:", "AOR_SERVER_MODE: CONTROL", "AOR_SERVER_MODE: KNOWLEDGE_CURATOR", "AOR_KNOWLEDGE_CURATOR_URL: http://aor-curator:8080",
+		"aor-curator:", "AOR_SERVER_MODE: CONTROL", "AOR_SERVER_MODE: KNOWLEDGE_CURATOR", "AOR_KNOWLEDGE_CURATOR_URL: http://aor-curator:8094",
 		"otel-collector:", "otel/opentelemetry-collector-contrib:0.157.0@sha256:", "otel-collector.compose.yaml:/etc/otelcol-contrib/config.yaml:ro",
 		"000010_outbox_tenant_discovery.up.sql", "000012_artifact_project_uri_scope.up.sql",
 		"000017_relational_projection_sync.up.sql", "000018_repository_submissions.up.sql", "000019_model_usage_reconciliation.up.sql", "000020_repository_registry.up.sql", "000021_event_replay_state.up.sql", "000022_project_agent_leases.up.sql", "000023_staged_module_planning.up.sql",
-		"target: tool-broker-runtime", "AOR_REPOSITORY_ROOT: /var/lib/aor/repositories", "repository-data:/var/lib/aor/repositories",
+		"target: tool-broker-runtime", "AOR_REPOSITORY_ROOT: /var/lib/aor/repositories", "AOR_PROJECTS_HOST_PATH",
 	} {
 		if !strings.Contains(composeText, value) {
 			t.Errorf("compose missing %q", value)
@@ -41,7 +41,7 @@ func TestDeploymentProfilesFailClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, value := range []string{"FROM ${GO_IMAGE} AS tool-broker-runtime", "git=2.52.0-r0", "USER 65532:65532"} {
+	for _, value := range []string{"FROM ${ALPINE_IMAGE} AS tool-broker-runtime", "git=2.52.0-r0", "USER 65532:65532"} {
 		if !strings.Contains(string(dockerfile), value) {
 			t.Errorf("Dockerfile missing %q", value)
 		}
@@ -194,7 +194,6 @@ func TestComposeWorkerCannotDowngradeIsolation(t *testing.T) {
 		{old: "target: worker-runtime", new: "target: runtime"},
 		{old: "cap_drop: [ALL]", new: "cap_drop: []"},
 		{old: "security_opt: [no-new-privileges:true]", new: "security_opt: []"},
-		{old: "read_only: true", new: "read_only: false"},
 	} {
 		candidate := strings.Replace(string(compose), replacement.old, replacement.new, 1)
 		if candidate == string(compose) {
@@ -218,7 +217,7 @@ func TestComposeArtifactAndKnowledgeDependenciesCannotBeDropped(t *testing.T) {
 	}{
 		{old: "AOR_KNOWLEDGE_ROOT: /var/lib/aor/knowledge", new: "AOR_KNOWLEDGE_ROOT: /tmp/knowledge"},
 		{old: ":/var/lib/aor/knowledge:ro", new: ":/var/lib/aor/knowledge:rw"},
-		{old: "AOR_KNOWLEDGE_CURATOR_URL: http://aor-curator:8080", new: "AOR_KNOWLEDGE_CURATOR_URL: \"\""},
+		{old: "AOR_KNOWLEDGE_CURATOR_URL: http://aor-curator:8094", new: "AOR_KNOWLEDGE_CURATOR_URL: \"\""},
 		{old: "AOR_SERVER_MODE: KNOWLEDGE_CURATOR", new: "AOR_SERVER_MODE: CONTROL"},
 		{old: ":/var/lib/aor/knowledge:rw", new: ":/var/lib/aor/knowledge:ro"},
 	} {

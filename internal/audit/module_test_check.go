@@ -59,6 +59,7 @@ func (check *ModuleTestCheck) Run(ctx context.Context, input DeterministicInput)
 	if err := os.MkdirAll(check.workRoot, 0o700); err != nil {
 		return moduleTestFailure(StatusError, "module test work root is unavailable", "module-test-work-root")
 	}
+	environment := moduleTestEnvironment(check.workRoot)
 	root, err := os.MkdirTemp(check.workRoot, "aor-module-test-")
 	if err != nil {
 		return moduleTestFailure(StatusError, "module test workspace could not be created", "module-test-workspace")
@@ -66,17 +67,17 @@ func (check *ModuleTestCheck) Run(ctx context.Context, input DeterministicInput)
 	defer os.RemoveAll(root)
 	workspace := filepath.Join(root, "checkout")
 	cloneCommand := exec.CommandContext(ctx, "git", "-c", "protocol.file.allow=always", "--no-pager", "--no-replace-objects", "clone", "--no-hardlinks", "--no-checkout", "--quiet", repositoryPath, workspace)
-	cloneCommand.Env = moduleTestEnvironment()
+	cloneCommand.Env = environment
 	cloneOutput := &moduleTestOutput{}
 	cloneCommand.Stdout, cloneCommand.Stderr = cloneOutput, cloneOutput
 	if err := cloneCommand.Run(); err != nil {
 		return moduleTestFailure(StatusError, "submission commit could not be checked out", "module-test-checkout")
 	}
-	resolved, err := runModuleGitOutput(ctx, workspace, "rev-parse", "--verify", input.Manifest.HeadCommit+"^{commit}")
+	resolved, err := runModuleGitOutput(ctx, workspace, environment, "rev-parse", "--verify", input.Manifest.HeadCommit+"^{commit}")
 	if err != nil || strings.TrimSpace(resolved) != input.Manifest.HeadCommit {
 		return moduleTestFailure(StatusError, "submission commit could not be verified", "module-test-commit")
 	}
-	if err := runModuleGit(ctx, workspace, "checkout", "--detach", "--quiet", input.Manifest.HeadCommit); err != nil {
+	if err := runModuleGit(ctx, workspace, environment, "checkout", "--detach", "--quiet", input.Manifest.HeadCommit); err != nil {
 		return moduleTestFailure(StatusError, "submission commit could not be checked out", "module-test-checkout")
 	}
 
@@ -84,7 +85,7 @@ func (check *ModuleTestCheck) Run(ctx context.Context, input DeterministicInput)
 	defer cancel()
 	command := exec.CommandContext(testContext, check.argv[0], check.argv[1:]...)
 	command.Dir = workspace
-	command.Env = moduleTestEnvironment()
+	command.Env = environment
 	var stdout, stderr moduleTestOutput
 	command.Stdout = &stdout
 	command.Stderr = &stderr
@@ -133,17 +134,17 @@ func isModuleTestShell(value string) bool {
 	}
 }
 
-func runModuleGit(ctx context.Context, directory string, arguments ...string) error {
+func runModuleGit(ctx context.Context, directory string, environment []string, arguments ...string) error {
 	command := exec.CommandContext(ctx, "git", append([]string{"--no-pager", "--no-replace-objects", "-C", directory}, arguments...)...)
-	command.Env = moduleTestEnvironment()
+	command.Env = environment
 	command.Stdout = &moduleTestOutput{}
 	command.Stderr = &moduleTestOutput{}
 	return command.Run()
 }
 
-func runModuleGitOutput(ctx context.Context, directory string, arguments ...string) (string, error) {
+func runModuleGitOutput(ctx context.Context, directory string, environment []string, arguments ...string) (string, error) {
 	command := exec.CommandContext(ctx, "git", append([]string{"--no-pager", "--no-replace-objects", "-C", directory}, arguments...)...)
-	command.Env = moduleTestEnvironment()
+	command.Env = environment
 	var stdout, stderr moduleTestOutput
 	command.Stdout = &stdout
 	command.Stderr = &stderr
@@ -153,9 +154,9 @@ func runModuleGitOutput(ctx context.Context, directory string, arguments ...stri
 	return string(stdout.Bytes()), nil
 }
 
-func moduleTestEnvironment() []string {
+func moduleTestEnvironment(workRoot string) []string {
 	pathValue := os.Getenv("PATH")
-	environment := []string{"HOME=/tmp", "TMPDIR=/tmp", "LC_ALL=C", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_SYSTEM=/dev/null", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0", "GIT_NO_LAZY_FETCH=1", "GIT_PROTOCOL_FROM_USER=0", "GOTOOLCHAIN=local", "GOPROXY=off", "GOFLAGS=-mod=readonly", "GOMAXPROCS=1", "GOMEMLIMIT=384MiB", "GOCACHE=/tmp/aor-go-build", "GOMODCACHE=/go/pkg/mod"}
+	environment := []string{"HOME=" + workRoot, "TMPDIR=" + workRoot, "LC_ALL=C", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_SYSTEM=/dev/null", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0", "GIT_NO_LAZY_FETCH=1", "GIT_PROTOCOL_FROM_USER=0", "GOTOOLCHAIN=local", "GOFLAGS=-mod=readonly", "GOMAXPROCS=1", "GOMEMLIMIT=384MiB"}
 	if pathValue != "" {
 		environment = append(environment, "PATH="+pathValue)
 	}

@@ -260,9 +260,9 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 			Audience:        value(lookup, "AOR_MODEL_GATEWAY_OAUTH_AUDIENCE", ""),
 		},
 		Services: ServiceEndpoints{
-			API:          value(lookup, "AOR_API_URL", "http://aor-api:8080"),
-			ModelGateway: value(lookup, "AOR_MODEL_GATEWAY_URL", "http://aor-model-gateway:8080"),
-			ToolBroker:   value(lookup, "AOR_TOOL_BROKER_URL", "http://aor-tool-broker:8080"),
+			API:          value(lookup, "AOR_API_URL", "http://aor-api:8090"),
+			ModelGateway: value(lookup, "AOR_MODEL_GATEWAY_URL", "http://aor-model-gateway:8091"),
+			ToolBroker:   value(lookup, "AOR_TOOL_BROKER_URL", "http://aor-tool-broker:8092"),
 		},
 		Sandbox: SandboxConfig{
 			LinuxLevel:                   value(lookup, "AOR_SANDBOX_LINUX_LEVEL", "CONTAINER"),

@@ -2,15 +2,13 @@
 
 ARG GO_IMAGE=golang:1.26.5-alpine3.23@sha256:622e56dbc11a8cfe87cafa2331e9a201877271cbff918af53d3be315f3da88cc
 ARG RUNTIME_IMAGE=gcr.io/distroless/static-debian12:nonroot@sha256:f5b485ea962d9bd1186b2f6b3a061191539b905b82ec395de78cbfae51f20e35
-ARG DOCKER_CLI_IMAGE=docker:29.6.1-cli@sha256:862099ada15c669000bef53aa4cb9d821262829f45b0dda2159ccb276443043b
+ARG ALPINE_IMAGE=alpine:3.23.3@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659
 
 FROM ${GO_IMAGE} AS build
 WORKDIR /src
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local
 COPY go.* ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download all
-RUN --mount=type=cache,target=/go/pkg/mod \
-    mkdir -p /out/go-mod && cp -a /go/pkg/mod/. /out/go-mod/
 COPY cmd ./cmd
 COPY internal ./internal
 COPY model-adapters ./model-adapters
@@ -36,27 +34,21 @@ FROM ${RUNTIME_IMAGE} AS runtime
 COPY --from=build /out/aor /usr/local/bin/aor
 COPY --from=build --chown=65532:65532 /out/runtime/knowledge /var/lib/aor/knowledge
 USER nonroot:nonroot
-EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/aor"]
 CMD ["serve"]
-
-FROM ${DOCKER_CLI_IMAGE} AS docker-cli
 
 FROM ${GO_IMAGE} AS worker-runtime
 COPY --from=build /out/aor /usr/local/bin/aor
-COPY --from=build /out/go-mod /go/pkg/mod
-COPY --from=build /src/go.mod /src/go.sum /usr/local/share/aor/
-COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 RUN apk add --no-cache git=2.52.0-r0 && \
-    mkdir -p /var/lib/aor/knowledge && \
-    chown -R 65532:65532 /var/lib/aor/knowledge
-ENV HOME=/tmp
+    mkdir -p /var/lib/aor/knowledge \
+      /var/lib/aor/work && \
+    chown -R 65532:65532 /var/lib/aor
+ENV HOME=/var/lib/aor/work
 USER 65532:65532
-EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/aor"]
 CMD ["serve"]
 
-FROM ${GO_IMAGE} AS tool-broker-runtime
+FROM ${ALPINE_IMAGE} AS tool-broker-runtime
 COPY --from=build /out/aor /usr/local/bin/aor
 RUN apk add --no-cache git=2.52.0-r0 && \
     mkdir -p /var/lib/aor/repositories && \
@@ -64,7 +56,6 @@ RUN apk add --no-cache git=2.52.0-r0 && \
     chmod 1777 /var/lib/aor/repositories
 ENV HOME=/tmp
 USER 65532:65532
-EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/aor"]
 CMD ["serve"]
 

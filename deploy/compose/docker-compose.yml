@@ -511,7 +511,8 @@ services:
       AOR_ENVIRONMENT: test
       AOR_OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       AOR_SERVER_MODE: CONTROL
-      AOR_LISTEN_ADDR: :8080
+      AOR_LISTEN_ADDR: :8090
+      AOR_HEALTHCHECK_URL: http://127.0.0.1:8090/health/ready
       AOR_DATABASE_HOST: postgres
       AOR_DATABASE_PORT: "5432"
       AOR_DATABASE_NAME: aor
@@ -528,14 +529,14 @@ services:
       AOR_S3_ACCESS_KEY_REF: secret://minio_root_user
       AOR_S3_SECRET_KEY_REF: secret://minio_root_password
       AOR_KNOWLEDGE_ROOT: /var/lib/aor/knowledge
-      AOR_KNOWLEDGE_CURATOR_URL: http://aor-curator:8080
+      AOR_KNOWLEDGE_CURATOR_URL: http://aor-curator:8094
       AOR_OPA_URL: http://opa:8181
       AOR_OIDC_ISSUER: http://127.0.0.1:5556/dex
       AOR_OIDC_JWKS_URL: http://identity:5556/dex/keys
       AOR_OIDC_AUDIENCE: aor-control-plane
       AOR_OIDC_DEFAULT_TENANT_ID: 11111111-1111-4111-8111-111111111111
       AOR_OIDC_DEFAULT_ROLE: USER
-      AOR_MODEL_GATEWAY_URL: http://aor-model-gateway:8080
+      AOR_MODEL_GATEWAY_URL: http://aor-model-gateway:8091
       AOR_MODEL_GATEWAY_OAUTH_TOKEN_ENDPOINT: http://identity:5556/dex/token
       AOR_MODEL_GATEWAY_OAUTH_CLIENT_ID: aor-server
       AOR_MODEL_GATEWAY_OAUTH_CLIENT_SECRET_REF: secret://aor_server_oauth_client_secret
@@ -547,18 +548,20 @@ services:
     volumes:
       - "${AOR_KNOWLEDGE_HOST_PATH:-aor-knowledge-data}:/var/lib/aor/knowledge:ro"
     ports:
-      - 127.0.0.1:8090:8080
+      - 127.0.0.1:8090:8090
 
   aor-curator:
     extends:
       service: aor-api
     environment:
       AOR_SERVER_MODE: KNOWLEDGE_CURATOR
+      AOR_LISTEN_ADDR: :8094
+      AOR_HEALTHCHECK_URL: http://127.0.0.1:8094/health/ready
       AOR_KNOWLEDGE_CURATOR_URL: ""
     volumes: !override
       - "${AOR_KNOWLEDGE_HOST_PATH:-aor-knowledge-data}:/var/lib/aor/knowledge:rw"
     ports: !override
-      - 127.0.0.1:8094:8080
+      - 127.0.0.1:8094:8094
 
   aor-model-gateway:
     <<: *aor-common
@@ -585,7 +588,8 @@ services:
     environment:
       AOR_ENVIRONMENT: test
       AOR_OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
-      AOR_LISTEN_ADDR: :8080
+      AOR_LISTEN_ADDR: :8091
+      AOR_HEALTHCHECK_URL: http://127.0.0.1:8091/health/ready
       AOR_DATABASE_HOST: postgres
       AOR_DATABASE_PORT: "5432"
       AOR_DATABASE_NAME: aor
@@ -604,7 +608,7 @@ services:
         [{"id":"openai-primary","provider":"openai","baseUrl":"${AOR_OPENAI_BASE_URL:-https://ai.1343263.xyz/v1}","apiKeyRef":"secret://model_provider_openai_key","models":["${AOR_OPENAI_MODEL:-gpt-5.6-sol}"],"inputMicrosPerToken":1,"outputMicrosPerToken":4,"supportsStreaming":true,"supportsToolCalls":true,"supportsJsonSchema":true,"supportsSeed":false,"supportsPromptCaching":false,"maxInputTokens":32768,"maxOutputTokens":4096,"dataResidency":["provider-defined"],"retentionPolicy":"provider-defined","modalities":["text"]},{"id":"deepseek-audit","provider":"deepseek","baseUrl":"${AOR_DEEPSEEK_BASE_URL:-https://ai.1343263.xyz/v1}","apiKeyRef":"secret://model_provider_deepseek_key","models":["${AOR_DEEPSEEK_MODEL:-deepseek-v4-flash}"],"inputMicrosPerToken":1,"outputMicrosPerToken":4,"supportsStreaming":true,"supportsToolCalls":true,"supportsJsonSchema":true,"supportsSeed":false,"supportsPromptCaching":false,"maxInputTokens":32768,"maxOutputTokens":4096,"dataResidency":["provider-defined"],"retentionPolicy":"provider-defined","modalities":["text"]}]
     secrets: [postgres_app_password, model_replay_key, model_provider_openai_key, model_provider_deepseek_key]
     ports:
-      - 127.0.0.1:8091:8080
+      - 127.0.0.1:8091:8091
 
   aor-tool-broker:
     <<: *aor-common
@@ -637,7 +641,8 @@ services:
       AOR_ENVIRONMENT: test
       AOR_OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       AOR_DEPLOYMENT_PROFILE: TEST
-      AOR_LISTEN_ADDR: :8080
+      AOR_LISTEN_ADDR: :8092
+      AOR_HEALTHCHECK_URL: http://127.0.0.1:8092/health/ready
       AOR_DATABASE_HOST: postgres
       AOR_DATABASE_PORT: "5432"
       AOR_DATABASE_NAME: aor
@@ -659,13 +664,15 @@ services:
       AOR_REPOSITORY_ROOT: /var/lib/aor/repositories
     secrets: [postgres_app_password, lease_signing_key, minio_root_user, minio_root_password]
     volumes:
-      - repository-data:/var/lib/aor/repositories
+      - "${AOR_PROJECTS_HOST_PATH:-../../projects}:/var/lib/aor/repositories"
     cap_drop: [ALL]
     ports:
-      - 127.0.0.1:8092:8080
+      - 127.0.0.1:8092:8092
 
   aor-worker:
     <<: *aor-common
+    read_only: false
+    tmpfs: []
     image: aor/aor-worker:0.1.0-test
     build:
       context: ../..
@@ -685,7 +692,8 @@ services:
       AOR_ENVIRONMENT: test
       AOR_OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       AOR_DEPLOYMENT_PROFILE: TEST
-      AOR_LISTEN_ADDR: :8080
+      AOR_LISTEN_ADDR: :8093
+      AOR_HEALTHCHECK_URL: http://127.0.0.1:8093/health/ready
       AOR_DATABASE_HOST: postgres
       AOR_DATABASE_PORT: "5432"
       AOR_DATABASE_NAME: aor
@@ -701,9 +709,9 @@ services:
       AOR_S3_ACCESS_KEY_REF: secret://minio_root_user
       AOR_S3_SECRET_KEY_REF: secret://minio_root_password
       AOR_OPA_URL: http://opa:8181
-      AOR_API_URL: http://aor-api:8080
-      AOR_MODEL_GATEWAY_URL: http://aor-model-gateway:8080
-      AOR_TOOL_BROKER_URL: http://aor-tool-broker:8080
+      AOR_API_URL: http://aor-api:8090
+      AOR_MODEL_GATEWAY_URL: http://aor-model-gateway:8091
+      AOR_TOOL_BROKER_URL: http://aor-tool-broker:8092
       AOR_KNOWLEDGE_ROOT: /var/lib/aor/knowledge
       AOR_REPOSITORY_ROOT: /var/lib/aor/repositories
       AOR_MODEL_GATEWAY_OAUTH_TOKEN_ENDPOINT: http://identity:5556/dex/token
@@ -719,17 +727,16 @@ services:
       AOR_MODULE_TEST_COMMAND_JSON: >-
         ["/usr/local/go/bin/go","test","-p=1","./..."]
       AOR_MODULE_TEST_TIMEOUT_SECONDS: "300"
-      AOR_INTEGRATION_WORK_ROOT: /tmp/aor-integration
-      AOR_INTEGRATION_DEPENDENCY_CACHE: /go/pkg/mod
+      AOR_INTEGRATION_WORK_ROOT: /var/lib/aor/work
       AOR_INTEGRATION_CHECKS_JSON: >-
         [{"kind":"COMPILE","argv":["/usr/local/go/bin/go","build","-p=1","./..."],"timeoutSeconds":300},{"kind":"CONTRACT","argv":["/usr/local/go/bin/go","run","-p=1","./cmd/aor-conformance","contracts"],"timeoutSeconds":300},{"kind":"INTEGRATION","argv":["/usr/local/go/bin/go","test","-p=1","./internal/integration"],"timeoutSeconds":300},{"kind":"E2E","argv":["/usr/local/go/bin/go","test","-p=1","./tests/integration"],"timeoutSeconds":300},{"kind":"MIGRATION","argv":["/usr/local/go/bin/go","run","-p=1","./cmd/aor-conformance","schemas"],"timeoutSeconds":300}]
     secrets: [postgres_app_password, lease_signing_key, minio_root_user, minio_root_password, aor_server_oauth_client_secret]
     volumes:
       - "${AOR_KNOWLEDGE_HOST_PATH:-aor-knowledge-data}:/var/lib/aor/knowledge:ro"
-      - repository-data:/var/lib/aor/repositories
+      - "${AOR_PROJECTS_HOST_PATH:-../../projects}:/var/lib/aor/repositories"
     cap_drop: [ALL]
     ports:
-      - 127.0.0.1:8093:8080
+      - 127.0.0.1:8093:8093
 
 networks:
   aor:
@@ -739,7 +746,6 @@ volumes:
   postgres-data:
   nats-data:
   minio-data:
-  repository-data:
   aor-knowledge-data:
 
 secrets:

@@ -3,6 +3,7 @@
 /dist/
 /coverage/
 /release-evidence/
+/projects/
 *.out
 *.test
 .env

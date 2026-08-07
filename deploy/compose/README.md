@@ -20,7 +20,7 @@ This profile requires the Docker Compose plugin with `--wait` and `--wait-timeou
 
 ## Classroom TEST Isolation
 
-The TEST profile runs the core Goal -> Plan -> Execution -> Audit path inside the Worker container. The Worker has no Docker socket, and no host sandbox engine or AppArmor setup is required. Its repository volume is the execution workspace and its knowledge volume is read-only; the container also drops all capabilities and uses a read-only root filesystem. Integration and GlobalAudit are disabled in this profile, so this is suitable for the classroom workflow but is not a production untrusted-code isolation boundary.
+The TEST profile runs the core Goal -> Plan -> Execution -> Audit path inside the Worker container. The Worker has no Docker socket, and no host sandbox engine or AppArmor setup is required. Tool Broker and Worker share the host directory `${AOR_PROJECTS_HOST_PATH}` at `/var/lib/aor/repositories`; when unset it defaults to this repository's `projects/` directory. Executor branches and project repositories remain visible on the host, while audit checkouts and Go build caches stay in the Worker's disposable overlay. Integration and GlobalAudit are disabled in this profile.
 
 ## Secrets
 
@@ -49,7 +49,7 @@ The Model Gateway defaults to OpenAI `gpt-5.6-sol` and DeepSeek `deepseek-v4-fla
 
 ## Knowledge Root
 
-The API and worker mount `/var/lib/aor/knowledge` as read-only. By default Compose uses the named `aor-knowledge-data` volume, initialized with the global namespace from the image; set `AOR_KNOWLEDGE_HOST_PATH` to an absolute host directory to serve a curated snapshot tree from another location. The API sets `AOR_KNOWLEDGE_CURATOR_URL=http://aor-curator:8080`, so authenticated knowledge-update requests are forwarded to the separate process that owns the only read-write knowledge mount. The curator runs the `KNOWLEDGE_CURATOR` server mode, exposes only the draft, lookup, and approval routes on `127.0.0.1:8094`, and does not start control-plane schedulers or maintenance workers. An empty root is valid, but knowledge searches and manifest reads return not found until a revision is published.
+The API and worker mount `/var/lib/aor/knowledge` as read-only. By default Compose uses the named `aor-knowledge-data` volume, initialized with the global namespace from the image; set `AOR_KNOWLEDGE_HOST_PATH` to an absolute host directory to serve a curated snapshot tree from another location. The API sets `AOR_KNOWLEDGE_CURATOR_URL=http://aor-curator:8094`, so authenticated knowledge-update requests are forwarded to the separate process that owns the only read-write knowledge mount. The curator runs the `KNOWLEDGE_CURATOR` server mode, exposes only the draft, lookup, and approval routes on `127.0.0.1:8094`, and does not start control-plane schedulers or maintenance workers. An empty root is valid, but knowledge searches and manifest reads return not found until a revision is published.
 
 ## Start
 
