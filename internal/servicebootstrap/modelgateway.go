@@ -27,8 +27,9 @@ import (
 )
 
 const (
-	modelGatewayReservationTTL = 24 * time.Hour
-	modelGatewayRequestTimeout = 5 * time.Minute
+	modelGatewayReservationTTL  = 24 * time.Hour
+	modelProviderRequestTimeout = 5 * time.Minute
+	modelGatewayClientTimeout   = 10 * time.Minute
 )
 
 // ModelGateway constructs the authenticated, policy-authorized model service.
@@ -185,7 +186,7 @@ func newConfiguredAdapter(provider runtimeconfig.ProviderConfig, credential []by
 		models[model] = capabilities
 	}
 	return openaicompatible.New(openaicompatible.Config{
-		Endpoint: endpoint, Credential: string(credential), Models: models, ReasoningEffort: provider.ReasoningEffort, RequestTimeout: modelGatewayRequestTimeout,
+		Endpoint: endpoint, Credential: string(credential), Models: models, ReasoningEffort: provider.ReasoningEffort, RequestTimeout: modelProviderRequestTimeout,
 	})
 }
 
