@@ -19,6 +19,7 @@ import (
 
 	"github.com/akimisaka/aor/internal/agentruntime"
 	"github.com/akimisaka/aor/internal/execution"
+	"github.com/akimisaka/aor/internal/modelgateway"
 	"github.com/akimisaka/aor/internal/observability"
 )
 
@@ -222,7 +223,9 @@ func terminalExecutionError(err error) bool {
 		errors.Is(err, agentruntime.ErrIntentDenied),
 		errors.Is(err, execution.ErrAssignmentInvalid),
 		errors.Is(err, execution.ErrPreparationInvalid),
-		errors.Is(err, execution.ErrSubmissionInvalid):
+		errors.Is(err, execution.ErrSubmissionInvalid),
+		errors.Is(err, modelgateway.ErrProviderUnavailable),
+		errors.Is(err, context.DeadlineExceeded):
 		return true
 	default:
 		return false
