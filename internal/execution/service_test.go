@@ -267,6 +267,18 @@ func TestServiceRejectsPreparedLeaseWithDifferentFence(t *testing.T) {
 	}
 }
 
+func TestValidateAssignmentAllowsExecutingReplayAtCurrentFence(t *testing.T) {
+	task := state.ModuleTask{State: contracts.TaskExecuting, FencingToken: 7}
+	assignment := Assignment{AgentInstanceID: "agent-1", SandboxID: "sandbox-1", FencingToken: 7}
+	if err := validateAssignment(task, assignment); err != nil {
+		t.Fatal(err)
+	}
+	assignment.FencingToken--
+	if !errors.Is(validateAssignment(task, assignment), ErrAssignmentInvalid) {
+		t.Fatal("stale executing assignment was accepted")
+	}
+}
+
 func executionTestService(t *testing.T, tasks *testTaskAuthority, module contracts.ModuleSpec, assignments *testAssignments, preparer *testPreparer, runtime *testRuntime, submissions *testSubmissions) *Service {
 	t.Helper()
 	service, err := New(Config{

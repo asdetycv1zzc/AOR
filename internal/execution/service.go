@@ -500,7 +500,7 @@ func validateAssignment(task state.ModuleTask, assignment Assignment) error {
 	if !validID(assignment.AgentInstanceID) || !validID(assignment.SandboxID) || assignment.FencingToken < 1 {
 		return ErrAssignmentInvalid
 	}
-	if task.State == contracts.TaskReadyExecution && assignment.FencingToken <= task.FencingToken || task.State == contracts.TaskExecuting && assignment.FencingToken <= task.FencingToken {
+	if task.State == contracts.TaskReadyExecution && assignment.FencingToken <= task.FencingToken || task.State == contracts.TaskExecuting && assignment.FencingToken < task.FencingToken {
 		return ErrAssignmentInvalid
 	}
 	return nil
