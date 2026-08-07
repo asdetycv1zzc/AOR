@@ -164,6 +164,23 @@ func (activities *Activities) Execute(ctx context.Context, input ExecutionInput)
 	info := activity.GetInfo(ctx)
 	identity := ActivityIdentity{TenantID: input.TenantID, WorkflowID: info.WorkflowExecution.ID, ActivityID: input.ActivityID}
 	ctx = context.WithValue(ctx, executionInputContextKey{}, input)
+	heartbeatDone := make(chan struct{})
+	activity.RecordHeartbeat(ctx)
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				activity.RecordHeartbeat(ctx)
+			case <-heartbeatDone:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	defer close(heartbeatDone)
 	result, err := activities.executor.Execute(ctx, identity, input.Payload)
 	if err != nil {
 		return ExecutionOutput{}, classifyActivityError(err)
