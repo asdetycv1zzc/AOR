@@ -92,10 +92,8 @@ type repositoryReadArguments struct {
 }
 
 type repositorySubmitArguments struct {
-	WorkspaceID           string   `json:"workspaceId"`
-	Attempt               int      `json:"attempt"`
-	ClaimedCriteria       []string `json:"claimedCriteria"`
-	LocalTestEvidenceRefs []string `json:"localTestEvidenceRefs"`
+	WorkspaceID string `json:"workspaceId"`
+	Attempt     int    `json:"attempt"`
 }
 
 func deriveRepositorySigningKey(leaseKey []byte) []byte {
@@ -402,12 +400,10 @@ func (client *repositoryMCPClient) CallTool(ctx context.Context, name string, ar
 			return mcp.ToolCallResult{}, repository.ErrInvalidRequest
 		}
 		submission, err := client.service.Submit(ctx, repository.SubmissionRequest{
-			WorkspaceID:           input.WorkspaceID,
-			Attempt:               input.Attempt,
-			ClaimedCriteria:       append([]string(nil), input.ClaimedCriteria...),
-			LocalTestEvidenceRefs: append([]string(nil), input.LocalTestEvidenceRefs...),
-			Lease:                 proof,
-			IdempotencyKey:        requestID,
+			WorkspaceID:    input.WorkspaceID,
+			Attempt:        input.Attempt,
+			Lease:          proof,
+			IdempotencyKey: requestID,
 		})
 		if err != nil {
 			return mcp.ToolCallResult{}, err
@@ -722,7 +718,6 @@ func repositoryMCPTools() []mcp.Tool {
 		return map[string]any{"type": "string", "minLength": 1, "maxLength": maxLength}
 	}
 	integerProperty := map[string]any{"type": "integer", "minimum": 1, "maximum": 3}
-	arrayProperty := map[string]any{"type": "array", "maxItems": 256, "items": stringProperty(4096), "uniqueItems": true}
 	objectSchema := func(required []any, properties map[string]any) map[string]any {
 		return map[string]any{"type": "object", "required": required, "properties": properties, "additionalProperties": false}
 	}
@@ -746,7 +741,7 @@ func repositoryMCPTools() []mcp.Tool {
 		{Name: string(repository.LeaseActionWriteFile), Description: "Write one module-owned file", InputSchema: objectSchema([]any{"workspaceId", "path", "contentBase64"}, map[string]any{"workspaceId": stringProperty(512), "path": stringProperty(4096), "contentBase64": stringProperty(6 << 20)}), OutputSchema: objectSchema([]any{"ok"}, map[string]any{"ok": map[string]any{"type": "boolean"}})},
 		{Name: string(repository.LeaseActionDeleteFile), Description: "Delete one module-owned file", InputSchema: objectSchema([]any{"workspaceId", "path"}, map[string]any{"workspaceId": stringProperty(512), "path": stringProperty(4096)}), OutputSchema: objectSchema([]any{"ok"}, map[string]any{"ok": map[string]any{"type": "boolean"}})},
 		{Name: repositoryReadTool, Description: "Read one lease-authorized file", InputSchema: readInput, OutputSchema: readOutput},
-		{Name: string(repository.LeaseActionSubmit), Description: "Create an immutable signed submission commit", InputSchema: objectSchema([]any{"workspaceId", "attempt", "claimedCriteria", "localTestEvidenceRefs"}, map[string]any{"workspaceId": stringProperty(512), "attempt": integerProperty, "claimedCriteria": arrayProperty, "localTestEvidenceRefs": arrayProperty}), OutputSchema: objectSchema([]any{"manifest"}, map[string]any{"manifest": map[string]any{"type": "object"}})},
+		{Name: string(repository.LeaseActionSubmit), Description: "Create an immutable signed submission commit; independent audit supplies criteria and evidence", InputSchema: objectSchema([]any{"workspaceId", "attempt"}, map[string]any{"workspaceId": stringProperty(512), "attempt": integerProperty}), OutputSchema: objectSchema([]any{"manifest"}, map[string]any{"manifest": map[string]any{"type": "object"}})},
 	}
 }
 
