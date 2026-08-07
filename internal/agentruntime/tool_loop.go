@@ -26,7 +26,7 @@ func (r *Runtime) RunToolLoop(ctx context.Context, runID string, call ModelCall,
 	}
 	seenCallIDs := make(map[string]struct{})
 	for round := 0; ; round++ {
-		response, err := r.generate(ctx, runID, toolLoopModelCall(call, round), messages)
+		response, err := r.generate(ctx, runID, toolLoopModelCall(call, round), messages, false)
 		if err != nil {
 			return modelgateway.NormalizedResponse{}, err
 		}

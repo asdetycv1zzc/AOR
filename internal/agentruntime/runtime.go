@@ -260,10 +260,10 @@ func (r *Runtime) RenewLease(ctx context.Context, runID string) error {
 }
 
 func (r *Runtime) Generate(ctx context.Context, runID string, call ModelCall) (modelgateway.NormalizedResponse, error) {
-	return r.generate(ctx, runID, call, nil)
+	return r.generate(ctx, runID, call, nil, true)
 }
 
-func (r *Runtime) generate(ctx context.Context, runID string, call ModelCall, messages []modelgateway.Message) (modelgateway.NormalizedResponse, error) {
+func (r *Runtime) generate(ctx context.Context, runID string, call ModelCall, messages []modelgateway.Message, enforceResponseSchema bool) (modelgateway.NormalizedResponse, error) {
 	if r.gateway == nil {
 		return modelgateway.NormalizedResponse{}, ErrProviderUnavailable
 	}
@@ -302,6 +302,11 @@ func (r *Runtime) generate(ctx context.Context, runID string, call ModelCall, me
 		Temperature:     call.Temperature, ProviderPolicy: call.ProviderPolicy,
 		DataClassification: declaration.DataClassification, CachePolicy: call.CachePolicy, PromptDigest: prompt.SHA256,
 		ToolSchemaDigest: declaration.ToolSchemaDigest, PolicyDigest: declaration.PolicyDigest, WorstCaseCostMicros: call.WorstCaseCostMicros,
+	}
+	if !enforceResponseSchema {
+		request.ResponseSchemaRef = ""
+		request.ResponseSchema = nil
+		request.ResponseSemanticValidator = nil
 	}
 	if call.Seed != nil {
 		seed := *call.Seed

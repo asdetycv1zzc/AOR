@@ -40,6 +40,11 @@ func TestRunToolLoopUsesDeclaredConversationAndBoundaries(t *testing.T) {
 	if len(requests) != 2 || len(options) != 2 {
 		t.Fatalf("gateway calls = %d", len(requests))
 	}
+	for index, request := range requests {
+		if request.ResponseSchemaRef != "" || len(request.ResponseSchema) != 0 || request.ResponseSemanticValidator != nil {
+			t.Fatalf("tool round %d retained final response schema", index)
+		}
+	}
 	runtime.mu.RLock()
 	declaredMessages := cloneMessages(runtime.runs[declaration.RunID].prompt.Messages)
 	runtime.mu.RUnlock()
