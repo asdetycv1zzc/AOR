@@ -395,6 +395,9 @@ func (r *Runtime) InvokeTool(ctx context.Context, runID string, call ToolCall) (
 			return toolbroker.ToolResult{}, err
 		}
 	} else {
+		if err := r.validateDetachedLease(opCtx, lease, LeaseOperationResult); err != nil {
+			return toolbroker.ToolResult{}, err
+		}
 		if err := r.validateLease(opCtx, runID, executionLease, "", LeaseOperationResult); err != nil {
 			return toolbroker.ToolResult{}, err
 		}
@@ -624,6 +627,16 @@ func (r *Runtime) operationLease(ctx context.Context, executionLease AgentLease,
 		return AgentLease{}, ErrLeaseInvalid
 	}
 	return lease, nil
+}
+
+func (r *Runtime) validateDetachedLease(ctx context.Context, lease AgentLease, operation LeaseOperation) error {
+	if validateLeaseShape(lease, r.clock()) != nil {
+		return ErrLeaseInvalid
+	}
+	if err := r.authority.Validate(ctx, cloneLease(lease), operation); err != nil {
+		return ErrLeaseInvalid
+	}
+	return nil
 }
 
 func operationLeaseBinding(executionLease, operationLease AgentLease) bool {
