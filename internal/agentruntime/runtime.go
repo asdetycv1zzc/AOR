@@ -261,10 +261,10 @@ func (r *Runtime) RenewLease(ctx context.Context, runID string) error {
 }
 
 func (r *Runtime) Generate(ctx context.Context, runID string, call ModelCall) (modelgateway.NormalizedResponse, error) {
-	return r.generate(ctx, runID, call, nil, true)
+	return r.generate(ctx, runID, call, nil, true, true)
 }
 
-func (r *Runtime) generate(ctx context.Context, runID string, call ModelCall, messages []modelgateway.Message, enforceResponseSchema bool) (modelgateway.NormalizedResponse, error) {
+func (r *Runtime) generate(ctx context.Context, runID string, call ModelCall, messages []modelgateway.Message, enforceResponseSchema, allowTools bool) (modelgateway.NormalizedResponse, error) {
 	if r.gateway == nil {
 		return modelgateway.NormalizedResponse{}, ErrProviderUnavailable
 	}
@@ -293,16 +293,20 @@ func (r *Runtime) generate(ctx context.Context, runID string, call ModelCall, me
 	if messages == nil {
 		messages = prompt.Messages
 	}
+	tools := cloneToolDefinitions(declaration.Tools)
+	if !allowTools {
+		tools = nil
+	}
 	request := modelgateway.NormalizedRequest{
 		RequestID: call.RequestID, TenantID: declaration.TenantID, ProjectID: declaration.ProjectID,
 		TaskID: declaration.TaskID, AgentInstanceID: declaration.AgentInstanceID, Role: string(declaration.Role),
 		Model: call.Model, PromptBundleVersion: declaration.PromptBundle.Version, Messages: cloneMessages(messages),
-		Tools: cloneToolDefinitions(declaration.Tools), ResponseSchemaRef: declaration.ResponseSchemaRef,
+		Tools: tools, ResponseSchemaRef: declaration.ResponseSchemaRef,
 		ResponseSchema: append(json.RawMessage(nil), declaration.ResponseSchema...), ResponseSemanticValidator: declaration.ResponseSemanticValidator,
 		MaxOutputTokens: call.MaxOutputTokens,
 		Temperature:     call.Temperature, ProviderPolicy: call.ProviderPolicy,
 		DataClassification: declaration.DataClassification, CachePolicy: call.CachePolicy, PromptDigest: prompt.SHA256,
-		ToolSchemaDigest: declaration.ToolSchemaDigest, PolicyDigest: declaration.PolicyDigest, WorstCaseCostMicros: call.WorstCaseCostMicros,
+		ToolSchemaDigest: DigestToolDefinitions(tools), PolicyDigest: declaration.PolicyDigest, WorstCaseCostMicros: call.WorstCaseCostMicros,
 	}
 	if !enforceResponseSchema {
 		request.ResponseSchemaRef = ""

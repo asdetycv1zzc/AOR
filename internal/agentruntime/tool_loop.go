@@ -3,6 +3,7 @@ package agentruntime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"unicode/utf8"
 
@@ -17,7 +18,8 @@ func (r *Runtime) RunToolLoop(ctx context.Context, runID string, call ModelCall,
 		return modelgateway.NormalizedResponse{}, modelgateway.ErrInvalidRequest
 	}
 	lastCall := toolLoopModelCall(call, maxToolRounds)
-	if validateModelCall(lastCall) != nil {
+	finalCall := toolLoopFinalModelCall(call)
+	if validateModelCall(lastCall) != nil || validateModelCall(finalCall) != nil {
 		return modelgateway.NormalizedResponse{}, modelgateway.ErrInvalidRequest
 	}
 	messages, allowed, err := r.toolLoopContext(runID)
@@ -26,13 +28,19 @@ func (r *Runtime) RunToolLoop(ctx context.Context, runID string, call ModelCall,
 	}
 	seenCallIDs := make(map[string]struct{})
 	for round := 0; ; round++ {
-		response, err := r.generate(ctx, runID, toolLoopModelCall(call, round), messages, false)
+		response, err := r.generate(ctx, runID, toolLoopModelCall(call, round), messages, false, true)
 		if err != nil {
+			if errors.Is(err, modelgateway.ErrOutputSchema) {
+				return r.finalizeToolLoop(ctx, runID, finalCall, messages)
+			}
 			return modelgateway.NormalizedResponse{}, err
 		}
 		if len(response.ToolCalls) == 0 {
 			if len(response.Content) == 0 || len(response.Content) > modelgateway.MaximumResponseBytes || !json.Valid(response.Content) {
-				return modelgateway.NormalizedResponse{}, modelgateway.ErrOutputSchema
+				return r.finalizeToolLoop(ctx, runID, finalCall, messages)
+			}
+			if err := r.validateToolLoopOutput(runID, response.Content); err != nil {
+				return r.finalizeToolLoop(ctx, runID, finalCall, messages)
 			}
 			return response, nil
 		}
@@ -62,6 +70,33 @@ func (r *Runtime) RunToolLoop(ctx context.Context, runID string, call ModelCall,
 	}
 }
 
+func (r *Runtime) finalizeToolLoop(ctx context.Context, runID string, call ModelCall, messages []modelgateway.Message) (modelgateway.NormalizedResponse, error) {
+	response, err := r.generate(ctx, runID, call, messages, true, false)
+	if err != nil {
+		return modelgateway.NormalizedResponse{}, err
+	}
+	if len(response.ToolCalls) != 0 || len(response.Content) == 0 {
+		return modelgateway.NormalizedResponse{}, modelgateway.ErrOutputSchema
+	}
+	if err := r.validateToolLoopOutput(runID, response.Content); err != nil {
+		return modelgateway.NormalizedResponse{}, err
+	}
+	return response, nil
+}
+
+func (r *Runtime) validateToolLoopOutput(runID string, content json.RawMessage) error {
+	r.mu.RLock()
+	run := r.runs[runID]
+	if run == nil {
+		r.mu.RUnlock()
+		return ErrRunNotFound
+	}
+	schema := append(json.RawMessage(nil), run.declaration.ResponseSchema...)
+	validator := run.declaration.ResponseSemanticValidator
+	r.mu.RUnlock()
+	return validateAgentOutput(schema, validator, AgentOutput{Payload: append(json.RawMessage(nil), content...)})
+}
+
 func (r *Runtime) toolLoopContext(runID string) ([]modelgateway.Message, map[string]string, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -86,6 +121,12 @@ func toolLoopModelCall(call ModelCall, round int) ModelCall {
 	suffix := "." + strconv.Itoa(round+1)
 	call.RequestID += suffix
 	call.ReservationID += suffix
+	return call
+}
+
+func toolLoopFinalModelCall(call ModelCall) ModelCall {
+	call.RequestID += ".final"
+	call.ReservationID += ".final"
 	return call
 }
 
