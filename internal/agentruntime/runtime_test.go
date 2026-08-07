@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/modelgateway"
 	"github.com/akimisaka/aor/internal/toolbroker"
 	"github.com/akimisaka/aor/pkg/aop"
@@ -57,6 +58,10 @@ func TestRuntimeUsesOnlyGatewayAndBrokerBoundaries(t *testing.T) {
 	toolRequest := broker.Captured()
 	if toolRequest.TenantID != declaration.TenantID || toolRequest.Principal.ID != declaration.AgentInstanceID || toolRequest.Lease.ID != "lease_test" || toolRequest.Lease.FencingToken != 1 || toolRequest.PolicyVersion != "policy_v1" {
 		t.Fatalf("broker request binding = %#v", toolRequest)
+	}
+	principal, found := broker.CapturedPrincipal()
+	if !found || principal.ID != declaration.AgentInstanceID || principal.Type != authn.PrincipalAgentInstance || principal.Role != string(declaration.Role) || principal.TenantID != declaration.TenantID || principal.ProjectID != declaration.ProjectID {
+		t.Fatalf("broker context principal = %#v, found = %t", principal, found)
 	}
 	snapshot, err := runtime.Snapshot(declaration.RunID)
 	if err != nil || snapshot.State != StateRunning || snapshot.Busy {
@@ -615,16 +620,19 @@ func (g *fakeGateway) Captured() (modelgateway.NormalizedRequest, modelgateway.G
 }
 
 type fakeBroker struct {
-	mu      sync.Mutex
-	request toolbroker.ToolRequest
-	result  toolbroker.ToolResult
-	err     error
+	mu           sync.Mutex
+	request      toolbroker.ToolRequest
+	principal    authn.Principal
+	hasPrincipal bool
+	result       toolbroker.ToolResult
+	err          error
 }
 
-func (b *fakeBroker) Invoke(_ context.Context, request toolbroker.ToolRequest) (toolbroker.ToolResult, error) {
+func (b *fakeBroker) Invoke(ctx context.Context, request toolbroker.ToolRequest) (toolbroker.ToolResult, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.request = request
+	b.principal, b.hasPrincipal = authn.PrincipalFromContext(ctx)
 	return b.result, b.err
 }
 
@@ -632,4 +640,10 @@ func (b *fakeBroker) Captured() toolbroker.ToolRequest {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.request
+}
+
+func (b *fakeBroker) CapturedPrincipal() (authn.Principal, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.principal, b.hasPrincipal
 }

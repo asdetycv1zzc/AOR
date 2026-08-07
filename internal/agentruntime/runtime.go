@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/modelgateway"
 	"github.com/akimisaka/aor/internal/toolbroker"
 	"github.com/akimisaka/aor/pkg/aop"
@@ -369,14 +370,22 @@ func (r *Runtime) InvokeTool(ctx context.Context, runID string, call ToolCall) (
 	if err := r.operationReady(opCtx, runID, executionLease, "tool.invoke", LeaseOperationTool, true); err != nil {
 		return toolbroker.ToolResult{}, err
 	}
+	principal := authn.Principal{
+		ID: declaration.AgentInstanceID, Type: authn.PrincipalAgentInstance, Role: string(declaration.Role),
+		TenantID: declaration.TenantID, ProjectID: declaration.ProjectID,
+	}
+	brokerContext, err := authn.ContextWithPrincipal(opCtx, principal)
+	if err != nil {
+		return toolbroker.ToolResult{}, ErrLeaseInvalid
+	}
 	request := toolbroker.ToolRequest{
 		RequestID: call.RequestID, TenantID: declaration.TenantID, ProjectID: declaration.ProjectID, TaskID: declaration.TaskID,
-		Principal: toolbroker.Principal{ID: declaration.AgentInstanceID, Type: "AGENT_INSTANCE", Role: string(declaration.Role)},
+		Principal: toolbroker.Principal{ID: principal.ID, Type: string(principal.Type), Role: principal.Role},
 		Lease:     toolbroker.Lease{ID: lease.LeaseID, ExpiresAt: lease.ExpiresAt.UTC().Format(time.RFC3339Nano), FencingToken: lease.FencingToken}, ExecutionLeaseID: executionLease.LeaseID, Approval: cloneApproval(call.Approval),
 		ToolID: call.ToolID, Version: call.Version, Parameters: append([]byte(nil), call.Parameters...),
 		PolicyVersion: lease.PolicyVersion, BudgetAccountID: lease.BudgetAccountID,
 	}
-	result, callErr := r.broker.Invoke(opCtx, request)
+	result, callErr := r.broker.Invoke(brokerContext, request)
 	if callErr != nil {
 		return toolbroker.ToolResult{}, callErr
 	}
