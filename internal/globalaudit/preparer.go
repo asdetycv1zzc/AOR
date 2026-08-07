@@ -449,7 +449,7 @@ func validGlobalAuditRoute(route goalplan.ModelRoute) bool {
 	return strings.TrimSpace(route.Provider) == route.Provider && route.Provider != "" && len(route.Provider) <= 128 &&
 		strings.TrimSpace(route.Model) == route.Model && route.Model != "" && len(route.Model) <= 256 &&
 		route.MaxOutputTokens > 0 && !math.IsNaN(route.Temperature) && !math.IsInf(route.Temperature, 0) && route.Temperature >= 0 && route.Temperature <= 2 &&
-		safeText(route.ProviderPolicy, 256) && safeText(route.CachePolicy, 128) && route.WorstCaseCostMicros >= 0 && route.MaxAttempts >= 1 && route.MaxAttempts <= 3
+		safeText(route.ProviderPolicy, 256) && safeText(route.CachePolicy, 128) && route.WorstCaseCostMicros >= 0 && route.MaxAttempts >= 1 && route.MaxAttempts <= 5
 }
 
 func validGlobalAuditLease(lease authz.CapabilityLease, principal authn.Principal, project state.Project, resource authz.Resource, parameterDigest string, now time.Time) bool {

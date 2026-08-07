@@ -588,7 +588,7 @@ func validGoalPlanRoute(route GoalPlanRouteConfig) bool {
 	return validIdentityPart(route.Provider, 128) && validIdentityPart(route.Model, 256) &&
 		route.MaxOutputTokens >= 1 && route.MaxOutputTokens <= 1_000_000 && route.Temperature >= 0 && route.Temperature <= 2 &&
 		validIdentityPart(route.ProviderPolicy, 256) && validIdentityPart(route.CachePolicy, 128) &&
-		route.WorstCaseCostMicros >= 0 && route.MaxAttempts >= 1 && route.MaxAttempts <= 3
+		route.WorstCaseCostMicros >= 0 && route.MaxAttempts >= 1 && route.MaxAttempts <= 5
 }
 
 func allowsNonPublic(classifications []string) bool {

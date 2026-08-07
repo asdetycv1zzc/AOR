@@ -24,6 +24,7 @@ const (
 	MaximumResponseBytes          = 4 << 20
 	MaximumResponseSchemaBytes    = 256 << 10
 	MaximumNormalizedRequestBytes = 8 << 20
+	maximumGenerateAttempts       = 5
 )
 
 type Gateway struct {
@@ -149,9 +150,9 @@ type GenerateOptions struct {
 
 func normalizeGenerateOptions(options GenerateOptions) (GenerateOptions, error) {
 	if options.MaxAttempts <= 0 {
-		options.MaxAttempts = 3
+		options.MaxAttempts = maximumGenerateAttempts
 	}
-	if options.Provider == "" || options.AccountID == "" || options.ReservationID == "" || options.MaxAttempts > 3 {
+	if options.Provider == "" || options.AccountID == "" || options.ReservationID == "" || options.MaxAttempts > maximumGenerateAttempts {
 		return GenerateOptions{}, ErrInvalidRequest
 	}
 	return options, nil
@@ -774,9 +775,9 @@ func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequ
 		return NormalizedResponse{}, err
 	}
 	if options.MaxAttempts <= 0 {
-		options.MaxAttempts = 3
+		options.MaxAttempts = maximumGenerateAttempts
 	}
-	if options.MaxAttempts > 3 || options.AccountID == "" || options.ReservationID == "" {
+	if options.MaxAttempts > maximumGenerateAttempts || options.AccountID == "" || options.ReservationID == "" {
 		return NormalizedResponse{}, ErrInvalidRequest
 	}
 	selections, err := g.selectProviders(ctx, "generate", request, options, policy)
@@ -992,10 +993,10 @@ func (g *Gateway) generateSingle(ctx context.Context, request NormalizedRequest,
 		return NormalizedResponse{}, err
 	}
 	if options.MaxAttempts <= 0 {
-		options.MaxAttempts = 3
+		options.MaxAttempts = maximumGenerateAttempts
 	}
-	if options.MaxAttempts > 3 {
-		options.MaxAttempts = 3
+	if options.MaxAttempts > maximumGenerateAttempts {
+		options.MaxAttempts = maximumGenerateAttempts
 	}
 	key := options.Provider + "\x00" + request.Model
 	adapter, pricing, allowed := g.provider(key, options.Provider, request.Model)

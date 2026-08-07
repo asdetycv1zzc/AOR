@@ -524,7 +524,7 @@ func validModelRoute(route ModelRoute) bool {
 		route.MaxOutputTokens > 0 && !math.IsNaN(route.Temperature) && !math.IsInf(route.Temperature, 0) &&
 		route.Temperature >= 0 && route.Temperature <= 2 && route.ProviderPolicy != "" && len(route.ProviderPolicy) <= 256 &&
 		route.CachePolicy != "" && len(route.CachePolicy) <= 128 && route.WorstCaseCostMicros >= 0 &&
-		route.MaxAttempts >= 1 && route.MaxAttempts <= 3
+		route.MaxAttempts >= 1 && route.MaxAttempts <= 5
 }
 
 func runtimeParameterDigest(request AgentInvocation, projectVersion, taskVersion int64, specDigest, promptDigest, contextDigest, responseDigest string, route ModelRoute) (string, error) {

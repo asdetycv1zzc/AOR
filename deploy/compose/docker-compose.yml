@@ -524,7 +524,7 @@ services:
       AOR_MODEL_GATEWAY_OAUTH_SCOPES: audience:server:client_id:aor-control-plane
       AOR_MODEL_GATEWAY_OAUTH_AUDIENCE: aor-control-plane
       AOR_GOAL_PLAN_ROUTES_JSON: >-
-        {"GOAL_PROPOSER":{"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-5.6-sol}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3},"GOAL_CHALLENGER":{"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-5.6-sol}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3},"PLAN_SUPERVISOR":{"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-5.6-sol}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3},"MODULE_PLANNER":{"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-5.6-sol}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3},"KNOWLEDGE_CURATOR":{"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-5.6-sol}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3}}
+        {"GOAL_PROPOSER":{"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-5.6-sol}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":5},"GOAL_CHALLENGER":{"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-5.6-sol}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":5},"PLAN_SUPERVISOR":{"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-5.6-sol}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":5},"MODULE_PLANNER":{"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-5.6-sol}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":5},"KNOWLEDGE_CURATOR":{"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-5.6-sol}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":5}}
     secrets: [postgres_app_password, lease_signing_key, minio_root_user, minio_root_password, aor_server_oauth_client_secret]
     volumes:
       - "${AOR_KNOWLEDGE_HOST_PATH:-aor-knowledge-data}:/var/lib/aor/knowledge:ro"
@@ -694,9 +694,9 @@ services:
       AOR_MODEL_GATEWAY_OAUTH_SCOPES: audience:server:client_id:aor-control-plane
       AOR_MODEL_GATEWAY_OAUTH_AUDIENCE: aor-control-plane
       AOR_EXECUTOR_ROUTE_JSON: >-
-        {"provider":"deepseek-audit","model":"${AOR_DEEPSEEK_MODEL:-deepseek-v4-flash}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3}
+        {"provider":"deepseek-audit","model":"${AOR_DEEPSEEK_MODEL:-deepseek-v4-flash}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":5}
       AOR_MODULE_AUDITOR_ROUTE_JSON: >-
-        {"provider":"deepseek-audit","model":"${AOR_DEEPSEEK_MODEL:-deepseek-v4-flash}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":3}
+        {"provider":"deepseek-audit","model":"${AOR_DEEPSEEK_MODEL:-deepseek-v4-flash}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":5}
       AOR_EXECUTOR_MAX_TOOL_ROUNDS: "8"
       AOR_MODULE_TEST_COMMAND_JSON: >-
         ["/usr/local/go/bin/go","test","-p=1","./..."]

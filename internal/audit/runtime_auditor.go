@@ -423,7 +423,7 @@ func validModuleAuditReferences(refs ModuleAuditReferences, input BlindAuditInpu
 }
 
 func validModuleAuditRoute(route goalplan.ModelRoute) bool {
-	return route.Provider != "" && strings.TrimSpace(route.Provider) == route.Provider && len(route.Provider) <= 128 && route.Model != "" && strings.TrimSpace(route.Model) == route.Model && len(route.Model) <= 256 && route.MaxOutputTokens > 0 && !math.IsNaN(route.Temperature) && !math.IsInf(route.Temperature, 0) && route.Temperature >= 0 && route.Temperature <= 2 && route.WorstCaseCostMicros >= 0 && route.MaxAttempts >= 1 && route.MaxAttempts <= 3 && len(route.ProviderPolicy) <= 256 && len(route.CachePolicy) <= 128
+	return route.Provider != "" && strings.TrimSpace(route.Provider) == route.Provider && len(route.Provider) <= 128 && route.Model != "" && strings.TrimSpace(route.Model) == route.Model && len(route.Model) <= 256 && route.MaxOutputTokens > 0 && !math.IsNaN(route.Temperature) && !math.IsInf(route.Temperature, 0) && route.Temperature >= 0 && route.Temperature <= 2 && route.WorstCaseCostMicros >= 0 && route.MaxAttempts >= 1 && route.MaxAttempts <= 5 && len(route.ProviderPolicy) <= 256 && len(route.CachePolicy) <= 128
 }
 
 func moduleAuditClassification(value string) bool {

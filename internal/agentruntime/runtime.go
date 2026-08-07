@@ -335,7 +335,7 @@ func (r *Runtime) generate(ctx context.Context, runID string, call ModelCall, me
 func validateModelCall(call ModelCall) error {
 	if !safeProtocolString(call.RequestID, 256) || !safeProtocolString(call.Provider, 128) || !safeProtocolString(call.Model, 256) ||
 		!safeProtocolString(call.ReservationID, 256) || !safeProtocolString(call.ProviderPolicy, 256) || !safeProtocolString(call.CachePolicy, 128) ||
-		call.MaxOutputTokens <= 0 || call.WorstCaseCostMicros < 0 || call.MaxAttempts < 0 || call.MaxAttempts > 3 ||
+		call.MaxOutputTokens <= 0 || call.WorstCaseCostMicros < 0 || call.MaxAttempts < 0 || call.MaxAttempts > 5 ||
 		math.IsNaN(call.Temperature) || math.IsInf(call.Temperature, 0) || call.Temperature < 0 || call.Temperature > 2 {
 		return modelgateway.ErrInvalidRequest
 	}

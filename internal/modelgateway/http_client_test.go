@@ -85,7 +85,7 @@ func TestHTTPClientGenerateUsesPrivateEnvelopeTokenAndTrace(t *testing.T) {
 	if captured.Accept != "application/json" || captured.ContentType != "application/json" || captured.Traceparent != traceparent || captured.Tracestate != "vendor=value" {
 		t.Fatalf("headers=%#v", captured)
 	}
-	if captured.Input.Request.RequestID != input.RequestID || captured.Input.Options.Provider != "provider" || captured.Input.Options.MaxAttempts != 3 {
+	if captured.Input.Request.RequestID != input.RequestID || captured.Input.Options.Provider != "provider" || captured.Input.Options.MaxAttempts != 5 {
 		t.Fatalf("transport input=%#v", captured.Input)
 	}
 }
