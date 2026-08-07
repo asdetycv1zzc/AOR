@@ -211,7 +211,7 @@ const moduleDraftSchema = `{
       }
     },
     "toolCapabilities": {"$ref": "#/$defs/strings"},
-    "knowledgeRefs": {"$ref": "#/$defs/strings"},
+    "knowledgeRefs": {"type": "array", "maxItems": 1000, "description": "Exact existing Knowledge Service paths only. Use an empty array when no knowledge is required; do not put explanatory prose here.", "items": {"type": "string", "minLength": 1, "maxLength": 4096}},
     "testRequirements": {"type": "array", "minItems": 1, "maxItems": 1000, "items": {"type": "string", "minLength": 1, "maxLength": 4096}},
     "observabilityRequirements": {"$ref": "#/$defs/strings"},
     "securityRequirements": {"type": "array", "minItems": 1, "maxItems": 1000, "items": {"type": "string", "minLength": 1, "maxLength": 4096}},
