@@ -26,9 +26,11 @@ var (
 )
 
 type LeaseProof struct {
-	ID           string
-	FencingToken int64
-	ExpiresAt    time.Time
+	ID               string
+	FencingToken     int64
+	ExpiresAt        time.Time
+	AgentInstanceID  string
+	ExecutionLeaseID string
 }
 
 type LeaseAction string
@@ -345,6 +347,10 @@ func sameWorkspace(left, right Workspace) bool {
 func sameWorkspaceBinding(left, right Workspace) bool {
 	left.ID = ""
 	right.ID = ""
+	if left.OperationLeases && right.OperationLeases {
+		left.AgentIdentity = contracts.AgentIdentity{}
+		right.AgentIdentity = contracts.AgentIdentity{}
+	}
 	return sameWorkspace(left, right)
 }
 

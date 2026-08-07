@@ -19,6 +19,30 @@ type testLeaseValidator struct{}
 
 type testSubmissionSigner struct{}
 
+type minimumFencingLeaseValidator struct {
+	mu      sync.RWMutex
+	minimum int64
+}
+
+func (validator *minimumFencingLeaseValidator) Validate(ctx context.Context, validation LeaseValidation) error {
+	if err := (testLeaseValidator{}).Validate(ctx, validation); err != nil {
+		return err
+	}
+	validator.mu.RLock()
+	minimum := validator.minimum
+	validator.mu.RUnlock()
+	if validation.Proof.FencingToken < minimum {
+		return ErrLeaseStale
+	}
+	return nil
+}
+
+func (validator *minimumFencingLeaseValidator) setMinimum(minimum int64) {
+	validator.mu.Lock()
+	validator.minimum = minimum
+	validator.mu.Unlock()
+}
+
 type revokingLeaseValidator struct {
 	mu     sync.Mutex
 	calls  int
@@ -268,6 +292,95 @@ func TestWorkspaceHidesForbiddenFilesAndKeepsGitMetadataOutsideMount(t *testing.
 	content, err := service.ReadFile(context.Background(), workspace.ID, "shared/interface.go")
 	if err != nil || string(content) != "package shared\n" {
 		t.Fatalf("shared file read = %q error=%v", content, err)
+	}
+}
+
+func TestServiceRecoveryReusesWorkspaceWithCurrentExecutionIdentity(t *testing.T) {
+	source := t.TempDir()
+	if _, err := runGit(source, "init", "-b", "main"); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, source, "owned/base.txt", "base\n")
+	if _, err := runGit(source, "add", "."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(source, "commit", "-m", "initial"); err != nil {
+		t.Fatal(err)
+	}
+	base, err := runGit(source, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	registry := NewMemoryRegistryStore()
+	leases := &minimumFencingLeaseValidator{minimum: 1}
+	service, err := NewServiceWithConfig(ServiceConfig{
+		Root: root, Leases: leases, Workspaces: registry,
+		ProjectRepositories: registry, Signer: testSubmissionSigner{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstLease := LeaseProof{
+		ID: "tool-1", FencingToken: 1, ExpiresAt: time.Now().Add(time.Hour),
+		AgentInstanceID: "agent-1", ExecutionLeaseID: "execution-1",
+	}
+	request := WorkspaceRequest{
+		RepositoryPath: source, TenantID: "tenant-1", ProjectID: "project-1", TaskID: "task-1",
+		Attempt: 1, AttemptSeriesID: "series-1", BaseCommit: strings.TrimSpace(base), ModuleSpec: testModule(),
+		AgentIdentity:    contracts.AgentIdentity{AgentInstanceID: "agent-1", Role: "EXECUTOR", LeaseID: "execution-1"},
+		ExecutionLeaseID: "execution-1", Lease: firstLease,
+	}
+	workspace, err := service.CreateWorkspace(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leases.setMinimum(2)
+	secondLease := LeaseProof{
+		ID: "tool-2", FencingToken: 2, ExpiresAt: time.Now().Add(time.Hour),
+		AgentInstanceID: "agent-2", ExecutionLeaseID: "execution-2",
+	}
+	recovery := request
+	recovery.AgentIdentity = contracts.AgentIdentity{AgentInstanceID: "agent-2", Role: "EXECUTOR", LeaseID: "execution-2"}
+	recovery.ExecutionLeaseID = "execution-2"
+	recovery.Lease = secondLease
+	recovered, err := service.CreateWorkspace(context.Background(), recovery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.ID != workspace.ID || recovered.Path != workspace.Path || recovered.AgentIdentity != recovery.AgentIdentity {
+		t.Fatalf("recovered workspace = %#v", recovered)
+	}
+	if err := service.WriteFile(context.Background(), WriteRequest{WorkspaceID: recovered.ID, Path: "owned/stale.txt", Content: []byte("stale\n"), Lease: firstLease}); !errors.Is(err, ErrLeaseStale) {
+		t.Fatalf("old execution lease write error = %v", err)
+	}
+	if err := service.WriteFile(context.Background(), WriteRequest{WorkspaceID: recovered.ID, Path: "owned/recovered.txt", Content: []byte("recovered\n"), Lease: secondLease}); err != nil {
+		t.Fatal(err)
+	}
+	submission, err := service.Submit(context.Background(), SubmissionRequest{
+		WorkspaceID: recovered.ID, Attempt: 1, ClaimedCriteria: []string{"criterion-1"},
+		LocalTestEvidenceRefs: []string{"artifact://sha256/3333333333333333333333333333333333333333333333333333333333333333"}, Lease: secondLease,
+		IdempotencyKey: "recovery-submit",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if submission.Manifest.AgentIdentity != recovery.AgentIdentity || submission.Workspace.AgentIdentity != recovery.AgentIdentity {
+		t.Fatalf("submission identity = manifest=%#v workspace=%#v", submission.Manifest.AgentIdentity, submission.Workspace.AgentIdentity)
+	}
+	persisted, found, err := registry.LoadWorkspaceByAttempt(context.Background(), request.TenantID, request.TaskID, request.AttemptSeriesID, request.Attempt)
+	if err != nil || !found || persisted.AgentIdentity != request.AgentIdentity {
+		t.Fatalf("persisted workspace = %#v found=%t error=%v", persisted, found, err)
+	}
+	restarted, err := NewServiceWithConfig(ServiceConfig{
+		Root: root, Leases: leases, Workspaces: registry,
+		ProjectRepositories: registry, Signer: testSubmissionSigner{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.WriteFile(context.Background(), WriteRequest{WorkspaceID: recovered.ID, Path: "owned/restarted.txt", Content: []byte("restarted\n"), Lease: secondLease}); err != nil {
+		t.Fatal(err)
 	}
 }
 

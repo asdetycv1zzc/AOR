@@ -147,22 +147,25 @@ func (s *Service) CreateWorkspace(ctx context.Context, request WorkspaceRequest)
 	} else if found {
 		expected := template
 		expected.ID = prior.ID
-		if !sameWorkspace(prior, expected) {
+		if !sameWorkspaceBinding(prior, expected) {
 			return Workspace{}, ErrWorkspaceConflict
 		}
 		if err := s.validateRecoveredWorkspace(ctx, prior); err != nil {
 			return Workspace{}, err
 		}
+		recovered := prior
+		recovered.AgentIdentity = request.AgentIdentity
+		recovered.OperationLeases = template.OperationLeases
 		s.mu.Lock()
-		s.workspaces[prior.ID] = prior
+		s.workspaces[recovered.ID] = recovered
 		s.mu.Unlock()
-		return cloneWorkspace(prior), nil
+		return cloneWorkspace(recovered), nil
 	}
 	if pathExists(directory) || pathExists(gitDirectory) {
 		recovered, err := readWorkspaceRegistration(gitDirectory)
 		expected := template
 		expected.ID = recovered.ID
-		if err != nil || !sameWorkspace(recovered, expected) {
+		if err != nil || !sameWorkspaceBinding(recovered, expected) {
 			return Workspace{}, ErrWorkspaceConflict
 		}
 		if err := s.validateRecoveredWorkspace(ctx, recovered); err != nil {
@@ -175,6 +178,8 @@ func (s *Service) CreateWorkspace(ctx context.Context, request WorkspaceRequest)
 		if err != nil {
 			return Workspace{}, err
 		}
+		persisted.AgentIdentity = request.AgentIdentity
+		persisted.OperationLeases = template.OperationLeases
 		s.mu.Lock()
 		s.workspaces[persisted.ID] = persisted
 		s.mu.Unlock()
@@ -237,6 +242,10 @@ func (s *Service) WriteFile(ctx context.Context, request WriteRequest) error {
 	if err != nil {
 		return err
 	}
+	workspace, err = bindWorkspaceIdentity(workspace, request.Lease)
+	if err != nil {
+		return err
+	}
 	relative, err := ownedPath(workspace, request.Path)
 	if err != nil {
 		return err
@@ -290,6 +299,10 @@ func (s *Service) WriteFile(ctx context.Context, request WriteRequest) error {
 
 func (s *Service) DeleteFile(ctx context.Context, request DeleteRequest) error {
 	workspace, err := s.workspace(ctx, request.WorkspaceID)
+	if err != nil {
+		return err
+	}
+	workspace, err = bindWorkspaceIdentity(workspace, request.Lease)
 	if err != nil {
 		return err
 	}
@@ -354,6 +367,10 @@ func (s *Service) Submit(ctx context.Context, request SubmissionRequest) (submis
 	s.submitMu.Lock()
 	defer s.submitMu.Unlock()
 	workspace, err := s.workspace(ctx, request.WorkspaceID)
+	if err != nil {
+		return Submission{}, err
+	}
+	workspace, err = bindWorkspaceIdentity(workspace, request.Lease)
 	if err != nil {
 		return Submission{}, err
 	}
@@ -500,7 +517,7 @@ func (s *Service) persistWorkspace(ctx context.Context, workspace, template Work
 	if loadErr == nil && found {
 		expected := template
 		expected.ID = prior.ID
-		if !sameWorkspace(prior, expected) {
+		if !sameWorkspaceBinding(prior, expected) {
 			return Workspace{}, ErrWorkspaceConflict
 		}
 		return prior, nil
@@ -594,6 +611,21 @@ func (s *Service) validateWorkspaceLease(ctx context.Context, workspace Workspac
 		return ErrLeaseStale
 	}
 	return s.validateLease(ctx, LeaseValidation{Proof: proof, ExecutionLeaseID: workspace.AgentIdentity.LeaseID, Action: action, TenantID: workspace.TenantID, ProjectID: workspace.ProjectID, TaskID: workspace.TaskID, AttemptSeriesID: workspace.AttemptSeriesID, Attempt: workspace.Attempt, ModuleSpecRef: workspace.ModuleSpecRef, AgentInstanceID: workspace.AgentIdentity.AgentInstanceID, Role: workspace.AgentIdentity.Role, ResourcePath: resourcePath, ParameterDigest: parameterDigest})
+}
+
+func bindWorkspaceIdentity(workspace Workspace, proof LeaseProof) (Workspace, error) {
+	if !workspace.OperationLeases && proof.AgentInstanceID == "" && proof.ExecutionLeaseID == "" {
+		return workspace, nil
+	}
+	if proof.AgentInstanceID == "" || proof.ExecutionLeaseID == "" {
+		return Workspace{}, ErrLeaseStale
+	}
+	if !workspace.OperationLeases && (workspace.AgentIdentity.AgentInstanceID != proof.AgentInstanceID || workspace.AgentIdentity.LeaseID != proof.ExecutionLeaseID) {
+		return Workspace{}, ErrLeaseStale
+	}
+	workspace.AgentIdentity.AgentInstanceID = proof.AgentInstanceID
+	workspace.AgentIdentity.LeaseID = proof.ExecutionLeaseID
+	return workspace, nil
 }
 
 func (s *Service) validateLease(ctx context.Context, validation LeaseValidation) error {

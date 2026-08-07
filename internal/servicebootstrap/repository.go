@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -373,6 +374,14 @@ func (client *repositoryMCPClient) CallTool(ctx context.Context, name string, ar
 			return mcp.ToolCallResult{}, repository.ErrLeaseStale
 		}
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				result["contentBase64"] = ""
+				result["sha256"] = repository.DigestBytes(nil)
+				result["size"] = 0
+				result["isError"] = true
+				result["error"] = "NOT_FOUND"
+				return repositoryToolError(result), nil
+			}
 			return mcp.ToolCallResult{}, err
 		}
 		result["contentBase64"] = base64.StdEncoding.EncodeToString(content)
@@ -482,7 +491,7 @@ func (authority *repositoryExecutionAuthority) claimForRoles(ctx context.Context
 	if err := authority.leases.Validate(ctx, claim); err != nil {
 		return toolbroker.LeaseValidation{}, repository.LeaseProof{}, repository.ErrLeaseStale
 	}
-	return claim, repository.LeaseProof{ID: claim.Lease.ID, FencingToken: claim.Lease.FencingToken, ExpiresAt: expiresAt.UTC()}, nil
+	return claim, repository.LeaseProof{ID: claim.Lease.ID, FencingToken: claim.Lease.FencingToken, ExpiresAt: expiresAt.UTC(), AgentInstanceID: claim.Principal.ID, ExecutionLeaseID: claim.ExecutionLeaseID}, nil
 }
 
 func (authority *repositoryExecutionAuthority) Validate(ctx context.Context, validation repository.LeaseValidation) error {
@@ -504,7 +513,10 @@ func (authority *repositoryExecutionAuthority) validateWorkspaceRead(ctx context
 	if claim.Principal.Role != authn.RoleExecutor || claim.TaskID == "" {
 		return repository.ErrLeaseStale
 	}
-	if workspace.TenantID != claim.TenantID || workspace.ProjectID != claim.ProjectID || workspace.TaskID != claim.TaskID || workspace.AgentIdentity.AgentInstanceID != claim.Principal.ID || workspace.AgentIdentity.LeaseID != claim.ExecutionLeaseID {
+	if workspace.TenantID != claim.TenantID || workspace.ProjectID != claim.ProjectID || workspace.TaskID != claim.TaskID {
+		return repository.ErrLeaseStale
+	}
+	if !workspace.OperationLeases && (workspace.AgentIdentity.AgentInstanceID != claim.Principal.ID || workspace.AgentIdentity.LeaseID != claim.ExecutionLeaseID) {
 		return repository.ErrLeaseStale
 	}
 	scope, err := authority.loadScope(ctx, claim, workspace.AttemptSeriesID, workspace.Attempt)
@@ -699,6 +711,12 @@ func repositoryToolResult(structured map[string]any) mcp.ToolCallResult {
 	return mcp.ToolCallResult{Content: []mcp.Content{{Type: "text", Text: "repository operation completed"}}, StructuredContent: structured}
 }
 
+func repositoryToolError(structured map[string]any) mcp.ToolCallResult {
+	result := repositoryToolResult(structured)
+	result.IsError = true
+	return result
+}
+
 func repositoryMCPTools() []mcp.Tool {
 	stringProperty := func(maxLength int) map[string]any {
 		return map[string]any{"type": "string", "minLength": 1, "maxLength": maxLength}
@@ -720,7 +738,7 @@ func repositoryMCPTools() []mcp.Tool {
 	}
 	readOutput := objectSchema([]any{"path", "contentBase64", "sha256", "size"}, map[string]any{
 		"workspaceId": stringProperty(512), "commit": map[string]any{"type": "string", "pattern": "^[0-9a-f]{40}$"},
-		"path": stringProperty(4096), "contentBase64": map[string]any{"type": "string"},
+		"path": stringProperty(4096), "contentBase64": map[string]any{"type": "string"}, "isError": map[string]any{"type": "boolean"}, "error": stringProperty(128),
 		"sha256": stringProperty(71), "size": map[string]any{"type": "integer", "minimum": 0},
 	})
 	return []mcp.Tool{
