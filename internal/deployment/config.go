@@ -135,7 +135,7 @@ func ValidateCompose(input []byte) error {
 		return ErrInvalidDeployment
 	}
 	for _, service := range document.Services {
-		if service.Privileged || service.NetworkMode == "host" {
+		if service.Privileged || service.NetworkMode != "host" {
 			return ErrInvalidDeployment
 		}
 		for _, volume := range service.Volumes {
@@ -156,7 +156,7 @@ func ValidateCompose(input []byte) error {
 	toolBroker, toolBrokerFound := document.Services["aor-tool-broker"]
 	identity, identityFound := document.Services["identity"]
 	collector, collectorFound := document.Services["otel-collector"]
-	if !apiFound || !curatorFound || !modelGatewayFound || !identityFound || !toolBrokerFound || api.Environment["AOR_SERVER_MODE"] != "CONTROL" || curator.Environment["AOR_SERVER_MODE"] != "KNOWLEDGE_CURATOR" || api.Environment["AOR_KNOWLEDGE_ROOT"] != "/var/lib/aor/knowledge" || api.Environment["AOR_KNOWLEDGE_CURATOR_URL"] != "http://aor-curator:8094" || !hasReadOnlyVolume(api.Volumes, "AOR_KNOWLEDGE_HOST_PATH", "/var/lib/aor/knowledge") || curator.Environment["AOR_KNOWLEDGE_CURATOR_URL"] != "" || !hasReadWriteVolume(curator.Volumes, "AOR_KNOWLEDGE_HOST_PATH", "/var/lib/aor/knowledge") || !hasS3Environment(api.Environment) || api.Environment["AOR_DEPLOYMENT_PROFILE"] != "TEST" || api.Environment["AOR_LEASE_SIGNING_KEY_REF"] != "secret://lease_signing_key" || !containsString(api.Secrets, "lease_signing_key") || !hasS3Environment(toolBroker.Environment) || toolBroker.Build.Target != "tool-broker-runtime" || toolBroker.Environment["AOR_REPOSITORY_ROOT"] != "/var/lib/aor/repositories" || !hasVolume(toolBroker.Volumes, "AOR_PROJECTS_HOST_PATH", "/var/lib/aor/repositories") || !containsString(toolBroker.CapDrop, "ALL") {
+	if !apiFound || !curatorFound || !modelGatewayFound || !identityFound || !toolBrokerFound || api.NetworkMode != "host" || curator.NetworkMode != "host" || modelGateway.NetworkMode != "host" || toolBroker.NetworkMode != "host" || api.Environment["AOR_SERVER_MODE"] != "CONTROL" || curator.Environment["AOR_SERVER_MODE"] != "KNOWLEDGE_CURATOR" || api.Environment["AOR_KNOWLEDGE_ROOT"] != "/var/lib/aor/knowledge" || api.Environment["AOR_KNOWLEDGE_CURATOR_URL"] != "http://127.0.0.1:8094" || !hasReadOnlyVolume(api.Volumes, "AOR_KNOWLEDGE_HOST_PATH", "/var/lib/aor/knowledge") || curator.Environment["AOR_KNOWLEDGE_CURATOR_URL"] != "" || !hasReadWriteVolume(curator.Volumes, "AOR_KNOWLEDGE_HOST_PATH", "/var/lib/aor/knowledge") || !hasS3Environment(api.Environment) || api.Environment["AOR_DEPLOYMENT_PROFILE"] != "TEST" || api.Environment["AOR_LEASE_SIGNING_KEY_REF"] != "secret://lease_signing_key" || !containsString(api.Secrets, "lease_signing_key") || !hasS3Environment(toolBroker.Environment) || toolBroker.Build.Target != "tool-broker-runtime" || toolBroker.Environment["AOR_REPOSITORY_ROOT"] != "/var/lib/aor/repositories" || !hasVolume(toolBroker.Volumes, "AOR_PROJECTS_HOST_PATH", "/var/lib/aor/repositories") || !containsString(toolBroker.CapDrop, "ALL") {
 		return ErrInvalidDeployment
 	}
 	apiTelemetry, apiTelemetryFound := api.DependsOn["otel-collector"]
@@ -165,13 +165,13 @@ func ValidateCompose(input []byte) error {
 	if !collectorFound || !collector.ReadOnly || collector.User == "" || collector.User == "0" || collector.User == "root" || !isImmutableSHA256Reference(collector.Image) || !hasReadOnlyVolume(collector.Volumes, "otel-collector.compose.yaml", "/etc/otelcol-contrib/config.yaml") || !containsString(collector.CapDrop, "ALL") || !containsString(collector.SecurityOpt, "no-new-privileges:true") || !containsString(collector.Healthcheck.Test, "/otelcol-contrib") || !containsString(collector.Healthcheck.Test, "validate") || !containsString(collector.Healthcheck.Test, "--config=/etc/otelcol-contrib/config.yaml") || !apiTelemetryFound || apiTelemetry.Condition != "service_healthy" || !modelTelemetryFound || modelTelemetry.Condition != "service_healthy" || !toolTelemetryFound || toolTelemetry.Condition != "service_healthy" {
 		return ErrInvalidDeployment
 	}
-	if api.Environment["AOR_MODEL_GATEWAY_URL"] != "http://aor-model-gateway:8091" || api.Environment["AOR_MODEL_GATEWAY_OAUTH_TOKEN_ENDPOINT"] != "http://identity:5556/dex/token" || api.Environment["AOR_MODEL_GATEWAY_OAUTH_CLIENT_ID"] != "aor-server" || api.Environment["AOR_MODEL_GATEWAY_OAUTH_CLIENT_SECRET_REF"] != "secret://aor_server_oauth_client_secret" || api.Environment["AOR_MODEL_GATEWAY_OAUTH_SCOPES"] != "audience:server:client_id:aor-control-plane" || api.Environment["AOR_MODEL_GATEWAY_OAUTH_AUDIENCE"] != "aor-control-plane" || !containsString(api.Secrets, "aor_server_oauth_client_secret") || !containsString(identity.Secrets, "aor_server_oauth_client_secret") || !isImmutableSHA256Reference(identity.Image) {
+	if api.Environment["AOR_MODEL_GATEWAY_URL"] != "http://127.0.0.1:8091" || api.Environment["AOR_MODEL_GATEWAY_OAUTH_TOKEN_ENDPOINT"] != "http://127.0.0.1:5556/dex/token" || api.Environment["AOR_MODEL_GATEWAY_OAUTH_CLIENT_ID"] != "aor-server" || api.Environment["AOR_MODEL_GATEWAY_OAUTH_CLIENT_SECRET_REF"] != "secret://aor_server_oauth_client_secret" || api.Environment["AOR_MODEL_GATEWAY_OAUTH_SCOPES"] != "audience:server:client_id:aor-control-plane" || api.Environment["AOR_MODEL_GATEWAY_OAUTH_AUDIENCE"] != "aor-control-plane" || !containsString(api.Secrets, "aor_server_oauth_client_secret") || !containsString(identity.Secrets, "aor_server_oauth_client_secret") || !isImmutableSHA256Reference(identity.Image) {
 		return ErrInvalidDeployment
 	}
 	if modelGateway.Environment["AOR_OIDC_SERVICE_SUBJECTS_JSON"] != `[{"subject":"Cgphb3Itc2VydmVy","tenantId":"11111111-1111-4111-8111-111111111111"}]` || modelGateway.Environment["AOR_OIDC_DEFAULT_TENANT_ID"] != "" || modelGateway.Environment["AOR_OIDC_DEFAULT_ROLE"] != "" {
 		return ErrInvalidDeployment
 	}
-	if !workerFound || worker.Build.Target != "worker-runtime" || !containsString(worker.CapDrop, "ALL") || !containsString(worker.SecurityOpt, "no-new-privileges:true") {
+	if !workerFound || worker.NetworkMode != "host" || worker.Build.Target != "worker-runtime" || !containsString(worker.CapDrop, "ALL") || !containsString(worker.SecurityOpt, "no-new-privileges:true") {
 		return ErrInvalidDeployment
 	}
 	if worker.Environment["AOR_LEASE_SIGNING_KEY_REF"] != "secret://lease_signing_key" || !containsString(worker.Secrets, "lease_signing_key") {

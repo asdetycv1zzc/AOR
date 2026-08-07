@@ -4,10 +4,10 @@ storage:
   type: memory
 
 web:
-  http: 0.0.0.0:5556
+  http: 127.0.0.1:5556
 
 telemetry:
-  http: 0.0.0.0:5558
+  http: 127.0.0.1:5558
 
 oauth2:
   skipApprovalScreen: true

@@ -12,11 +12,11 @@ This profile starts the complete local dependency set before any AOR process:
 - Two independently configured model-provider families for the Model Gateway
 - The classroom TEST execution and audit path in the Worker container
 
-All upstream images are pinned by version and multi-platform manifest digest. Host ports bind to `127.0.0.1`; this profile is for development and test only.
+All upstream images are pinned by version and multi-platform manifest digest. Every container uses the host network stack; services bind their distinct ports directly to `127.0.0.1` where the image supports an explicit bind address. This profile is for development and test only.
 
 The local Collector applies the repository redaction and mandatory trace-sampling policies, then writes basic signal summaries to its container log. This keeps Compose self-contained without pretending to provide a durable or queryable observability backend; production deployments use `observability/otel-collector.yaml` with four independently configured exporter endpoints.
 
-This profile requires the Docker Compose plugin with `--wait` and `--wait-timeout` support; legacy `docker-compose` v1 is not supported. Docker bridge networking normally requires IPv4 forwarding on Linux. The Docker host must report `net.ipv4.ip_forward = 1` for outbound provider calls; enabling it is a host-administration step and is intentionally not performed by this repository. Trusted local AOR image builds use host networking while downloading Go modules, while every runtime container remains on the isolated Compose bridge network.
+This profile requires the Docker Compose plugin with `--wait` and `--wait-timeout` support; legacy `docker-compose` v1 is not supported. Every runtime and dependency container uses `network_mode: host`; internal addresses use `127.0.0.1`, and AOR binds ports 8090 through 8094 on loopback. Model-provider access therefore does not require Docker bridge forwarding.
 
 ## Classroom TEST Isolation
 
@@ -49,7 +49,7 @@ The Model Gateway defaults to OpenAI `gpt-5.6-sol` and DeepSeek `deepseek-v4-fla
 
 ## Knowledge Root
 
-The API and worker mount `/var/lib/aor/knowledge` as read-only. By default Compose uses the named `aor-knowledge-data` volume, initialized with the global namespace from the image; set `AOR_KNOWLEDGE_HOST_PATH` to an absolute host directory to serve a curated snapshot tree from another location. The API sets `AOR_KNOWLEDGE_CURATOR_URL=http://aor-curator:8094`, so authenticated knowledge-update requests are forwarded to the separate process that owns the only read-write knowledge mount. The curator runs the `KNOWLEDGE_CURATOR` server mode, exposes only the draft, lookup, and approval routes on `127.0.0.1:8094`, and does not start control-plane schedulers or maintenance workers. An empty root is valid, but knowledge searches and manifest reads return not found until a revision is published.
+The API and worker mount `/var/lib/aor/knowledge` as read-only. By default Compose uses the named `aor-knowledge-data` volume, initialized with the global namespace from the image; set `AOR_KNOWLEDGE_HOST_PATH` to an absolute host directory to serve a curated snapshot tree from another location. The API sets `AOR_KNOWLEDGE_CURATOR_URL=http://127.0.0.1:8094`, so authenticated knowledge-update requests are forwarded to the separate process that owns the only read-write knowledge mount. The curator runs the `KNOWLEDGE_CURATOR` server mode, exposes only the draft, lookup, and approval routes on `127.0.0.1:8094`, and does not start control-plane schedulers or maintenance workers. An empty root is valid, but knowledge searches and manifest reads return not found until a revision is published.
 
 ## Start
 

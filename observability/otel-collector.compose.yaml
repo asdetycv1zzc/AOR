@@ -1,20 +1,20 @@
 extensions:
   health_check:
-    endpoint: 0.0.0.0:13133
+    endpoint: 127.0.0.1:13133
 
 receivers:
   otlp/application:
     protocols:
       grpc:
-        endpoint: 0.0.0.0:4317
+        endpoint: 127.0.0.1:4317
       http:
-        endpoint: 0.0.0.0:4318
+        endpoint: 127.0.0.1:4318
   otlp/audit:
     protocols:
       grpc:
-        endpoint: 0.0.0.0:4327
+        endpoint: 127.0.0.1:4327
       http:
-        endpoint: 0.0.0.0:4328
+        endpoint: 127.0.0.1:4328
 
 processors:
   memory_limiter:
