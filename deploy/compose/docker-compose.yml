@@ -227,6 +227,10 @@ services:
         if [ "$$planning_recovery_installed" != "t" ]; then
           psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000044_planning_recovery.up.sql
         fi
+        module_spec_project_uniqueness_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.module_specs'::regclass AND conname = 'module_specs_tenant_project_module_version_key') AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.module_specs'::regclass AND conname = 'module_specs_tenant_project_module_content_key')")"
+        if [ "$$module_spec_project_uniqueness_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000045_project_scoped_module_spec_uniqueness.up.sql
+        fi
         unset AOR_APP_PASSWORD
     secrets: [postgres_password, postgres_app_password]
     volumes:
@@ -274,6 +278,7 @@ services:
       - ../../migrations/postgres/000042_service_capability_leases.up.sql:/migrations/000042_service_capability_leases.up.sql:ro
       - ../../migrations/postgres/000043_tenant_registration_grant.up.sql:/migrations/000043_tenant_registration_grant.up.sql:ro
       - ../../migrations/postgres/000044_planning_recovery.up.sql:/migrations/000044_planning_recovery.up.sql:ro
+      - ../../migrations/postgres/000045_project_scoped_module_spec_uniqueness.up.sql:/migrations/000045_project_scoped_module_spec_uniqueness.up.sql:ro
       - ./postgres-app-password.sql:/migrations/postgres-app-password.sql:ro
     read_only: true
     tmpfs: [/tmp]

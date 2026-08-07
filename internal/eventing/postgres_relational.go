@@ -627,8 +627,8 @@ ON CONFLICT DO NOTHING`, moduleSpecUUID.String(), tenantID, projectID, planID, m
 	err = tx.QueryRowContext(ctx, `
 SELECT id::text, plan_spec_id::text, module_id, version, content_sha256, created_by_agent_id
 FROM module_specs
-WHERE tenant_id = $1::uuid AND module_id = $2 AND version = $3
-FOR SHARE`, tenantID, module.ModuleID, module.ModuleSpecVersion).Scan(&moduleSpecID, &storedPlanID, &storedModuleID, &storedVersion, &storedSHA, &storedCreatedBy)
+WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND module_id = $3 AND version = $4
+FOR SHARE`, tenantID, projectID, module.ModuleID, module.ModuleSpecVersion).Scan(&moduleSpecID, &storedPlanID, &storedModuleID, &storedVersion, &storedSHA, &storedCreatedBy)
 	if err != nil {
 		return relationalModuleSpec{}, err
 	}

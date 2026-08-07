@@ -309,6 +309,13 @@
       "file": "000044_planning_recovery.up.sql",
       "sha256": "sha256:1031eb4160b39cc919f8d2475dfe6cec7b31a58fac5237b04daf1fb87cfed6db",
       "destructive": false
+    },
+    {
+      "version": 45,
+      "mode": "EXPAND",
+      "file": "000045_project_scoped_module_spec_uniqueness.up.sql",
+      "sha256": "sha256:0b6e71fed51e7ac1bd290045c74357578833d3648b80873779f22776bacd1279",
+      "destructive": false
     }
   ]
 }
