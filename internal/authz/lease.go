@@ -64,10 +64,22 @@ func (lease CapabilityLease) IsExpired(now time.Time) bool {
 	if lease.ExpiresAt.IsZero() || !now.Before(lease.ExpiresAt) {
 		return true
 	}
+	// Model and tool operation leases are one-shot capabilities bound to the
+	// parent execution lease through Resource.Path. They do not have an
+	// independent heartbeat loop; their parent execution lease is heartbeated
+	// by the runtime and their absolute expiry remains the final boundary.
+	if lease.isOperationLease() {
+		return false
+	}
 	if lease.HeartbeatIntervalSeconds > 0 && !lease.LastHeartbeatAt.IsZero() && !now.Before(lease.LastHeartbeatAt.Add(3*time.Duration(lease.HeartbeatIntervalSeconds)*time.Second)) {
 		return true
 	}
 	return false
+}
+
+func (lease CapabilityLease) isOperationLease() bool {
+	return strings.HasPrefix(lease.IdempotencyKey, "runtime-operation-") && lease.Resource.Path != "" &&
+		(lease.Action == ActionModelGenerate || lease.Action == ActionToolInvoke)
 }
 
 func (lease CapabilityLease) ValidateShape() *aorerrors.Error {
