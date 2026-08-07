@@ -17,6 +17,8 @@ import (
 	temporalworker "go.temporal.io/sdk/worker"
 	temporalworkflow "go.temporal.io/sdk/workflow"
 
+	"github.com/akimisaka/aor/internal/agentruntime"
+	"github.com/akimisaka/aor/internal/execution"
 	"github.com/akimisaka/aor/internal/observability"
 )
 
@@ -115,7 +117,7 @@ func ProjectExecutionWorkflow(ctx temporalworkflow.Context, input ExecutionInput
 			MaximumInterval:    time.Minute,
 			MaximumAttempts:    3,
 			NonRetryableErrorTypes: []string{
-				"AORInvalidArgument", "AORPolicyDenied", "AORSandboxUnavailable",
+				"AORInvalidArgument", "AORPolicyDenied", "AORSandboxUnavailable", "AORExecutionState",
 			},
 		},
 	}
@@ -192,6 +194,9 @@ func classifyActivityError(err error) error {
 	if err == nil {
 		return nil
 	}
+	if terminalExecutionError(err) {
+		return temporal.NewNonRetryableApplicationError(err.Error(), "AORExecutionState", nil)
+	}
 	// Input and policy errors are expected to be represented by callers using
 	// typed Temporal application errors. Unknown errors remain retryable.
 	var typed interface{ NonRetryable() bool }
@@ -199,6 +204,29 @@ func classifyActivityError(err error) error {
 		return temporal.NewNonRetryableApplicationError(err.Error(), "AORPolicyDenied", nil)
 	}
 	return err
+}
+
+func terminalExecutionError(err error) bool {
+	switch {
+	case errors.Is(err, agentruntime.ErrInvalidTransition),
+		errors.Is(err, agentruntime.ErrLeaseInvalid),
+		errors.Is(err, agentruntime.ErrLeaseExpired),
+		errors.Is(err, agentruntime.ErrLeaseBinding),
+		errors.Is(err, agentruntime.ErrCapabilityDenied),
+		errors.Is(err, agentruntime.ErrPromptIntegrity),
+		errors.Is(err, agentruntime.ErrContextIntegrity),
+		errors.Is(err, agentruntime.ErrBlindAuditContext),
+		errors.Is(err, agentruntime.ErrToolResultInvalid),
+		errors.Is(err, agentruntime.ErrToolRoundsExhausted),
+		errors.Is(err, agentruntime.ErrOutputInvalid),
+		errors.Is(err, agentruntime.ErrIntentDenied),
+		errors.Is(err, execution.ErrAssignmentInvalid),
+		errors.Is(err, execution.ErrPreparationInvalid),
+		errors.Is(err, execution.ErrSubmissionInvalid):
+		return true
+	default:
+		return false
+	}
 }
 
 // TemporalWorker owns registration and lifecycle for a deterministic worker.

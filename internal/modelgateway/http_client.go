@@ -67,6 +67,16 @@ func (err *HTTPResponseError) Unwrap() error {
 	return err.cause
 }
 
+// NonRetryable lets workflow boundaries honor the gateway's retry decision.
+// An unknown provider outcome is terminal for this request identity: retrying
+// it would reuse a reservation whose final disposition is already reconcile.
+func (err *HTTPResponseError) NonRetryable() bool {
+	if err == nil {
+		return false
+	}
+	return !err.Retryable || err.Code == "AOR_PROVIDER_RESULT_UNKNOWN"
+}
+
 type HTTPClient struct {
 	endpoint         string
 	tokenSource      BearerTokenSource
