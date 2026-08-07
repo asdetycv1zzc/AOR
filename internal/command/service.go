@@ -87,7 +87,10 @@ func runServer(component string, factory HandlerFactory) error {
 	var domain http.Handler
 	if factory != nil {
 		domain, err = factory(config, clients)
-		if err != nil || domain == nil {
+		if err != nil {
+			return err
+		}
+		if domain == nil {
 			return ErrInvalidCommand
 		}
 		if closeable, ok := domain.(interface{ Close() error }); ok {
