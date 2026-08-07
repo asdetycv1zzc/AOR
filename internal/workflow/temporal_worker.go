@@ -205,8 +205,6 @@ func NewTemporalWorker(client temporalclient.Client, taskQueue, buildID string, 
 	}
 	workerOptions := temporalworker.Options{
 		Identity:                               "aor-worker/" + buildID,
-		BuildID:                                buildID,
-		UseBuildIDForVersioning:                true,
 		MaxConcurrentActivityExecutionSize:     8,
 		MaxConcurrentWorkflowTaskExecutionSize: 8,
 		DisableRegistrationAliasing:            true,
