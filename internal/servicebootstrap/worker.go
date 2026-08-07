@@ -896,14 +896,17 @@ func configuredWorkerExecution(config runtimeconfig.Config, clients *runtimeclie
 	}
 	var planCompletion *goalplan.PlanCompletionService
 	if config.DeploymentProfile == "TEST" {
-		routes, routeErr := configuredGoalPlanRoutes(config.GoalPlan)
-		if routeErr != nil {
-			_ = host.Close()
-			return nil, routeErr
-		}
+		route := config.Execution.Route
 		completionPreparer, prepareErr := goalplan.NewAuthoritativeRuntimePreparer(goalplan.RuntimePreparerConfig{
 			Artifacts: artifacts, Projects: tasks, Tasks: tasks, Leases: leaseService,
-			Routes: routes, LeaseTTL: 5 * time.Minute, Clock: time.Now,
+			Routes: map[agentruntime.Role]goalplan.ModelRoute{
+				agentruntime.RolePlanSupervisor: {
+					Provider: route.Provider, Model: route.Model, MaxOutputTokens: route.MaxOutputTokens,
+					Temperature: route.Temperature, Seed: route.Seed, ProviderPolicy: route.ProviderPolicy,
+					CachePolicy: route.CachePolicy, WorstCaseCostMicros: route.WorstCaseCostMicros, MaxAttempts: route.MaxAttempts,
+				},
+			},
+			LeaseTTL: 5 * time.Minute, Clock: time.Now,
 		})
 		if prepareErr != nil {
 			_ = host.Close()

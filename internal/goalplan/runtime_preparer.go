@@ -80,14 +80,17 @@ func NewAuthoritativeRuntimePreparer(config RuntimePreparerConfig) (*Authoritati
 	if config.LeaseTTL < time.Duration(agentruntime.DefaultHeartbeatSeconds*agentruntime.MissedHeartbeatLimit)*time.Second || config.LeaseTTL > 15*time.Minute {
 		return nil, ErrInvalidRequest
 	}
-	routes := make(map[agentruntime.Role]ModelRoute, 5)
-	for _, role := range []agentruntime.Role{
-		agentruntime.RoleGoalProposer, agentruntime.RoleGoalChallenger,
-		agentruntime.RolePlanSupervisor, agentruntime.RoleModulePlanner,
-		agentruntime.RoleKnowledgeCurator,
-	} {
-		route, found := config.Routes[role]
-		if !found || !validModelRoute(route) {
+	if len(config.Routes) == 0 || len(config.Routes) > 5 {
+		return nil, ErrInvalidRequest
+	}
+	routes := make(map[agentruntime.Role]ModelRoute, len(config.Routes))
+	for role, route := range config.Routes {
+		switch role {
+		case agentruntime.RoleGoalProposer, agentruntime.RoleGoalChallenger, agentruntime.RolePlanSupervisor, agentruntime.RoleModulePlanner, agentruntime.RoleKnowledgeCurator:
+		default:
+			return nil, ErrInvalidRequest
+		}
+		if !validModelRoute(route) {
 			return nil, ErrInvalidRequest
 		}
 		if route.Seed != nil {
@@ -142,7 +145,10 @@ func (preparer *AuthoritativeRuntimePreparer) Prepare(ctx context.Context, reque
 	if err != nil {
 		return RuntimeInvocation{}, ErrInvalidRequest
 	}
-	route := preparer.routes[request.Role]
+	route, found := preparer.routes[request.Role]
+	if !found {
+		return RuntimeInvocation{}, ErrInvalidRequest
+	}
 	parameterDigest, err := runtimeParameterDigest(request, project.Version, stage.taskVersion, stage.specDigest, bundle.SHA256, manifest.SHA256, responseDigest, route)
 	if err != nil {
 		return RuntimeInvocation{}, ErrInvalidRequest
