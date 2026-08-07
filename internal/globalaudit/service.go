@@ -268,7 +268,7 @@ func (service *Service) execute(ctx context.Context, prepared PreparedRun) (acce
 	if err != nil {
 		return fail(err)
 	}
-	if modelResponse.RequestID != prepared.ModelCall.RequestID || modelResponse.ModelVersion != prepared.ModelCall.Model || len(modelResponse.Content) == 0 {
+	if modelResponse.RequestID != prepared.ModelCall.RequestID || strings.TrimSpace(modelResponse.ModelVersion) == "" || len(modelResponse.Content) == 0 {
 		return fail(ErrInvalidReport)
 	}
 	accepted, err := service.runtime.Complete(ctx, runID, agentruntime.AgentOutput{Intent: aop.IntentReportGlobalAudit, Payload: append(json.RawMessage(nil), modelResponse.Content...)})
