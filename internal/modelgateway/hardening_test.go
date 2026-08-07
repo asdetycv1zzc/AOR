@@ -315,6 +315,32 @@ func TestGatewayDoesNotFallbackAfterKnownNonRetryableFailure(t *testing.T) {
 	}
 }
 
+func TestGatewayDoesNotFallbackToDifferentLogicalModel(t *testing.T) {
+	ledger := NewBudgetLedger(time.Now)
+	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "account", TenantID: "tenant", LimitMicros: 10_000}); err != nil {
+		t.Fatal(err)
+	}
+	primary := &hardeningAdapter{failures: []error{&ProviderFailure{Cause: errors.New("primary unavailable"), Retryable: true, OutcomeKnown: true}}}
+	fallback := &hardeningAdapter{response: NormalizedResponse{Content: json.RawMessage(`{"ok":true}`)}}
+	gateway := NewGatewayWithConfig(ledger, time.Now, GatewayConfig{ProviderPolicies: map[string]ProviderPolicy{"strict": {
+		Candidates: []ProviderCandidate{{Provider: "primary", Model: "model", CapabilityRank: 100}, {Provider: "fallback", Model: "other-model", CapabilityRank: 100}},
+	}}})
+	if err := gateway.Register("primary", "model", primary, Pricing{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := gateway.Register("fallback", "other-model", fallback, Pricing{}); err != nil {
+		t.Fatal(err)
+	}
+	request := hardeningRequest("different-model-fallback")
+	request.ProviderPolicy = "strict"
+	if _, err := gateway.Generate(context.Background(), request, GenerateOptions{Provider: "primary", AccountID: "account", ReservationID: "different-model-reservation", MaxAttempts: 1}); err == nil {
+		t.Fatal("different logical model fallback succeeded")
+	}
+	if primary.Calls() != 1 || fallback.Calls() != 0 {
+		t.Fatalf("primary calls=%d fallback calls=%d", primary.Calls(), fallback.Calls())
+	}
+}
+
 func TestGatewayRetriesKnownStreamStartFailureWithBackoff(t *testing.T) {
 	ledger := NewBudgetLedger(time.Now)
 	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "account", TenantID: "tenant", LimitMicros: 10_000}); err != nil {
