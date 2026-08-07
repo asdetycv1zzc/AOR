@@ -398,14 +398,30 @@ func (a *Adapter) decodeResponse(request modelgateway.NormalizedRequest, capabil
 	}
 	hasContent := choice.Message.Content != nil && *choice.Message.Content != ""
 	hasToolCalls := len(choice.Message.ToolCalls) != 0
-	if hasContent == hasToolCalls || len(choice.Message.ToolCalls) > modelgateway.MaximumToolCalls {
+	if !hasContent && !hasToolCalls || len(choice.Message.ToolCalls) > modelgateway.MaximumToolCalls {
 		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
 	}
 	if choice.Message.ToolCallID != "" || choice.Message.Role != "" && choice.Message.Role != "assistant" {
 		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
 	}
-	if hasContent && len(*choice.Message.Content) > modelgateway.MaximumResponseBytes {
-		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputTooLarge)
+	if hasContent {
+		if len(*choice.Message.Content) > modelgateway.MaximumResponseBytes {
+			return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputTooLarge)
+		}
+		if !utf8.ValidString(*choice.Message.Content) {
+			return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
+		}
+		if a.containsCredential(*choice.Message.Content) {
+			return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrCredentialDetected)
+		}
+		// Some compatible providers add prose beside native tool calls. The
+		// provider-independent protocol carries the actionable calls only.
+		if hasToolCalls && !json.Valid([]byte(*choice.Message.Content)) {
+			hasContent = false
+		}
+	}
+	if hasContent && hasToolCalls {
+		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
 	}
 	outputBytes := 0
 	for _, wireCall := range choice.Message.ToolCalls {
@@ -417,13 +433,15 @@ func (a *Adapter) decodeResponse(request modelgateway.NormalizedRequest, capabil
 	}
 	var content json.RawMessage
 	if hasContent {
-		if !utf8.ValidString(*choice.Message.Content) || !json.Valid([]byte(*choice.Message.Content)) {
-			return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
+		if json.Valid([]byte(*choice.Message.Content)) {
+			content = append(json.RawMessage(nil), (*choice.Message.Content)...)
+		} else {
+			encoded, err := json.Marshal(*choice.Message.Content)
+			if err != nil || len(encoded) > modelgateway.MaximumResponseBytes {
+				return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputTooLarge)
+			}
+			content = encoded
 		}
-		if a.containsCredential(*choice.Message.Content) {
-			return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrCredentialDetected)
-		}
-		content = append(json.RawMessage(nil), (*choice.Message.Content)...)
 	}
 	toolCalls := make([]modelgateway.ToolCall, 0, len(choice.Message.ToolCalls))
 	allowed := make(map[string]struct{}, len(request.Tools))
