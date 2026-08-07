@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -177,8 +176,6 @@ type GlobalAuditScheduler struct {
 	source  GlobalAuditCandidateSource
 	starter *GlobalAuditStarter
 	running atomic.Bool
-	status  sync.RWMutex
-	lastErr error
 }
 
 func NewGlobalAuditScheduler(source GlobalAuditCandidateSource, starter *GlobalAuditStarter) (*GlobalAuditScheduler, error) {
@@ -224,9 +221,6 @@ func (scheduler *GlobalAuditScheduler) Run(ctx context.Context) error {
 	defer scheduler.running.Store(false)
 	for {
 		_, dispatchErr := scheduler.DispatchOnce(ctx)
-		scheduler.status.Lock()
-		scheduler.lastErr = dispatchErr
-		scheduler.status.Unlock()
 		wait := globalAuditPollInterval
 		if dispatchErr != nil {
 			wait = globalAuditFailureBackoff
@@ -247,9 +241,7 @@ func (scheduler *GlobalAuditScheduler) Ready() error {
 	if scheduler == nil || !scheduler.running.Load() {
 		return ErrGlobalAuditSchedulerNotRunning
 	}
-	scheduler.status.RLock()
-	defer scheduler.status.RUnlock()
-	return scheduler.lastErr
+	return nil
 }
 
 func validGlobalAuditCandidate(candidate GlobalAuditCandidate) bool {

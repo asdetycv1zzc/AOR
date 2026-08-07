@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -183,8 +182,6 @@ type ModuleAuditScheduler struct {
 	source  ModuleAuditCandidateSource
 	starter *ModuleAuditStarter
 	running atomic.Bool
-	status  sync.RWMutex
-	lastErr error
 }
 
 func NewModuleAuditScheduler(source ModuleAuditCandidateSource, starter *ModuleAuditStarter) (*ModuleAuditScheduler, error) {
@@ -230,9 +227,6 @@ func (scheduler *ModuleAuditScheduler) Run(ctx context.Context) error {
 	defer scheduler.running.Store(false)
 	for {
 		_, dispatchErr := scheduler.DispatchOnce(ctx)
-		scheduler.status.Lock()
-		scheduler.lastErr = dispatchErr
-		scheduler.status.Unlock()
 		wait := moduleAuditPollInterval
 		if dispatchErr != nil {
 			wait = moduleAuditFailureBackoff
@@ -253,9 +247,7 @@ func (scheduler *ModuleAuditScheduler) Ready() error {
 	if scheduler == nil || !scheduler.running.Load() {
 		return ErrModuleAuditSchedulerNotRunning
 	}
-	scheduler.status.RLock()
-	defer scheduler.status.RUnlock()
-	return scheduler.lastErr
+	return nil
 }
 
 func validModuleAuditCandidate(candidate ModuleAuditCandidate) bool {

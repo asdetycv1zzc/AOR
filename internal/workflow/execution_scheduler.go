@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -176,8 +175,6 @@ type ReadyExecutionScheduler struct {
 	source  ReadyExecutionSource
 	starter *ProjectExecutionStarter
 	running atomic.Bool
-	status  sync.RWMutex
-	lastErr error
 }
 
 func NewReadyExecutionScheduler(source ReadyExecutionSource, starter *ProjectExecutionStarter) (*ReadyExecutionScheduler, error) {
@@ -223,9 +220,6 @@ func (scheduler *ReadyExecutionScheduler) Run(ctx context.Context) error {
 	defer scheduler.running.Store(false)
 	for {
 		_, dispatchErr := scheduler.DispatchOnce(ctx)
-		scheduler.status.Lock()
-		scheduler.lastErr = dispatchErr
-		scheduler.status.Unlock()
 		wait := readyExecutionPollInterval
 		if dispatchErr != nil {
 			wait = readyExecutionFailureBackoff
@@ -246,9 +240,7 @@ func (scheduler *ReadyExecutionScheduler) Ready() error {
 	if scheduler == nil || !scheduler.running.Load() {
 		return ErrExecutionSchedulerNotRunning
 	}
-	scheduler.status.RLock()
-	defer scheduler.status.RUnlock()
-	return scheduler.lastErr
+	return nil
 }
 
 func validReadyExecution(ready ReadyExecution) bool {

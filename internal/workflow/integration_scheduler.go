@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -189,8 +188,6 @@ type IntegrationScheduler struct {
 	source  IntegrationCandidateSource
 	starter *IntegrationStarter
 	running atomic.Bool
-	status  sync.RWMutex
-	lastErr error
 }
 
 func NewIntegrationScheduler(source IntegrationCandidateSource, starter *IntegrationStarter) (*IntegrationScheduler, error) {
@@ -236,9 +233,6 @@ func (scheduler *IntegrationScheduler) Run(ctx context.Context) error {
 	defer scheduler.running.Store(false)
 	for {
 		_, dispatchErr := scheduler.DispatchOnce(ctx)
-		scheduler.status.Lock()
-		scheduler.lastErr = dispatchErr
-		scheduler.status.Unlock()
 		wait := integrationPollInterval
 		if dispatchErr != nil {
 			wait = integrationFailureBackoff
@@ -259,9 +253,7 @@ func (scheduler *IntegrationScheduler) Ready() error {
 	if scheduler == nil || !scheduler.running.Load() {
 		return ErrIntegrationSchedulerNotRunning
 	}
-	scheduler.status.RLock()
-	defer scheduler.status.RUnlock()
-	return scheduler.lastErr
+	return nil
 }
 
 func validIntegrationCandidate(candidate IntegrationCandidate) bool {
