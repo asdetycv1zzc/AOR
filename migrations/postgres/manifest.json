@@ -302,6 +302,13 @@
       "file": "000043_tenant_registration_grant.up.sql",
       "sha256": "sha256:b30c8408bb6831b82d71c44d334bffd2afe9bce2982ce3118c38151d6268bad6",
       "destructive": false
+    },
+    {
+      "version": 44,
+      "mode": "EXPAND",
+      "file": "000044_planning_recovery.up.sql",
+      "sha256": "sha256:1031eb4160b39cc919f8d2475dfe6cec7b31a58fac5237b04daf1fb87cfed6db",
+      "destructive": false
     }
   ]
 }

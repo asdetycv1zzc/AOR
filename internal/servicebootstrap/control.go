@@ -15,6 +15,7 @@ import (
 	"github.com/akimisaka/aor/internal/controlapi"
 	"github.com/akimisaka/aor/internal/credentials"
 	"github.com/akimisaka/aor/internal/eventing"
+	"github.com/akimisaka/aor/internal/goalplan"
 	"github.com/akimisaka/aor/internal/knowledge"
 	"github.com/akimisaka/aor/internal/leaseauthority"
 	"github.com/akimisaka/aor/internal/observability"
@@ -32,6 +33,7 @@ type controlHandler struct {
 	moduleAuditScheduler *aorworkflow.ModuleAuditScheduler
 	integrationScheduler *aorworkflow.IntegrationScheduler
 	globalAuditScheduler *aorworkflow.GlobalAuditScheduler
+	planningRecovery     *goalplan.PlanningRecoveryScheduler
 	cancel               context.CancelFunc
 	dispatchDone         <-chan error
 	retentionDone        <-chan error
@@ -39,6 +41,7 @@ type controlHandler struct {
 	moduleAuditDone      <-chan error
 	integrationDone      <-chan error
 	globalAuditDone      <-chan error
+	planningRecoveryDone <-chan error
 	close                sync.Once
 	closeErr             error
 }
@@ -63,7 +66,7 @@ func (eraser artifactProjectEraser) FinalizeProjectAuthorizationErasure(ctx cont
 }
 
 func (handler *controlHandler) Ready() error {
-	if handler == nil || handler.dispatcher == nil || handler.retention == nil || handler.scheduler == nil || handler.moduleAuditScheduler == nil {
+	if handler == nil || handler.dispatcher == nil || handler.retention == nil || handler.scheduler == nil || handler.moduleAuditScheduler == nil || handler.planningRecovery == nil {
 		return runtimeclient.ErrDependencyUnavailable
 	}
 	if err := handler.dispatcher.Ready(); err != nil {
@@ -76,6 +79,9 @@ func (handler *controlHandler) Ready() error {
 		return err
 	}
 	if err := handler.moduleAuditScheduler.Ready(); err != nil {
+		return err
+	}
+	if err := handler.planningRecovery.Ready(); err != nil {
 		return err
 	}
 	if handler.integrationScheduler != nil {
@@ -105,6 +111,12 @@ func (handler *controlHandler) Close() error {
 		}
 		if handler.retentionDone != nil {
 			err := <-handler.retentionDone
+			if err != nil && !errors.Is(err, context.Canceled) {
+				handler.closeErr = errors.Join(handler.closeErr, err)
+			}
+		}
+		if handler.planningRecoveryDone != nil {
+			err := <-handler.planningRecoveryDone
 			if err != nil && !errors.Is(err, context.Canceled) {
 				handler.closeErr = errors.Join(handler.closeErr, err)
 			}
@@ -194,6 +206,15 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	if err != nil {
 		return nil, err
 	}
+	planningRecoveries, err := goalplan.NewPostgresPlanningRecoverySource(clients.Database())
+	if err != nil {
+		return nil, err
+	}
+	planningRecovery, err := goalplan.NewPlanningRecoveryScheduler(planningRecoveries, projectAgents.goalPlan.Planner)
+	if err != nil {
+		return nil, err
+	}
+	projectAgents.goalPlan.Recovery = planningRecoveries
 	knowledgeCurator := controlapi.KnowledgeCuratorService(projectAgents.curator)
 	if config.KnowledgeCuratorURL != "" {
 		// The API process keeps the project-scoped read service, but all Curator
@@ -282,12 +303,14 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	retentionDone := make(chan error, 1)
 	schedulerDone := make(chan error, 1)
 	moduleAuditDone := make(chan error, 1)
+	planningRecoveryDone := make(chan error, 1)
 	var integrationDone chan error
 	var globalAuditDone chan error
 	go func() { dispatchDone <- dispatcher.Run(dispatchContext) }()
 	go func() { retentionDone <- retentionWorker.Run(dispatchContext) }()
 	go func() { schedulerDone <- scheduler.Run(dispatchContext) }()
 	go func() { moduleAuditDone <- moduleAuditScheduler.Run(dispatchContext) }()
+	go func() { planningRecoveryDone <- planningRecovery.Run(dispatchContext) }()
 	if integrationScheduler != nil {
 		integrationDone = make(chan error, 1)
 		go func() { integrationDone <- integrationScheduler.Run(dispatchContext) }()
@@ -299,9 +322,9 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	return &controlHandler{
 		Handler: withRequestTrace(domain), dispatcher: dispatcher, retention: retentionWorker, scheduler: scheduler,
 		moduleAuditScheduler: moduleAuditScheduler, integrationScheduler: integrationScheduler,
-		globalAuditScheduler: globalAuditScheduler, cancel: cancel,
+		globalAuditScheduler: globalAuditScheduler, planningRecovery: planningRecovery, cancel: cancel,
 		dispatchDone: dispatchDone, retentionDone: retentionDone, schedulerDone: schedulerDone, moduleAuditDone: moduleAuditDone,
-		integrationDone: integrationDone, globalAuditDone: globalAuditDone,
+		integrationDone: integrationDone, globalAuditDone: globalAuditDone, planningRecoveryDone: planningRecoveryDone,
 	}, nil
 }
 

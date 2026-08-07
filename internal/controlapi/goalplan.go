@@ -30,9 +30,14 @@ type GoalPlanningService interface {
 	BuildAndPublishAutomatic(context.Context, goalplan.PlanningRequest) (goalplan.PlanningResult, error)
 }
 
+type GoalPlanningRecovery interface {
+	Schedule(context.Context, goalplan.PlanningRequest) error
+}
+
 type GoalPlanServices struct {
 	Negotiator GoalNegotiationService
 	Planner    GoalPlanningService
+	Recovery   GoalPlanningRecovery
 }
 
 func (handler *Handler) negotiateGoal(ctx context.Context, principal authn.Principal, projectID string, body goalMessageBody, idempotencyKey string) (state.Project, error) {
@@ -195,14 +200,22 @@ func (handler *Handler) approveGoalAndPlan(ctx context.Context, principal authn.
 			return state.Project{}, err
 		}
 	}
-	plan, err := handler.goalPlan.Planner.BuildAndPublishAutomatic(ctx, goalplan.PlanningRequest{
+	planningRequest := goalplan.PlanningRequest{
 		TenantID: principal.TenantID, ProjectID: projectID, PrincipalID: principal.ID,
 		GoalSpecID: projection.GoalSpecID, GoalRef: goalRef,
 		PlanSpecID: planSpecID, PlanVersion: 1,
 		ExpectedProjectVersion: approvedProjectVersion,
 		IdempotencyKey:         goalPlanKey("initial-plan", principal.TenantID, projectID, principal.ID, idempotencyKey),
-	})
+	}
+	plan, err := handler.goalPlan.Planner.BuildAndPublishAutomatic(ctx, planningRequest)
 	if err != nil {
+		if handler.goalPlan.Recovery != nil {
+			recoveryContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			if recoveryErr := handler.goalPlan.Recovery.Schedule(recoveryContext, planningRequest); recoveryErr != nil {
+				return state.Project{}, errors.Join(err, recoveryErr)
+			}
+		}
 		return state.Project{}, err
 	}
 	outcome := plan.Publication.Project
@@ -301,3 +314,4 @@ func normalizeGoalPlanError(err error) error {
 
 var _ GoalNegotiationService = (*goalplan.Negotiator)(nil)
 var _ GoalPlanningService = (*goalplan.Planner)(nil)
+var _ GoalPlanningRecovery = (*goalplan.PostgresPlanningRecoverySource)(nil)
