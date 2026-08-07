@@ -803,7 +803,11 @@ func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequ
 	}
 	var incurred int64
 	var lastErr error
+	remainingAttempts := options.MaxAttempts
 	for selectionIndex, selection := range selections {
+		if remainingAttempts == 0 {
+			break
+		}
 		if g.eligibility != nil {
 			if eligibilityErr := g.eligibility(ctx, ProviderEligibilityInput{Operation: "generate", Request: request, Candidate: selection.candidate, Capabilities: selection.caps, AccountID: options.AccountID, ReservationID: options.ReservationID}); eligibilityErr != nil {
 				lastErr = eligibilityErr
@@ -813,7 +817,12 @@ func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequ
 		call.Provider = selection.candidate.Provider
 		call.LogicalModel = request.Model
 		call.ActualModelVersion = selection.caps.ActualModelVersion
-		for attempt := 0; attempt < options.MaxAttempts; attempt++ {
+		selectionAttempts := remainingAttempts
+		if selectionIndex+1 < len(selections) {
+			selectionAttempts = 1
+		}
+		for attempt := 0; attempt < selectionAttempts; attempt++ {
+			remainingAttempts--
 			response, generateErr := selection.adapter.Generate(ctx, selection.request)
 			if generateErr != nil {
 				lastErr = generateErr
@@ -831,7 +840,7 @@ func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequ
 				if !providerFailure.Retryable {
 					break
 				}
-				if attempt+1 < options.MaxAttempts {
+				if attempt+1 < selectionAttempts {
 					if waitErr := g.waitForRetry(ctx, selection.key, providerFailure); waitErr != nil {
 						call.Status = ModelCallFailedProvider
 						call.CostMicros = incurred
