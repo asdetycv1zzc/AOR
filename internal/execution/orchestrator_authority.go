@@ -96,7 +96,8 @@ func (authority *OrchestratorTaskAuthority) LeaseExecution(ctx context.Context, 
 	}
 	now := authority.clock().UTC()
 	authorization, err := authority.signAuthorization(orchestrator.CommitCapability{
-		TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID,
+		CapabilityVersion: orchestrator.CommitCapabilityVersion,
+		TenantID:          request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID,
 		PrincipalID: request.AgentInstanceID, PrincipalType: string(authn.PrincipalAgentInstance), Role: authn.RoleExecutor,
 		Action: string(state.TaskCommandLeaseExecution), ExpectedVersion: request.ExpectedVersion,
 		ProjectVersion: project.Version, TaskVersion: current.Version, ParameterDigest: digest,
@@ -151,7 +152,8 @@ func (authority *OrchestratorTaskAuthority) SubmitExecution(ctx context.Context,
 		return state.ModuleTask{}, false, ErrSubmissionInvalid
 	}
 	authorization, err := authority.signAuthorization(orchestrator.CommitCapability{
-		TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID,
+		CapabilityVersion: orchestrator.CommitCapabilityVersion,
+		TenantID:          request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID,
 		PrincipalID: request.Submission.AgentIdentity.AgentInstanceID, PrincipalType: string(authn.PrincipalAgentInstance), Role: authn.RoleExecutor,
 		Action: string(state.TaskCommandSubmit), ExpectedVersion: request.ExpectedVersion,
 		ProjectVersion: project.Version, TaskVersion: current.Version, ParameterDigest: digest,
