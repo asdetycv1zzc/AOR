@@ -3,7 +3,6 @@ package eventing
 import (
 	"context"
 	"errors"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -45,8 +44,6 @@ type OutboxDispatcher struct {
 	failureBackoff time.Duration
 	clock          func() time.Time
 	running        atomic.Bool
-	statusMu       sync.RWMutex
-	lastError      error
 }
 
 func NewOutboxDispatcher(tenants OutboxTenantSource, publisher *OutboxPublisher, config OutboxDispatcherConfig) (*OutboxDispatcher, error) {
@@ -117,9 +114,6 @@ func (dispatcher *OutboxDispatcher) Run(ctx context.Context) error {
 		if statusErr == nil && result.Retried > 0 {
 			statusErr = ErrOutboxPublishDeferred
 		}
-		dispatcher.statusMu.Lock()
-		dispatcher.lastError = statusErr
-		dispatcher.statusMu.Unlock()
 		wait := dispatcher.pollInterval
 		if statusErr != nil {
 			wait = dispatcher.failureBackoff
@@ -150,7 +144,5 @@ func (dispatcher *OutboxDispatcher) Ready() error {
 	if dispatcher == nil || !dispatcher.running.Load() {
 		return ErrOutboxDispatcherNotRunning
 	}
-	dispatcher.statusMu.RLock()
-	defer dispatcher.statusMu.RUnlock()
-	return dispatcher.lastError
+	return nil
 }
