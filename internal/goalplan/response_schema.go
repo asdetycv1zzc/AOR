@@ -62,7 +62,7 @@ const goalDraftSchema = `{
     "constraints": {"$ref": "#/$defs/strings"},
     "assumptions": {"type": "array", "maxItems": 1000, "items": {"$ref": "#/$defs/assumption"}},
     "decisions": {"$ref": "#/$defs/strings"},
-    "unresolvedItems": {"$ref": "#/$defs/strings"},
+    "unresolvedItems": {"description": "Substantive unresolved requirements or decisions only. Do not include pending approval or a request for approval; use an empty array when substantive decisions are resolved.", "$ref": "#/$defs/strings"},
     "acceptanceCriteria": {"type": "array", "minItems": 1, "maxItems": 1000, "items": {"$ref": "#/$defs/criterion"}},
     "riskTolerance": {"enum": ["LOW", "MEDIUM", "HIGH"]},
     "humanApprovalPoints": {"$ref": "#/$defs/strings"},
