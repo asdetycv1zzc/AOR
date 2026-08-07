@@ -3,6 +3,7 @@ package goalplan
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/akimisaka/aor/internal/agentruntime"
 	"github.com/akimisaka/aor/internal/modelgateway"
@@ -37,6 +38,7 @@ type runtimeExecutor interface {
 	Queue(string) error
 	AssignLease(context.Context, string, agentruntime.AgentLease) error
 	Start(context.Context, string) error
+	Heartbeat(context.Context, string) error
 	Generate(context.Context, string, agentruntime.ModelCall) (modelgateway.NormalizedResponse, error)
 	Complete(context.Context, string, agentruntime.AgentOutput) (agentruntime.AcceptedResult, error)
 	AcceptedResult(string) (agentruntime.AcceptedResult, bool)
@@ -81,7 +83,7 @@ func (invoker *RuntimeAgentInvoker) Invoke(ctx context.Context, request AgentInv
 	if err := invoker.runtime.Start(ctx, runID); err != nil {
 		return fail(err)
 	}
-	response, err := invoker.runtime.Generate(ctx, runID, prepared.ModelCall)
+	response, err := invoker.generateWithHeartbeat(ctx, runID, prepared.Lease, prepared.ModelCall)
 	if err != nil {
 		return fail(err)
 	}
@@ -96,6 +98,43 @@ func (invoker *RuntimeAgentInvoker) Invoke(ctx context.Context, request AgentInv
 		return AgentRecord{}, ErrAgentOutput
 	}
 	return AgentRecord{RunID: runID, AgentInstanceID: prepared.Declaration.AgentInstanceID, Role: request.Role, Payload: append([]byte(nil), accepted.Payload...)}, nil
+}
+
+func (invoker *RuntimeAgentInvoker) generateWithHeartbeat(ctx context.Context, runID string, lease agentruntime.AgentLease, call agentruntime.ModelCall) (modelgateway.NormalizedResponse, error) {
+	interval := time.Duration(lease.HeartbeatIntervalSeconds) * time.Second
+	if interval <= 0 {
+		return modelgateway.NormalizedResponse{}, agentruntime.ErrLeaseInvalid
+	}
+	heartbeatCtx, cancel := context.WithCancel(ctx)
+	heartbeatErr := make(chan error, 1)
+	heartbeatDone := make(chan struct{})
+	go func() {
+		defer close(heartbeatDone)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := invoker.runtime.Heartbeat(heartbeatCtx, runID); err != nil {
+					if heartbeatCtx.Err() == nil {
+						heartbeatErr <- err
+						cancel()
+					}
+					return
+				}
+			case <-heartbeatCtx.Done():
+				return
+			}
+		}
+	}()
+	response, err := invoker.runtime.Generate(heartbeatCtx, runID, call)
+	cancel()
+	<-heartbeatDone
+	select {
+	case err = <-heartbeatErr:
+	default:
+	}
+	return response, err
 }
 
 func (invoker *RuntimeAgentInvoker) completedRecord(request AgentInvocation, prepared RuntimeInvocation) (AgentRecord, error) {

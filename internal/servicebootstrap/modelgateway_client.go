@@ -34,6 +34,7 @@ func configuredModelGatewayClient(ctx context.Context, config runtimeconfig.Conf
 	client, err := modelgateway.NewHTTPClient(modelgateway.HTTPClientConfig{
 		Endpoint:    config.Services.ModelGateway,
 		TokenSource: tokenSource,
+		Timeout:     modelGatewayRequestTimeout,
 	})
 	if err != nil {
 		return nil, runtimeconfig.ErrInvalidConfiguration

@@ -131,38 +131,55 @@ func (handler *Handler) approveGoalAndPlan(ctx context.Context, principal authn.
 	if err := authorizeRead(ctx, handler.authorizer, principal, projectID, authz.ActionProjectCommand, "project", projectID, string(project.State), project.Version, project.DataClassification); err != nil {
 		return state.Project{}, err
 	}
-	issuedAt := handler.clock().UTC()
-	if projection.Spec.Status == contracts.GoalApproved {
-		if projection.Spec.ApprovedBy == nil || projection.Spec.ApprovedBy.ActorID != principal.ID {
+	goalRef := contracts.SpecRef{Version: projection.Spec.Content.Version, SHA256: body.SHA256}
+	approvedProjectVersion := body.ExpectedVersion + 1
+	approvalCommitted := project.Version == approvedProjectVersion || project.Version == approvedProjectVersion+1
+	if approvalCommitted {
+		if projection.Spec.Status != contracts.GoalApproved || project.Goal == nil || project.Goal.ID != projection.GoalSpecID || project.Goal.Version != goalRef.Version || project.Goal.SHA256 != goalRef.SHA256 || project.Goal.ApprovedBy != principal.ID {
 			return state.Project{}, goalplan.ErrInvalidRequest
 		}
-		approvedAt, err := time.Parse(time.RFC3339Nano, projection.Spec.ApprovedBy.ApprovedAt)
-		if err != nil {
+		if project.Version == approvedProjectVersion && project.State != contracts.ProjectPlanning {
+			return state.Project{}, goalplan.ErrInvalidRequest
+		}
+		if project.Version == approvedProjectVersion+1 && (project.State != contracts.ProjectExecuting || project.Plan == nil) {
+			return state.Project{}, goalplan.ErrInvalidRequest
+		}
+	} else {
+		if project.Version != body.ExpectedVersion {
+			return state.Project{}, goalplan.ErrInvalidRequest
+		}
+		issuedAt := handler.clock().UTC()
+		if projection.Spec.Status == contracts.GoalApproved {
+			if projection.Spec.ApprovedBy == nil || projection.Spec.ApprovedBy.ActorID != principal.ID {
+				return state.Project{}, goalplan.ErrInvalidRequest
+			}
+			approvedAt, parseErr := time.Parse(time.RFC3339Nano, projection.Spec.ApprovedBy.ApprovedAt)
+			if parseErr != nil {
+				return state.Project{}, goalplan.ErrAgentOutput
+			}
+			issuedAt = approvedAt.UTC()
+		}
+		approvalID, idErr := newRecordUUIDv7()
+		if idErr != nil {
+			return state.Project{}, idErr
+		}
+		approval, approveErr := handler.goalPlan.Negotiator.Approve(ctx, goalplan.ApprovalRequest{
+			TenantID: principal.TenantID, ProjectID: projectID, GoalSpecID: projection.GoalSpecID, GoalRef: goalRef,
+			UserPrincipalID: principal.ID, ExpectedProjectVersion: body.ExpectedVersion, IdempotencyKey: idempotencyKey,
+			Approval: goalplan.ApprovalBinding{
+				RecordID:     approvalID,
+				ApprovalType: "GOAL_APPROVAL", SubjectType: "GOAL_SPEC", SubjectID: projection.GoalSpecID,
+				SubjectVersion: goalRef.Version, SubjectSHA256: goalRef.SHA256, PrincipalID: principal.ID,
+				Reason: reason, IssuedAt: issuedAt,
+				Signature: goalApprovalSignature(principal.TenantID, projectID, projection.GoalSpecID, goalRef.Version, goalRef.SHA256, principal.ID, reason, idempotencyKey),
+			},
+		})
+		if approveErr != nil {
+			return state.Project{}, approveErr
+		}
+		if approval.Project.TenantID != principal.TenantID || approval.Project.ID != projectID || approval.Project.Version != approvedProjectVersion || approval.Project.State != contracts.ProjectPlanning || approval.Project.Goal == nil || approval.Project.Goal.ID != projection.GoalSpecID || approval.Project.Goal.Version != goalRef.Version || approval.Project.Goal.SHA256 != goalRef.SHA256 || approval.Project.Goal.ApprovedBy != principal.ID {
 			return state.Project{}, goalplan.ErrAgentOutput
 		}
-		issuedAt = approvedAt.UTC()
-	}
-	goalRef := contracts.SpecRef{Version: projection.Spec.Content.Version, SHA256: body.SHA256}
-	approvalID, err := newRecordUUIDv7()
-	if err != nil {
-		return state.Project{}, err
-	}
-	approval, err := handler.goalPlan.Negotiator.Approve(ctx, goalplan.ApprovalRequest{
-		TenantID: principal.TenantID, ProjectID: projectID, GoalSpecID: projection.GoalSpecID, GoalRef: goalRef,
-		UserPrincipalID: principal.ID, ExpectedProjectVersion: body.ExpectedVersion, IdempotencyKey: idempotencyKey,
-		Approval: goalplan.ApprovalBinding{
-			RecordID:     approvalID,
-			ApprovalType: "GOAL_APPROVAL", SubjectType: "GOAL_SPEC", SubjectID: projection.GoalSpecID,
-			SubjectVersion: goalRef.Version, SubjectSHA256: goalRef.SHA256, PrincipalID: principal.ID,
-			Reason: reason, IssuedAt: issuedAt,
-			Signature: goalApprovalSignature(principal.TenantID, projectID, projection.GoalSpecID, goalRef.Version, goalRef.SHA256, principal.ID, reason, idempotencyKey),
-		},
-	})
-	if err != nil {
-		return state.Project{}, err
-	}
-	if approval.Project.TenantID != principal.TenantID || approval.Project.ID != projectID || approval.Project.Version != body.ExpectedVersion+1 || approval.Project.State != contracts.ProjectPlanning || approval.Project.Goal == nil || approval.Project.Goal.ID != projection.GoalSpecID || approval.Project.Goal.Version != goalRef.Version || approval.Project.Goal.SHA256 != goalRef.SHA256 || approval.Project.Goal.ApprovedBy != principal.ID {
-		return state.Project{}, goalplan.ErrAgentOutput
 	}
 
 	planSpecID, _, err := handler.findGoalPlanArtifactSpecID(ctx, principal.TenantID, projectID, goalplan.ArtifactPlanSpec, 1, func(artifact goalplan.SpecArtifact) bool {
@@ -182,14 +199,14 @@ func (handler *Handler) approveGoalAndPlan(ctx context.Context, principal authn.
 		TenantID: principal.TenantID, ProjectID: projectID, PrincipalID: principal.ID,
 		GoalSpecID: projection.GoalSpecID, GoalRef: goalRef,
 		PlanSpecID: planSpecID, PlanVersion: 1,
-		ExpectedProjectVersion: approval.Project.Version,
+		ExpectedProjectVersion: approvedProjectVersion,
 		IdempotencyKey:         goalPlanKey("initial-plan", principal.TenantID, projectID, principal.ID, idempotencyKey),
 	})
 	if err != nil {
 		return state.Project{}, err
 	}
 	outcome := plan.Publication.Project
-	if outcome.TenantID != principal.TenantID || outcome.ID != projectID || outcome.Version != approval.Project.Version+1 || outcome.State != contracts.ProjectExecuting || outcome.Plan == nil || outcome.Plan.Version != plan.Plan.PlanSpecVersion || outcome.Plan.SHA256 != plan.Plan.SHA256 || plan.PlanArtifact.Kind != goalplan.ArtifactPlanSpec || plan.PlanArtifact.SpecID != planSpecID {
+	if outcome.TenantID != principal.TenantID || outcome.ID != projectID || outcome.Version != approvedProjectVersion+1 || outcome.State != contracts.ProjectExecuting || outcome.Plan == nil || outcome.Plan.Version != plan.Plan.PlanSpecVersion || outcome.Plan.SHA256 != plan.Plan.SHA256 || plan.PlanArtifact.Kind != goalplan.ArtifactPlanSpec || plan.PlanArtifact.SpecID != planSpecID {
 		return state.Project{}, goalplan.ErrAgentOutput
 	}
 	return outcome, nil
