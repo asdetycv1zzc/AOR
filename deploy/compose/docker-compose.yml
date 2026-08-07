@@ -223,6 +223,10 @@ services:
         if [ "$$tenant_registration_grant_installed" != "t" ]; then
           psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000043_tenant_registration_grant.up.sql
         fi
+        planning_recovery_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT to_regprocedure('public.aor_claim_planning_recoveries(integer)') IS NOT NULL")"
+        if [ "$$planning_recovery_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000044_planning_recovery.up.sql
+        fi
         unset AOR_APP_PASSWORD
     secrets: [postgres_password, postgres_app_password]
     volumes:
@@ -269,6 +273,7 @@ services:
       - ../../migrations/postgres/000041_scheduler_trace_context.up.sql:/migrations/000041_scheduler_trace_context.up.sql:ro
       - ../../migrations/postgres/000042_service_capability_leases.up.sql:/migrations/000042_service_capability_leases.up.sql:ro
       - ../../migrations/postgres/000043_tenant_registration_grant.up.sql:/migrations/000043_tenant_registration_grant.up.sql:ro
+      - ../../migrations/postgres/000044_planning_recovery.up.sql:/migrations/000044_planning_recovery.up.sql:ro
       - ./postgres-app-password.sql:/migrations/postgres-app-password.sql:ro
     read_only: true
     tmpfs: [/tmp]
