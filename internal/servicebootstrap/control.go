@@ -22,6 +22,7 @@ import (
 	"github.com/akimisaka/aor/internal/policy"
 	"github.com/akimisaka/aor/internal/runtimeclient"
 	"github.com/akimisaka/aor/internal/runtimeconfig"
+	"github.com/akimisaka/aor/internal/webui"
 	aorworkflow "github.com/akimisaka/aor/internal/workflow"
 )
 
@@ -232,6 +233,17 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	if err != nil {
 		return nil, err
 	}
+	domainHandler := http.Handler(domain)
+	if root := os.Getenv("AOR_WEB_ROOT"); root != "" {
+		domainHandler, err = webui.New(webui.Config{
+			Next: domainHandler, Root: root, Issuer: config.Identity.Issuer,
+			ClientID: config.Identity.Audience, TokenEndpoint: config.ModelGatewayClient.TokenEndpoint,
+		})
+		if err != nil {
+			return nil, runtimeconfig.ErrInvalidConfiguration
+		}
+	}
+	domainHandler = withRequestTrace(domainHandler)
 	bus, err := eventing.NewJetStreamEventBus(clients.JetStream(), eventing.JetStreamEventBusConfig{
 		Stream: config.NATS.Stream, Source: "urn:aor:service:orchestrator",
 	})
@@ -320,7 +332,7 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 		go func() { globalAuditDone <- globalAuditScheduler.Run(dispatchContext) }()
 	}
 	return &controlHandler{
-		Handler: withRequestTrace(domain), dispatcher: dispatcher, retention: retentionWorker, scheduler: scheduler,
+		Handler: domainHandler, dispatcher: dispatcher, retention: retentionWorker, scheduler: scheduler,
 		moduleAuditScheduler: moduleAuditScheduler, integrationScheduler: integrationScheduler,
 		globalAuditScheduler: globalAuditScheduler, planningRecovery: planningRecovery, cancel: cancel,
 		dispatchDone: dispatchDone, retentionDone: retentionDone, schedulerDone: schedulerDone, moduleAuditDone: moduleAuditDone,
