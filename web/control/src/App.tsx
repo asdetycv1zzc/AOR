@@ -354,10 +354,13 @@ function ControlConsole({ client, onSignOut }: { client: AorClient; onSignOut: (
     if (!silent) setError("");
     try {
       const current = await client.getProject(projectId);
+      const tasksRequest = current.plan
+        ? client.getTasks(projectId)
+        : Promise.resolve({ items: [] as ModuleTask[] });
       const [goals, plans, tasks, result] = await Promise.allSettled([
         client.getGoalSpecs(projectId),
         client.getPlans(projectId),
-        client.getTasks(projectId),
+        tasksRequest,
         client.getResult(projectId),
       ]);
       setBundle({
