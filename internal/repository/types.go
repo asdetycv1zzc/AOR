@@ -313,11 +313,11 @@ func submissionKey(tenantID, taskID, attemptSeriesID string, attempt int) string
 }
 
 func cloneSubmission(value Submission) Submission {
-	value.Manifest.ChangedFiles = append([]string(nil), value.Manifest.ChangedFiles...)
-	value.Manifest.DeletedFiles = append([]string(nil), value.Manifest.DeletedFiles...)
-	value.Manifest.CreatedFiles = append([]string(nil), value.Manifest.CreatedFiles...)
-	value.Manifest.ClaimedCriteria = append([]string(nil), value.Manifest.ClaimedCriteria...)
-	value.Manifest.LocalTestEvidenceRefs = append([]string(nil), value.Manifest.LocalTestEvidenceRefs...)
+	value.Manifest.ChangedFiles = append([]string{}, value.Manifest.ChangedFiles...)
+	value.Manifest.DeletedFiles = append([]string{}, value.Manifest.DeletedFiles...)
+	value.Manifest.CreatedFiles = append([]string{}, value.Manifest.CreatedFiles...)
+	value.Manifest.ClaimedCriteria = append([]string{}, value.Manifest.ClaimedCriteria...)
+	value.Manifest.LocalTestEvidenceRefs = append([]string{}, value.Manifest.LocalTestEvidenceRefs...)
 	if value.Manifest.Signature != nil {
 		signature := *value.Manifest.Signature
 		value.Manifest.Signature = &signature
