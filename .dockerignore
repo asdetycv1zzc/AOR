@@ -7,5 +7,7 @@ dist
 node_modules
 release-evidence
 sdk
+web/*/.playwright
+web/*/visual-artifacts/*.png
 *.out
 *.test
