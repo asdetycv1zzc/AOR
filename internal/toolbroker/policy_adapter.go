@@ -70,7 +70,7 @@ func (e OPAPolicyEvaluator) Evaluate(ctx context.Context, descriptor ToolDescrip
 		Project:         scope.Project,
 		Task:            scope.Task,
 		Action:          authz.ActionToolInvoke,
-		Resource:        AuthorizationResource(descriptor.MCPServerID, descriptor.ToolID, descriptor.Version),
+		Resource:        AuthorizationResource(descriptor.MCPServerID, descriptor.ToolID, descriptor.Version, request.ExecutionLeaseID),
 		ParameterDigest: digest,
 		Budget:          scope.Budget,
 		Lease:           &authz.LeaseReference{ID: request.Lease.ID, ExpiresAt: expiresAt, PolicyVersion: request.PolicyVersion, FencingToken: request.Lease.FencingToken},
