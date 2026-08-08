@@ -85,9 +85,11 @@ func sameDeclaration(left, right Declaration) bool {
 	left.Envelope.CreatedAt = time.Time{}
 	left.Envelope.ExpiresAt = time.Time{}
 	left.Envelope.TraceContext = nil
+	left.Envelope.Sender.LeaseID = ""
 	right.Envelope.CreatedAt = time.Time{}
 	right.Envelope.ExpiresAt = time.Time{}
 	right.Envelope.TraceContext = nil
+	right.Envelope.Sender.LeaseID = ""
 	return reflect.DeepEqual(left, right)
 }
 
