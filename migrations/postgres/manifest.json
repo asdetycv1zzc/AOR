@@ -316,6 +316,13 @@
       "file": "000045_project_scoped_module_spec_uniqueness.up.sql",
       "sha256": "sha256:0b6e71fed51e7ac1bd290045c74357578833d3648b80873779f22776bacd1279",
       "destructive": false
+    },
+    {
+      "version": 46,
+      "mode": "EXPAND",
+      "file": "000046_tenant_model_routes.up.sql",
+      "sha256": "sha256:7c70ae7cb234c7e517ae1fbf08ca5914dc464f2b3c6e855a58e3dcf362825751",
+      "destructive": false
     }
   ]
 }

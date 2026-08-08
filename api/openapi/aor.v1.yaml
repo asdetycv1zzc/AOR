@@ -10,6 +10,7 @@ security:
   - mutualTLS: []
 tags:
   - name: Projects
+  - name: Settings
   - name: Goals
   - name: Plans
   - name: Tasks
@@ -19,6 +20,40 @@ tags:
   - name: Budgets
   - name: Administration
 paths:
+  /v1/model-providers:
+    get:
+      tags: [Settings]
+      operationId: listModelProviders
+      responses:
+        '200':
+          description: Configured provider metadata without endpoints or credential references
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ModelProviderPage'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/settings/model-routes:
+    get:
+      tags: [Settings]
+      operationId: getModelRouteSettings
+      responses:
+        '200': {$ref: '#/components/responses/ModelRouteSettings'}
+        default: {$ref: '#/components/responses/Problem'}
+    put:
+      tags: [Settings]
+      operationId: putModelRouteSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [modelRoutes]
+              properties:
+                modelRoutes: {$ref: '#/components/schemas/ModelRoutes'}
+      responses:
+        '200': {$ref: '#/components/responses/ModelRouteSettings'}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/projects:
     post:
       tags: [Projects]
@@ -723,6 +758,86 @@ components:
     IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 256}}
     IfMatch: {name: If-Match, in: header, required: true, schema: {type: string, minLength: 3, maxLength: 256}}
   schemas:
+    ProjectModelRoute:
+      type: object
+      additionalProperties: false
+      required: [provider, model, maxOutputTokens, temperature, providerPolicy, cachePolicy, worstCaseCostMicros, maxAttempts]
+      properties:
+        provider: {type: string, minLength: 1, maxLength: 128}
+        model: {type: string, minLength: 1, maxLength: 256}
+        maxOutputTokens: {type: integer, minimum: 1, maximum: 1000000}
+        temperature: {type: number, minimum: 0, maximum: 2}
+        seed: {type: integer, format: int64}
+        providerPolicy: {type: string, minLength: 1, maxLength: 256}
+        cachePolicy: {type: string, minLength: 1, maxLength: 128}
+        worstCaseCostMicros: {type: integer, format: int64, minimum: 0}
+        maxAttempts: {type: integer, minimum: 1, maximum: 5}
+    ModelRoutes:
+      type: object
+      additionalProperties: false
+      required: [GOAL_PROPOSER, GOAL_CHALLENGER, PLAN_SUPERVISOR, MODULE_PLANNER, EXECUTOR, MODULE_AUDITOR, GLOBAL_AUDITOR, KNOWLEDGE_CURATOR]
+      properties:
+        GOAL_PROPOSER: {$ref: '#/components/schemas/ProjectModelRoute'}
+        GOAL_CHALLENGER: {$ref: '#/components/schemas/ProjectModelRoute'}
+        PLAN_SUPERVISOR: {$ref: '#/components/schemas/ProjectModelRoute'}
+        MODULE_PLANNER: {$ref: '#/components/schemas/ProjectModelRoute'}
+        EXECUTOR: {$ref: '#/components/schemas/ProjectModelRoute'}
+        MODULE_AUDITOR: {$ref: '#/components/schemas/ProjectModelRoute'}
+        GLOBAL_AUDITOR: {$ref: '#/components/schemas/ProjectModelRoute'}
+        KNOWLEDGE_CURATOR: {$ref: '#/components/schemas/ProjectModelRoute'}
+    ModelRouteSettings:
+      type: object
+      additionalProperties: false
+      required: [modelRoutes, version]
+      properties:
+        modelRoutes: {$ref: '#/components/schemas/ModelRoutes'}
+        version: {type: integer, format: int64, minimum: 0}
+    ModelProvider:
+      type: object
+      additionalProperties: false
+      required: [id, provider, models, inputMicrosPerToken, outputMicrosPerToken, supportsStreaming, supportsToolCalls, supportsJsonSchema, supportsSeed, supportsPromptCaching, maxInputTokens, maxOutputTokens, allowedDataClassifications, dataResidency, retentionPolicy, modalities]
+      properties:
+        id: {type: string, minLength: 1, maxLength: 128}
+        provider: {type: string, minLength: 1, maxLength: 128}
+        models:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: {type: string, minLength: 1, maxLength: 256}
+        reasoningEffort: {type: string, minLength: 1, maxLength: 128}
+        inputMicrosPerToken: {type: integer, format: int64, minimum: 0}
+        outputMicrosPerToken: {type: integer, format: int64, minimum: 0}
+        supportsStreaming: {type: boolean}
+        supportsToolCalls: {type: boolean}
+        supportsJsonSchema: {type: boolean}
+        supportsSeed: {type: boolean}
+        supportsPromptCaching: {type: boolean}
+        maxInputTokens: {type: integer, minimum: 1}
+        maxOutputTokens: {type: integer, minimum: 1}
+        allowedDataClassifications:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: {type: string, minLength: 1, maxLength: 64}
+        dataResidency:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: {type: string, minLength: 1, maxLength: 128}
+        retentionPolicy: {type: string, minLength: 1, maxLength: 256}
+        modalities:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: {type: string, minLength: 1, maxLength: 128}
+    ModelProviderPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/ModelProvider'}
     ProjectCreate:
       type: object
       additionalProperties: false
@@ -738,6 +853,7 @@ components:
           uniqueItems: true
           items: {type: string, minLength: 1, maxLength: 128}
         budget: {$ref: '#/components/schemas/ProjectBudgetSelection'}
+        modelRoutes: {$ref: '#/components/schemas/ModelRoutes'}
     ProjectBudgetSelection:
       type: object
       additionalProperties: false
@@ -765,6 +881,7 @@ components:
         state: {enum: [CREATED, GOAL_NEGOTIATING, GOAL_SUSPENDED, PLANNING, EXECUTING, INTEGRATING, GLOBAL_AUDIT, BLOCKED_USER_DECISION, PAUSED, COMPLETED, ABORTED, FAILED_SYSTEM, ARCHIVED]}
         version: {type: integer, format: int64, minimum: 1}
         goalAgentCount: {type: integer, minimum: 1, maximum: 2}
+        modelRoutes: {$ref: '#/components/schemas/ModelRoutes'}
         goal: {type: object, additionalProperties: true}
         plan: {type: object, additionalProperties: true}
         coreSummary: {$ref: '#/components/schemas/CoreSummary'}
@@ -1418,6 +1535,13 @@ components:
         items: {type: array}
         nextCursor: {type: string}
   responses:
+    ModelRouteSettings:
+      description: Effective tenant model routes and persisted settings version
+      headers:
+        ETag: {$ref: '#/components/headers/ETag'}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ModelRouteSettings'}
     ProjectCreated:
       description: Project created
       headers:

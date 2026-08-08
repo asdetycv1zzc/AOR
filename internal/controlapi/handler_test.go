@@ -257,6 +257,7 @@ func TestCreateProjectInitializesSelectedBudgetKnowledgePromptsAndGoalAgents(t *
 			ID: "user-1", Type: authn.PrincipalUser, Role: authn.RoleUser, TenantID: testTenantID,
 		}},
 		Authorizer: authorizer, Artifacts: catalog, Knowledge: knowledgeReader,
+		DefaultModelRoutes: testControlModelRoutes(), ModelProviders: testControlModelProviders(),
 		Clock: func() time.Time { return controlAPITestTime },
 	})
 	if err != nil {
@@ -404,6 +405,7 @@ func TestProjectExportPublishesStableContentAddressedManifest(t *testing.T) {
 		Store:         store,
 		Authenticator: fixedAuthenticator{principal: authn.Principal{ID: "user-1", Type: authn.PrincipalUser, Role: authn.RoleUser, TenantID: testTenantID}},
 		Authorizer:    authorizer, Artifacts: catalog, Knowledge: &testKnowledgeReader{}, Clock: func() time.Time { return controlAPITestTime },
+		DefaultModelRoutes: testControlModelRoutes(), ModelProviders: testControlModelProviders(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1087,11 +1089,13 @@ func newBudgetTestHandler(t *testing.T) (*Handler, *modelgateway.BudgetLedger, *
 		Authenticator: fixedAuthenticator{principal: authn.Principal{
 			ID: "user-1", Type: authn.PrincipalUser, Role: authn.RoleUser, TenantID: testTenantID,
 		}},
-		Authorizer: authorizer,
-		Budgets:    ledger,
-		Artifacts:  &testArtifactCatalog{},
-		Knowledge:  &testKnowledgeReader{},
-		Clock:      func() time.Time { return controlAPITestTime },
+		Authorizer:         authorizer,
+		Budgets:            ledger,
+		Artifacts:          &testArtifactCatalog{},
+		Knowledge:          &testKnowledgeReader{},
+		DefaultModelRoutes: testControlModelRoutes(),
+		ModelProviders:     testControlModelProviders(),
+		Clock:              func() time.Time { return controlAPITestTime },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1108,10 +1112,12 @@ func newTestHandler(t *testing.T) (*Handler, *eventing.MemoryStore, *recordingAu
 		Authenticator: fixedAuthenticator{principal: authn.Principal{
 			ID: "user-1", Type: authn.PrincipalUser, Role: authn.RoleUser, TenantID: testTenantID,
 		}},
-		Authorizer: authorizer,
-		Artifacts:  &testArtifactCatalog{},
-		Knowledge:  &testKnowledgeReader{},
-		Clock:      func() time.Time { return controlAPITestTime },
+		Authorizer:         authorizer,
+		Artifacts:          &testArtifactCatalog{},
+		Knowledge:          &testKnowledgeReader{},
+		DefaultModelRoutes: testControlModelRoutes(),
+		ModelProviders:     testControlModelProviders(),
+		Clock:              func() time.Time { return controlAPITestTime },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1132,6 +1138,23 @@ func createTestProject(t *testing.T, handler http.Handler) state.Project {
 		t.Fatal(err)
 	}
 	return project
+}
+
+func testControlModelRoutes() map[string]state.ProjectModelRoute {
+	route := state.ProjectModelRoute{Provider: "provider", Model: "model", MaxOutputTokens: 4096, ProviderPolicy: "default", CachePolicy: "NO_STORE", MaxAttempts: 3}
+	return map[string]state.ProjectModelRoute{
+		"GOAL_PROPOSER": route, "GOAL_CHALLENGER": route, "PLAN_SUPERVISOR": route, "MODULE_PLANNER": route,
+		"EXECUTOR": route, "MODULE_AUDITOR": route, "GLOBAL_AUDITOR": route, "KNOWLEDGE_CURATOR": route,
+	}
+}
+
+func testControlModelProviders() []ModelProvider {
+	return []ModelProvider{{
+		ID: "provider", Provider: "provider-family", Models: []string{"model"},
+		MaxInputTokens: 8192, MaxOutputTokens: 4096, SupportsSeed: true,
+		AllowedDataClassifications: []string{"PUBLIC", "INTERNAL"}, DataResidency: []string{"test"},
+		RetentionPolicy: "test", Modalities: []string{"text"},
+	}}
 }
 
 func seedGoalSpec(t *testing.T, handler *Handler, projectID string, expectedVersion int64, commandType state.ProjectCommandType, spec contracts.GoalSpec) {

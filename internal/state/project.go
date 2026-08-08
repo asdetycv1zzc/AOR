@@ -2,6 +2,7 @@ package state
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -10,27 +11,76 @@ import (
 )
 
 type Project struct {
-	TenantID                string                 `json:"tenantId"`
-	ID                      string                 `json:"id"`
-	Name                    string                 `json:"name"`
-	CreatedBy               string                 `json:"createdBy"`
-	DataClassification      string                 `json:"dataClassification"`
-	DeploymentTargets       []string               `json:"deploymentTargets,omitempty"`
-	BudgetCurrency          string                 `json:"budgetCurrency,omitempty"`
-	BudgetHardLimitMinor    int64                  `json:"budgetHardLimitMinor,omitempty"`
-	BudgetSoftLimitMinor    int64                  `json:"budgetSoftLimitMinor,omitempty"`
-	PromptBundleVersion     string                 `json:"promptBundleVersion,omitempty"`
-	RiskTolerance           string                 `json:"riskTolerance"`
-	State                   contracts.ProjectState `json:"state"`
-	Version                 int64                  `json:"version"`
-	GoalAgentCount          int                    `json:"goalAgentCount"`
-	Goal                    *GoalRecord            `json:"goal,omitempty"`
-	Plan                    *contracts.SpecRef     `json:"plan,omitempty"`
-	CoreSummary             *CoreSummary           `json:"coreSummary,omitempty"`
-	ReleaseApprovalRecordID string                 `json:"releaseApprovalRecordId,omitempty"`
-	PausedFromState         contracts.ProjectState `json:"pausedFromState,omitempty"`
-	Deletion                *ProjectDeletion       `json:"deletion,omitempty"`
-	LegalHolds              []ProjectLegalHold     `json:"legalHolds,omitempty"`
+	TenantID                string                       `json:"tenantId"`
+	ID                      string                       `json:"id"`
+	Name                    string                       `json:"name"`
+	CreatedBy               string                       `json:"createdBy"`
+	DataClassification      string                       `json:"dataClassification"`
+	DeploymentTargets       []string                     `json:"deploymentTargets,omitempty"`
+	BudgetCurrency          string                       `json:"budgetCurrency,omitempty"`
+	BudgetHardLimitMinor    int64                        `json:"budgetHardLimitMinor,omitempty"`
+	BudgetSoftLimitMinor    int64                        `json:"budgetSoftLimitMinor,omitempty"`
+	PromptBundleVersion     string                       `json:"promptBundleVersion,omitempty"`
+	RiskTolerance           string                       `json:"riskTolerance"`
+	State                   contracts.ProjectState       `json:"state"`
+	Version                 int64                        `json:"version"`
+	GoalAgentCount          int                          `json:"goalAgentCount"`
+	ModelRoutes             map[string]ProjectModelRoute `json:"modelRoutes,omitempty"`
+	Goal                    *GoalRecord                  `json:"goal,omitempty"`
+	Plan                    *contracts.SpecRef           `json:"plan,omitempty"`
+	CoreSummary             *CoreSummary                 `json:"coreSummary,omitempty"`
+	ReleaseApprovalRecordID string                       `json:"releaseApprovalRecordId,omitempty"`
+	PausedFromState         contracts.ProjectState       `json:"pausedFromState,omitempty"`
+	Deletion                *ProjectDeletion             `json:"deletion,omitempty"`
+	LegalHolds              []ProjectLegalHold           `json:"legalHolds,omitempty"`
+}
+
+type ProjectModelRoute struct {
+	Provider            string  `json:"provider"`
+	Model               string  `json:"model"`
+	MaxOutputTokens     int     `json:"maxOutputTokens"`
+	Temperature         float64 `json:"temperature"`
+	Seed                *int64  `json:"seed,omitempty"`
+	ProviderPolicy      string  `json:"providerPolicy"`
+	CachePolicy         string  `json:"cachePolicy"`
+	WorstCaseCostMicros int64   `json:"worstCaseCostMicros"`
+	MaxAttempts         int     `json:"maxAttempts"`
+}
+
+var requiredProjectModelRoles = [...]string{
+	"GOAL_PROPOSER",
+	"GOAL_CHALLENGER",
+	"PLAN_SUPERVISOR",
+	"MODULE_PLANNER",
+	"EXECUTOR",
+	"MODULE_AUDITOR",
+	"GLOBAL_AUDITOR",
+	"KNOWLEDGE_CURATOR",
+}
+
+func ValidateProjectModelRoutes(routes map[string]ProjectModelRoute) error {
+	if len(routes) != len(requiredProjectModelRoles) {
+		return fmt.Errorf("project model routes must define all roles")
+	}
+	for _, role := range requiredProjectModelRoles {
+		route, found := routes[role]
+		if !found || !validProjectModelRoute(route) {
+			return fmt.Errorf("invalid project model route for %s", role)
+		}
+	}
+	return nil
+}
+
+func validProjectModelRoute(route ProjectModelRoute) bool {
+	return validProjectModelIdentity(route.Provider, 128) && validProjectModelIdentity(route.Model, 256) &&
+		route.MaxOutputTokens >= 1 && route.MaxOutputTokens <= 1_000_000 &&
+		!math.IsNaN(route.Temperature) && !math.IsInf(route.Temperature, 0) && route.Temperature >= 0 && route.Temperature <= 2 &&
+		validProjectModelIdentity(route.ProviderPolicy, 256) && validProjectModelIdentity(route.CachePolicy, 128) &&
+		route.WorstCaseCostMicros >= 0 && route.MaxAttempts >= 1 && route.MaxAttempts <= 5
+}
+
+func validProjectModelIdentity(value string, maximum int) bool {
+	return value != "" && len(value) <= maximum && strings.TrimSpace(value) == value && !strings.ContainsAny(value, "\r\n\x00")
 }
 
 type CoreSummary struct {
@@ -221,6 +271,7 @@ type ProjectCommand struct {
 	BudgetSoftLimitMinor int64
 	PromptBundleVersion  string
 	RiskTolerance        string
+	ModelRoutes          map[string]ProjectModelRoute
 	Deletion             *ProjectDeletion
 	LegalHold            *ProjectLegalHold
 	LegalHoldID          string
@@ -246,7 +297,7 @@ func DecideProject(current Project, command ProjectCommand) (ProjectEvent, *aore
 	}
 	switch command.Type {
 	case ProjectCommandCreate:
-		if current.Version != 0 || current.ID != "" || command.TenantID == "" || command.ProjectID == "" || command.GoalAgentCount < 1 || command.GoalAgentCount > 2 {
+		if current.Version != 0 || current.ID != "" || command.TenantID == "" || command.ProjectID == "" || command.GoalAgentCount < 1 || command.GoalAgentCount > 2 || command.ModelRoutes != nil && ValidateProjectModelRoutes(command.ModelRoutes) != nil {
 			return ProjectEvent{}, invalidProject(command, "project creation guard")
 		}
 		name := command.Name
@@ -285,7 +336,7 @@ func DecideProject(current Project, command ProjectCommand) (ProjectEvent, *aore
 		} else {
 			eventType = "io.aor.project.created.v1"
 		}
-		next = Project{TenantID: command.TenantID, ID: command.ProjectID, Name: name, CreatedBy: command.ActorID, DataClassification: dataClassification, DeploymentTargets: deploymentTargets, BudgetCurrency: command.BudgetCurrency, BudgetHardLimitMinor: command.BudgetHardLimitMinor, BudgetSoftLimitMinor: command.BudgetSoftLimitMinor, PromptBundleVersion: command.PromptBundleVersion, RiskTolerance: riskTolerance, State: stateValue, GoalAgentCount: command.GoalAgentCount}
+		next = Project{TenantID: command.TenantID, ID: command.ProjectID, Name: name, CreatedBy: command.ActorID, DataClassification: dataClassification, DeploymentTargets: deploymentTargets, BudgetCurrency: command.BudgetCurrency, BudgetHardLimitMinor: command.BudgetHardLimitMinor, BudgetSoftLimitMinor: command.BudgetSoftLimitMinor, PromptBundleVersion: command.PromptBundleVersion, RiskTolerance: riskTolerance, State: stateValue, GoalAgentCount: command.GoalAgentCount, ModelRoutes: cloneProjectModelRoutes(command.ModelRoutes)}
 	case ProjectCommandStartGoalNegotiation:
 		if current.State != contracts.ProjectCreated {
 			return ProjectEvent{}, transitionProject(command, current.State)
@@ -552,6 +603,7 @@ func DecideProject(current Project, command ProjectCommand) (ProjectEvent, *aore
 		next.Goal = nil
 		next.Plan = nil
 		next.DeploymentTargets = nil
+		next.ModelRoutes = nil
 		next.PromptBundleVersion = ""
 		next.ReleaseApprovalRecordID = ""
 		eventType = "io.aor.project.deletion-completed.v1"
@@ -639,6 +691,7 @@ func ApplyProject(current Project, event ProjectEvent) (Project, error) {
 func cloneProject(project Project) Project {
 	next := project
 	next.DeploymentTargets = append([]string(nil), project.DeploymentTargets...)
+	next.ModelRoutes = cloneProjectModelRoutes(project.ModelRoutes)
 	if project.Goal != nil {
 		goal := *project.Goal
 		goal.UnresolvedItems = append([]string(nil), project.Goal.UnresolvedItems...)
@@ -663,6 +716,21 @@ func cloneProject(project Project) Project {
 		next.LegalHolds[index].ReleasedAt = cloneTimePointer(next.LegalHolds[index].ReleasedAt)
 	}
 	return next
+}
+
+func cloneProjectModelRoutes(routes map[string]ProjectModelRoute) map[string]ProjectModelRoute {
+	if routes == nil {
+		return nil
+	}
+	cloned := make(map[string]ProjectModelRoute, len(routes))
+	for role, route := range routes {
+		if route.Seed != nil {
+			seed := *route.Seed
+			route.Seed = &seed
+		}
+		cloned[role] = route
+	}
+	return cloned
 }
 
 func cloneCoreSummary(value *CoreSummary) *CoreSummary {

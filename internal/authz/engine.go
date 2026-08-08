@@ -335,8 +335,13 @@ func (e *Engine) validateLease(ctx context.Context, input PolicyInput, now time.
 
 func (e *Engine) defaultDecision(input PolicyInput, lease CapabilityLease, now time.Time) PolicyDecision {
 	switch input.Action {
-	case ActionGoalRead, ActionPlanRead, ActionTaskRead, ActionKnowledgeRead:
+	case ActionGoalRead, ActionPlanRead, ActionTaskRead, ActionKnowledgeRead, ActionSettingsRead:
 		return allowDecision(e.bundle.Version, "aor.read", "ROLE_ALLOWED", "PROJECT_SCOPE_VALID")
+	case ActionSettingsWrite:
+		if (input.Principal.Type == authn.PrincipalUser || input.Principal.Type == authn.PrincipalBreakGlassAdmin) && roleIn(input.Principal.Role, authn.RoleUser, authn.RoleBreakGlassAdmin) {
+			return allowDecision(e.bundle.Version, "aor.human.control", "HUMAN_CONTROL_ALLOWED", "PROJECT_SCOPE_VALID")
+		}
+		return denyDecision(e.bundle.Version, "HUMAN_CONTROL_REQUIRED")
 	case ActionRepoRead:
 		if roleIn(input.Principal.Role, authn.RoleExecutor, authn.RoleAuditor, authn.RoleModulePlanner, authn.RolePlanSupervisor, authn.RoleService) {
 			return allowDecision(e.bundle.Version, "aor.repo.read", "ROLE_ALLOWED", "PROJECT_SCOPE_VALID")

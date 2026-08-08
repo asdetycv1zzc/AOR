@@ -248,6 +248,7 @@ func newGoalPlanTestHandler(t *testing.T, negotiator GoalNegotiationService, pla
 			ID: "user-1", Type: authn.PrincipalUser, Role: authn.RoleUser, TenantID: testTenantID,
 		}},
 		Authorizer: authorizer, Artifacts: &testArtifactCatalog{}, Knowledge: &testKnowledgeReader{},
+		DefaultModelRoutes: testControlModelRoutes(), ModelProviders: testControlModelProviders(),
 		GoalPlan: GoalPlanServices{Negotiator: negotiator, Planner: planner},
 		Clock:    func() time.Time { return controlAPITestTime },
 	})

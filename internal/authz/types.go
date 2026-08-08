@@ -33,6 +33,8 @@ const (
 	ActionProjectCreate     = "project.create"
 	ActionProjectRead       = "project.read"
 	ActionProjectCommand    = "project.command"
+	ActionSettingsRead      = "settings.read"
+	ActionSettingsWrite     = "settings.write"
 	ActionGoalRead          = "goal.read"
 	ActionPlanRead          = "plan.read"
 	ActionTaskRead          = "task.read"
@@ -444,7 +446,7 @@ func IsSideEffect(action string) bool {
 
 func RequiresTask(action string) bool {
 	switch action {
-	case ActionProjectCreate, ActionProjectRead, ActionProjectCommand, ActionGoalRead, ActionPlanRead,
+	case ActionProjectCreate, ActionProjectRead, ActionProjectCommand, ActionSettingsRead, ActionSettingsWrite, ActionGoalRead, ActionPlanRead,
 		ActionKnowledgeRead, ActionKnowledgeWrite, ActionArtifactPublish, ActionPolicyTest, ActionModelCapabilities, ActionModelGenerate,
 		ActionModelStream, ActionModelCancel, ActionModelReconcile, ActionIntegrationMerge:
 		return false

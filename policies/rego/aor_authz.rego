@@ -23,6 +23,7 @@ side_effect_actions := {
 
 read_actions := {
 	"project.read",
+	"settings.read",
     "goal.read",
     "plan.read",
     "task.read",
@@ -32,6 +33,7 @@ read_actions := {
 human_control_actions := {
 	"project.create",
 	"project.command",
+	"settings.write",
 	"task.command",
 }
 

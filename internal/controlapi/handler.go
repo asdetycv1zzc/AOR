@@ -55,6 +55,8 @@ type Config struct {
 	Leases               LeaseAuthority
 	GoalPlan             GoalPlanServices
 	ClassroomCore        bool
+	DefaultModelRoutes   map[string]state.ProjectModelRoute
+	ModelProviders       []ModelProvider
 	Clock                func() time.Time
 }
 
@@ -103,16 +105,20 @@ type Handler struct {
 	eraser               ProjectEraser
 	leases               LeaseAuthority
 	goalPlan             GoalPlanServices
+	defaultModelRoutes   map[string]state.ProjectModelRoute
+	modelProviders       []ModelProvider
+	modelRouteSettings   modelRouteSettingsStore
 	autoBudget           bool
 	clock                func() time.Time
 }
 
 type projectCreate struct {
-	Name               string                 `json:"name"`
-	GoalAgentCount     int                    `json:"goalAgentCount"`
-	DataClassification string                 `json:"dataClassification"`
-	DeploymentTargets  []string               `json:"deploymentTargets,omitempty"`
-	Budget             projectBudgetSelection `json:"budget,omitempty"`
+	Name               string                             `json:"name"`
+	GoalAgentCount     int                                `json:"goalAgentCount"`
+	DataClassification string                             `json:"dataClassification"`
+	DeploymentTargets  []string                           `json:"deploymentTargets,omitempty"`
+	Budget             projectBudgetSelection             `json:"budget,omitempty"`
+	ModelRoutes        map[string]state.ProjectModelRoute `json:"modelRoutes,omitempty"`
 }
 
 type projectBudgetSelection struct {
@@ -253,6 +259,10 @@ func New(config Config) (*Handler, error) {
 	if config.GoalPlan.Negotiator == nil != (config.GoalPlan.Planner == nil) {
 		return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "goal plan configuration"})
 	}
+	providers, defaultRoutes, err := validatedModelConfiguration(config.ModelProviders, config.DefaultModelRoutes)
+	if err != nil {
+		return nil, err
+	}
 	if config.Clock == nil {
 		config.Clock = time.Now
 	}
@@ -309,6 +319,9 @@ func New(config Config) (*Handler, error) {
 		eraser:               config.Eraser,
 		leases:               config.Leases,
 		goalPlan:             config.GoalPlan,
+		defaultModelRoutes:   defaultRoutes,
+		modelProviders:       providers,
+		modelRouteSettings:   newModelRouteSettingsStore(config.Database),
 		autoBudget:           autoBudget,
 		clock:                config.Clock,
 	}
@@ -340,6 +353,25 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 			handler.admin(response, request, principal, "backup-verify")
 		default:
 			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+		}
+		return
+	}
+	if request.URL.Path == "/v1/model-providers" {
+		if request.Method == http.MethodGet {
+			handler.listModelProviders(response, request, principal)
+			return
+		}
+		writeMethodNotAllowed(response, request)
+		return
+	}
+	if request.URL.Path == "/v1/settings/model-routes" {
+		switch request.Method {
+		case http.MethodGet:
+			handler.getModelRouteSettings(response, request, principal)
+		case http.MethodPut:
+			handler.putModelRouteSettings(response, request, principal)
+		default:
+			writeMethodNotAllowedWith(response, request, "GET, PUT")
 		}
 		return
 	}
@@ -790,6 +822,11 @@ func (handler *Handler) createProject(response http.ResponseWriter, request *htt
 		writeError(response, request, err)
 		return
 	}
+	modelRoutes, err := handler.resolveProjectModelRoutes(request.Context(), principal.TenantID, body.ModelRoutes)
+	if err != nil {
+		writeError(response, request, err)
+		return
+	}
 	bundles := make([]agentruntime.PromptBundle, 0, body.GoalAgentCount)
 	promptVersion := ""
 	roles := []agentruntime.Role{agentruntime.RoleGoalProposer}
@@ -831,7 +868,7 @@ func (handler *Handler) createProject(response http.ResponseWriter, request *htt
 			DataClassification: body.DataClassification, DeploymentTargets: append([]string(nil), body.DeploymentTargets...),
 			BudgetCurrency: body.Budget.Currency, BudgetHardLimitMinor: body.Budget.HardLimitMinor,
 			BudgetSoftLimitMinor: body.Budget.SoftLimitMinor, PromptBundleVersion: promptVersion,
-			StartGoalNegotiation: true,
+			StartGoalNegotiation: true, ModelRoutes: modelRoutes,
 		},
 	})
 	if err != nil {
@@ -2902,7 +2939,11 @@ func writeJSON(response http.ResponseWriter, status int, value any) {
 }
 
 func writeMethodNotAllowed(response http.ResponseWriter, request *http.Request) {
-	response.Header().Set("Allow", "GET, POST")
+	writeMethodNotAllowedWith(response, request, "GET, POST")
+}
+
+func writeMethodNotAllowedWith(response http.ResponseWriter, request *http.Request, allowed string) {
+	response.Header().Set("Allow", allowed)
 	problem := aorerrors.New(aorerrors.CodeInvalidArgument, request.Header.Get("X-Request-ID"), map[string]any{"scope": "http method"}).Problem()
 	problem.Status = http.StatusMethodNotAllowed
 	problem.Instance = request.URL.Path
