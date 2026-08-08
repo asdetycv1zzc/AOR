@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+
+	"github.com/akimisaka/aor/internal/agentruntime"
+	"github.com/akimisaka/aor/pkg/contracts"
 )
 
 type PostgresCoordinationStore struct {
@@ -176,6 +179,79 @@ WHERE tenant_id = $1::uuid AND module_task_id = $2::uuid
 	return current, nil
 }
 
+func (store *PostgresCoordinationStore) Register(ctx context.Context, registration ModuleAuditAgentRegistration) error {
+	if store == nil || store.database == nil || ctx == nil || ctx.Err() != nil || !validModuleAuditAgentRegistration(registration) {
+		return ErrInvalidAuditRequest
+	}
+	tx, err := store.begin(ctx, registration.TenantID, false)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var projectState, taskState, seriesID, coordinationState string
+	var projectVersion, taskVersion int64
+	var attempt int
+	err = tx.QueryRowContext(ctx, `
+SELECT project.state, project.state_version, task.state, task.state_version,
+       task.active_attempt_series_id::text, task.attempt_count, coordination.state
+FROM projects AS project
+JOIN module_tasks AS task
+  ON task.tenant_id = project.tenant_id AND task.project_id = project.id
+JOIN module_audit_coordinations AS coordination
+  ON coordination.tenant_id = task.tenant_id
+ AND coordination.project_id = task.project_id
+ AND coordination.module_task_id = task.id
+ AND coordination.attempt_series_id = task.active_attempt_series_id
+ AND coordination.attempt = task.attempt_count
+WHERE project.tenant_id = $1::uuid AND project.id = $2::uuid
+  AND task.id = $3::uuid AND coordination.audit_run_id = $4::uuid
+FOR UPDATE OF task, coordination`, registration.TenantID, registration.ProjectID,
+		registration.TaskID, registration.AuditRunID).Scan(
+		&projectState, &projectVersion, &taskState, &taskVersion,
+		&seriesID, &attempt, &coordinationState,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrAuditRecoveryConflict
+	}
+	if err != nil {
+		return err
+	}
+	if projectState != string(contracts.ProjectExecuting) || projectVersion != registration.ProjectVersion ||
+		taskState != string(contracts.TaskLLMAudit) || taskVersion != registration.TaskVersion ||
+		seriesID != registration.AttemptSeriesID || attempt != registration.Attempt || coordinationState != coordinationLLM {
+		return ErrAuditRecoveryConflict
+	}
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO agent_instances
+  (id, tenant_id, project_id, role, provider, logical_model, actual_model_version,
+   prompt_bundle_version, state, created_at)
+VALUES ($1, $2::uuid, $3::uuid, 'MODULE_AUDITOR', $4, $5, $5, $6,
+        'DECLARED', transaction_timestamp())
+ON CONFLICT (id) DO NOTHING`, registration.AgentInstanceID, registration.TenantID,
+		registration.ProjectID, registration.Provider, registration.Model, registration.PromptBundleVersion)
+	if err != nil {
+		return err
+	}
+	var tenantID, projectID, role, provider, logicalModel, actualModel, promptVersion, state string
+	err = tx.QueryRowContext(ctx, `
+SELECT tenant_id::text, project_id::text, role, provider, logical_model,
+       actual_model_version, prompt_bundle_version, state
+FROM agent_instances
+WHERE tenant_id = $1::uuid AND id = $2`, registration.TenantID, registration.AgentInstanceID).Scan(
+		&tenantID, &projectID, &role, &provider, &logicalModel, &actualModel, &promptVersion, &state,
+	)
+	if err != nil {
+		return err
+	}
+	if tenantID != registration.TenantID || projectID != registration.ProjectID || role != string(agentruntime.RoleModuleAuditor) ||
+		provider != registration.Provider || logicalModel != registration.Model || actualModel != registration.Model ||
+		promptVersion != registration.PromptBundleVersion || state != "DECLARED" {
+		return ErrAuditRecoveryConflict
+	}
+	return tx.Commit()
+}
+
 func (store *PostgresCoordinationStore) begin(ctx context.Context, tenantID string, readOnly bool) (*sql.Tx, error) {
 	tx, err := store.database.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable, ReadOnly: readOnly})
 	if err != nil {
@@ -252,6 +328,22 @@ func validPostgresCoordination(value Coordination) bool {
 	}
 }
 
+func validModuleAuditAgentRegistration(registration ModuleAuditAgentRegistration) bool {
+	if !canonicalAuditUUID(registration.TenantID) || !canonicalAuditUUID(registration.ProjectID) ||
+		!canonicalAuditUUID(registration.TaskID) || !canonicalAuditUUID(registration.AttemptSeriesID) ||
+		!validAuditRunID(registration.AuditRunID) || registration.ProjectVersion < 1 || registration.TaskVersion < 1 ||
+		registration.Attempt < 1 || registration.Attempt > 3 ||
+		registration.AgentInstanceID != stableModuleAuditID("module-auditor-", registration.AuditRunID, registration.TaskID) {
+		return false
+	}
+	for _, value := range []string{registration.Provider, registration.Model, registration.PromptBundleVersion} {
+		if value == "" || strings.TrimSpace(value) != value || len(value) > 256 || strings.ContainsAny(value, "\r\n\x00") {
+			return false
+		}
+	}
+	return len(registration.Provider) <= 128
+}
+
 func validStoredRuntimeFacts(facts RuntimeFacts) bool {
 	if !digestPattern.MatchString(facts.PolicyDigest) || len(facts.SandboxAttestation) == 0 || len(facts.SandboxAttestation) > 4096 {
 		return false
@@ -272,3 +364,4 @@ func validCoordinationOutcome(value string) bool {
 }
 
 var _ CoordinationStore = (*PostgresCoordinationStore)(nil)
+var _ ModuleAuditAgentRegistry = (*PostgresCoordinationStore)(nil)

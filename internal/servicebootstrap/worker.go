@@ -663,7 +663,7 @@ func configuredModuleAudit(config runtimeconfig.Config, clients *runtimeclient.C
 		CachePolicy: routeConfig.CachePolicy, WorstCaseCostMicros: routeConfig.WorstCaseCostMicros, MaxAttempts: routeConfig.MaxAttempts,
 	}
 	auditors, err := audit.NewRuntimeAuditorFactory(audit.RuntimeAuditorFactoryConfig{
-		Runtime: services.agentRuntime, References: references, Leases: services.leaseService,
+		Runtime: services.agentRuntime, References: references, Agents: checkpoints, Leases: services.leaseService,
 		Routes: route, Tools: tools, LeaseTTL: 5 * time.Minute, MaxToolRounds: config.Execution.MaxToolRounds, Clock: time.Now,
 	})
 	if err != nil {

@@ -65,9 +65,29 @@ type ModuleAuditLeaseIssuer interface {
 	Issue(context.Context, authn.Principal, leaseauthority.GrantRequest) (authz.CapabilityLease, error)
 }
 
+type ModuleAuditAgentRegistration struct {
+	TenantID            string
+	ProjectID           string
+	ProjectVersion      int64
+	TaskID              string
+	TaskVersion         int64
+	AttemptSeriesID     string
+	Attempt             int
+	AuditRunID          string
+	AgentInstanceID     string
+	Provider            string
+	Model               string
+	PromptBundleVersion string
+}
+
+type ModuleAuditAgentRegistry interface {
+	Register(context.Context, ModuleAuditAgentRegistration) error
+}
+
 type RuntimeAuditorFactoryConfig struct {
 	Runtime       ModuleAuditRuntime
 	References    ModuleAuditReferenceSource
+	Agents        ModuleAuditAgentRegistry
 	Leases        ModuleAuditLeaseIssuer
 	Routes        goalplan.ModelRoute
 	Tools         []modelgateway.ToolDefinition
@@ -79,6 +99,7 @@ type RuntimeAuditorFactoryConfig struct {
 type RuntimeAuditorFactory struct {
 	runtime    ModuleAuditRuntime
 	references ModuleAuditReferenceSource
+	agents     ModuleAuditAgentRegistry
 	leases     ModuleAuditLeaseIssuer
 	route      goalplan.ModelRoute
 	tools      []modelgateway.ToolDefinition
@@ -88,7 +109,7 @@ type RuntimeAuditorFactory struct {
 }
 
 func NewRuntimeAuditorFactory(config RuntimeAuditorFactoryConfig) (*RuntimeAuditorFactory, error) {
-	if config.Runtime == nil || config.References == nil || config.Leases == nil || !validModuleAuditRoute(config.Routes) {
+	if config.Runtime == nil || config.References == nil || config.Agents == nil || config.Leases == nil || !validModuleAuditRoute(config.Routes) {
 		return nil, ErrRuntimeAuditorUnavailable
 	}
 	if config.Clock == nil {
@@ -110,11 +131,11 @@ func NewRuntimeAuditorFactory(config RuntimeAuditorFactoryConfig) (*RuntimeAudit
 	if err != nil {
 		return nil, err
 	}
-	return &RuntimeAuditorFactory{runtime: config.Runtime, references: config.References, leases: config.Leases, route: cloneModelRoute(config.Routes), tools: tools, leaseTTL: config.LeaseTTL, maxRounds: config.MaxToolRounds, clock: config.Clock}, nil
+	return &RuntimeAuditorFactory{runtime: config.Runtime, references: config.References, agents: config.Agents, leases: config.Leases, route: cloneModelRoute(config.Routes), tools: tools, leaseTTL: config.LeaseTTL, maxRounds: config.MaxToolRounds, clock: config.Clock}, nil
 }
 
 func (factory *RuntimeAuditorFactory) New(ctx context.Context) (Auditor, error) {
-	if factory == nil || factory.runtime == nil || factory.references == nil || factory.leases == nil || ctx == nil || ctx.Err() != nil {
+	if factory == nil || factory.runtime == nil || factory.references == nil || factory.agents == nil || factory.leases == nil || ctx == nil || ctx.Err() != nil {
 		return nil, ErrRuntimeAuditorUnavailable
 	}
 	return &runtimeAuditor{factory: factory}, nil
@@ -207,6 +228,14 @@ func (auditor *runtimeAuditor) prepare(ctx context.Context, input BlindAuditInpu
 		return preparedModuleAudit{}, err
 	}
 	agentID := stableModuleAuditID("module-auditor-", input.AuditRunID, input.TaskID)
+	if err := auditor.factory.agents.Register(ctx, ModuleAuditAgentRegistration{
+		TenantID: refs.TenantID, ProjectID: input.ProjectID, ProjectVersion: refs.ProjectVersion,
+		TaskID: input.TaskID, TaskVersion: refs.TaskVersion, AttemptSeriesID: input.AttemptSeriesID,
+		Attempt: input.Attempt, AuditRunID: input.AuditRunID, AgentInstanceID: agentID,
+		Provider: auditor.factory.route.Provider, Model: auditor.factory.route.Model, PromptBundleVersion: bundle.Version,
+	}); err != nil {
+		return preparedModuleAudit{}, err
+	}
 	principal := authn.Principal{ID: agentID, Type: authn.PrincipalAgentInstance, Role: string(agentruntime.RoleModuleAuditor), TenantID: refs.TenantID, ProjectID: input.ProjectID}
 	leaseContext, err := authn.ContextWithPrincipal(ctx, principal)
 	if err != nil {
