@@ -219,7 +219,11 @@ func (auditor *runtimeAuditor) prepare(ctx context.Context, input BlindAuditInpu
 	if err := agentruntime.ValidateContextManifest(manifest); err != nil {
 		return preparedModuleAudit{}, err
 	}
-	responseDigest, err := canonicaljson.Digest(moduleAuditDecisionSchema)
+	responseSchema, err := moduleAuditDecisionSchemaForCriteria(input.RequiredCriteria)
+	if err != nil {
+		return preparedModuleAudit{}, err
+	}
+	responseDigest, err := canonicaljson.Digest(responseSchema)
 	if err != nil {
 		return preparedModuleAudit{}, err
 	}
@@ -267,7 +271,7 @@ func (auditor *runtimeAuditor) prepare(ctx context.Context, input BlindAuditInpu
 		return preparedModuleAudit{}, ErrRuntimeAuditorUnavailable
 	}
 	requiredCriteria := append([]string(nil), input.RequiredCriteria...)
-	declaration := agentruntime.Declaration{RunID: input.AuditRunID, Envelope: envelope, TenantID: refs.TenantID, ProjectID: input.ProjectID, TaskID: input.TaskID, AgentInstanceID: agentID, Role: agentruntime.RoleModuleAuditor, PromptBundle: bundle, ContextManifest: manifest, ResponseSchemaRef: ModuleAuditDecisionSchemaReference, ResponseSchema: ModuleAuditDecisionSchema(), ResponseSemanticValidator: func(content json.RawMessage) error {
+	declaration := agentruntime.Declaration{RunID: input.AuditRunID, Envelope: envelope, TenantID: refs.TenantID, ProjectID: input.ProjectID, TaskID: input.TaskID, AgentInstanceID: agentID, Role: agentruntime.RoleModuleAuditor, PromptBundle: bundle, ContextManifest: manifest, ResponseSchemaRef: ModuleAuditDecisionSchemaReference, ResponseSchema: responseSchema, ResponseSemanticValidator: func(content json.RawMessage) error {
 		_, err := decodeModuleAuditResponse(content, requiredCriteria)
 		return err
 	}, Tools: cloneModelTools(auditor.factory.tools), ToolSchemaDigest: agentruntime.DigestToolDefinitions(auditor.factory.tools), PolicyVersion: lease.PolicyVersion, PolicyDigest: lease.PolicyVersion, DataClassification: refs.DataClassification}
@@ -409,10 +413,12 @@ func decodeModuleAuditResponse(encoded []byte, requiredCriteria []string) (modul
 		!criteriaMatch(requiredCriteria, response.CriteriaResults) {
 		return moduleAuditResponse{}, ErrRuntimeAuditorOutput
 	}
-	for _, finding := range response.Findings {
-		if finding.Validate() != nil {
+	for index, finding := range response.Findings {
+		canonical, err := contracts.CanonicalAuditFinding(finding)
+		if err != nil {
 			return moduleAuditResponse{}, ErrRuntimeAuditorOutput
 		}
+		response.Findings[index] = canonical
 	}
 	for _, criterion := range response.CriteriaResults {
 		if criterion.Validate() != nil {

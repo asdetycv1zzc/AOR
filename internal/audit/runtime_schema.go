@@ -30,3 +30,32 @@ var moduleAuditDecisionSchema = json.RawMessage(`{
 func ModuleAuditDecisionSchema() json.RawMessage {
 	return append(json.RawMessage(nil), moduleAuditDecisionSchema...)
 }
+
+func moduleAuditDecisionSchemaForCriteria(criteria []string) (json.RawMessage, error) {
+	var schema map[string]any
+	if json.Unmarshal(moduleAuditDecisionSchema, &schema) != nil {
+		return nil, ErrRuntimeAuditorOutput
+	}
+	definitions, ok := schema["$defs"].(map[string]any)
+	if !ok {
+		return nil, ErrRuntimeAuditorOutput
+	}
+	criterion, ok := definitions["criterion"].(map[string]any)
+	if !ok {
+		return nil, ErrRuntimeAuditorOutput
+	}
+	properties, ok := criterion["properties"].(map[string]any)
+	if !ok {
+		return nil, ErrRuntimeAuditorOutput
+	}
+	criterionID, ok := properties["criterionId"].(map[string]any)
+	if !ok {
+		return nil, ErrRuntimeAuditorOutput
+	}
+	criterionID["enum"] = append([]string(nil), criteria...)
+	encoded, err := json.Marshal(schema)
+	if err != nil {
+		return nil, err
+	}
+	return encoded, nil
+}
