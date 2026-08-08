@@ -52,7 +52,7 @@ INSERT INTO audit_runs
   (id, tenant_id, project_id, subject_type, subject_id, submission_id, phase,
    state, pipeline_version, execution_platform, isolation_level, started_at)
 VALUES
-  ($1::uuid, $2::uuid, $3::uuid, 'SUBMISSION', $4, $4::uuid, $5, $6, $7, $8, $9, $10)
+  ($1::uuid, $2::uuid, $3::uuid, 'SUBMISSION', $4::text, $4::uuid, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (id) DO NOTHING`, run.ID, run.TenantID, run.ProjectID, run.SubmissionID,
 		run.Phase, auditRunRunning, run.PipelineVersion, run.Platform, run.Isolation, run.StartedAt)
 	if err != nil {
