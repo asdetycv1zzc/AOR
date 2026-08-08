@@ -12,4 +12,6 @@
 .DS_Store
 node_modules/
 web/*/dist/
+web/*/.playwright/
+web/*/visual-artifacts/*.png
 __pycache__/

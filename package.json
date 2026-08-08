@@ -11,6 +11,7 @@
     "test": "go test ./...",
     "verify": "make verify",
     "web:build": "pnpm --filter @aor/control-ui build",
-    "web:dev": "pnpm --filter @aor/control-ui dev"
+    "web:dev": "pnpm --filter @aor/control-ui dev",
+    "web:visual": "pnpm --filter @aor/control-ui visual"
   }
 }
