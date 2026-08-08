@@ -1,6 +1,7 @@
 import { chromium } from "playwright";
 
 const baseURL = process.env.AOR_WEB_URL || "http://127.0.0.1:8090/ui/";
+const existingProjectID = process.env.AOR_EXISTING_PROJECT_ID || "";
 const artifactDirectory = "visual-artifacts";
 const browser = await chromium.launch({ headless: true });
 const context = await browser.newContext({ viewport: { width: 1440, height: 960 } });
@@ -52,12 +53,22 @@ try {
   await page.waitForURL(/\/ui\//, { timeout: 15_000 });
   await page.getByRole("heading", { name: "选择一个项目开始" }).waitFor({ timeout: 15_000 });
 
-  await page.getByRole("button", { name: "新建项目" }).first().click();
-  const projectName = `webui-smoke-${Date.now()}`;
-  await page.getByLabel("项目名称").fill(projectName);
-  await page.getByLabel("部署目标").fill("test");
-  await page.getByRole("button", { name: "创建项目" }).click();
-  await page.getByRole("heading", { name: projectName }).waitFor({ timeout: 20_000 });
+  let projectName;
+  if (existingProjectID) {
+    await page.getByRole("button", { name: "按 ID 打开" }).click();
+    await page.getByLabel("Project ID").fill(existingProjectID);
+    await page.getByRole("dialog").getByRole("button", { name: "打开" }).click();
+    const heading = page.locator(".workspace-header h1");
+    await heading.waitFor({ timeout: 20_000 });
+    projectName = await heading.innerText();
+  } else {
+    await page.getByRole("button", { name: "新建项目" }).first().click();
+    projectName = `webui-smoke-${Date.now()}`;
+    await page.getByLabel("项目名称").fill(projectName);
+    await page.getByLabel("部署目标").fill("test");
+    await page.getByRole("button", { name: "创建项目" }).click();
+    await page.getByRole("heading", { name: projectName }).waitFor({ timeout: 20_000 });
+  }
   await page.waitForTimeout(700);
   await assertNoPageOverflow("desktop project");
   await page.screenshot({ path: `${artifactDirectory}/project-desktop.png`, fullPage: true });
@@ -71,6 +82,17 @@ try {
     throw new Error([...errors, ...failedResponses.map((item) => `response: ${item}`)].join("\n"));
   }
   process.stdout.write(`visual-check ok: ${projectName}\n`);
+} catch (cause) {
+  await page.screenshot({ path: `${artifactDirectory}/failure.png`, fullPage: true });
+  const body = (await page.locator("body").innerText()).slice(0, 1200);
+  const diagnostics = [
+    cause instanceof Error ? cause.message : String(cause),
+    ...errors,
+    ...failedResponses.map((item) => `response: ${item}`),
+    `url: ${page.url()}`,
+    `body: ${body}`,
+  ];
+  throw new Error(diagnostics.join("\n"));
 } finally {
   await browser.close();
 }
