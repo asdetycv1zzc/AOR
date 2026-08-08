@@ -444,7 +444,9 @@ func (catalog *PostgresS3Catalog) Publish(ctx context.Context, publication Publi
 			// The catalog row is the commit point. If the relational transaction
 			// below fails, remove the newly-created object so retries cannot leave
 			// an unreferenced scoped blob behind.
-			_ = catalog.objects.RemoveObject(context.Background(), catalog.bucket, objectName, minio.RemoveObjectOptions{})
+			if createdFinal {
+				_ = catalog.objects.RemoveObject(context.Background(), catalog.bucket, objectName, minio.RemoveObjectOptions{})
+			}
 		}()
 	}
 	if err := catalog.verifyObject(ctx, objectName, digest, int64(len(publication.Data))); err != nil {
