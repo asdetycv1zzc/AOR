@@ -25,6 +25,7 @@ import {
   FilePlus,
   FlagCheckered,
   FolderOpen,
+  GearSix,
   ListChecks,
   LockKey,
   Plus,
@@ -59,9 +60,14 @@ import {
   loadSession,
   usableSession,
 } from "./auth";
+import { modelRoles } from "./types";
 import type {
   AuditRun,
   GoalSpec,
+  ModelProvider,
+  ModelRole,
+  ModelRouteSettings,
+  ModelRoutes,
   ModuleTask,
   PlanSpec,
   Project,
@@ -114,6 +120,22 @@ const terminalProjectStates = new Set<ProjectState>([
   "FAILED_SYSTEM",
   "ARCHIVED",
 ]);
+
+const modelRoleLabels: Record<ModelRole, string> = {
+  GOAL_PROPOSER: "目标提案",
+  GOAL_CHALLENGER: "目标审议",
+  PLAN_SUPERVISOR: "计划总控",
+  MODULE_PLANNER: "模块规划",
+  EXECUTOR: "代码执行",
+  MODULE_AUDITOR: "模块审计",
+  GLOBAL_AUDITOR: "全局审计",
+  KNOWLEDGE_CURATOR: "知识管理",
+};
+
+function cloneModelRoutes(routes?: ModelRoutes): ModelRoutes | undefined {
+  if (!routes) return undefined;
+  return Object.fromEntries(modelRoles.map((role) => [role, { ...routes[role] }])) as ModelRoutes;
+}
 
 function readRecentProjects(): RecentProject[] {
   try {
@@ -342,6 +364,10 @@ function ControlConsole({ client, onSignOut }: { client: AorClient; onSignOut: (
   const [newOpen, setNewOpen] = useState(false);
   const [openOpen, setOpenOpen] = useState(false);
   const [resultOpen, setResultOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsBusy, setSettingsBusy] = useState(false);
+  const [modelProviders, setModelProviders] = useState<ModelProvider[]>([]);
+  const [routeSettings, setRouteSettings] = useState<ModelRouteSettings>();
   const [selectedTask, setSelectedTask] = useState("");
   const [audits, setAudits] = useState<Record<string, AuditRun[]>>({});
   const [auditLoading, setAuditLoading] = useState("");
@@ -383,6 +409,18 @@ function ControlConsole({ client, onSignOut }: { client: AorClient; onSignOut: (
     const active = localStorage.getItem(activeProjectKey);
     if (active) void loadProject(active);
   }, [loadProject]);
+
+  useEffect(() => {
+    let active = true;
+    void Promise.all([client.getModelProviders(), client.getModelRouteSettings()])
+      .then(([providers, settings]) => {
+        if (!active) return;
+        setModelProviders(providers.items);
+        setRouteSettings(settings);
+      })
+      .catch((cause) => active && setError(errorMessage(cause)));
+    return () => { active = false; };
+  }, [client]);
 
   useEffect(() => {
     if (!project || terminalProjectStates.has(project.state)) return;
@@ -452,6 +490,21 @@ function ControlConsole({ client, onSignOut }: { client: AorClient; onSignOut: (
     }
   }, [client, loadProject]);
 
+  const saveModelRoutes = useCallback(async (modelRoutes: ModelRoutes) => {
+    setSettingsBusy(true);
+    setError("");
+    try {
+      const saved = await client.putModelRouteSettings(modelRoutes);
+      setRouteSettings(saved);
+      setSettingsOpen(false);
+      setNotice("默认模型组合已更新");
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setSettingsBusy(false);
+    }
+  }, [client]);
+
   return (
     <div className="console-shell" ref={mainRef}>
       <header className="topbar">
@@ -463,6 +516,7 @@ function ControlConsole({ client, onSignOut }: { client: AorClient; onSignOut: (
         </div>
         <div className="topbar-actions">
           <IconButton label="刷新" icon={<ArrowClockwise className={refreshing ? "spin" : ""} />} onClick={() => project && void loadProject(project.id)} disabled={!project || refreshing} />
+          <IconButton label="默认模型组合" icon={<GearSix />} onClick={() => setSettingsOpen(true)} disabled={!routeSettings || modelProviders.length === 0} />
           <Button appearance="subtle" icon={<FolderOpen />} onClick={() => setOpenOpen(true)}>打开</Button>
           <Button appearance="primary" icon={<Plus weight="bold" />} onClick={() => setNewOpen(true)}>新建项目</Button>
           <IconButton label="退出登录" icon={<SignOut />} onClick={onSignOut} />
@@ -503,8 +557,9 @@ function ControlConsole({ client, onSignOut }: { client: AorClient; onSignOut: (
         <EmptyWorkspace onCreate={() => setNewOpen(true)} onOpen={() => setOpenOpen(true)} recent={recent} onSelect={(id) => void loadProject(id)} />
       )}
 
-      <NewProjectDialog open={newOpen} busy={loading} onClose={() => setNewOpen(false)} onSubmit={createProject} />
+      <NewProjectDialog open={newOpen} busy={loading} providers={modelProviders} defaults={routeSettings} onClose={() => setNewOpen(false)} onSubmit={createProject} />
       <OpenProjectDialog open={openOpen} onClose={() => setOpenOpen(false)} onSubmit={(id) => { setOpenOpen(false); void loadProject(id); }} />
+      <ModelSettingsDialog open={settingsOpen} busy={settingsBusy} providers={modelProviders} settings={routeSettings} onClose={() => setSettingsOpen(false)} onSubmit={saveModelRoutes} />
       <ResultDrawer result={bundle.result} project={project} open={resultOpen} onClose={() => setResultOpen(false)} />
     </div>
   );
@@ -846,9 +901,11 @@ function AuditList({ runs }: { runs: AuditRun[] }) {
   );
 }
 
-function NewProjectDialog({ open, busy, onClose, onSubmit }: {
+function NewProjectDialog({ open, busy, providers, defaults, onClose, onSubmit }: {
   open: boolean;
   busy: boolean;
+  providers: ModelProvider[];
+  defaults?: ModelRouteSettings;
   onClose: () => void;
   onSubmit: (input: ProjectCreateInput) => Promise<void>;
 }) {
@@ -858,6 +915,10 @@ function NewProjectDialog({ open, busy, onClose, onSubmit }: {
   const [target, setTarget] = useState("test");
   const [hard, setHard] = useState("100000");
   const [soft, setSoft] = useState("80000");
+  const [routes, setRoutes] = useState<ModelRoutes>();
+  useEffect(() => {
+    if (open) setRoutes(cloneModelRoutes(defaults?.modelRoutes));
+  }, [defaults?.version, open]);
   const submit = (event: FormEvent) => {
     event.preventDefault();
     void onSubmit({
@@ -866,11 +927,12 @@ function NewProjectDialog({ open, busy, onClose, onSubmit }: {
       dataClassification: classification,
       deploymentTargets: target.split(",").map((item) => item.trim()).filter(Boolean),
       budget: { hardLimitMinor: Number(hard), softLimitMinor: Number(soft), currency: "USD" },
+      modelRoutes: cloneModelRoutes(routes),
     });
   };
   return (
     <Dialog open={open} onOpenChange={(_, data) => !data.open && onClose()}>
-      <DialogSurface className="form-dialog">
+      <DialogSurface className="form-dialog project-form-dialog">
         <form onSubmit={submit}>
           <DialogBody>
             <DialogTitle>新建项目</DialogTitle>
@@ -892,12 +954,94 @@ function NewProjectDialog({ open, busy, onClose, onSubmit }: {
                 <Field label="预算上限（美分）"><Input type="number" min={1} value={hard} onChange={(_, data) => setHard(data.value)} /></Field>
                 <Field label="软预警（美分）"><Input type="number" min={0} value={soft} onChange={(_, data) => setSoft(data.value)} /></Field>
               </div>
+              {routes && providers.length > 0 && <ModelRouteEditor routes={routes} providers={providers} onChange={setRoutes} />}
             </DialogContent>
             <DialogActions><Button appearance="secondary" onClick={onClose}>取消</Button><Button appearance="primary" type="submit" disabled={busy || !name.trim() || !target.trim() || Number(hard) <= 0 || Number(soft) > Number(hard)}>{busy ? "创建中" : "创建项目"}</Button></DialogActions>
           </DialogBody>
         </form>
       </DialogSurface>
     </Dialog>
+  );
+}
+
+function ModelSettingsDialog({ open, busy, providers, settings, onClose, onSubmit }: {
+  open: boolean;
+  busy: boolean;
+  providers: ModelProvider[];
+  settings?: ModelRouteSettings;
+  onClose: () => void;
+  onSubmit: (routes: ModelRoutes) => Promise<void>;
+}) {
+  const [routes, setRoutes] = useState<ModelRoutes>();
+  useEffect(() => {
+    if (open) setRoutes(cloneModelRoutes(settings?.modelRoutes));
+  }, [open, settings?.version]);
+  return (
+    <Dialog open={open} onOpenChange={(_, data) => !data.open && onClose()}>
+      <DialogSurface className="form-dialog model-settings-dialog">
+        <DialogBody>
+          <DialogTitle>默认模型组合</DialogTitle>
+          <DialogContent className="dialog-form">
+            {routes ? <ModelRouteEditor routes={routes} providers={providers} onChange={setRoutes} /> : <Spinner label="正在读取模型目录" />}
+          </DialogContent>
+          <DialogActions>
+            <Button appearance="secondary" onClick={onClose}>取消</Button>
+            <Button appearance="primary" disabled={busy || !routes} onClick={() => routes && void onSubmit(routes)}>{busy ? "保存中" : "保存"}</Button>
+          </DialogActions>
+        </DialogBody>
+      </DialogSurface>
+    </Dialog>
+  );
+}
+
+function ModelRouteEditor({ routes, providers, onChange }: {
+  routes: ModelRoutes;
+  providers: ModelProvider[];
+  onChange: (routes: ModelRoutes) => void;
+}) {
+  const providersForRole = (role: ModelRole) => providers.filter((provider) =>
+    provider.supportsJsonSchema &&
+    (!["EXECUTOR", "MODULE_AUDITOR", "GLOBAL_AUDITOR"].includes(role) || provider.supportsToolCalls),
+  );
+  const updateProvider = (role: ModelRole, providerId: string) => {
+    const provider = providers.find((item) => item.id === providerId);
+    if (!provider || provider.models.length === 0) return;
+    const current = routes[role];
+    onChange({
+      ...routes,
+      [role]: {
+        ...current,
+        provider: provider.id,
+        model: provider.models.includes(current.model) ? current.model : provider.models[0],
+        maxOutputTokens: Math.min(current.maxOutputTokens, provider.maxOutputTokens),
+        seed: provider.supportsSeed ? current.seed : undefined,
+      },
+    });
+  };
+  const updateModel = (role: ModelRole, model: string) => {
+    onChange({ ...routes, [role]: { ...routes[role], model } });
+  };
+  return (
+    <fieldset className="model-route-editor">
+      <legend>模型组合</legend>
+      <div className="model-route-head"><span>角色</span><span>供应商</span><span>模型</span></div>
+      {modelRoles.map((role) => {
+        const route = routes[role];
+        const eligibleProviders = providersForRole(role);
+        const provider = eligibleProviders.find((item) => item.id === route.provider) || eligibleProviders[0];
+        return (
+          <div className="model-route-row" key={role}>
+            <label htmlFor={`provider-${role}`}>{modelRoleLabels[role]}</label>
+            <select id={`provider-${role}`} className="native-select" value={route.provider} onChange={(event) => updateProvider(role, event.target.value)}>
+              {eligibleProviders.map((item) => <option value={item.id} key={item.id}>{item.id}</option>)}
+            </select>
+            <select aria-label={`${modelRoleLabels[role]}模型`} className="native-select" value={route.model} onChange={(event) => updateModel(role, event.target.value)}>
+              {(provider?.models || []).map((model) => <option value={model} key={model}>{model}</option>)}
+            </select>
+          </div>
+        );
+      })}
+    </fieldset>
   );
 }
 

@@ -13,6 +13,58 @@ export type ProjectState =
   | "FAILED_SYSTEM"
   | "ARCHIVED";
 
+export const modelRoles = [
+  "GOAL_PROPOSER",
+  "GOAL_CHALLENGER",
+  "PLAN_SUPERVISOR",
+  "MODULE_PLANNER",
+  "EXECUTOR",
+  "MODULE_AUDITOR",
+  "GLOBAL_AUDITOR",
+  "KNOWLEDGE_CURATOR",
+] as const;
+
+export type ModelRole = (typeof modelRoles)[number];
+
+export interface ProjectModelRoute {
+  provider: string;
+  model: string;
+  maxOutputTokens: number;
+  temperature: number;
+  seed?: number;
+  providerPolicy: string;
+  cachePolicy: string;
+  worstCaseCostMicros: number;
+  maxAttempts: number;
+}
+
+export type ModelRoutes = Record<ModelRole, ProjectModelRoute>;
+
+export interface ModelProvider {
+  id: string;
+  provider: string;
+  models: string[];
+  reasoningEffort?: string;
+  inputMicrosPerToken: number;
+  outputMicrosPerToken: number;
+  supportsStreaming: boolean;
+  supportsToolCalls: boolean;
+  supportsJsonSchema: boolean;
+  supportsSeed: boolean;
+  supportsPromptCaching: boolean;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  allowedDataClassifications: string[];
+  dataResidency: string[];
+  retentionPolicy: string;
+  modalities: string[];
+}
+
+export interface ModelRouteSettings {
+  modelRoutes: ModelRoutes;
+  version: number;
+}
+
 export interface SpecReference {
   version: number;
   sha256: string;
@@ -55,6 +107,7 @@ export interface Project {
   state: ProjectState;
   version: number;
   goalAgentCount: 1 | 2;
+  modelRoutes?: ModelRoutes;
   goal?: { id?: string; version?: number; sha256?: string };
   plan?: SpecReference;
   coreSummary?: CoreSummary;
@@ -208,4 +261,5 @@ export interface ProjectCreateInput {
     softLimitMinor: number;
     currency: "USD";
   };
+  modelRoutes?: ModelRoutes;
 }

@@ -1,6 +1,9 @@
 import type {
   AuditRun,
   GoalSpec,
+  ModelProvider,
+  ModelRouteSettings,
+  ModelRoutes,
   ModuleTask,
   Page,
   PlanSpec,
@@ -61,6 +64,21 @@ export class AorClient {
       method: "POST",
       headers: { "Idempotency-Key": crypto.randomUUID() },
       body: JSON.stringify(input),
+    });
+  }
+
+  getModelProviders(): Promise<Page<ModelProvider>> {
+    return this.request("/v1/model-providers");
+  }
+
+  getModelRouteSettings(): Promise<ModelRouteSettings> {
+    return this.request("/v1/settings/model-routes");
+  }
+
+  putModelRouteSettings(modelRoutes: ModelRoutes): Promise<ModelRouteSettings> {
+    return this.request("/v1/settings/model-routes", {
+      method: "PUT",
+      body: JSON.stringify({ modelRoutes }),
     });
   }
 
