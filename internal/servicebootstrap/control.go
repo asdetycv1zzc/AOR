@@ -203,6 +203,10 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	if err != nil {
 		return nil, err
 	}
+	modelProviders, defaultModelRoutes, err := configuredControlModelConfiguration(config)
+	if err != nil {
+		return nil, err
+	}
 	projectAgents, err := configuredGoalPlanServices(config, lifecycleStore, leaseService, authorizer, knowledgeService, knowledgeEvents)
 	if err != nil {
 		return nil, err
@@ -228,7 +232,8 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 		KnowledgeCurator: knowledgeCurator, KnowledgeCuratorURL: config.KnowledgeCuratorURL,
 		DecisionReportSigner: decisionReportSigner,
 		Eraser:               artifactProjectEraser{catalog: artifactCatalog}, Leases: leaseService,
-		GoalPlan: projectAgents.goalPlan, ClassroomCore: config.DeploymentProfile == "TEST", Clock: time.Now,
+		GoalPlan: projectAgents.goalPlan, ClassroomCore: config.DeploymentProfile == "TEST",
+		ModelProviders: modelProviders, DefaultModelRoutes: defaultModelRoutes, Clock: time.Now,
 	})
 	if err != nil {
 		return nil, err

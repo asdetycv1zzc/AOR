@@ -15,6 +15,18 @@ x-aor-common: &aor-common
     retries: 12
     start_period: 5s
 
+x-model-providers: &model-providers >-
+  [{"id":"openai-primary","provider":"openai","baseUrl":"${AOR_OPENAI_BASE_URL:-https://ai.1343263.xyz/v1}","apiKeyRef":"secret://model_provider_openai_key","models":["${AOR_OPENAI_MODEL:-gpt-5.6-sol}"],"reasoningEffort":"${AOR_OPENAI_REASONING_EFFORT:-low}","inputMicrosPerToken":1,"outputMicrosPerToken":4,"supportsStreaming":true,"supportsToolCalls":true,"supportsJsonSchema":true,"supportsSeed":false,"supportsPromptCaching":false,"maxInputTokens":32768,"maxOutputTokens":4096,"dataResidency":["provider-defined"],"retentionPolicy":"provider-defined","modalities":["text"]},{"id":"deepseek-audit","provider":"deepseek","baseUrl":"${AOR_DEEPSEEK_BASE_URL:-https://ai.1343263.xyz/v1}","apiKeyRef":"secret://model_provider_deepseek_key","models":["${AOR_DEEPSEEK_MODEL:-deepseek-v4-flash}"],"inputMicrosPerToken":1,"outputMicrosPerToken":4,"supportsStreaming":true,"supportsToolCalls":true,"supportsJsonSchema":true,"supportsSeed":false,"supportsPromptCaching":false,"maxInputTokens":32768,"maxOutputTokens":4096,"dataResidency":["provider-defined"],"retentionPolicy":"provider-defined","modalities":["text"]}]
+
+x-goal-plan-routes: &goal-plan-routes >-
+  {"GOAL_PROPOSER":{"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-5.6-sol}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":5},"GOAL_CHALLENGER":{"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-5.6-sol}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":5},"PLAN_SUPERVISOR":{"provider":"deepseek-audit","model":"${AOR_DEEPSEEK_MODEL:-deepseek-v4-flash}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":5},"MODULE_PLANNER":{"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-5.6-sol}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":5},"KNOWLEDGE_CURATOR":{"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-5.6-sol}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":5}}
+
+x-executor-route: &executor-route >-
+  {"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-5.6-sol}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":5}
+
+x-auditor-route: &auditor-route >-
+  {"provider":"deepseek-audit","model":"${AOR_DEEPSEEK_MODEL:-deepseek-v4-flash}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":5}
+
 services:
   postgres:
     image: postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
@@ -231,6 +243,10 @@ services:
         if [ "$$module_spec_project_uniqueness_installed" != "t" ]; then
           psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000045_project_scoped_module_spec_uniqueness.up.sql
         fi
+        tenant_model_routes_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT to_regclass('public.tenant_model_route_settings') IS NOT NULL")"
+        if [ "$$tenant_model_routes_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000046_tenant_model_routes.up.sql
+        fi
         unset AOR_APP_PASSWORD
     secrets: [postgres_password, postgres_app_password]
     volumes:
@@ -279,6 +295,7 @@ services:
       - ../../migrations/postgres/000043_tenant_registration_grant.up.sql:/migrations/000043_tenant_registration_grant.up.sql:ro
       - ../../migrations/postgres/000044_planning_recovery.up.sql:/migrations/000044_planning_recovery.up.sql:ro
       - ../../migrations/postgres/000045_project_scoped_module_spec_uniqueness.up.sql:/migrations/000045_project_scoped_module_spec_uniqueness.up.sql:ro
+      - ../../migrations/postgres/000046_tenant_model_routes.up.sql:/migrations/000046_tenant_model_routes.up.sql:ro
       - ./postgres-app-password.sql:/migrations/postgres-app-password.sql:ro
     read_only: true
     tmpfs: [/tmp]
@@ -535,8 +552,11 @@ services:
       AOR_MODEL_GATEWAY_OAUTH_CLIENT_SECRET_REF: secret://aor_server_oauth_client_secret
       AOR_MODEL_GATEWAY_OAUTH_SCOPES: audience:server:client_id:aor-control-plane
       AOR_MODEL_GATEWAY_OAUTH_AUDIENCE: aor-control-plane
-      AOR_GOAL_PLAN_ROUTES_JSON: >-
-        {"GOAL_PROPOSER":{"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-5.6-sol}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":5},"GOAL_CHALLENGER":{"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-5.6-sol}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":5},"PLAN_SUPERVISOR":{"provider":"deepseek-audit","model":"${AOR_DEEPSEEK_MODEL:-deepseek-v4-flash}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":5},"MODULE_PLANNER":{"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-5.6-sol}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":5},"KNOWLEDGE_CURATOR":{"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-5.6-sol}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":5}}
+      AOR_MODEL_PROVIDERS_JSON: *model-providers
+      AOR_GOAL_PLAN_ROUTES_JSON: *goal-plan-routes
+      AOR_EXECUTOR_ROUTE_JSON: *executor-route
+      AOR_MODULE_AUDITOR_ROUTE_JSON: *auditor-route
+      AOR_GLOBAL_AUDITOR_ROUTE_JSON: *auditor-route
     secrets: [postgres_app_password, lease_signing_key, minio_root_user, minio_root_password, aor_server_oauth_client_secret]
     volumes:
       - "${AOR_KNOWLEDGE_HOST_PATH:-aor-knowledge-data}:/var/lib/aor/knowledge:ro"
@@ -594,8 +614,7 @@ services:
       AOR_MODEL_REPLAY_KEY_REF: secret://model_replay_key
       AOR_MODEL_REPLAY_KEY_ID: compose-model-replay-v1
       AOR_MODEL_REPLAY_TTL_HOURS: "24"
-      AOR_MODEL_PROVIDERS_JSON: >-
-        [{"id":"openai-primary","provider":"openai","baseUrl":"${AOR_OPENAI_BASE_URL:-https://ai.1343263.xyz/v1}","apiKeyRef":"secret://model_provider_openai_key","models":["${AOR_OPENAI_MODEL:-gpt-5.6-sol}"],"reasoningEffort":"${AOR_OPENAI_REASONING_EFFORT:-low}","inputMicrosPerToken":1,"outputMicrosPerToken":4,"supportsStreaming":true,"supportsToolCalls":true,"supportsJsonSchema":true,"supportsSeed":false,"supportsPromptCaching":false,"maxInputTokens":32768,"maxOutputTokens":4096,"dataResidency":["provider-defined"],"retentionPolicy":"provider-defined","modalities":["text"]},{"id":"deepseek-audit","provider":"deepseek","baseUrl":"${AOR_DEEPSEEK_BASE_URL:-https://ai.1343263.xyz/v1}","apiKeyRef":"secret://model_provider_deepseek_key","models":["${AOR_DEEPSEEK_MODEL:-deepseek-v4-flash}"],"inputMicrosPerToken":1,"outputMicrosPerToken":4,"supportsStreaming":true,"supportsToolCalls":true,"supportsJsonSchema":true,"supportsSeed":false,"supportsPromptCaching":false,"maxInputTokens":32768,"maxOutputTokens":4096,"dataResidency":["provider-defined"],"retentionPolicy":"provider-defined","modalities":["text"]}]
+      AOR_MODEL_PROVIDERS_JSON: *model-providers
     secrets: [postgres_app_password, model_replay_key, model_provider_openai_key, model_provider_deepseek_key]
 
   aor-tool-broker:
@@ -705,10 +724,10 @@ services:
       AOR_MODEL_GATEWAY_OAUTH_CLIENT_SECRET_REF: secret://aor_server_oauth_client_secret
       AOR_MODEL_GATEWAY_OAUTH_SCOPES: audience:server:client_id:aor-control-plane
       AOR_MODEL_GATEWAY_OAUTH_AUDIENCE: aor-control-plane
-      AOR_EXECUTOR_ROUTE_JSON: >-
-        {"provider":"openai-primary","model":"${AOR_OPENAI_MODEL:-gpt-5.6-sol}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":5}
-      AOR_MODULE_AUDITOR_ROUTE_JSON: >-
-        {"provider":"deepseek-audit","model":"${AOR_DEEPSEEK_MODEL:-deepseek-v4-flash}","maxOutputTokens":4096,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":5}
+      AOR_GOAL_PLAN_ROUTES_JSON: *goal-plan-routes
+      AOR_EXECUTOR_ROUTE_JSON: *executor-route
+      AOR_MODULE_AUDITOR_ROUTE_JSON: *auditor-route
+      AOR_GLOBAL_AUDITOR_ROUTE_JSON: *auditor-route
       AOR_EXECUTOR_MAX_TOOL_ROUNDS: "8"
       AOR_MODULE_TEST_COMMAND_JSON: >-
         ["/usr/local/go/bin/go","test","-p=1","./..."]

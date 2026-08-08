@@ -902,7 +902,10 @@ func configuredWorkerExecution(config runtimeconfig.Config, clients *runtimeclie
 	}
 	var planCompletion *goalplan.PlanCompletionService
 	if config.DeploymentProfile == "TEST" {
-		route := config.Execution.Route
+		route, found := config.GoalPlan.Routes[string(agentruntime.RolePlanSupervisor)]
+		if !found {
+			route = config.Execution.Route
+		}
 		completionPreparer, prepareErr := goalplan.NewAuthoritativeRuntimePreparer(goalplan.RuntimePreparerConfig{
 			Artifacts: artifacts, Projects: tasks, Tasks: tasks, Leases: leaseService,
 			Routes: map[agentruntime.Role]goalplan.ModelRoute{
