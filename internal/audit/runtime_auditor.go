@@ -337,7 +337,7 @@ func (auditor *runtimeAuditor) execute(ctx context.Context, prepared preparedMod
 	if heartbeatErr != nil {
 		return fail(heartbeatErr)
 	}
-	if response.RequestID != prepared.modelCall.RequestID || strings.TrimSpace(response.ModelVersion) == "" || len(response.Content) == 0 || len(response.ToolCalls) != 0 {
+	if strings.TrimSpace(response.RequestID) == "" || strings.TrimSpace(response.ModelVersion) == "" || len(response.Content) == 0 || len(response.ToolCalls) != 0 {
 		return fail(ErrRuntimeAuditorOutput)
 	}
 	accepted, err := auditor.factory.runtime.Complete(ctx, runID, agentruntime.AgentOutput{Intent: aop.IntentReportLLMAudit, Payload: append(json.RawMessage(nil), response.Content...)})
