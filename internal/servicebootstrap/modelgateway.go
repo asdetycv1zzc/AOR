@@ -28,7 +28,7 @@ import (
 
 const (
 	modelGatewayReservationTTL  = 24 * time.Hour
-	modelProviderRequestTimeout = 5 * time.Minute
+	modelProviderRequestTimeout = 90 * time.Second
 	modelGatewayClientTimeout   = 10 * time.Minute
 )
 
