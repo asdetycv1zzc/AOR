@@ -433,7 +433,7 @@ func (s *Service) Submit(ctx context.Context, request SubmissionRequest) (submis
 	if err := s.publishWorkspaceCommit(ctx, workspace, head); err != nil {
 		return Submission{}, err
 	}
-	manifest := contracts.SubmissionManifest{SubmissionVersion: 1, ProjectID: workspace.ProjectID, ModuleTaskID: workspace.TaskID, AttemptSeriesID: workspace.AttemptSeriesID, Attempt: request.Attempt, ModuleSpecRef: workspace.ModuleSpecRef, BaseCommit: workspace.BaseCommit, HeadCommit: head, ChangedFiles: changed, DeletedFiles: deleted, CreatedFiles: created, ClaimedCriteria: append([]string{}, request.ClaimedCriteria...), LocalTestEvidenceRefs: append([]string{}, request.LocalTestEvidenceRefs...), AgentIdentity: workspace.AgentIdentity, CreatedAt: request.CreatedAt.UTC().Format(time.RFC3339)}
+	manifest := contracts.SubmissionManifest{SubmissionVersion: 1, ProjectID: workspace.ProjectID, ModuleTaskID: workspace.TaskID, AttemptSeriesID: workspace.AttemptSeriesID, Attempt: request.Attempt, ModuleSpecRef: workspace.ModuleSpecRef, BaseCommit: workspace.BaseCommit, HeadCommit: head, ChangedFiles: append([]string{}, changed...), DeletedFiles: append([]string{}, deleted...), CreatedFiles: append([]string{}, created...), ClaimedCriteria: append([]string{}, request.ClaimedCriteria...), LocalTestEvidenceRefs: append([]string{}, request.LocalTestEvidenceRefs...), AgentIdentity: workspace.AgentIdentity, CreatedAt: request.CreatedAt.UTC().Format(time.RFC3339)}
 	if err := fillManifestDigest(&manifest); err != nil {
 		return Submission{}, err
 	}
