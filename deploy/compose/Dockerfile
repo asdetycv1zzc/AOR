@@ -1,8 +1,19 @@
 # syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 
 ARG GO_IMAGE=golang:1.26.5-alpine3.23@sha256:622e56dbc11a8cfe87cafa2331e9a201877271cbff918af53d3be315f3da88cc
+ARG NODE_IMAGE=node:22.19.0-alpine3.22@sha256:d2166de198f26e17e5a442f537754dd616ab069c47cc57b889310a717e0abbf9
 ARG RUNTIME_IMAGE=gcr.io/distroless/static-debian12:nonroot@sha256:f5b485ea962d9bd1186b2f6b3a061191539b905b82ec395de78cbfae51f20e35
 ARG ALPINE_IMAGE=alpine:3.23.3@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659
+
+FROM ${NODE_IMAGE} AS web-build
+WORKDIR /src
+RUN corepack enable && corepack prepare pnpm@11.20.0 --activate
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY web/control/package.json ./web/control/package.json
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+    pnpm install --frozen-lockfile --filter @aor/control-ui...
+COPY web/control ./web/control
+RUN pnpm --filter @aor/control-ui build
 
 FROM ${GO_IMAGE} AS build
 WORKDIR /src
@@ -36,6 +47,9 @@ COPY --from=build --chown=65532:65532 /out/runtime/knowledge /var/lib/aor/knowle
 USER nonroot:nonroot
 ENTRYPOINT ["/usr/local/bin/aor"]
 CMD ["serve"]
+
+FROM runtime AS server-runtime
+COPY --from=web-build --chown=65532:65532 /src/web/control/dist /usr/local/share/aor-web
 
 FROM ${GO_IMAGE} AS worker-runtime
 COPY --from=build /out/aor /usr/local/bin/aor

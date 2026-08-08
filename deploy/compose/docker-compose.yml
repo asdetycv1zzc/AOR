@@ -474,6 +474,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/compose/Dockerfile
+      target: server-runtime
       network: host
       args:
         AOR_COMPONENT: aor-server
@@ -504,6 +505,7 @@ services:
       AOR_SERVER_MODE: CONTROL
       AOR_LISTEN_ADDR: 127.0.0.1:8090
       AOR_HEALTHCHECK_URL: http://127.0.0.1:8090/health/ready
+      AOR_WEB_ROOT: /usr/local/share/aor-web
       AOR_DATABASE_HOST: 127.0.0.1
       AOR_DATABASE_PORT: "5432"
       AOR_DATABASE_NAME: aor

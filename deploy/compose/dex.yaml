@@ -27,6 +27,8 @@ staticClients:
       - aor-server
     redirectURIs:
       - http://127.0.0.1:5555/callback
+      - http://127.0.0.1:8090/ui/callback
+      - http://127.0.0.1:5173/ui/callback
   - id: aor-server
     name: AOR server workload
     secret: {{ file.Read "/run/secrets/aor_server_oauth_client_secret" | strings.TrimSpace | strings.Quote }}
