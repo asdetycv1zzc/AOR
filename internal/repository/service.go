@@ -684,9 +684,6 @@ func (s *Service) commitWorkspace(ctx context.Context, workspace Workspace, leas
 	if _, err := git(ctx, workspace.Path, "add", "--all", "."); err != nil {
 		return nil, nil, nil, ErrGitUnavailable
 	}
-	if _, err := git(ctx, workspace.Path, "diff", "--cached", "--check"); err != nil {
-		return nil, nil, nil, ErrRepositoryDirty
-	}
 	if err := s.validateWorkspaceLease(ctx, workspace, lease, LeaseActionSubmit, workspace.Path, requestDigest); err != nil {
 		return nil, nil, nil, err
 	}
