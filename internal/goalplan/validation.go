@@ -139,7 +139,7 @@ func validatePlanOwnership(plan contracts.PlanSpec) error {
 				return ErrOwnershipConflict
 			}
 			for ownedPath := range seenPaths {
-				if pathContains(clean, ownedPath) || pathContains(ownedPath, clean) {
+				if forbiddenPathConflicts(clean, ownedPath) {
 					return ErrOwnershipConflict
 				}
 			}
@@ -194,7 +194,7 @@ func cleanOwnedPath(value string) (string, bool) {
 	}
 	normalized := strings.ReplaceAll(value, "\\", "/")
 	clean := path.Clean(normalized)
-	if clean == "." || strings.HasPrefix(clean, "/") || clean == ".." || strings.HasPrefix(clean, "../") || clean == ".git" || strings.HasPrefix(clean, ".git/") {
+	if clean == "." || strings.HasPrefix(clean, "/") || clean == ".." || strings.HasPrefix(clean, "../") || clean == ".git" || strings.HasPrefix(clean, ".git/") || strings.ContainsAny(clean, "*?[") {
 		return "", false
 	}
 	return clean, true
@@ -214,4 +214,30 @@ func cleanForbiddenPath(value string) (string, bool) {
 
 func pathContains(parent, child string) bool {
 	return child == parent || strings.HasPrefix(child, parent+"/")
+}
+
+func forbiddenPathConflicts(forbidden, owned string) bool {
+	if pathContains(owned, forbidden) || pathPatternMatches(forbidden, owned) {
+		return true
+	}
+	lowerForbidden := strings.ToLower(forbidden)
+	lowerOwned := strings.ToLower(owned)
+	return pathContains(lowerOwned, lowerForbidden) || pathPatternMatches(lowerForbidden, lowerOwned)
+}
+
+func pathPatternMatches(pattern, candidate string) bool {
+	if pattern == candidate {
+		return true
+	}
+	for _, suffix := range []string{"/...", "/**"} {
+		if strings.HasSuffix(pattern, suffix) {
+			root := strings.TrimSuffix(pattern, suffix)
+			return candidate == root || strings.HasPrefix(candidate, root+"/")
+		}
+	}
+	if strings.ContainsAny(pattern, "*?[") {
+		matched, _ := path.Match(pattern, candidate)
+		return matched
+	}
+	return strings.HasPrefix(candidate, pattern+"/")
 }

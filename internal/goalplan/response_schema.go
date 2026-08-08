@@ -164,7 +164,7 @@ const planDraftSchema = `{
         "executionPlatform": {"enum": ["LINUX", "WINDOWS"]},
         "sandboxLevel": {"enum": ["CONTAINER", "NONE"]},
         "ownedPaths": {"type": "array", "minItems": 1, "maxItems": 4096, "items": {"type": "string", "minLength": 1, "maxLength": 4096, "not": {"enum": [".", ".."]}, "description": "Concrete repository-relative file or directory path. Never use '.', '..', an absolute path, or traversal; list root-level files individually."}},
-        "forbiddenPaths": {"$ref": "#/$defs/strings"},
+        "forbiddenPaths": {"type": "array", "maxItems": 4096, "description": "Repository-relative paths or glob patterns that must not match, contain, or be contained by any owned path. Do not forbid file types that the module owns.", "items": {"type": "string", "minLength": 1, "maxLength": 4096}},
         "publicInterfaces": {"$ref": "#/$defs/strings"},
         "dependencies": {"type": "array", "maxItems": 1000, "items": {"type": "string", "minLength": 1, "maxLength": 128}},
         "acceptanceCriteria": {"type": "array", "minItems": 1, "maxItems": 1000, "items": {"type": "string", "minLength": 1, "maxLength": 4096}},
