@@ -372,12 +372,15 @@ func (client *repositoryMCPClient) CallTool(ctx context.Context, name string, ar
 			return mcp.ToolCallResult{}, repository.ErrLeaseStale
 		}
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
+			if errors.Is(err, os.ErrNotExist) || errors.Is(err, repository.ErrPathDenied) {
 				result["contentBase64"] = ""
 				result["sha256"] = repository.DigestBytes(nil)
 				result["size"] = 0
 				result["isError"] = true
-				result["error"] = "NOT_FOUND"
+				result["error"] = "PATH_DENIED"
+				if errors.Is(err, os.ErrNotExist) {
+					result["error"] = "NOT_FOUND"
+				}
 				return repositoryToolError(result), nil
 			}
 			return mcp.ToolCallResult{}, err
