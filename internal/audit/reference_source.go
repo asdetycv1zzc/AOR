@@ -52,6 +52,7 @@ func (source *StateModuleAuditReferenceSource) Resolve(ctx context.Context, inpu
 		GoalSpec:           contracts.SpecRef{Version: project.Goal.Version, SHA256: project.Goal.SHA256},
 		PlanSpec:           *project.Plan,
 		DataClassification: project.DataClassification,
+		ModelRoutes:        project.ModelRoutes,
 	}, nil
 }
 

@@ -100,6 +100,10 @@ func (preparer *ExecutorRuntimePreparer) Prepare(ctx context.Context, request Pr
 	project := request.Project
 	task := request.Task
 	module := request.ModuleSpec
+	route, resolved := goalplan.ResolveProjectModelRoute(project, agentruntime.RoleExecutor, preparer.route)
+	if !resolved {
+		return PreparedRun{}, ErrPreparationInvalid
+	}
 	goalRef := contracts.SpecRef{Version: project.Goal.Version, SHA256: project.Goal.SHA256}
 	planRef := *project.Plan
 	if goalRef.Validate() != nil || planRef.Validate() != nil || module.Validate() != nil || request.BaseCommit == "" || !validCommit(request.BaseCommit) {
@@ -126,7 +130,7 @@ func (preparer *ExecutorRuntimePreparer) Prepare(ctx context.Context, request Pr
 	if err != nil {
 		return PreparedRun{}, ErrPreparationInvalid
 	}
-	parameterDigest, err := executionParameterDigest(request, bundle.SHA256, manifest.SHA256, responseDigest, preparer.route, preparer.tools, knowledgeRefs)
+	parameterDigest, err := executionParameterDigest(request, bundle.SHA256, manifest.SHA256, responseDigest, route, preparer.tools, knowledgeRefs)
 	if err != nil {
 		return PreparedRun{}, ErrPreparationInvalid
 	}
@@ -139,7 +143,7 @@ func (preparer *ExecutorRuntimePreparer) Prepare(ctx context.Context, request Pr
 	now := preparer.clock().UTC()
 	lease, err := preparer.leases.IssueExecution(leaseContext, principal, leaseauthority.GrantRequest{
 		TenantID: request.Project.TenantID, ProjectID: request.Project.ID, TaskID: task.ID,
-		Action: authz.ActionModelGenerate, Resource: authz.Resource{Type: "model", ID: preparer.route.Provider + "/" + preparer.route.Model},
+		Action: authz.ActionModelGenerate, Resource: authz.Resource{Type: "model", ID: route.Provider + "/" + route.Model},
 		ParameterDigest: parameterDigest, BudgetAccountID: request.Project.ID,
 		IdempotencyKey: stableExecutionID("execution-lease_", request.ExecutionID, parameterDigest), TTL: preparer.leaseTTL,
 	}, task.FencingToken)
@@ -152,8 +156,8 @@ func (preparer *ExecutorRuntimePreparer) Prepare(ctx context.Context, request Pr
 	if err := preparer.assignments.BindRuntime(ctx, RuntimeBindingRequest{
 		ExecutionID: request.ExecutionID, TenantID: request.Project.TenantID, ProjectID: request.Project.ID,
 		TaskID: task.ID, AttemptSeriesID: task.AttemptSeriesID, AgentInstanceID: agentID,
-		FencingToken: task.FencingToken, LeaseID: lease.ID, Provider: preparer.route.Provider,
-		Model: preparer.route.Model, PromptVersion: bundle.Version,
+		FencingToken: task.FencingToken, LeaseID: lease.ID, Provider: route.Provider,
+		Model: route.Model, PromptVersion: bundle.Version,
 	}); err != nil {
 		return PreparedRun{}, err
 	}
@@ -176,7 +180,7 @@ func (preparer *ExecutorRuntimePreparer) Prepare(ctx context.Context, request Pr
 		CorrelationID:  stableExecutionID("corr_", request.Project.TenantID, request.Project.ID, request.ExecutionID),
 		ProjectID:      request.Project.ID, GoalSpec: &goalRef, PlanSpec: &planRef, ModuleSpec: &task.ModuleSpecRef,
 		TaskID: task.ID, AttemptSeriesID: task.AttemptSeriesID, Attempt: request.Attempt,
-		Sender: aop.Sender{AgentInstanceID: agentID, Role: string(agentruntime.RoleExecutor), Provider: preparer.route.Provider, Model: preparer.route.Model, LeaseID: lease.ID},
+		Sender: aop.Sender{AgentInstanceID: agentID, Role: string(agentruntime.RoleExecutor), Provider: route.Provider, Model: route.Model, LeaseID: lease.ID},
 		Scope:  aop.ScopeTask, Intent: aop.IntentSubmitImplementation, ExpectedAggregateVersion: task.Version,
 		ArtifactRefs:  []string{executionArtifactRef("goal", goalRef), executionArtifactRef("plan", planRef), executionArtifactRef("module", task.ModuleSpecRef)},
 		KnowledgeRefs: append([]string(nil), knowledgeRefs...), BudgetContext: &aop.BudgetContext{AccountID: request.Project.ID, ReservationID: reservationID},
@@ -198,10 +202,10 @@ func (preparer *ExecutorRuntimePreparer) Prepare(ctx context.Context, request Pr
 	}
 	return PreparedRun{
 		Declaration: declaration, Lease: executionAgentLease(lease),
-		ModelCall: agentruntime.ModelCall{RequestID: requestID, Provider: preparer.route.Provider, Model: preparer.route.Model, ReservationID: reservationID,
-			MaxOutputTokens: preparer.route.MaxOutputTokens, Temperature: preparer.route.Temperature, Seed: cloneExecutionSeed(preparer.route.Seed),
-			ProviderPolicy: preparer.route.ProviderPolicy, CachePolicy: preparer.route.CachePolicy,
-			WorstCaseCostMicros: preparer.route.WorstCaseCostMicros, MaxAttempts: preparer.route.MaxAttempts},
+		ModelCall: agentruntime.ModelCall{RequestID: requestID, Provider: route.Provider, Model: route.Model, ReservationID: reservationID,
+			MaxOutputTokens: route.MaxOutputTokens, Temperature: route.Temperature, Seed: cloneExecutionSeed(route.Seed),
+			ProviderPolicy: route.ProviderPolicy, CachePolicy: route.CachePolicy,
+			WorstCaseCostMicros: route.WorstCaseCostMicros, MaxAttempts: route.MaxAttempts},
 		MaxToolRounds: preparer.maxToolRounds,
 	}, nil
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/akimisaka/aor/internal/leaseauthority"
 	"github.com/akimisaka/aor/internal/modelgateway"
 	"github.com/akimisaka/aor/internal/observability"
+	"github.com/akimisaka/aor/internal/state"
 	"github.com/akimisaka/aor/pkg/aop"
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 	"github.com/akimisaka/aor/pkg/contracts"
@@ -43,6 +44,7 @@ type ModuleAuditReferences struct {
 	GoalSpec           contracts.SpecRef
 	PlanSpec           contracts.SpecRef
 	DataClassification string
+	ModelRoutes        map[string]state.ProjectModelRoute
 }
 
 type ModuleAuditReferenceSource interface {
@@ -206,6 +208,10 @@ type preparedModuleAudit struct {
 }
 
 func (auditor *runtimeAuditor) prepare(ctx context.Context, input BlindAuditInput, refs ModuleAuditReferences) (preparedModuleAudit, error) {
+	route, resolved := goalplan.ResolveProjectModelRoute(state.Project{ModelRoutes: refs.ModelRoutes}, agentruntime.RoleModuleAuditor, auditor.factory.route)
+	if !resolved {
+		return preparedModuleAudit{}, ErrRuntimeAuditorUnavailable
+	}
 	bundle, err := loadModuleAuditorPrompt()
 	if err != nil {
 		return preparedModuleAudit{}, ErrRuntimeAuditorUnavailable
@@ -227,7 +233,7 @@ func (auditor *runtimeAuditor) prepare(ctx context.Context, input BlindAuditInpu
 	if err != nil {
 		return preparedModuleAudit{}, err
 	}
-	parameterDigest, err := moduleAuditParameterDigest(input, refs, bundle, manifest, responseDigest, auditor.factory.route, auditor.factory.tools)
+	parameterDigest, err := moduleAuditParameterDigest(input, refs, bundle, manifest, responseDigest, route, auditor.factory.tools)
 	if err != nil {
 		return preparedModuleAudit{}, err
 	}
@@ -236,7 +242,7 @@ func (auditor *runtimeAuditor) prepare(ctx context.Context, input BlindAuditInpu
 		TenantID: refs.TenantID, ProjectID: input.ProjectID, ProjectVersion: refs.ProjectVersion,
 		TaskID: input.TaskID, TaskVersion: refs.TaskVersion, AttemptSeriesID: input.AttemptSeriesID,
 		Attempt: input.Attempt, AuditRunID: input.AuditRunID, AgentInstanceID: agentID,
-		Provider: auditor.factory.route.Provider, Model: auditor.factory.route.Model, PromptBundleVersion: bundle.Version,
+		Provider: route.Provider, Model: route.Model, PromptBundleVersion: bundle.Version,
 	}); err != nil {
 		return preparedModuleAudit{}, err
 	}
@@ -245,7 +251,7 @@ func (auditor *runtimeAuditor) prepare(ctx context.Context, input BlindAuditInpu
 	if err != nil {
 		return preparedModuleAudit{}, ErrRuntimeAuditorUnavailable
 	}
-	resource := authz.Resource{Type: "model", ID: auditor.factory.route.Provider + "/" + auditor.factory.route.Model}
+	resource := authz.Resource{Type: "model", ID: route.Provider + "/" + route.Model}
 	lease, err := auditor.factory.leases.Issue(leaseContext, principal, leaseauthority.GrantRequest{TenantID: refs.TenantID, ProjectID: input.ProjectID, TaskID: input.TaskID, Action: authz.ActionModelGenerate, Resource: resource, ParameterDigest: parameterDigest, BudgetAccountID: input.ProjectID, IdempotencyKey: stableModuleAuditID("module-audit-lease-", input.AuditRunID, parameterDigest), TTL: auditor.factory.leaseTTL})
 	if err != nil {
 		return preparedModuleAudit{}, err
@@ -266,7 +272,7 @@ func (auditor *runtimeAuditor) prepare(ctx context.Context, input BlindAuditInpu
 		return preparedModuleAudit{}, err
 	}
 	goalRef, planRef, moduleRef := refs.GoalSpec, refs.PlanSpec, input.ModuleSpecRef
-	envelope := aop.Envelope{AOPVersion: aop.Version, MessageID: stableModuleAuditID("module-audit-message-", input.AuditRunID), IdempotencyKey: stableModuleAuditID("module-audit-aop-", input.AuditRunID), CorrelationID: stableModuleAuditID("module-audit-correlation-", refs.TenantID, input.ProjectID, input.AuditRunID), ProjectID: input.ProjectID, GoalSpec: &goalRef, PlanSpec: &planRef, ModuleSpec: &moduleRef, TaskID: input.TaskID, AttemptSeriesID: input.AttemptSeriesID, Attempt: input.Attempt, Sender: aop.Sender{AgentInstanceID: agentID, Role: string(agentruntime.RoleModuleAuditor), Provider: auditor.factory.route.Provider, Model: auditor.factory.route.Model, LeaseID: lease.ID}, Scope: aop.ScopeTask, Intent: aop.IntentReportLLMAudit, ExpectedAggregateVersion: refs.TaskVersion, ArtifactRefs: []string{}, KnowledgeRefs: []string{}, BudgetContext: &aop.BudgetContext{AccountID: input.ProjectID, ReservationID: stableModuleAuditID("module-audit-reservation-", input.AuditRunID, parameterDigest)}, TraceContext: &aop.TraceContext{Traceparent: traceparent, Tracestate: trace.TraceState}, CreatedAt: lease.IssuedAt, ExpiresAt: lease.ExpiresAt}
+	envelope := aop.Envelope{AOPVersion: aop.Version, MessageID: stableModuleAuditID("module-audit-message-", input.AuditRunID), IdempotencyKey: stableModuleAuditID("module-audit-aop-", input.AuditRunID), CorrelationID: stableModuleAuditID("module-audit-correlation-", refs.TenantID, input.ProjectID, input.AuditRunID), ProjectID: input.ProjectID, GoalSpec: &goalRef, PlanSpec: &planRef, ModuleSpec: &moduleRef, TaskID: input.TaskID, AttemptSeriesID: input.AttemptSeriesID, Attempt: input.Attempt, Sender: aop.Sender{AgentInstanceID: agentID, Role: string(agentruntime.RoleModuleAuditor), Provider: route.Provider, Model: route.Model, LeaseID: lease.ID}, Scope: aop.ScopeTask, Intent: aop.IntentReportLLMAudit, ExpectedAggregateVersion: refs.TaskVersion, ArtifactRefs: []string{}, KnowledgeRefs: []string{}, BudgetContext: &aop.BudgetContext{AccountID: input.ProjectID, ReservationID: stableModuleAuditID("module-audit-reservation-", input.AuditRunID, parameterDigest)}, TraceContext: &aop.TraceContext{Traceparent: traceparent, Tracestate: trace.TraceState}, CreatedAt: lease.IssuedAt, ExpiresAt: lease.ExpiresAt}
 	if envelope.Validate(now) != nil {
 		return preparedModuleAudit{}, ErrRuntimeAuditorUnavailable
 	}
@@ -278,7 +284,7 @@ func (auditor *runtimeAuditor) prepare(ctx context.Context, input BlindAuditInpu
 	if _, err := agentruntime.AssemblePrompt(bundle, manifest, declaration.ResponseSchemaRef, declaration.ResponseSchema); err != nil {
 		return preparedModuleAudit{}, err
 	}
-	return preparedModuleAudit{declaration: declaration, lease: toAgentLease(lease), modelCall: agentruntime.ModelCall{RequestID: stableModuleAuditID("module-audit-request-", input.AuditRunID, parameterDigest), Provider: auditor.factory.route.Provider, Model: auditor.factory.route.Model, ReservationID: stableModuleAuditID("module-audit-reservation-", input.AuditRunID, parameterDigest), MaxOutputTokens: auditor.factory.route.MaxOutputTokens, Temperature: auditor.factory.route.Temperature, Seed: cloneSeed(auditor.factory.route.Seed), ProviderPolicy: auditor.factory.route.ProviderPolicy, CachePolicy: auditor.factory.route.CachePolicy, WorstCaseCostMicros: auditor.factory.route.WorstCaseCostMicros, MaxAttempts: auditor.factory.route.MaxAttempts}}, nil
+	return preparedModuleAudit{declaration: declaration, lease: toAgentLease(lease), modelCall: agentruntime.ModelCall{RequestID: stableModuleAuditID("module-audit-request-", input.AuditRunID, parameterDigest), Provider: route.Provider, Model: route.Model, ReservationID: stableModuleAuditID("module-audit-reservation-", input.AuditRunID, parameterDigest), MaxOutputTokens: route.MaxOutputTokens, Temperature: route.Temperature, Seed: cloneSeed(route.Seed), ProviderPolicy: route.ProviderPolicy, CachePolicy: route.CachePolicy, WorstCaseCostMicros: route.WorstCaseCostMicros, MaxAttempts: route.MaxAttempts}}, nil
 }
 
 func (auditor *runtimeAuditor) execute(ctx context.Context, prepared preparedModuleAudit) (agentruntime.AcceptedResult, error) {

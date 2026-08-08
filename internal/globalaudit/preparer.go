@@ -129,6 +129,10 @@ func (preparer *AuthoritativePreparer) Prepare(ctx context.Context, request Requ
 	if preparer == nil || ctx == nil || ctx.Err() != nil || !uuidV7(request.RunID) || !validProject(project, request) || project.PromptBundleVersion != prompts.BaselineVersion {
 		return PreparedRun{}, ErrInvalidRequest
 	}
+	route, resolved := goalplan.ResolveProjectModelRoute(project, agentruntime.RoleGlobalAuditor, preparer.route)
+	if !resolved {
+		return PreparedRun{}, ErrRuntimeUnavailable
+	}
 	input, err := preparer.inputs.Load(ctx, request, project)
 	if err != nil {
 		return PreparedRun{}, err
@@ -176,15 +180,15 @@ func (preparer *AuthoritativePreparer) Prepare(ctx context.Context, request Requ
 	if err != nil {
 		return PreparedRun{}, ErrInvalidRequest
 	}
-	parameterDigest, err := globalAuditParameterDigest(request, project, input, bundle.SHA256, manifest.SHA256, responseDigest, preparer.route, preparer.tools)
+	parameterDigest, err := globalAuditParameterDigest(request, project, input, bundle.SHA256, manifest.SHA256, responseDigest, route, preparer.tools)
 	if err != nil {
 		return PreparedRun{}, ErrInvalidRequest
 	}
 	agentID := request.ProjectID + ":" + string(agentruntime.RoleGlobalAuditor) + ":" + request.RunID
 	if err := preparer.agents.Register(ctx, AgentRegistration{
 		TenantID: request.TenantID, ProjectID: request.ProjectID, ProjectVersion: project.Version,
-		RunID: request.RunID, AgentInstanceID: agentID, Provider: preparer.route.Provider,
-		Model: preparer.route.Model, PromptBundleVersion: bundle.Version,
+		RunID: request.RunID, AgentInstanceID: agentID, Provider: route.Provider,
+		Model: route.Model, PromptBundleVersion: bundle.Version,
 	}); err != nil {
 		return PreparedRun{}, err
 	}
@@ -196,7 +200,7 @@ func (preparer *AuthoritativePreparer) Prepare(ctx context.Context, request Requ
 	if err != nil {
 		return PreparedRun{}, ErrInvalidRequest
 	}
-	resource := authz.Resource{Type: "model", ID: preparer.route.Provider + "/" + preparer.route.Model}
+	resource := authz.Resource{Type: "model", ID: route.Provider + "/" + route.Model}
 	lease, err := preparer.leases.Issue(leaseContext, principal, leaseauthority.GrantRequest{
 		TenantID: request.TenantID, ProjectID: request.ProjectID,
 		Action: authz.ActionModelGenerate, Resource: resource, ParameterDigest: parameterDigest,
@@ -230,7 +234,7 @@ func (preparer *AuthoritativePreparer) Prepare(ctx context.Context, request Requ
 		IdempotencyKey: stableGlobalAuditID("aop_", request.RunID, parameterDigest),
 		CorrelationID:  stableGlobalAuditID("corr_", request.TenantID, request.ProjectID, request.RunID),
 		ProjectID:      request.ProjectID, GoalSpec: &goalRef, PlanSpec: &planRef,
-		Sender: aop.Sender{AgentInstanceID: agentID, Role: string(agentruntime.RoleGlobalAuditor), Provider: preparer.route.Provider, Model: preparer.route.Model, LeaseID: lease.ID},
+		Sender: aop.Sender{AgentInstanceID: agentID, Role: string(agentruntime.RoleGlobalAuditor), Provider: route.Provider, Model: route.Model, LeaseID: lease.ID},
 		Scope:  aop.ScopeProject, Intent: aop.IntentReportGlobalAudit, ExpectedAggregateVersion: project.Version,
 		ArtifactRefs: artifactRefs, KnowledgeRefs: []string{},
 		BudgetContext: &aop.BudgetContext{AccountID: project.ID, ReservationID: reservationID},
@@ -254,10 +258,10 @@ func (preparer *AuthoritativePreparer) Prepare(ctx context.Context, request Requ
 	prepared = PreparedRun{
 		Declaration: declaration, Lease: globalAuditAgentLease(lease),
 		ModelCall: agentruntime.ModelCall{
-			RequestID: requestID, Provider: preparer.route.Provider, Model: preparer.route.Model, ReservationID: reservationID,
-			MaxOutputTokens: preparer.route.MaxOutputTokens, Temperature: preparer.route.Temperature, Seed: cloneGlobalAuditSeed(preparer.route.Seed),
-			ProviderPolicy: preparer.route.ProviderPolicy, CachePolicy: preparer.route.CachePolicy,
-			WorstCaseCostMicros: preparer.route.WorstCaseCostMicros, MaxAttempts: preparer.route.MaxAttempts,
+			RequestID: requestID, Provider: route.Provider, Model: route.Model, ReservationID: reservationID,
+			MaxOutputTokens: route.MaxOutputTokens, Temperature: route.Temperature, Seed: cloneGlobalAuditSeed(route.Seed),
+			ProviderPolicy: route.ProviderPolicy, CachePolicy: route.CachePolicy,
+			WorstCaseCostMicros: route.WorstCaseCostMicros, MaxAttempts: route.MaxAttempts,
 		},
 		MaxToolRounds: preparer.maxToolRounds, ReleaseCommit: input.ReleaseCommit,
 		RequiredCriteria: criteria, ExecutionPlatform: input.ExecutionPlatform,

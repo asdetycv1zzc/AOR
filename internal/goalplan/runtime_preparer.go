@@ -145,8 +145,12 @@ func (preparer *AuthoritativeRuntimePreparer) Prepare(ctx context.Context, reque
 	if err != nil {
 		return RuntimeInvocation{}, ErrInvalidRequest
 	}
-	route, found := preparer.routes[request.Role]
+	fallback, found := preparer.routes[request.Role]
 	if !found {
+		return RuntimeInvocation{}, ErrInvalidRequest
+	}
+	route, resolved := ResolveProjectModelRoute(project, request.Role, fallback)
+	if !resolved {
 		return RuntimeInvocation{}, ErrInvalidRequest
 	}
 	parameterDigest, err := runtimeParameterDigest(request, project.Version, stage.taskVersion, stage.specDigest, bundle.SHA256, manifest.SHA256, responseDigest, route)
