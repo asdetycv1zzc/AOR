@@ -11,4 +11,5 @@
 !.env.example
 .DS_Store
 node_modules/
+web/*/dist/
 __pycache__/

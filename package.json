@@ -2,12 +2,15 @@
   "name": "@aor/workspace",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@11.20.0",
   "engines": {
     "node": "22.19.0"
   },
   "scripts": {
     "build": "go build ./...",
     "test": "go test ./...",
-    "verify": "make verify"
+    "verify": "make verify",
+    "web:build": "pnpm --filter @aor/control-ui build",
+    "web:dev": "pnpm --filter @aor/control-ui dev"
   }
 }
