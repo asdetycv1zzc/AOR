@@ -345,13 +345,63 @@ func (a *Adapter) encodeRequest(request modelgateway.NormalizedRequest, stream b
 		value.Seed = request.Seed
 	}
 	if len(request.ResponseSchema) != 0 {
-		value.ResponseFormat = &chatResponseFormat{Type: "json_schema", JSONSchema: chatJSONSchema{Name: "aor_response", Schema: request.ResponseSchema, Strict: true}}
+		providerSchema, err := compatibleResponseSchema(request.ResponseSchema)
+		if err != nil {
+			return nil, err
+		}
+		value.ResponseFormat = &chatResponseFormat{Type: "json_schema", JSONSchema: chatJSONSchema{Name: "aor_response", Schema: providerSchema, Strict: true}}
 	}
 	encoded, err := json.Marshal(value)
 	if err != nil || int64(len(encoded)) > a.maxRequestBytes {
 		return nil, modelgateway.ErrInvalidRequest
 	}
 	return encoded, nil
+}
+
+// Compatible endpoints commonly implement the strict structured-output shape
+// but reject validation-only JSON Schema keywords. The gateway still validates
+// the response against the original schema and semantic validator.
+func compatibleResponseSchema(schema json.RawMessage) (json.RawMessage, error) {
+	var value map[string]any
+	if json.Unmarshal(schema, &value) != nil {
+		return nil, modelgateway.ErrInvalidRequest
+	}
+	stripUnsupportedSchemaKeywords(value)
+	encoded, err := json.Marshal(value)
+	if err != nil || len(encoded) == 0 || len(encoded) > modelgateway.MaximumResponseSchemaBytes {
+		return nil, modelgateway.ErrInvalidRequest
+	}
+	return encoded, nil
+}
+
+func stripUnsupportedSchemaKeywords(value any) {
+	switch current := value.(type) {
+	case map[string]any:
+		for key := range current {
+			if unsupportedSchemaKeyword(key) {
+				delete(current, key)
+				continue
+			}
+			stripUnsupportedSchemaKeywords(current[key])
+		}
+	case []any:
+		for _, item := range current {
+			stripUnsupportedSchemaKeywords(item)
+		}
+	}
+}
+
+func unsupportedSchemaKeyword(key string) bool {
+	switch key {
+	case "$schema", "$id", "minLength", "maxLength", "pattern", "format",
+		"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
+		"minItems", "maxItems", "uniqueItems", "contains", "minContains", "maxContains",
+		"minProperties", "maxProperties", "patternProperties", "propertyNames", "unevaluatedProperties",
+		"not", "if", "then", "else", "dependentRequired", "dependentSchemas":
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *Adapter) do(ctx context.Context, payload []byte) (*http.Response, context.CancelFunc, error) {
