@@ -371,7 +371,12 @@ func moduleAuditContextItems(input BlindAuditInput, refs ModuleAuditReferences) 
 	if err != nil {
 		return nil, err
 	}
-	checks, err := json.Marshal(input.DeterministicChecks)
+	stableChecks := append([]contracts.EvidenceCheck(nil), input.DeterministicChecks...)
+	for index := range stableChecks {
+		stableChecks[index].StartedAt = ""
+		stableChecks[index].CompletedAt = ""
+	}
+	checks, err := json.Marshal(stableChecks)
 	if err != nil {
 		return nil, err
 	}
