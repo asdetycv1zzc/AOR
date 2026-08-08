@@ -710,7 +710,13 @@ func moduleAuditToolDefinitions(descriptors []toolbroker.ToolDescriptor) ([]mode
 			return nil, ErrWorkerConfiguration
 		}
 		seen[descriptor.ToolID] = struct{}{}
-		tools = append(tools, modelgateway.ToolDefinition{Name: descriptor.ToolID, Version: descriptor.Version, Schema: append(json.RawMessage(nil), descriptor.InputSchema...)})
+		schema := append(json.RawMessage(nil), descriptor.InputSchema...)
+		description := ""
+		if descriptor.ToolID == repositoryReadTool {
+			schema = json.RawMessage(`{"type":"object","required":["commit","path"],"properties":{"commit":{"type":"string","pattern":"^[0-9a-f]{40}$"},"path":{"type":"string","minLength":1,"maxLength":4096}},"additionalProperties":false}`)
+			description = "Read one file from the submission base or head commit supplied in the audit context"
+		}
+		tools = append(tools, modelgateway.ToolDefinition{Name: descriptor.ToolID, Version: descriptor.Version, Description: description, Schema: schema})
 	}
 	if _, found := seen[repositoryReadTool]; !found {
 		return nil, ErrWorkerConfiguration

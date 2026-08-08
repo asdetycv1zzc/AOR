@@ -402,8 +402,14 @@ func globalAuditToolDefinitions(descriptors []toolbroker.ToolDescriptor) ([]mode
 	}
 	tools := make([]modelgateway.ToolDefinition, 0, len(byID))
 	for _, descriptor := range byID {
+		schema := append(json.RawMessage(nil), descriptor.InputSchema...)
+		description := ""
+		if descriptor.ToolID == requiredGlobalAuditRepositoryTool {
+			schema = json.RawMessage(`{"type":"object","required":["commit","path"],"properties":{"commit":{"type":"string","pattern":"^[0-9a-f]{40}$"},"path":{"type":"string","minLength":1,"maxLength":4096}},"additionalProperties":false}`)
+			description = "Read one file from the release commit supplied in the audit context"
+		}
 		tools = append(tools, modelgateway.ToolDefinition{
-			Name: descriptor.ToolID, Version: descriptor.Version, Schema: append(json.RawMessage(nil), descriptor.InputSchema...),
+			Name: descriptor.ToolID, Version: descriptor.Version, Description: description, Schema: schema,
 		})
 	}
 	sort.Slice(tools, func(left, right int) bool { return tools[left].Name < tools[right].Name })
