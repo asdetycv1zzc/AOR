@@ -335,7 +335,14 @@
       "version": 48,
       "mode": "EXPAND",
       "file": "000048_tenant_model_sampling.up.sql",
-      "sha256": "sha256:212a4872f00c1490d42c9a30d1a491c34b3d52b5a0a8f1fdf491aa33b3ddc8b7",
+      "sha256": "sha256:7fa05358305caad5e14810d1e1f0ced653e58dbb3584cf941634915031d524cc",
+      "destructive": false
+    },
+    {
+      "version": 49,
+      "mode": "EXPAND",
+      "file": "000049_model_sampling_max_effort.up.sql",
+      "sha256": "sha256:b6859909255832f1c16d7a9b9ad437cd11cc09b6847776b55d9acd1693586ad5",
       "destructive": false
     }
   ]
