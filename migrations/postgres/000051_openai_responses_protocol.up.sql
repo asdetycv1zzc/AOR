@@ -7,12 +7,6 @@ ALTER TABLE public.tenant_model_provider_settings
 
 ALTER TABLE public.tenant_model_provider_settings
   ADD CONSTRAINT tenant_model_provider_settings_protocol_check
-    CHECK (protocol IN ('openai-compatible', 'openai-responses', 'anthropic-messages')),
-  ADD CONSTRAINT tenant_model_provider_settings_provider_protocol_check
-    CHECK (
-      (provider = 'openai' AND protocol IN ('openai-compatible', 'openai-responses')) OR
-      (provider = 'claude' AND protocol IN ('openai-compatible', 'anthropic-messages')) OR
-      (provider IN ('deepseek', 'grok') AND protocol = 'openai-compatible')
-    );
+    CHECK (protocol IN ('openai-compatible', 'openai-responses', 'anthropic-messages'));
 
 COMMIT;

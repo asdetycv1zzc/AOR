@@ -356,7 +356,7 @@
       "version": 51,
       "mode": "EXPAND",
       "file": "000051_openai_responses_protocol.up.sql",
-      "sha256": "sha256:aea89fd406ee898d2a1db1483527a6c18618a5ce00efd8bc46c581bf3e77cb09",
+      "sha256": "sha256:2a0a9c93581a4630bd7ddaef82b6484c2372115c7c22abf640c54f4b14d2509d",
       "destructive": false
     },
     {
