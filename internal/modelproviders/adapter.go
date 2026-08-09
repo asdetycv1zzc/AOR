@@ -36,6 +36,9 @@ func newAdapter(factory AdapterFactory, provider string, protocol Protocol, base
 		} else if !validModelName(model) {
 			return nil, ErrInvalidSettings
 		}
+		if protocol == ProtocolAnthropic {
+			definition.Streaming = false
+		}
 		capabilities[model] = modelCapabilities(definition)
 	}
 	if factory.RequestTimeout == 0 {
