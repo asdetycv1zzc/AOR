@@ -201,7 +201,9 @@ WHERE tenant_id = $1::uuid AND provider_id = $2`, tenantID, providerID).
 	if err := tx.Commit(); err != nil {
 		return ResolvedSettings{}, false, err
 	}
-	return ResolvedSettings{ProviderSettings: settings, APIKey: string(key)}, true, nil
+	apiKey := string(key)
+	clearBytes(key)
+	return ResolvedSettings{ProviderSettings: settings, APIKey: apiKey}, true, nil
 }
 
 func (store *Store) Put(ctx context.Context, tenantID, providerID string, request PutRequest) (ProviderSettings, error) {
