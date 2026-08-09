@@ -1,4 +1,4 @@
-.PHONY: build test lint schema cross-language sdk backup-restore supply-chain release-tool release-package-check repository-check secret-scan security-corpus license-scan state-machine postgres-reconciliation verify compose-init-secrets compose-check compose-check-secrets compose-check-infrastructure-secrets compose-check-provider-secrets compose-pull compose-deps-up compose-aor-up compose-up compose-ps
+.PHONY: build test lint schema cross-language sdk backup-restore supply-chain release-tool release-package-check repository-check secret-scan security-corpus license-scan state-machine postgres-reconciliation verify compose-init-secrets compose-check compose-check-secrets compose-check-infrastructure-secrets compose-pull compose-deps-up compose-aor-up compose-up compose-ps
 
 GOCACHE ?= $(CURDIR)/.cache/go-build
 GOMODCACHE ?= $(CURDIR)/.cache/go-mod
@@ -92,11 +92,7 @@ compose-check-infrastructure-secrets: compose-init-secrets
 	test -s deploy/compose/secrets/lease_signing_key
 	test -s deploy/compose/secrets/aor_server_oauth_client_secret
 
-compose-check-provider-secrets:
-	test -s deploy/compose/secrets/model_provider_openai_key
-	test -s deploy/compose/secrets/model_provider_deepseek_key
-
-compose-check-secrets: compose-check-infrastructure-secrets compose-check-provider-secrets
+compose-check-secrets: compose-check-infrastructure-secrets
 
 compose-check: compose-check-secrets
 	$(COMPOSE) config --quiet
@@ -115,7 +111,6 @@ compose-deps-up: compose-pull
 	$(COMPOSE) wait minio-init
 
 compose-aor-up: compose-deps-up
-	$(MAKE) compose-check-provider-secrets
 	$(COMPOSE) --profile aor build aor-api aor-curator
 	$(COMPOSE) --profile aor build aor-model-gateway
 	$(COMPOSE) --profile aor build aor-tool-broker

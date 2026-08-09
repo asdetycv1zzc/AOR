@@ -439,8 +439,10 @@ func (config Config) Validate() error {
 		return ErrInvalidConfiguration
 	}
 	if config.Component == "aor-server" {
-		if err := validateGoalPlanRoutes(config.GoalPlan.Routes); err != nil {
-			return err
+		if len(config.GoalPlan.Routes) != 0 {
+			if err := validateGoalPlanRoutes(config.GoalPlan.Routes); err != nil {
+				return err
+			}
 		}
 	}
 	if needsDatabase(config.Component) {
@@ -490,12 +492,14 @@ func (config Config) Validate() error {
 		if !validSecretReference(config.ModelGateway.ReplayKeyRef) || config.ModelGateway.ReplayKeyID == "" || len(config.ModelGateway.ReplayKeyID) > 128 || strings.ContainsAny(config.ModelGateway.ReplayKeyID, "\r\n\x00") || config.ModelGateway.ReplayTTLHours < 1 || config.ModelGateway.ReplayTTLHours > 30*24 {
 			return ErrInvalidConfiguration
 		}
-		if err := validateProviders(config.ModelGateway.Providers); err != nil {
-			return err
+		if len(config.ModelGateway.Providers) != 0 {
+			if err := validateProviders(config.ModelGateway.Providers); err != nil {
+				return err
+			}
 		}
 	}
 	if config.Component == "aor-worker" {
-		if !validSecretReference(config.LeaseSigningKeyRef) || !validDeploymentProfile(config.DeploymentProfile) || !validKnowledgeRoot(config.KnowledgeRoot) || !validKnowledgeRoot(config.RepositoryRoot) || !validURL(config.Services.API, "http", "https") || !validURL(config.Services.ModelGateway, "http", "https") || !validURL(config.Services.ToolBroker, "http", "https") || !validGoalPlanRoute(config.Execution.Route) || config.Execution.MaxToolRounds < 2 || config.Execution.MaxToolRounds > 8 {
+		if !validSecretReference(config.LeaseSigningKeyRef) || !validDeploymentProfile(config.DeploymentProfile) || !validKnowledgeRoot(config.KnowledgeRoot) || !validKnowledgeRoot(config.RepositoryRoot) || !validURL(config.Services.API, "http", "https") || !validURL(config.Services.ModelGateway, "http", "https") || !validURL(config.Services.ToolBroker, "http", "https") || globalAuditRouteConfigured(config.Execution.Route) && !validGoalPlanRoute(config.Execution.Route) || config.Execution.MaxToolRounds < 2 || config.Execution.MaxToolRounds > 8 {
 			return ErrInvalidConfiguration
 		}
 		if !validModuleTestCommand(config.Execution.ModuleTestCommand) || config.Execution.ModuleTestTimeoutSeconds < 1 || config.Execution.ModuleTestTimeoutSeconds > 900 {

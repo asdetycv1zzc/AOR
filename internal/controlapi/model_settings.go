@@ -171,6 +171,7 @@ func cloneModelRoutes(routes map[string]state.ProjectModelRoute) map[string]stat
 
 func (handler *Handler) resolveProjectModelRoutes(ctx context.Context, tenantID string, supplied map[string]state.ProjectModelRoute) (map[string]state.ProjectModelRoute, error) {
 	if supplied != nil {
+		supplied = normalizeModelProviderAliases(supplied)
 		if validateRoutesAgainstProviders(supplied, handler.modelProviders) != nil {
 			return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "project model routes"})
 		}
@@ -183,6 +184,7 @@ func (handler *Handler) resolveProjectModelRoutes(ctx context.Context, tenantID 
 	if !found {
 		routes = handler.defaultModelRoutes
 	}
+	routes = normalizeModelProviderAliases(routes)
 	if validateRoutesAgainstProviders(routes, handler.modelProviders) != nil {
 		return nil, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "model route configuration"})
 	}
@@ -223,6 +225,7 @@ func (handler *Handler) getModelRouteSettings(response http.ResponseWriter, requ
 		routes = handler.defaultModelRoutes
 		version = 0
 	}
+	routes = normalizeModelProviderAliases(routes)
 	if validateRoutesAgainstProviders(routes, handler.modelProviders) != nil {
 		writeError(response, request, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "model route configuration"}))
 		return
@@ -236,7 +239,12 @@ func (handler *Handler) putModelRouteSettings(response http.ResponseWriter, requ
 		return
 	}
 	var body modelRouteSettingsBody
-	if decodeJSON(request, &body) != nil || validateRoutesAgainstProviders(body.ModelRoutes, handler.modelProviders) != nil {
+	if decodeJSON(request, &body) != nil {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "model route settings"}))
+		return
+	}
+	body.ModelRoutes = normalizeModelProviderAliases(body.ModelRoutes)
+	if validateRoutesAgainstProviders(body.ModelRoutes, handler.modelProviders) != nil {
 		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "model route settings"}))
 		return
 	}
@@ -264,6 +272,20 @@ func (handler *Handler) putModelRouteSettings(response http.ResponseWriter, requ
 		return
 	}
 	writeModelRouteSettings(response, http.StatusOK, routes, version)
+}
+
+func normalizeModelProviderAliases(routes map[string]state.ProjectModelRoute) map[string]state.ProjectModelRoute {
+	normalized := cloneModelRoutes(routes)
+	for role, route := range normalized {
+		switch route.Provider {
+		case "openai-primary":
+			route.Provider = "openai"
+		case "deepseek-audit":
+			route.Provider = "deepseek"
+		}
+		normalized[role] = route
+	}
+	return normalized
 }
 
 func (handler *Handler) authorizeTenantModelResource(ctx context.Context, principal authn.Principal, action, resourceType, parameterDigest string) error {

@@ -31,6 +31,53 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/ModelProviderPage'}
         default: {$ref: '#/components/responses/Problem'}
+  /v1/settings/model-providers:
+    get:
+      tags: [Settings]
+      operationId: getModelProviderSettings
+      responses:
+        '200':
+          description: Provider endpoints and write-only credential status
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ModelProviderSettingsPage'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/settings/model-providers/{providerId}:
+    parameters:
+      - $ref: '#/components/parameters/ProviderId'
+    put:
+      tags: [Settings]
+      operationId: putModelProviderSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ModelProviderSettingsInput'}
+      responses:
+        '200':
+          description: Saved provider settings without the API key
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ModelProviderSettings'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/settings/model-providers/{providerId}:test:
+    parameters:
+      - $ref: '#/components/parameters/ProviderId'
+    post:
+      tags: [Settings]
+      operationId: testModelProvider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ModelProviderTestInput'}
+      responses:
+        '200':
+          description: Sanitized connectivity result
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ModelProviderTestResult'}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/settings/model-routes:
     get:
       tags: [Settings]
@@ -753,6 +800,7 @@ components:
     TaskId: {name: taskId, in: path, required: true, schema: {type: string, pattern: '^[A-Za-z][A-Za-z0-9_-]{2,127}$'}}
     ArtifactId: {name: artifactId, in: path, required: true, schema: {type: string, format: uuid, pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'}}
     HoldId: {name: holdId, in: path, required: true, schema: {type: string, pattern: '^[A-Za-z][A-Za-z0-9_-]{2,127}$'}}
+    ProviderId: {name: providerId, in: path, required: true, schema: {enum: [openai, deepseek, claude, grok]}}
     Version: {name: version, in: path, required: true, schema: {type: integer, minimum: 1}}
     Cursor: {name: cursor, in: query, schema: {type: string, maxLength: 512}}
     IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 256}}
@@ -838,6 +886,66 @@ components:
         items:
           type: array
           items: {$ref: '#/components/schemas/ModelProvider'}
+    ModelProviderSettings:
+      type: object
+      additionalProperties: false
+      required: [id, provider, displayName, baseUrl, protocol, protocols, models, apiKeyConfigured, enabled, version]
+      properties:
+        id: {enum: [openai, deepseek, claude, grok]}
+        provider: {enum: [openai, deepseek, claude, grok]}
+        displayName: {type: string, minLength: 1, maxLength: 64}
+        baseUrl: {type: string, maxLength: 2048}
+        protocol: {enum: [openai-compatible, anthropic-messages]}
+        protocols:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: {enum: [openai-compatible, anthropic-messages]}
+        models:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: {type: string, minLength: 1, maxLength: 256}
+        apiKeyConfigured: {type: boolean}
+        enabled: {type: boolean}
+        version: {type: integer, format: int64, minimum: 0}
+    ModelProviderSettingsPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 4
+          maxItems: 4
+          items: {$ref: '#/components/schemas/ModelProviderSettings'}
+    ModelProviderSettingsInput:
+      type: object
+      additionalProperties: false
+      required: [baseUrl, protocol, enabled]
+      properties:
+        baseUrl: {type: string, maxLength: 2048}
+        protocol: {enum: [openai-compatible, anthropic-messages]}
+        apiKey: {type: string, minLength: 1, maxLength: 65536, writeOnly: true}
+        enabled: {type: boolean}
+    ModelProviderTestInput:
+      type: object
+      additionalProperties: false
+      required: [baseUrl, protocol, model]
+      properties:
+        baseUrl: {type: string, minLength: 1, maxLength: 2048}
+        protocol: {enum: [openai-compatible, anthropic-messages]}
+        apiKey: {type: string, minLength: 1, maxLength: 65536, writeOnly: true}
+        model: {type: string, minLength: 1, maxLength: 256}
+    ModelProviderTestResult:
+      type: object
+      additionalProperties: false
+      required: [ok, model]
+      properties:
+        ok: {type: boolean}
+        model: {type: string, minLength: 1, maxLength: 256}
+        latencyMs: {type: integer, format: int64, minimum: 0}
+        detail: {type: string, maxLength: 256}
     ProjectCreate:
       type: object
       additionalProperties: false

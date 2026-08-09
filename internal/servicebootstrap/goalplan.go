@@ -100,13 +100,15 @@ func configuredGoalPlanRoutes(config runtimeconfig.GoalPlanConfig) (map[agentrun
 		agentruntime.RoleModulePlanner,
 		agentruntime.RoleKnowledgeCurator,
 	}
-	if len(config.Routes) != len(roles) {
+	if len(config.Routes) != 0 && len(config.Routes) != len(roles) {
 		return nil, runtimeconfig.ErrInvalidConfiguration
 	}
 	routes := make(map[agentruntime.Role]goalplan.ModelRoute, len(roles))
 	for _, role := range roles {
 		configured, found := config.Routes[string(role)]
-		if !found {
+		if len(config.Routes) == 0 {
+			configured = defaultRoleRoute(role)
+		} else if !found {
 			return nil, runtimeconfig.ErrInvalidConfiguration
 		}
 		var seed *int64

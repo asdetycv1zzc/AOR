@@ -3,6 +3,7 @@ package servicebootstrap
 import (
 	"github.com/akimisaka/aor/internal/agentruntime"
 	"github.com/akimisaka/aor/internal/controlapi"
+	"github.com/akimisaka/aor/internal/modelproviders"
 	"github.com/akimisaka/aor/internal/runtimeconfig"
 	"github.com/akimisaka/aor/internal/state"
 )
@@ -16,46 +17,77 @@ func configuredControlModelConfiguration(config runtimeconfig.Config) ([]control
 		agentruntime.RoleModulePlanner,
 		agentruntime.RoleKnowledgeCurator,
 	} {
-		configured, found := config.GoalPlan.Routes[string(role)]
-		if !found {
-			return nil, nil, runtimeconfig.ErrInvalidConfiguration
-		}
-		routes[string(role)] = projectModelRoute(configured)
+		routes[string(role)] = projectModelRoute(configuredRoleRoute(config, role))
 	}
-	routes[string(agentruntime.RoleExecutor)] = projectModelRoute(config.Execution.Route)
-	moduleAuditor := config.ModuleAuditRoute
-	if moduleAuditor.Provider == "" {
-		moduleAuditor = config.Execution.Route
-	}
-	routes[string(agentruntime.RoleModuleAuditor)] = projectModelRoute(moduleAuditor)
-	globalAuditor := config.GlobalAuditRoute
-	if globalAuditor.Provider == "" {
-		globalAuditor = moduleAuditor
-	}
-	routes[string(agentruntime.RoleGlobalAuditor)] = projectModelRoute(globalAuditor)
+	routes[string(agentruntime.RoleExecutor)] = projectModelRoute(configuredRoleRoute(config, agentruntime.RoleExecutor))
+	routes[string(agentruntime.RoleModuleAuditor)] = projectModelRoute(configuredRoleRoute(config, agentruntime.RoleModuleAuditor))
+	routes[string(agentruntime.RoleGlobalAuditor)] = projectModelRoute(configuredRoleRoute(config, agentruntime.RoleGlobalAuditor))
 	if state.ValidateProjectModelRoutes(routes) != nil {
 		return nil, nil, runtimeconfig.ErrInvalidConfiguration
 	}
 
-	providers := make([]controlapi.ModelProvider, 0, len(config.ModelGateway.Providers))
-	for _, provider := range config.ModelGateway.Providers {
+	providers := make([]controlapi.ModelProvider, 0, len(modelproviders.Catalog()))
+	for _, provider := range modelproviders.Catalog() {
+		models := make([]string, 0, len(provider.Models))
+		maxInputTokens, maxOutputTokens := 0, 0
+		supportsStreaming, supportsToolCalls, supportsJSONSchema, supportsPromptCaching := true, true, true, true
+		for _, model := range provider.Models {
+			models = append(models, model.ID)
+			if model.MaxInput > maxInputTokens {
+				maxInputTokens = model.MaxInput
+			}
+			if model.MaxOutput > maxOutputTokens {
+				maxOutputTokens = model.MaxOutput
+			}
+			supportsStreaming = supportsStreaming && model.Streaming
+			supportsToolCalls = supportsToolCalls && model.ToolCalls
+			supportsJSONSchema = supportsJSONSchema && model.JSONSchema
+			supportsPromptCaching = supportsPromptCaching && model.PromptCache
+		}
 		providers = append(providers, controlapi.ModelProvider{
-			ID: provider.ID, Provider: provider.Provider, Models: append([]string(nil), provider.Models...),
-			ReasoningEffort:     provider.ReasoningEffort,
-			InputMicrosPerToken: provider.InputMicrosPerToken, OutputMicrosPerToken: provider.OutputMicrosPerToken,
-			SupportsStreaming: provider.SupportsStreaming, SupportsToolCalls: provider.SupportsToolCalls,
-			SupportsJSONSchema: provider.SupportsJSONSchema, SupportsSeed: provider.SupportsSeed,
-			SupportsPromptCaching: provider.SupportsPromptCaching,
-			MaxInputTokens:        provider.MaxInputTokens, MaxOutputTokens: provider.MaxOutputTokens,
-			AllowedDataClassifications: append([]string(nil), provider.AllowedDataClassifications...),
-			DataResidency:              append([]string(nil), provider.DataResidency...), RetentionPolicy: provider.RetentionPolicy,
-			Modalities: append([]string(nil), provider.Modalities...),
+			ID: provider.ID, Provider: provider.ID, Models: models,
+			InputMicrosPerToken: 1, OutputMicrosPerToken: 4,
+			SupportsStreaming: supportsStreaming, SupportsToolCalls: supportsToolCalls,
+			SupportsJSONSchema: supportsJSONSchema, SupportsPromptCaching: supportsPromptCaching,
+			MaxInputTokens: maxInputTokens, MaxOutputTokens: maxOutputTokens,
+			AllowedDataClassifications: []string{"PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"},
+			DataResidency:              []string{"provider-defined"}, RetentionPolicy: "provider-defined",
+			Modalities: []string{"text"},
 		})
 	}
-	if len(providers) == 0 {
-		return nil, nil, runtimeconfig.ErrInvalidConfiguration
-	}
 	return providers, routes, nil
+}
+
+func configuredRoleRoute(config runtimeconfig.Config, role agentruntime.Role) runtimeconfig.GoalPlanRouteConfig {
+	switch role {
+	case agentruntime.RoleExecutor:
+		if config.Execution.Route.Provider != "" {
+			return config.Execution.Route
+		}
+	case agentruntime.RoleModuleAuditor:
+		if config.ModuleAuditRoute.Provider != "" {
+			return config.ModuleAuditRoute
+		}
+	case agentruntime.RoleGlobalAuditor:
+		if config.GlobalAuditRoute.Provider != "" {
+			return config.GlobalAuditRoute
+		}
+	}
+	if route, found := config.GoalPlan.Routes[string(role)]; found {
+		return route
+	}
+	return defaultRoleRoute(role)
+}
+
+func defaultRoleRoute(role agentruntime.Role) runtimeconfig.GoalPlanRouteConfig {
+	provider, model := modelproviders.ProviderOpenAI, "gpt-5.6-sol"
+	if role == agentruntime.RolePlanSupervisor || role == agentruntime.RoleModuleAuditor || role == agentruntime.RoleGlobalAuditor {
+		provider, model = modelproviders.ProviderDeepSeek, "deepseek-v4-flash"
+	}
+	return runtimeconfig.GoalPlanRouteConfig{
+		Provider: provider, Model: model, MaxOutputTokens: 4096, Temperature: 0,
+		ProviderPolicy: "default", CachePolicy: "NO_STORE", MaxAttempts: 5,
+	}
 }
 
 func projectModelRoute(route runtimeconfig.GoalPlanRouteConfig) state.ProjectModelRoute {

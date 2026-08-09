@@ -18,6 +18,7 @@ import (
 	"github.com/akimisaka/aor/internal/authz"
 	"github.com/akimisaka/aor/internal/credentials"
 	"github.com/akimisaka/aor/internal/modelgateway"
+	"github.com/akimisaka/aor/internal/modelproviders"
 	"github.com/akimisaka/aor/internal/policy"
 	"github.com/akimisaka/aor/internal/runtimeclient"
 	"github.com/akimisaka/aor/internal/runtimeconfig"
@@ -36,7 +37,7 @@ const (
 // Provider credentials are resolved only while constructing adapters and are
 // never included in the returned handler or any authorization input.
 func ModelGateway(config runtimeconfig.Config, clients *runtimeclient.Clients) (http.Handler, error) {
-	if clients == nil || clients.Database() == nil || len(config.ModelGateway.Providers) < 2 {
+	if clients == nil || clients.Database() == nil {
 		return nil, runtimeclient.ErrInvalidClientConfig
 	}
 	authenticator, err := oidcAuthenticator(config)
@@ -54,6 +55,11 @@ func ModelGateway(config runtimeconfig.Config, clients *runtimeclient.Clients) (
 	if err != nil {
 		return nil, runtimeclient.ErrDependencyUnavailable
 	}
+	providerSettings, err := modelproviders.NewPostgresStore(clients.Database(), replayKey)
+	if err != nil {
+		clearBytes(replayKey)
+		return nil, runtimeclient.ErrInvalidClientConfig
+	}
 	ledger, ledgerErr := modelgateway.NewPostgresBudgetLedgerWithReplay(clients.Database(), time.Now, modelGatewayReservationTTL, modelgateway.ReplayStoreConfig{
 		KeyID:         config.ModelGateway.ReplayKeyID,
 		EncryptionKey: replayKey,
@@ -63,30 +69,18 @@ func ModelGateway(config runtimeconfig.Config, clients *runtimeclient.Clients) (
 	if ledgerErr != nil {
 		return nil, ledgerErr
 	}
-	allowed := make(map[string]map[string]struct{}, len(config.ModelGateway.Providers))
+	allowed := make(map[string]map[string]struct{}, len(modelproviders.Catalog())+2)
 	var authorizer *modelGatewayAuthorizer
 	gateway := modelgateway.NewGatewayWithConfig(ledger, time.Now, modelgateway.GatewayConfig{
 		ProviderPolicies: map[string]modelgateway.ProviderPolicy{
-			"default": configuredProviderPolicy(config.ModelGateway.Providers),
+			"default": configuredCatalogProviderPolicy(),
 		},
 		ProviderEligibility: func(ctx context.Context, input modelgateway.ProviderEligibilityInput) error {
 			return authorizeProviderCandidate(ctx, authorizer, input)
 		},
 	})
-	for _, provider := range config.ModelGateway.Providers {
-		credential, resolveErr := resolver.Resolve(resolveContext, provider.APIKeyRef)
-		if resolveErr != nil {
-			return nil, runtimeclient.ErrDependencyUnavailable
-		}
-		adapter, adapterErr := newConfiguredAdapter(provider, credential)
-		clearBytes(credential)
-		if adapterErr != nil {
-			return nil, runtimeclient.ErrInvalidClientConfig
-		}
-		providerNames := []string{provider.ID}
-		if provider.Provider != provider.ID {
-			providerNames = append(providerNames, provider.Provider)
-		}
+	for _, provider := range modelproviders.Catalog() {
+		providerNames := providerAliases(provider.ID)
 		for _, providerName := range providerNames {
 			models := allowed[providerName]
 			if models == nil {
@@ -94,12 +88,16 @@ func ModelGateway(config runtimeconfig.Config, clients *runtimeclient.Clients) (
 				allowed[providerName] = models
 			}
 			for _, model := range provider.Models {
-				if err := gateway.Register(providerName, model, adapter, modelgateway.Pricing{
-					InputMicrosPerToken: provider.InputMicrosPerToken, OutputMicrosPerToken: provider.OutputMicrosPerToken,
+				adapter, adapterErr := modelproviders.NewDynamicAdapter(provider.ID, model.ID, providerSettings, modelproviders.AdapterFactory{RequestTimeout: modelProviderRequestTimeout})
+				if adapterErr != nil {
+					return nil, runtimeclient.ErrInvalidClientConfig
+				}
+				if err := gateway.Register(providerName, model.ID, adapter, modelgateway.Pricing{
+					InputMicrosPerToken: 1, OutputMicrosPerToken: 4,
 				}); err != nil {
 					return nil, runtimeclient.ErrInvalidClientConfig
 				}
-				models[model] = struct{}{}
+				models[model.ID] = struct{}{}
 			}
 		}
 	}
@@ -117,6 +115,49 @@ func ModelGateway(config runtimeconfig.Config, clients *runtimeclient.Clients) (
 		return nil, err
 	}
 	return protected, nil
+}
+
+func providerAliases(provider string) []string {
+	aliases := []string{provider}
+	switch provider {
+	case modelproviders.ProviderOpenAI:
+		aliases = append(aliases, "openai-primary")
+	case modelproviders.ProviderDeepSeek:
+		aliases = append(aliases, "deepseek-audit")
+	}
+	return aliases
+}
+
+func configuredCatalogProviderPolicy() modelgateway.ProviderPolicy {
+	candidates := make([]modelgateway.ProviderCandidate, 0)
+	appendCandidate := func(provider, model string) {
+		candidates = append(candidates, modelgateway.ProviderCandidate{
+			Provider: provider, Model: model, CapabilityRank: 100,
+			AllowedDataClassifications: []string{"PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"},
+			AllowedDataResidencies:     []string{"provider-defined"}, RetentionPolicy: "provider-defined",
+		})
+	}
+	defaultModels := map[string]string{
+		modelproviders.ProviderOpenAI: "gpt-5.6-sol", modelproviders.ProviderDeepSeek: "deepseek-v4-flash",
+		modelproviders.ProviderClaude: "claude-sonnet-4-6", modelproviders.ProviderGrok: "grok-4.5",
+	}
+	for _, provider := range modelproviders.Catalog() {
+		appendCandidate(provider.ID, defaultModels[provider.ID])
+	}
+	for _, provider := range modelproviders.Catalog() {
+		for _, model := range provider.Models {
+			appendCandidate(provider.ID, model.ID)
+		}
+	}
+	for _, provider := range modelproviders.Catalog() {
+		aliases := providerAliases(provider.ID)
+		for _, providerName := range aliases[1:] {
+			for _, model := range provider.Models {
+				appendCandidate(providerName, model.ID)
+			}
+		}
+	}
+	return modelgateway.ProviderPolicy{Candidates: candidates, MinimumCapabilityRank: 100}
 }
 
 func configuredProviderPolicy(providers []runtimeconfig.ProviderConfig) modelgateway.ProviderPolicy {

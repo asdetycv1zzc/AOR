@@ -9,7 +9,7 @@ This profile starts the complete local dependency set before any AOR process:
 - Open Policy Agent with the repository policy and data
 - Dex with a local OAuth 2.0/OIDC test issuer and rotating JWKS
 - OpenTelemetry Collector with separate application and audit OTLP ingress
-- Two independently configured model-provider families for the Model Gateway
+- A WebUI-managed catalog for OpenAI, DeepSeek, Claude, and Grok
 - The classroom TEST execution and audit path in the Worker container
 
 All upstream images are pinned by version and multi-platform manifest digest. Every container uses the host network stack; services bind their distinct ports directly to `127.0.0.1` where the image supports an explicit bind address. This profile is for development and test only.
@@ -24,28 +24,19 @@ The TEST profile runs the core Goal -> Plan -> Execution -> Audit path inside th
 
 ## Secrets
 
-Generate the ignored local infrastructure secrets. This is sufficient to start
-the dependency stage; model-provider credentials are checked only before AOR is
-built and started:
+Generate the ignored local infrastructure secrets, then start AOR:
 
 ```bash
 mkdir -p deploy/compose/secrets
 chmod 700 deploy/compose/secrets
 umask 077
 make compose-init-secrets
-make compose-deps-up
-
-# Write actual credentials issued by each provider, one value per file.
-# Do not generate placeholders: Compose checks that both files are nonempty.
-${EDITOR:-vi} deploy/compose/secrets/model_provider_openai_key
-${EDITOR:-vi} deploy/compose/secrets/model_provider_deepseek_key
-chmod 0444 deploy/compose/secrets/model_provider_openai_key deploy/compose/secrets/model_provider_deepseek_key
 make compose-aor-up
 ```
 
-`compose-init-secrets` creates only local infrastructure values; it never creates or changes provider credentials. The local Compose engine exposes file-backed secrets as read-only bind mounts, so the source files use mode `0444` for the containers' distinct non-root UIDs; the containing `secrets/` directory remains mode `0700` and prevents other host users from traversing to them. The secret values are not committed or placed in AOR container environment variables. PostgreSQL migrations use the admin-only `postgres_password` to apply schema changes and configure the least-privilege `aor_app` runtime role; API, Model Gateway, Tool Broker, and worker use `secret://postgres_app_password`. AOR refers to mounted files only through `secret://` references. API, Tool Broker, and worker use the MinIO root access and secret files for local S3 access; the Model Gateway uses one mounted file for each provider family and the independent `model_replay_key` to encrypt bounded idempotency responses at rest. The Tool Broker and worker use the independent `lease_signing_key` for persistent capability leases. Dex, the API, and the worker share `aor_server_oauth_client_secret` through separate read-only mounts; the value is never placed in an AOR container environment variable.
+`compose-init-secrets` creates only local infrastructure values. No provider endpoint or credential is present in Compose or committed to Git. PostgreSQL migrations configure the least-privilege `aor_app` runtime role. The API and Model Gateway share `model_replay_key`: model replay responses and WebUI-supplied provider API keys are encrypted before they are written to PostgreSQL.
 
-The bundled provider catalog contains OpenAI `gpt-5.6-sol` and DeepSeek `deepseek-v4-flash` examples through OpenAI-compatible endpoints, but the control plane is not limited to those provider IDs or model names. Extend `x-model-providers` and mount the referenced credential when adding another compatible provider. The WebUI exposes only registered provider IDs, models, and capabilities; endpoints and credentials remain deployment-only configuration. Goal proposer, challenger, module planner, knowledge curator, and Executor default to the OpenAI entry; Plan Supervisor and both Auditor roles default to the DeepSeek entry. The global WebUI setting changes the defaults for future projects, while project creation stores its selected role-to-model combination as an immutable project snapshot. Set `AOR_OPENAI_BASE_URL`, `AOR_OPENAI_MODEL`, `AOR_OPENAI_REASONING_EFFORT`, `AOR_DEEPSEEK_BASE_URL`, or `AOR_DEEPSEEK_MODEL` before `make compose-up` to change the bundled entries. The test profile accepts only `PUBLIC` project data because provider residency and retention remain provider-defined; a deployment must supply verified provider metadata before allowing a higher classification.
+After the containers are healthy, open `/ui/`, choose **模型设置**, and enter the Base URL and API key for any provider you want to use. Each provider has its own **测试连接** button. OpenAI, DeepSeek, and Grok use OpenAI-compatible Chat Completions; Claude supports Anthropic Messages directly and can also use an OpenAI-compatible proxy. Saving takes effect on the next model call without restarting a container. Global role routes become defaults for future projects, while the new-project dialog can store a different combination on that project.
 
 ## Knowledge Root
 
@@ -53,8 +44,7 @@ The API and worker mount `/var/lib/aor/knowledge` as read-only. By default Compo
 
 ## Start
 
-From the repository root, the complete deployment remains one command when both
-provider credentials are already present:
+From the repository root, the complete deployment is one command:
 
 ```bash
 make compose-up
@@ -66,7 +56,7 @@ The target performs these stages in order:
 2. Pull the pinned dependency images.
 3. Start PostgreSQL, Temporal, NATS, MinIO, OPA, Dex, and OpenTelemetry Collector, then wait for their health checks and initialization jobs.
 4. Apply the PostgreSQL migrations and run the idempotent initialization jobs.
-5. Check both model-provider credentials, then build the AOR server image (shared by the API and curator), Model Gateway, Tool Broker, and Worker from the current source.
+5. Build the AOR server image (shared by the API and curator), Model Gateway, Tool Broker, and Worker from the current source.
 6. Start AOR only after every dependency and initializer has completed successfully, then wait for every process readiness endpoint.
 
 Individual stages are available as `make compose-pull`, `make compose-deps-up`, `make compose-aor-up`, and `make compose-ps`.

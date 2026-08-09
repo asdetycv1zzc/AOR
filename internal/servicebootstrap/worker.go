@@ -649,14 +649,7 @@ func configuredModuleAudit(config runtimeconfig.Config, clients *runtimeclient.C
 	if err != nil {
 		return nil, err
 	}
-	routeConfig := config.ModuleAuditRoute
-	if routeConfig.Provider == "" {
-		var found bool
-		routeConfig, found = config.GoalPlan.Routes[string(agentruntime.RoleModuleAuditor)]
-		if !found {
-			routeConfig = config.Execution.Route
-		}
-	}
+	routeConfig := configuredRoleRoute(config, agentruntime.RoleModuleAuditor)
 	route := goalplan.ModelRoute{
 		Provider: routeConfig.Provider, Model: routeConfig.Model, MaxOutputTokens: routeConfig.MaxOutputTokens,
 		Temperature: routeConfig.Temperature, Seed: routeConfig.Seed, ProviderPolicy: routeConfig.ProviderPolicy,
@@ -863,7 +856,7 @@ func configuredWorkerExecution(config runtimeconfig.Config, clients *runtimeclie
 		_ = host.Close()
 		return nil, err
 	}
-	route := config.Execution.Route
+	route := configuredRoleRoute(config, agentruntime.RoleExecutor)
 	preparer, err := execution.NewExecutorRuntimePreparer(execution.ExecutorRuntimePreparerConfig{
 		Knowledge: execution.KnowledgeServiceContextSource{Service: knowledgeService}, PriorEvidence: priorEvidence, Leases: leaseService,
 		Assignments: assignments, Tools: host.Broker().List(),
@@ -902,10 +895,7 @@ func configuredWorkerExecution(config runtimeconfig.Config, clients *runtimeclie
 	}
 	var planCompletion *goalplan.PlanCompletionService
 	if config.DeploymentProfile == "TEST" {
-		route, found := config.GoalPlan.Routes[string(agentruntime.RolePlanSupervisor)]
-		if !found {
-			route = config.Execution.Route
-		}
+		route := configuredRoleRoute(config, agentruntime.RolePlanSupervisor)
 		completionPreparer, prepareErr := goalplan.NewAuthoritativeRuntimePreparer(goalplan.RuntimePreparerConfig{
 			Artifacts: artifacts, Projects: tasks, Tasks: tasks, Leases: leaseService,
 			Routes: map[agentruntime.Role]goalplan.ModelRoute{
@@ -943,17 +933,7 @@ func configuredGlobalAudit(config runtimeconfig.Config, clients *runtimeclient.C
 	if clients == nil || provider == nil || services == nil || services.agentRuntime == nil || services.tasks == nil || services.leaseService == nil || services.artifactCatalog == nil || services.artifactPublisher == nil || signer == nil || secretResolver == nil || runtime.GOOS != "linux" {
 		return nil, ErrWorkerConfiguration
 	}
-	routeConfig := config.GlobalAuditRoute
-	if routeConfig.Provider == "" {
-		var found bool
-		routeConfig, found = config.GoalPlan.Routes[string(agentruntime.RoleGlobalAuditor)]
-		if !found {
-			routeConfig = config.Execution.Route
-		}
-	}
-	if routeConfig.Provider == "" {
-		routeConfig = config.Execution.Route
-	}
+	routeConfig := configuredRoleRoute(config, agentruntime.RoleGlobalAuditor)
 	route := goalplan.ModelRoute{
 		Provider: routeConfig.Provider, Model: routeConfig.Model, MaxOutputTokens: routeConfig.MaxOutputTokens,
 		Temperature: routeConfig.Temperature, Seed: routeConfig.Seed, ProviderPolicy: routeConfig.ProviderPolicy,
