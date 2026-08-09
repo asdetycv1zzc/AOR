@@ -448,7 +448,7 @@ function ControlConsole({ client }: { client: AorClient }) {
   }, [client]);
 
   useEffect(() => {
-    if (!project || terminalProjectStates.has(displayedProjectState(project, bundle.result))) return;
+    if (!project || terminalProjectStates.has(project.state) || bundle.result?.status === "COMPLETED") return;
     const timer = window.setInterval(() => void loadProject(project.id, true), 5_000);
     return () => window.clearInterval(timer);
   }, [bundle.result, loadProject, project]);
