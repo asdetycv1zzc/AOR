@@ -265,7 +265,7 @@ func (a *Adapter) validateRequest(request modelgateway.NormalizedRequest, requir
 		return modelgateway.ModelCapabilities{}, err
 	}
 	if request.Model == "" || len(request.Messages) == 0 || len(request.Messages) > modelgateway.MaximumMessages || len(request.Tools) > modelgateway.MaximumTools || request.MaxOutputTokens <= 0 || request.MaxOutputTokens > capabilities.MaxOutputTokens ||
-		request.Temperature < 0 || request.Temperature > 2 || request.TopP < 0 || request.TopP > 1 || request.TopK < 0 || !validReasoningEffort(request.ReasoningEffort) || !utf8.ValidString(request.Model) {
+		request.Temperature < 0 || request.Temperature > 2 || request.TopP < 0 || request.TopP > 1 || request.TopK < 0 || request.TopK > modelgateway.MaximumTopK || !validReasoningEffort(request.ReasoningEffort) || !utf8.ValidString(request.Model) {
 		return modelgateway.ModelCapabilities{}, modelgateway.ErrInvalidRequest
 	}
 	if request.Seed != nil && !capabilities.SupportsSeed {
@@ -330,7 +330,7 @@ func (a *Adapter) encodeRequest(request modelgateway.NormalizedRequest, stream b
 	}
 	value := chatRequest{
 		Model: request.Model, MaxTokens: request.MaxOutputTokens, Temperature: request.Temperature,
-		TopP: request.TopP, ReasoningEffort: reasoningEffort, Stream: stream,
+		TopP: request.TopP, TopK: request.TopK, ReasoningEffort: reasoningEffort, Stream: stream,
 	}
 	if stream {
 		value.StreamOptions = &chatStreamOptions{IncludeUsage: true}
@@ -638,6 +638,7 @@ type chatRequest struct {
 	MaxTokens       int                 `json:"max_tokens"`
 	Temperature     float64             `json:"temperature"`
 	TopP            float64             `json:"top_p"`
+	TopK            int                 `json:"top_k,omitempty"`
 	ReasoningEffort string              `json:"reasoning_effort,omitempty"`
 	Seed            *int64              `json:"seed,omitempty"`
 	Stream          bool                `json:"stream,omitempty"`

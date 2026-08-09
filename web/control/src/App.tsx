@@ -1047,7 +1047,7 @@ function ModelSamplingSettingsEditor({ settings, onChange }: {
         <Field label="Top P">
           <Input type="number" min={0} max={1} step={0.05} value={settings.topP} onChange={(_, data) => onChange({ ...settings, topP: Number(data.value) })} />
         </Field>
-        <Field label="Top K（0 使用默认值）">
+        <Field label="Top K（0 使用默认值，需供应商支持）">
           <Input type="number" min={0} max={500} step={1} value={settings.topK} onChange={(_, data) => onChange({ ...settings, topK: Number(data.value) })} />
         </Field>
         <Field label="推理深度">

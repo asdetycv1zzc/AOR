@@ -242,7 +242,7 @@ func (adapter *anthropicAdapter) validateRequest(ctx context.Context, request mo
 	if err != nil {
 		return modelgateway.ModelCapabilities{}, err
 	}
-	if requireID && request.RequestID == "" || len(request.Messages) == 0 || len(request.Messages) > modelgateway.MaximumMessages || len(request.Tools) > modelgateway.MaximumTools || request.MaxOutputTokens <= 0 || request.MaxOutputTokens > capabilities.MaxOutputTokens || request.Temperature < 0 || request.Temperature > 1 || request.TopP < 0 || request.TopP > 1 || request.TopK < 0 || !validAnthropicEffort(request.ReasoningEffort) || request.Seed != nil {
+	if requireID && request.RequestID == "" || len(request.Messages) == 0 || len(request.Messages) > modelgateway.MaximumMessages || len(request.Tools) > modelgateway.MaximumTools || request.MaxOutputTokens <= 0 || request.MaxOutputTokens > capabilities.MaxOutputTokens || request.Temperature < 0 || request.Temperature > 1 || request.TopP < 0 || request.TopP > 1 || request.TopK < 0 || request.TopK > modelgateway.MaximumTopK || !validAnthropicEffort(request.ReasoningEffort) || request.Seed != nil {
 		return modelgateway.ModelCapabilities{}, modelgateway.ErrInvalidRequest
 	}
 	if len(request.Tools) != 0 && !capabilities.SupportsToolCalls || len(request.ResponseSchema) != 0 && (!capabilities.SupportsJSONSchema || !json.Valid(request.ResponseSchema)) {
