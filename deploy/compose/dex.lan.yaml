@@ -1,0 +1,40 @@
+issuer: http://192.168.1.193:5556/dex
+
+storage:
+  type: memory
+
+web:
+  http: 0.0.0.0:5556
+
+telemetry:
+  http: 127.0.0.1:5558
+
+oauth2:
+  skipApprovalScreen: true
+  grantTypes:
+    - authorization_code
+    - refresh_token
+    - client_credentials
+
+expiry:
+  idTokens: 5m
+
+staticClients:
+  - id: aor-control-plane
+    name: AOR local test client
+    public: true
+    trustedPeers:
+      - aor-server
+    redirectURIs:
+      - http://127.0.0.1:5555/callback
+      - http://127.0.0.1:8090/ui/callback
+      - http://127.0.0.1:5173/ui/callback
+      - http://192.168.1.193:8090/ui/callback
+  - id: aor-server
+    name: AOR server workload
+    secret: {{ file.Read "/run/secrets/aor_server_oauth_client_secret" | strings.TrimSpace | strings.Quote }}
+
+connectors:
+  - type: mockCallback
+    id: local-test
+    name: Local test identity
