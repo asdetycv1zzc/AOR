@@ -323,6 +323,13 @@
       "file": "000046_tenant_model_routes.up.sql",
       "sha256": "sha256:7c70ae7cb234c7e517ae1fbf08ca5914dc464f2b3c6e855a58e3dcf362825751",
       "destructive": false
+    },
+    {
+      "version": 47,
+      "mode": "EXPAND",
+      "file": "000047_tenant_model_providers.up.sql",
+      "sha256": "sha256:ec389959e48e0e2c33da31a8395b452ff354da535f0255b3f2b999de91083405",
+      "destructive": false
     }
   ]
 }
