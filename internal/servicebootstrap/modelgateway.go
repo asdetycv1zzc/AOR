@@ -86,25 +86,18 @@ func ModelGateway(config runtimeconfig.Config, clients *runtimeclient.Clients) (
 		},
 	})
 	for _, provider := range modelproviders.Catalog() {
+		adapter, adapterErr := modelproviders.NewDynamicAdapter(provider.ID, "*", providerSettings, modelproviders.AdapterFactory{RequestTimeout: modelProviderRequestTimeout})
+		if adapterErr != nil {
+			return nil, runtimeclient.ErrInvalidClientConfig
+		}
 		providerNames := providerAliases(provider.ID)
 		for _, providerName := range providerNames {
-			models := allowed[providerName]
-			if models == nil {
-				models = make(map[string]struct{}, len(provider.Models))
-				allowed[providerName] = models
+			if err := gateway.Register(providerName, "*", adapter, modelgateway.Pricing{
+				InputMicrosPerToken: 1, OutputMicrosPerToken: 4,
+			}); err != nil {
+				return nil, runtimeclient.ErrInvalidClientConfig
 			}
-			for _, model := range provider.Models {
-				adapter, adapterErr := modelproviders.NewDynamicAdapter(provider.ID, model.ID, providerSettings, modelproviders.AdapterFactory{RequestTimeout: modelProviderRequestTimeout})
-				if adapterErr != nil {
-					return nil, runtimeclient.ErrInvalidClientConfig
-				}
-				if err := gateway.Register(providerName, model.ID, adapter, modelgateway.Pricing{
-					InputMicrosPerToken: 1, OutputMicrosPerToken: 4,
-				}); err != nil {
-					return nil, runtimeclient.ErrInvalidClientConfig
-				}
-				models[model.ID] = struct{}{}
-			}
+			allowed[providerName] = map[string]struct{}{"*": {}}
 		}
 	}
 	authorizer = &modelGatewayAuthorizer{
@@ -161,6 +154,11 @@ func configuredCatalogProviderPolicy() modelgateway.ProviderPolicy {
 			for _, model := range provider.Models {
 				appendCandidate(providerName, model.ID)
 			}
+		}
+	}
+	for _, provider := range modelproviders.Catalog() {
+		for _, providerName := range providerAliases(provider.ID) {
+			appendCandidate(providerName, "")
 		}
 	}
 	return modelgateway.ProviderPolicy{Candidates: candidates, MinimumCapabilityRank: 100}
@@ -233,7 +231,8 @@ func newConfiguredAdapter(provider runtimeconfig.ProviderConfig, credential []by
 		models[model] = capabilities
 	}
 	return openaicompatible.New(openaicompatible.Config{
-		Endpoint: endpoint, Credential: string(credential), Models: models, ReasoningEffort: provider.ReasoningEffort, RequestTimeout: modelProviderRequestTimeout,
+		Endpoint: endpoint, Credential: string(credential), Models: models,
+		SupportsReasoningEffort: !strings.EqualFold(provider.Provider, modelproviders.ProviderGrok), RequestTimeout: modelProviderRequestTimeout,
 	})
 }
 
@@ -296,7 +295,9 @@ func (authorizer *modelGatewayAuthorizer) AuthorizeModel(ctx context.Context, re
 		return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
 	}
 	if _, found = models[request.Model]; !found {
-		return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
+		if _, found = models["*"]; !found {
+			return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
+		}
 	}
 	projectID := request.ProjectID
 	if projectID == "" {

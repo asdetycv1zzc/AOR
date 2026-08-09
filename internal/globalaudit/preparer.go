@@ -259,7 +259,7 @@ func (preparer *AuthoritativePreparer) Prepare(ctx context.Context, request Requ
 		Declaration: declaration, Lease: globalAuditAgentLease(lease),
 		ModelCall: agentruntime.ModelCall{
 			RequestID: requestID, Provider: route.Provider, Model: route.Model, ReservationID: reservationID,
-			MaxOutputTokens: route.MaxOutputTokens, Temperature: route.Temperature, Seed: cloneGlobalAuditSeed(route.Seed),
+			ReasoningEffort: route.ReasoningEffort, MaxOutputTokens: route.MaxOutputTokens, Temperature: route.Temperature, Seed: cloneGlobalAuditSeed(route.Seed),
 			ProviderPolicy: route.ProviderPolicy, CachePolicy: route.CachePolicy,
 			WorstCaseCostMicros: route.WorstCaseCostMicros, MaxAttempts: route.MaxAttempts,
 		},
@@ -458,6 +458,7 @@ func globalAuditParameterDigest(request Request, project state.Project, input In
 func validGlobalAuditRoute(route goalplan.ModelRoute) bool {
 	return strings.TrimSpace(route.Provider) == route.Provider && route.Provider != "" && len(route.Provider) <= 128 &&
 		strings.TrimSpace(route.Model) == route.Model && route.Model != "" && len(route.Model) <= 256 &&
+		state.ValidModelReasoningEffort(route.Provider, route.ReasoningEffort) &&
 		route.MaxOutputTokens > 0 && !math.IsNaN(route.Temperature) && !math.IsInf(route.Temperature, 0) && route.Temperature >= 0 && route.Temperature <= 2 &&
 		safeText(route.ProviderPolicy, 256) && safeText(route.CachePolicy, 128) && route.WorstCaseCostMicros >= 0 && route.MaxAttempts >= 1 && route.MaxAttempts <= 5
 }

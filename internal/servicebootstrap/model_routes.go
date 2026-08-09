@@ -80,12 +80,12 @@ func configuredRoleRoute(config runtimeconfig.Config, role agentruntime.Role) ru
 }
 
 func defaultRoleRoute(role agentruntime.Role) runtimeconfig.GoalPlanRouteConfig {
-	provider, model := modelproviders.ProviderOpenAI, "gpt-5.6-sol"
+	provider, model, reasoningEffort := modelproviders.ProviderOpenAI, "gpt-5.6-sol", "medium"
 	if role == agentruntime.RolePlanSupervisor || role == agentruntime.RoleModuleAuditor || role == agentruntime.RoleGlobalAuditor {
-		provider, model = modelproviders.ProviderDeepSeek, "deepseek-v4-flash"
+		provider, model, reasoningEffort = modelproviders.ProviderDeepSeek, "deepseek-v4-flash", "high"
 	}
 	return runtimeconfig.GoalPlanRouteConfig{
-		Provider: provider, Model: model, MaxOutputTokens: 4096, Temperature: 0,
+		Provider: provider, Model: model, ReasoningEffort: reasoningEffort, MaxOutputTokens: 4096, Temperature: 0,
 		ProviderPolicy: "default", CachePolicy: "NO_STORE", MaxAttempts: 5,
 	}
 }
@@ -97,7 +97,7 @@ func projectModelRoute(route runtimeconfig.GoalPlanRouteConfig) state.ProjectMod
 		seed = &value
 	}
 	return state.ProjectModelRoute{
-		Provider: route.Provider, Model: route.Model, MaxOutputTokens: route.MaxOutputTokens,
+		Provider: route.Provider, Model: route.Model, ReasoningEffort: route.ReasoningEffort, MaxOutputTokens: route.MaxOutputTokens,
 		Temperature: route.Temperature, Seed: seed, ProviderPolicy: route.ProviderPolicy,
 		CachePolicy: route.CachePolicy, WorstCaseCostMicros: route.WorstCaseCostMicros,
 		MaxAttempts: route.MaxAttempts,

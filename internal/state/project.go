@@ -38,6 +38,7 @@ type Project struct {
 type ProjectModelRoute struct {
 	Provider            string  `json:"provider"`
 	Model               string  `json:"model"`
+	ReasoningEffort     string  `json:"reasoningEffort"`
 	MaxOutputTokens     int     `json:"maxOutputTokens"`
 	Temperature         float64 `json:"temperature"`
 	Seed                *int64  `json:"seed,omitempty"`
@@ -72,11 +73,38 @@ func ValidateProjectModelRoutes(routes map[string]ProjectModelRoute) error {
 }
 
 func validProjectModelRoute(route ProjectModelRoute) bool {
-	return validProjectModelIdentity(route.Provider, 128) && validProjectModelIdentity(route.Model, 256) &&
+	return validProjectModelIdentity(route.Provider, 128) && validProjectModelIdentity(route.Model, 256) && route.Model != "*" &&
+		ValidModelReasoningEffort(route.Provider, route.ReasoningEffort) &&
 		route.MaxOutputTokens >= 1 && route.MaxOutputTokens <= 1_000_000 &&
 		!math.IsNaN(route.Temperature) && !math.IsInf(route.Temperature, 0) && route.Temperature >= 0 && route.Temperature <= 2 &&
 		validProjectModelIdentity(route.ProviderPolicy, 256) && validProjectModelIdentity(route.CachePolicy, 128) &&
 		route.WorstCaseCostMicros >= 0 && route.MaxAttempts >= 1 && route.MaxAttempts <= 5
+}
+
+func ValidModelReasoningEffort(provider, effort string) bool {
+	switch strings.ToLower(provider) {
+	case "openai", "openai-primary":
+		return effort == "none" || effort == "low" || effort == "medium" || effort == "high" || effort == "xhigh" || effort == "max"
+	case "claude":
+		return effort == "low" || effort == "medium" || effort == "high" || effort == "xhigh" || effort == "max"
+	case "deepseek", "deepseek-audit":
+		return effort == "high" || effort == "max"
+	case "grok":
+		return effort == ""
+	default:
+		return effort == ""
+	}
+}
+
+func DefaultModelReasoningEffort(provider string) string {
+	switch strings.ToLower(provider) {
+	case "openai", "openai-primary", "claude":
+		return "medium"
+	case "deepseek", "deepseek-audit":
+		return "high"
+	default:
+		return ""
+	}
 }
 
 func validProjectModelIdentity(value string, maximum int) bool {

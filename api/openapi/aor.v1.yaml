@@ -835,10 +835,11 @@ components:
     ProjectModelRoute:
       type: object
       additionalProperties: false
-      required: [provider, model, maxOutputTokens, temperature, providerPolicy, cachePolicy, worstCaseCostMicros, maxAttempts]
+      required: [provider, model, reasoningEffort, maxOutputTokens, temperature, providerPolicy, cachePolicy, worstCaseCostMicros, maxAttempts]
       properties:
         provider: {type: string, minLength: 1, maxLength: 128}
         model: {type: string, minLength: 1, maxLength: 256}
+        reasoningEffort: {enum: ['', none, low, medium, high, xhigh, max]}
         maxOutputTokens: {type: integer, minimum: 1, maximum: 1000000}
         temperature: {type: number, minimum: 0, maximum: 2}
         seed: {type: integer, format: int64}
@@ -869,21 +870,19 @@ components:
     ModelSamplingSettingsInput:
       type: object
       additionalProperties: false
-      required: [temperature, topP, topK, reasoningEffort]
+      required: [temperature, topP, topK]
       properties:
         temperature: {type: number, minimum: 0, maximum: 2}
         topP: {type: number, minimum: 0, maximum: 1}
         topK: {type: integer, minimum: 0, maximum: 500}
-        reasoningEffort: {enum: ['', none, minimal, low, medium, high, xhigh, max]}
     ModelSamplingSettings:
       type: object
       additionalProperties: false
-      required: [temperature, topP, topK, reasoningEffort, version]
+      required: [temperature, topP, topK, version]
       properties:
         temperature: {type: number, minimum: 0, maximum: 2}
         topP: {type: number, minimum: 0, maximum: 1}
         topK: {type: integer, minimum: 0, maximum: 500}
-        reasoningEffort: {enum: ['', none, minimal, low, medium, high, xhigh, max]}
         version: {type: integer, format: int64, minimum: 0}
     ModelProvider:
       type: object
@@ -897,7 +896,6 @@ components:
           minItems: 1
           uniqueItems: true
           items: {type: string, minLength: 1, maxLength: 256}
-        reasoningEffort: {type: string, minLength: 1, maxLength: 128}
         inputMicrosPerToken: {type: integer, format: int64, minimum: 0}
         outputMicrosPerToken: {type: integer, format: int64, minimum: 0}
         supportsStreaming: {type: boolean}
@@ -976,12 +974,13 @@ components:
     ModelProviderTestInput:
       type: object
       additionalProperties: false
-      required: [baseUrl, protocol, model]
+      required: [baseUrl, protocol, model, reasoningEffort]
       properties:
         baseUrl: {type: string, minLength: 1, maxLength: 2048}
         protocol: {enum: [openai-compatible, anthropic-messages]}
         apiKey: {type: string, minLength: 1, maxLength: 65536, writeOnly: true}
         model: {type: string, minLength: 1, maxLength: 256}
+        reasoningEffort: {enum: ['', none, low, medium, high, xhigh, max]}
     ModelProviderTestResult:
       type: object
       additionalProperties: false

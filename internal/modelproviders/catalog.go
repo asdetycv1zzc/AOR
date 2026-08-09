@@ -67,16 +67,19 @@ func Catalog() []ProviderCatalog {
 		{
 			ID: ProviderClaude, DisplayName: "Claude", Protocol: ProtocolAnthropic, Protocols: []Protocol{ProtocolAnthropic, ProtocolOpenAICompatible},
 			Models: []CatalogModel{
-				{ID: "claude-sonnet-4", MaxInput: 200000, MaxOutput: 8192, ToolCalls: true, JSONSchema: true},
 				{ID: "claude-sonnet-4-5", MaxInput: 200000, MaxOutput: 8192, ToolCalls: true, JSONSchema: true},
 				{ID: "claude-sonnet-4-6", MaxInput: 200000, MaxOutput: 8192, ToolCalls: true, JSONSchema: true},
-				{ID: "claude-opus-4", MaxInput: 200000, MaxOutput: 8192, ToolCalls: true, JSONSchema: true},
+				{ID: "claude-sonnet-4-7", MaxInput: 200000, MaxOutput: 8192, ToolCalls: true, JSONSchema: true},
+				{ID: "claude-sonnet-4-8", MaxInput: 200000, MaxOutput: 8192, ToolCalls: true, JSONSchema: true},
+				{ID: "claude-sonnet-5", MaxInput: 200000, MaxOutput: 8192, ToolCalls: true, JSONSchema: true},
 				{ID: "claude-opus-4-1", MaxInput: 200000, MaxOutput: 8192, ToolCalls: true, JSONSchema: true},
 				{ID: "claude-opus-4-5", MaxInput: 200000, MaxOutput: 8192, ToolCalls: true, JSONSchema: true},
 				{ID: "claude-opus-4-6", MaxInput: 200000, MaxOutput: 8192, ToolCalls: true, JSONSchema: true},
-				{ID: "claude-fable-4", MaxInput: 200000, MaxOutput: 8192, ToolCalls: true, JSONSchema: true},
-				{ID: "claude-fable-4-5", MaxInput: 200000, MaxOutput: 8192, ToolCalls: true, JSONSchema: true},
-				{ID: "claude-fable-4-6", MaxInput: 200000, MaxOutput: 8192, ToolCalls: true, JSONSchema: true},
+				{ID: "claude-opus-4-7", MaxInput: 200000, MaxOutput: 8192, ToolCalls: true, JSONSchema: true},
+				{ID: "claude-opus-4-8", MaxInput: 200000, MaxOutput: 8192, ToolCalls: true, JSONSchema: true},
+				{ID: "claude-opus-5", MaxInput: 200000, MaxOutput: 8192, ToolCalls: true, JSONSchema: true},
+				{ID: "claude-fable-5", MaxInput: 200000, MaxOutput: 8192, ToolCalls: true, JSONSchema: true},
+				{ID: "claude-haiku-4-5", MaxInput: 200000, MaxOutput: 8192, ToolCalls: true, JSONSchema: true},
 			},
 		},
 		{
@@ -90,8 +93,8 @@ func Catalog() []ProviderCatalog {
 
 func openAIModels() []CatalogModel {
 	models := []string{
-		"gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.4-pro",
-		"gpt-5.5", "gpt-5.5-pro",
+		"gpt-5.4", "gpt-5.4-mini",
+		"gpt-5.5",
 		"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
 	}
 	result := make([]CatalogModel, 0, len(models))

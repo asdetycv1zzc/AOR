@@ -271,7 +271,7 @@ func (adapter *anthropicAdapter) validateRequest(ctx context.Context, request mo
 
 func (adapter *anthropicAdapter) encodeRequest(request modelgateway.NormalizedRequest) ([]byte, error) {
 	value := anthropicRequest{Model: request.Model, MaxTokens: request.MaxOutputTokens}
-	if effort := anthropicEffort(request.Model, request.ReasoningEffort); effort != "" {
+	if effort := anthropicEffort(request.ReasoningEffort); effort != "" {
 		value.OutputConfig = &anthropicOutputConfig{Effort: effort}
 	} else {
 		value.Temperature = &request.Temperature
@@ -324,33 +324,19 @@ func (adapter *anthropicAdapter) encodeRequest(request modelgateway.NormalizedRe
 
 func validAnthropicEffort(value string) bool {
 	switch value {
-	case "", "none", "minimal", "low", "medium", "high", "xhigh", "max":
+	case "", "low", "medium", "high", "xhigh", "max":
 		return true
 	default:
 		return false
 	}
 }
 
-func anthropicEffort(model, value string) string {
-	if !anthropicModelSupportsEffort(model) {
-		return ""
-	}
+func anthropicEffort(value string) string {
 	switch value {
-	case "minimal":
-		return "low"
 	case "low", "medium", "high", "xhigh", "max":
 		return value
 	default:
 		return ""
-	}
-}
-
-func anthropicModelSupportsEffort(model string) bool {
-	switch model {
-	case "claude-opus-4-5", "claude-opus-4-6", "claude-sonnet-4-6", "claude-fable-4-6":
-		return true
-	default:
-		return false
 	}
 }
 

@@ -24,7 +24,11 @@ func newAdapter(factory AdapterFactory, provider string, protocol Protocol, base
 	for _, model := range models {
 		definition, found := findModel(catalog.ID, model)
 		if !found {
-			return nil, ErrInvalidSettings
+			if !validModelName(model) || len(catalog.Models) == 0 {
+				return nil, ErrInvalidSettings
+			}
+			definition = catalog.Models[0]
+			definition.ID = model
 		}
 		capabilities[model] = modelCapabilities(definition)
 	}
@@ -44,7 +48,7 @@ func newAdapter(factory AdapterFactory, provider string, protocol Protocol, base
 		}
 		adapter, err := openaicompatible.New(openaicompatible.Config{
 			Endpoint: endpoint, Credential: apiKey, Models: capabilities,
-			SupportsReasoningEffort: provider == ProviderOpenAI,
+			SupportsReasoningEffort: provider != ProviderGrok,
 			HTTPClient:              factory.HTTPClient, RequestTimeout: factory.RequestTimeout,
 		})
 		if err != nil {
@@ -100,29 +104,29 @@ type dynamicAdapterEntry struct {
 }
 
 func NewDynamicAdapter(provider, model string, store SettingsStore, factory AdapterFactory) (*DynamicAdapter, error) {
-	if _, found := findModel(provider, model); !found || store == nil {
+	if _, found := findCatalog(provider); !found || store == nil || model != "*" && !validModelName(model) {
 		return nil, ErrInvalidSettings
 	}
 	return &DynamicAdapter{provider: provider, model: model, store: store, factory: factory, current: make(map[string]dynamicAdapterEntry)}, nil
 }
 
 func (adapter *DynamicAdapter) Capabilities(ctx context.Context, model string) (modelgateway.ModelCapabilities, error) {
-	if model != adapter.model {
+	if !adapter.accepts(model) {
 		return modelgateway.ModelCapabilities{}, modelgateway.ErrProviderNotAllowed
 	}
 	tenantID, err := tenantFromContext(ctx)
 	if err != nil {
 		return modelgateway.ModelCapabilities{}, err
 	}
-	_, concrete, err := adapter.resolve(ctx, tenantID)
+	_, concrete, err := adapter.resolve(ctx, tenantID, model)
 	if err != nil {
 		return modelgateway.ModelCapabilities{}, err
 	}
-	return concrete.Capabilities(ctx, adapter.model)
+	return concrete.Capabilities(ctx, model)
 }
 
 func (adapter *DynamicAdapter) CountTokens(ctx context.Context, request modelgateway.NormalizedRequest) (modelgateway.TokenEstimate, error) {
-	concrete, err := adapter.concrete(ctx, request.TenantID)
+	concrete, err := adapter.concrete(ctx, request.TenantID, request.Model)
 	if err != nil {
 		return modelgateway.TokenEstimate{}, err
 	}
@@ -130,7 +134,7 @@ func (adapter *DynamicAdapter) CountTokens(ctx context.Context, request modelgat
 }
 
 func (adapter *DynamicAdapter) Generate(ctx context.Context, request modelgateway.NormalizedRequest) (modelgateway.NormalizedResponse, error) {
-	concrete, err := adapter.concrete(ctx, request.TenantID)
+	concrete, err := adapter.concrete(ctx, request.TenantID, request.Model)
 	if err != nil {
 		return modelgateway.NormalizedResponse{}, err
 	}
@@ -138,7 +142,7 @@ func (adapter *DynamicAdapter) Generate(ctx context.Context, request modelgatewa
 }
 
 func (adapter *DynamicAdapter) Stream(ctx context.Context, request modelgateway.NormalizedRequest) (modelgateway.ResponseStream, error) {
-	concrete, err := adapter.concrete(ctx, request.TenantID)
+	concrete, err := adapter.concrete(ctx, request.TenantID, request.Model)
 	if err != nil {
 		return nil, err
 	}
@@ -172,36 +176,41 @@ func (adapter *DynamicAdapter) NormalizeUsage(raw any) (modelgateway.Usage, erro
 	return modelgateway.Usage{}, modelgateway.ErrProviderNotAllowed
 }
 
-func (adapter *DynamicAdapter) concrete(ctx context.Context, tenantID string) (modelgateway.ModelAdapter, error) {
-	if ctx == nil || tenantID == "" {
+func (adapter *DynamicAdapter) concrete(ctx context.Context, tenantID, model string) (modelgateway.ModelAdapter, error) {
+	if ctx == nil || tenantID == "" || !adapter.accepts(model) {
 		return nil, modelgateway.ErrInvalidRequest
 	}
-	_, concrete, err := adapter.resolve(ctx, tenantID)
+	_, concrete, err := adapter.resolve(ctx, tenantID, model)
 	return concrete, err
 }
 
-func (adapter *DynamicAdapter) resolve(ctx context.Context, tenantID string) (ResolvedSettings, modelgateway.ModelAdapter, error) {
+func (adapter *DynamicAdapter) resolve(ctx context.Context, tenantID, model string) (ResolvedSettings, modelgateway.ModelAdapter, error) {
 	resolved, found, err := adapter.store.Resolve(ctx, tenantID, adapter.provider)
 	if err != nil {
 		return ResolvedSettings{}, nil, modelgateway.ErrProviderUnavailable
 	}
-	if !found || !contains(resolved.Models, adapter.model) {
+	if !found || adapter.model != "*" && !contains(resolved.Models, model) {
 		return ResolvedSettings{}, nil, modelgateway.ErrProviderNotAllowed
 	}
+	cacheKey := tenantID + "\x00" + model
 	adapter.mu.Lock()
-	if entry, found := adapter.current[tenantID]; found && entry.version == resolved.Version {
+	if entry, found := adapter.current[cacheKey]; found && entry.version == resolved.Version {
 		adapter.mu.Unlock()
 		return resolved, entry.adapter, nil
 	}
-	concrete, err := adapter.factory.NewWithProtocol(resolved.Provider, resolved.Protocol, resolved.BaseURL, resolved.APIKey, resolved.Models)
+	concrete, err := adapter.factory.NewWithProtocol(resolved.Provider, resolved.Protocol, resolved.BaseURL, resolved.APIKey, []string{model})
 	if err == nil {
-		adapter.current[tenantID] = dynamicAdapterEntry{version: resolved.Version, adapter: concrete}
+		adapter.current[cacheKey] = dynamicAdapterEntry{version: resolved.Version, adapter: concrete}
 	}
 	adapter.mu.Unlock()
 	if err != nil {
 		return ResolvedSettings{}, nil, modelgateway.ErrProviderUnavailable
 	}
 	return resolved, concrete, nil
+}
+
+func (adapter *DynamicAdapter) accepts(model string) bool {
+	return adapter != nil && validModelName(model) && (adapter.model == "*" || adapter.model == model)
 }
 
 func tenantFromContext(ctx context.Context) (string, error) {
@@ -222,4 +231,8 @@ func contains(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func validModelName(value string) bool {
+	return value != "" && value != "*" && len(value) <= 256 && strings.TrimSpace(value) == value && !strings.ContainsAny(value, "\r\n\x00")
 }

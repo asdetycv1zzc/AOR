@@ -372,10 +372,11 @@ func settingsFromCatalog(id, provider, baseURL string, protocol Protocol, enable
 	if !found || !validProtocol(catalog, protocol) {
 		return ProviderSettings{}, ErrInvalidSettings
 	}
-	var models []string
-	if json.Unmarshal(encoded, &models) != nil || len(models) == 0 || normalizedModels(catalog, models) == nil {
+	var storedModels []string
+	if json.Unmarshal(encoded, &storedModels) != nil || len(storedModels) == 0 {
 		return ProviderSettings{}, ErrInvalidSettings
 	}
+	models := normalizedModels(catalog, nil)
 	capability := modelCapabilities(catalog.Models[0])
 	for _, model := range catalog.Models {
 		if model.ID == models[0] {

@@ -13,14 +13,13 @@ import (
 
 const MaximumTopK = 500
 
-// SamplingSettings are tenant-global generation parameters. Version is
+// SamplingSettings are tenant-global sampling parameters. Version is
 // assigned by the store and changes only when a value changes.
 type SamplingSettings struct {
-	Temperature     float64 `json:"temperature"`
-	TopP            float64 `json:"topP"`
-	TopK            int     `json:"topK"`
-	ReasoningEffort string  `json:"reasoningEffort"`
-	Version         int64   `json:"version"`
+	Temperature float64 `json:"temperature"`
+	TopP        float64 `json:"topP"`
+	TopK        int     `json:"topK"`
+	Version     int64   `json:"version"`
 }
 
 type SamplingSettingsStore interface {
@@ -29,26 +28,16 @@ type SamplingSettingsStore interface {
 }
 
 func DefaultSamplingSettings() SamplingSettings {
-	return SamplingSettings{Temperature: 0, TopP: 1, TopK: 0, ReasoningEffort: "medium"}
+	return SamplingSettings{Temperature: 0, TopP: 1, TopK: 0}
 }
 
 func ValidateSamplingSettings(settings SamplingSettings) error {
 	if settings.Version < 0 || math.IsNaN(settings.Temperature) || math.IsInf(settings.Temperature, 0) ||
 		settings.Temperature < 0 || settings.Temperature > 2 || math.IsNaN(settings.TopP) || math.IsInf(settings.TopP, 0) ||
-		settings.TopP < 0 || settings.TopP > 1 || settings.TopK < 0 || settings.TopK > MaximumTopK ||
-		!validReasoningEffort(settings.ReasoningEffort) {
+		settings.TopP < 0 || settings.TopP > 1 || settings.TopK < 0 || settings.TopK > MaximumTopK {
 		return ErrInvalidRequest
 	}
 	return nil
-}
-
-func validReasoningEffort(value string) bool {
-	switch value {
-	case "", "none", "minimal", "low", "medium", "high", "xhigh", "max":
-		return true
-	default:
-		return false
-	}
 }
 
 type MemorySamplingSettingsStore struct {
@@ -111,10 +100,10 @@ func (store *PostgresSamplingSettingsStore) Get(ctx context.Context, tenantID st
 	defer func() { _ = tx.Rollback() }()
 	var settings SamplingSettings
 	err = tx.QueryRowContext(ctx, `
-SELECT temperature, top_p, top_k, reasoning_effort, version
+SELECT temperature, top_p, top_k, version
 FROM tenant_model_sampling_settings
 WHERE tenant_id = $1::uuid`, tenantID).Scan(
-		&settings.Temperature, &settings.TopP, &settings.TopK, &settings.ReasoningEffort, &settings.Version,
+		&settings.Temperature, &settings.TopP, &settings.TopK, &settings.Version,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		if err := tx.Commit(); err != nil {
@@ -146,17 +135,16 @@ func (store *PostgresSamplingSettingsStore) Put(ctx context.Context, tenantID st
 	defer func() { _ = tx.Rollback() }()
 	err = tx.QueryRowContext(ctx, `
 INSERT INTO tenant_model_sampling_settings (tenant_id, temperature, top_p, top_k, reasoning_effort, version)
-VALUES ($1::uuid, $2, $3, $4, $5, 1)
+VALUES ($1::uuid, $2, $3, $4, '', 1)
 ON CONFLICT (tenant_id) DO UPDATE
 SET temperature = EXCLUDED.temperature,
     top_p = EXCLUDED.top_p,
     top_k = EXCLUDED.top_k,
-    reasoning_effort = EXCLUDED.reasoning_effort,
+    reasoning_effort = '',
     version = CASE
       WHEN tenant_model_sampling_settings.temperature = EXCLUDED.temperature
        AND tenant_model_sampling_settings.top_p = EXCLUDED.top_p
        AND tenant_model_sampling_settings.top_k = EXCLUDED.top_k
-       AND tenant_model_sampling_settings.reasoning_effort = EXCLUDED.reasoning_effort
       THEN tenant_model_sampling_settings.version
       ELSE tenant_model_sampling_settings.version + 1
     END,
@@ -164,13 +152,12 @@ SET temperature = EXCLUDED.temperature,
       WHEN tenant_model_sampling_settings.temperature = EXCLUDED.temperature
        AND tenant_model_sampling_settings.top_p = EXCLUDED.top_p
        AND tenant_model_sampling_settings.top_k = EXCLUDED.top_k
-       AND tenant_model_sampling_settings.reasoning_effort = EXCLUDED.reasoning_effort
       THEN tenant_model_sampling_settings.updated_at
       ELSE transaction_timestamp()
     END
-RETURNING temperature, top_p, top_k, reasoning_effort, version`,
-		tenantID, settings.Temperature, settings.TopP, settings.TopK, settings.ReasoningEffort,
-	).Scan(&settings.Temperature, &settings.TopP, &settings.TopK, &settings.ReasoningEffort, &settings.Version)
+RETURNING temperature, top_p, top_k, version`,
+		tenantID, settings.Temperature, settings.TopP, settings.TopK,
+	).Scan(&settings.Temperature, &settings.TopP, &settings.TopK, &settings.Version)
 	if err != nil {
 		return SamplingSettings{}, err
 	}

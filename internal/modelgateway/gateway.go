@@ -17,6 +17,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/akimisaka/aor/internal/observability"
+	"github.com/akimisaka/aor/internal/state"
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 )
 
@@ -200,6 +201,9 @@ func (g *Gateway) Stream(ctx context.Context, request NormalizedRequest, options
 	options, err = normalizeGenerateOptions(options)
 	if err != nil {
 		return nil, err
+	}
+	if !state.ValidModelReasoningEffort(options.Provider, request.ReasoningEffort) {
+		return nil, ErrInvalidRequest
 	}
 	if policy, found := g.policyFor(request); found {
 		return g.streamWithPolicy(ctx, request, options, policy)
@@ -406,6 +410,9 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 	if err != nil {
 		return NormalizedResponse{}, err
 	}
+	if !state.ValidModelReasoningEffort(options.Provider, request.ReasoningEffort) {
+		return NormalizedResponse{}, ErrInvalidRequest
+	}
 	ctx, traceSpan := observability.StartSpan(ctx, observability.SpanModelGenerate, modelTraceCorrelation(request), map[string]string{
 		"aor.agent.id":         request.AgentInstanceID,
 		"aor.agent.role":       request.Role,
@@ -511,7 +518,6 @@ func (g *Gateway) applySamplingSettings(ctx context.Context, request NormalizedR
 	request.Temperature = settings.Temperature
 	request.TopP = settings.TopP
 	request.TopK = settings.TopK
-	request.ReasoningEffort = settings.ReasoningEffort
 	return request, nil
 }
 
@@ -674,6 +680,10 @@ func (g *Gateway) selectProviders(ctx context.Context, operation string, request
 	baselineRank := candidates[0].CapabilityRank
 	for index, candidate := range candidates {
 		if candidate.CapabilityRank < policy.MinimumCapabilityRank || index > 0 && candidate.CapabilityRank < baselineRank && !policy.AllowDowngrade {
+			lastErr = ErrProviderNotAllowed
+			continue
+		}
+		if !state.ValidModelReasoningEffort(candidate.Provider, request.ReasoningEffort) {
 			lastErr = ErrProviderNotAllowed
 			continue
 		}
@@ -1649,7 +1659,7 @@ func validateRequest(request NormalizedRequest) error {
 	if request.RequestID == "" || request.TenantID == "" || request.ProjectID == "" || request.AgentInstanceID == "" || request.Role == "" || request.Model == "" || request.PromptBundleVersion == "" || len(request.Messages) == 0 || len(request.Messages) > MaximumMessages || len(request.Tools) > MaximumTools || request.MaxOutputTokens <= 0 || request.DataClassification == "" {
 		return ErrInvalidRequest
 	}
-	if ValidateSamplingSettings(SamplingSettings{Temperature: request.Temperature, TopP: request.TopP, TopK: request.TopK, ReasoningEffort: request.ReasoningEffort}) != nil {
+	if ValidateSamplingSettings(SamplingSettings{Temperature: request.Temperature, TopP: request.TopP, TopK: request.TopK}) != nil {
 		return ErrInvalidRequest
 	}
 	if len(request.ResponseSchema) > MaximumResponseSchemaBytes || len(request.ResponseSchema) != 0 && !json.Valid(request.ResponseSchema) {
@@ -1846,7 +1856,13 @@ func (g *Gateway) String() string {
 func (g *Gateway) provider(key, provider, model string) (ModelAdapter, Pricing, bool) {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	return g.adapters[key], g.pricing[key], g.allowed[provider][model]
+	adapter, pricing := g.adapters[key], g.pricing[key]
+	if adapter == nil {
+		wildcardKey := provider + "\x00*"
+		adapter, pricing = g.adapters[wildcardKey], g.pricing[wildcardKey]
+	}
+	allowed := g.allowed[provider]
+	return adapter, pricing, allowed[model] || allowed["*"]
 }
 
 func (g *Gateway) providerReady(key string, now time.Time) bool {

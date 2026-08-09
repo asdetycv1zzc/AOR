@@ -306,7 +306,7 @@ func (r *Runtime) generate(ctx context.Context, runID string, call ModelCall, me
 		Tools: tools, ResponseSchemaRef: declaration.ResponseSchemaRef,
 		ResponseSchema: append(json.RawMessage(nil), declaration.ResponseSchema...), ResponseSemanticValidator: declaration.ResponseSemanticValidator,
 		MaxOutputTokens: call.MaxOutputTokens,
-		Temperature:     call.Temperature, ProviderPolicy: call.ProviderPolicy,
+		Temperature:     call.Temperature, ReasoningEffort: call.ReasoningEffort, ProviderPolicy: call.ProviderPolicy,
 		DataClassification: declaration.DataClassification, CachePolicy: call.CachePolicy, PromptDigest: prompt.SHA256,
 		ToolSchemaDigest: DigestToolDefinitions(tools), PolicyDigest: declaration.PolicyDigest, WorstCaseCostMicros: call.WorstCaseCostMicros,
 	}

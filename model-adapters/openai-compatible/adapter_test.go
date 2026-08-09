@@ -46,8 +46,10 @@ func TestGenerateUsesChatCompletionsWithoutCredentialLeakage(t *testing.T) {
 	}))
 	defer server.Close()
 
-	adapter := testAdapter(t, server.URL+"/v1/chat/completions", Config{ReasoningEffort: "low"})
-	response, err := adapter.Generate(context.Background(), testRequest())
+	adapter := testAdapter(t, server.URL+"/v1/chat/completions", Config{SupportsReasoningEffort: true})
+	request := testRequest()
+	request.ReasoningEffort = "low"
+	response, err := adapter.Generate(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +356,7 @@ func testAdapter(t *testing.T, endpoint string, overrides Config) *Adapter {
 	if overrides.MaxResponseBytes != 0 {
 		config.MaxResponseBytes = overrides.MaxResponseBytes
 	}
-	config.ReasoningEffort = overrides.ReasoningEffort
+	config.SupportsReasoningEffort = overrides.SupportsReasoningEffort
 	adapter, err := New(config)
 	if err != nil {
 		t.Fatal(err)

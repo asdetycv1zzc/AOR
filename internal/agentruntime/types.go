@@ -221,6 +221,7 @@ type ModelCall struct {
 	RequestID           string
 	Provider            string
 	Model               string
+	ReasoningEffort     string
 	ReservationID       string
 	MaxOutputTokens     int
 	Temperature         float64

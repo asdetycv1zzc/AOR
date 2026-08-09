@@ -651,7 +651,7 @@ func configuredModuleAudit(config runtimeconfig.Config, clients *runtimeclient.C
 	}
 	routeConfig := configuredRoleRoute(config, agentruntime.RoleModuleAuditor)
 	route := goalplan.ModelRoute{
-		Provider: routeConfig.Provider, Model: routeConfig.Model, MaxOutputTokens: routeConfig.MaxOutputTokens,
+		Provider: routeConfig.Provider, Model: routeConfig.Model, ReasoningEffort: routeConfig.ReasoningEffort, MaxOutputTokens: routeConfig.MaxOutputTokens,
 		Temperature: routeConfig.Temperature, Seed: routeConfig.Seed, ProviderPolicy: routeConfig.ProviderPolicy,
 		CachePolicy: routeConfig.CachePolicy, WorstCaseCostMicros: routeConfig.WorstCaseCostMicros, MaxAttempts: routeConfig.MaxAttempts,
 	}
@@ -861,7 +861,7 @@ func configuredWorkerExecution(config runtimeconfig.Config, clients *runtimeclie
 		Knowledge: execution.KnowledgeServiceContextSource{Service: knowledgeService}, PriorEvidence: priorEvidence, Leases: leaseService,
 		Assignments: assignments, Tools: host.Broker().List(),
 		Route: goalplan.ModelRoute{Provider: route.Provider, Model: route.Model, MaxOutputTokens: route.MaxOutputTokens,
-			Temperature: route.Temperature, Seed: route.Seed, ProviderPolicy: route.ProviderPolicy,
+			ReasoningEffort: route.ReasoningEffort, Temperature: route.Temperature, Seed: route.Seed, ProviderPolicy: route.ProviderPolicy,
 			CachePolicy: route.CachePolicy, WorstCaseCostMicros: route.WorstCaseCostMicros, MaxAttempts: route.MaxAttempts},
 		LeaseTTL: 5 * time.Minute, MaxToolRounds: config.Execution.MaxToolRounds, Clock: time.Now,
 	})
@@ -901,7 +901,7 @@ func configuredWorkerExecution(config runtimeconfig.Config, clients *runtimeclie
 			Routes: map[agentruntime.Role]goalplan.ModelRoute{
 				agentruntime.RolePlanSupervisor: {
 					Provider: route.Provider, Model: route.Model, MaxOutputTokens: route.MaxOutputTokens,
-					Temperature: route.Temperature, Seed: route.Seed, ProviderPolicy: route.ProviderPolicy,
+					ReasoningEffort: route.ReasoningEffort, Temperature: route.Temperature, Seed: route.Seed, ProviderPolicy: route.ProviderPolicy,
 					CachePolicy: route.CachePolicy, WorstCaseCostMicros: route.WorstCaseCostMicros, MaxAttempts: route.MaxAttempts,
 				},
 			},
@@ -935,7 +935,7 @@ func configuredGlobalAudit(config runtimeconfig.Config, clients *runtimeclient.C
 	}
 	routeConfig := configuredRoleRoute(config, agentruntime.RoleGlobalAuditor)
 	route := goalplan.ModelRoute{
-		Provider: routeConfig.Provider, Model: routeConfig.Model, MaxOutputTokens: routeConfig.MaxOutputTokens,
+		Provider: routeConfig.Provider, Model: routeConfig.Model, ReasoningEffort: routeConfig.ReasoningEffort, MaxOutputTokens: routeConfig.MaxOutputTokens,
 		Temperature: routeConfig.Temperature, Seed: routeConfig.Seed, ProviderPolicy: routeConfig.ProviderPolicy,
 		CachePolicy: routeConfig.CachePolicy, WorstCaseCostMicros: routeConfig.WorstCaseCostMicros, MaxAttempts: routeConfig.MaxAttempts,
 	}

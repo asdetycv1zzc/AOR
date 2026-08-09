@@ -34,7 +34,6 @@ type Config struct {
 	Endpoint                string
 	Credential              string
 	Models                  map[string]modelgateway.ModelCapabilities
-	ReasoningEffort         string
 	SupportsReasoningEffort bool
 	HTTPClient              *http.Client
 	RequestTimeout          time.Duration
@@ -48,7 +47,6 @@ type Adapter struct {
 	endpoint                string
 	credential              string
 	models                  map[string]modelgateway.ModelCapabilities
-	reasoningEffort         string
 	supportsReasoningEffort bool
 	client                  *http.Client
 	timeout                 time.Duration
@@ -62,7 +60,7 @@ type Adapter struct {
 
 func New(config Config) (*Adapter, error) {
 	endpoint, err := validateEndpoint(config.Endpoint)
-	if err != nil || config.Credential == "" || len(config.Models) == 0 || !validReasoningEffort(config.ReasoningEffort) {
+	if err != nil || config.Credential == "" || len(config.Models) == 0 {
 		return nil, modelgateway.ErrInvalidRequest
 	}
 	models := make(map[string]modelgateway.ModelCapabilities, len(config.Models))
@@ -102,8 +100,8 @@ func New(config Config) (*Adapter, error) {
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &Adapter{
 		endpoint: endpoint, credential: config.Credential, models: models, client: client,
-		reasoningEffort: config.ReasoningEffort, supportsReasoningEffort: config.SupportsReasoningEffort || config.ReasoningEffort != "",
-		timeout: config.RequestTimeout, maxRequestBytes: config.MaxRequestBytes,
+		supportsReasoningEffort: config.SupportsReasoningEffort,
+		timeout:                 config.RequestTimeout, maxRequestBytes: config.MaxRequestBytes,
 		maxResponseBytes: config.MaxResponseBytes, maxStreamEventBytes: config.MaxStreamEventBytes,
 		active: make(map[string]*responseStream),
 	}, nil
@@ -324,9 +322,6 @@ func (a *Adapter) encodeRequest(request modelgateway.NormalizedRequest, stream b
 	reasoningEffort := ""
 	if a.supportsReasoningEffort {
 		reasoningEffort = request.ReasoningEffort
-		if reasoningEffort == "" {
-			reasoningEffort = a.reasoningEffort
-		}
 	}
 	value := chatRequest{
 		Model: request.Model, MaxTokens: request.MaxOutputTokens, Temperature: request.Temperature,
@@ -647,7 +642,7 @@ type chatRequest struct {
 
 func validReasoningEffort(value string) bool {
 	switch value {
-	case "", "none", "minimal", "low", "medium", "high", "xhigh", "max":
+	case "", "none", "low", "medium", "high", "xhigh", "max":
 		return true
 	default:
 		return false

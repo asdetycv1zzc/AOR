@@ -16,6 +16,9 @@ func ResolveProjectModelRoute(project state.Project, role agentruntime.Role, fal
 		if len(project.ModelRoutes) != 0 {
 			return ModelRoute{}, false
 		}
+		if fallback.ReasoningEffort == "" {
+			fallback.ReasoningEffort = state.DefaultModelReasoningEffort(fallback.Provider)
+		}
 		if !validModelRoute(fallback) {
 			return ModelRoute{}, false
 		}
@@ -24,6 +27,7 @@ func ResolveProjectModelRoute(project state.Project, role agentruntime.Role, fal
 	route := ModelRoute{
 		Provider:            configured.Provider,
 		Model:               configured.Model,
+		ReasoningEffort:     configured.ReasoningEffort,
 		MaxOutputTokens:     configured.MaxOutputTokens,
 		Temperature:         configured.Temperature,
 		Seed:                configured.Seed,
@@ -31,6 +35,9 @@ func ResolveProjectModelRoute(project state.Project, role agentruntime.Role, fal
 		CachePolicy:         configured.CachePolicy,
 		WorstCaseCostMicros: configured.WorstCaseCostMicros,
 		MaxAttempts:         configured.MaxAttempts,
+	}
+	if route.ReasoningEffort == "" {
+		route.ReasoningEffort = state.DefaultModelReasoningEffort(route.Provider)
 	}
 	if !validModelRoute(route) {
 		return ModelRoute{}, false

@@ -12,15 +12,14 @@ import (
 )
 
 type modelSamplingSettingsBody struct {
-	Temperature     float64 `json:"temperature"`
-	TopP            float64 `json:"topP"`
-	TopK            int     `json:"topK"`
-	ReasoningEffort string  `json:"reasoningEffort"`
+	Temperature float64 `json:"temperature"`
+	TopP        float64 `json:"topP"`
+	TopK        int     `json:"topK"`
 }
 
 func (body modelSamplingSettingsBody) settings() modelgateway.SamplingSettings {
 	return modelgateway.SamplingSettings{
-		Temperature: body.Temperature, TopP: body.TopP, TopK: body.TopK, ReasoningEffort: body.ReasoningEffort,
+		Temperature: body.Temperature, TopP: body.TopP, TopK: body.TopK,
 	}
 }
 

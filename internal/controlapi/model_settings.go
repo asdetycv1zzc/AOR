@@ -21,7 +21,6 @@ type ModelProvider struct {
 	ID                         string   `json:"id"`
 	Provider                   string   `json:"provider"`
 	Models                     []string `json:"models"`
-	ReasoningEffort            string   `json:"reasoningEffort,omitempty"`
 	InputMicrosPerToken        int64    `json:"inputMicrosPerToken"`
 	OutputMicrosPerToken       int64    `json:"outputMicrosPerToken"`
 	SupportsStreaming          bool     `json:"supportsStreaming"`
@@ -74,7 +73,7 @@ func validateModelProviders(providers []ModelProvider) error {
 	for _, provider := range providers {
 		if !safeModelValue(provider.ID, 128) || !safeModelValue(provider.Provider, 128) || len(provider.Models) == 0 ||
 			provider.InputMicrosPerToken < 0 || provider.OutputMicrosPerToken < 0 || provider.MaxInputTokens < 1 || provider.MaxOutputTokens < 1 ||
-			!safeOptionalModelValue(provider.ReasoningEffort, 128) || !safeModelValue(provider.RetentionPolicy, 256) ||
+			!safeModelValue(provider.RetentionPolicy, 256) ||
 			len(provider.AllowedDataClassifications) == 0 || len(provider.DataResidency) == 0 || len(provider.Modalities) == 0 {
 			return errors.New("invalid model provider")
 		}
@@ -100,7 +99,7 @@ func validateRoutesAgainstProviders(routes map[string]state.ProjectModelRoute, p
 	}
 	for role, route := range routes {
 		provider, found := byID[route.Provider]
-		if !found || !containsModel(provider.Models, route.Model) || route.MaxOutputTokens > provider.MaxOutputTokens ||
+		if !found || !safeModelValue(route.Model, 256) || route.Model == "*" || route.MaxOutputTokens > provider.MaxOutputTokens ||
 			route.Seed != nil && !provider.SupportsSeed || !provider.SupportsJSONSchema || routeUsesTools(role) && !provider.SupportsToolCalls {
 			return errors.New("model route is not supported by provider")
 		}
@@ -128,19 +127,6 @@ func uniqueModelValues(values []string, maximum int) bool {
 
 func safeModelValue(value string, maximum int) bool {
 	return value != "" && len(value) <= maximum && strings.TrimSpace(value) == value && !strings.ContainsAny(value, "\r\n\x00")
-}
-
-func safeOptionalModelValue(value string, maximum int) bool {
-	return value == "" || safeModelValue(value, maximum)
-}
-
-func containsModel(models []string, model string) bool {
-	for _, candidate := range models {
-		if candidate == model {
-			return true
-		}
-	}
-	return false
 }
 
 func cloneModelProviders(providers []ModelProvider) []ModelProvider {
@@ -376,7 +362,16 @@ WHERE tenant_id = $1::uuid`, tenantID).Scan(&encoded, &version)
 		return nil, 0, false, err
 	}
 	var routes map[string]state.ProjectModelRoute
-	if json.Unmarshal(encoded, &routes) != nil || state.ValidateProjectModelRoutes(routes) != nil || version < 1 {
+	if json.Unmarshal(encoded, &routes) != nil {
+		return nil, 0, false, errors.New("invalid persisted model route settings")
+	}
+	for role, route := range routes {
+		if route.ReasoningEffort == "" {
+			route.ReasoningEffort = state.DefaultModelReasoningEffort(route.Provider)
+			routes[role] = route
+		}
+	}
+	if state.ValidateProjectModelRoutes(routes) != nil || version < 1 {
 		return nil, 0, false, errors.New("invalid persisted model route settings")
 	}
 	if err := tx.Commit(); err != nil {

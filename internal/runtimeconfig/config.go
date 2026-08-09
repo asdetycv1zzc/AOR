@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/akimisaka/aor/internal/state"
 )
 
 var ErrInvalidConfiguration = errors.New("invalid runtime configuration")
@@ -147,6 +149,7 @@ type IntegrationCheckConfig struct {
 type GoalPlanRouteConfig struct {
 	Provider            string  `json:"provider"`
 	Model               string  `json:"model"`
+	ReasoningEffort     string  `json:"reasoningEffort"`
 	MaxOutputTokens     int     `json:"maxOutputTokens"`
 	Temperature         float64 `json:"temperature"`
 	Seed                *int64  `json:"seed,omitempty"`
@@ -162,7 +165,6 @@ type ProviderConfig struct {
 	BaseURL                    string   `json:"baseUrl"`
 	APIKeyRef                  string   `json:"apiKeyRef"`
 	Models                     []string `json:"models"`
-	ReasoningEffort            string   `json:"reasoningEffort,omitempty"`
 	InputMicrosPerToken        int64    `json:"inputMicrosPerToken"`
 	OutputMicrosPerToken       int64    `json:"outputMicrosPerToken"`
 	SupportsStreaming          bool     `json:"supportsStreaming"`
@@ -526,7 +528,7 @@ func (config Config) Validate() error {
 }
 
 func globalAuditRouteConfigured(route GoalPlanRouteConfig) bool {
-	return route.Provider != "" || route.Model != "" || route.MaxOutputTokens != 0 || route.Temperature != 0 || route.Seed != nil || route.ProviderPolicy != "" || route.CachePolicy != "" || route.WorstCaseCostMicros != 0 || route.MaxAttempts != 0
+	return route.Provider != "" || route.Model != "" || route.ReasoningEffort != "" || route.MaxOutputTokens != 0 || route.Temperature != 0 || route.Seed != nil || route.ProviderPolicy != "" || route.CachePolicy != "" || route.WorstCaseCostMicros != 0 || route.MaxAttempts != 0
 }
 
 func validateProviders(providers []ProviderConfig) error {
@@ -536,7 +538,7 @@ func validateProviders(providers []ProviderConfig) error {
 	ids := make(map[string]struct{}, len(providers))
 	families := make(map[string]struct{}, len(providers))
 	for _, provider := range providers {
-		if provider.ID == "" || provider.Provider == "" || !validURL(provider.BaseURL, "http", "https") || !validSecretReference(provider.APIKeyRef) || len(provider.Models) == 0 || !oneOf(provider.ReasoningEffort, "", "none", "minimal", "low", "medium", "high", "xhigh", "max") || provider.InputMicrosPerToken < 0 || provider.OutputMicrosPerToken < 0 || provider.MaxInputTokens <= 0 || provider.MaxOutputTokens <= 0 || len(provider.AllowedDataClassifications) == 0 || strings.TrimSpace(provider.RetentionPolicy) == "" || len(provider.DataResidency) == 0 || len(provider.Modalities) == 0 {
+		if provider.ID == "" || provider.Provider == "" || !validURL(provider.BaseURL, "http", "https") || !validSecretReference(provider.APIKeyRef) || len(provider.Models) == 0 || provider.InputMicrosPerToken < 0 || provider.OutputMicrosPerToken < 0 || provider.MaxInputTokens <= 0 || provider.MaxOutputTokens <= 0 || len(provider.AllowedDataClassifications) == 0 || strings.TrimSpace(provider.RetentionPolicy) == "" || len(provider.DataResidency) == 0 || len(provider.Modalities) == 0 {
 			return ErrInvalidConfiguration
 		}
 		if _, duplicate := ids[provider.ID]; duplicate {
@@ -597,7 +599,8 @@ func validateGoalPlanRoutes(routes map[string]GoalPlanRouteConfig) error {
 }
 
 func validGoalPlanRoute(route GoalPlanRouteConfig) bool {
-	return validIdentityPart(route.Provider, 128) && validIdentityPart(route.Model, 256) &&
+	return validIdentityPart(route.Provider, 128) && validIdentityPart(route.Model, 256) && route.Model != "*" &&
+		state.ValidModelReasoningEffort(route.Provider, route.ReasoningEffort) &&
 		route.MaxOutputTokens >= 1 && route.MaxOutputTokens <= 1_000_000 && route.Temperature >= 0 && route.Temperature <= 2 &&
 		validIdentityPart(route.ProviderPolicy, 256) && validIdentityPart(route.CachePolicy, 128) &&
 		route.WorstCaseCostMicros >= 0 && route.MaxAttempts >= 1 && route.MaxAttempts <= 5
