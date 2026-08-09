@@ -358,6 +358,13 @@
       "file": "000051_openai_responses_protocol.up.sql",
       "sha256": "sha256:aea89fd406ee898d2a1db1483527a6c18618a5ce00efd8bc46c581bf3e77cb09",
       "destructive": false
+    },
+    {
+      "version": 52,
+      "mode": "EXPAND",
+      "file": "000052_provider_protocol_selection.up.sql",
+      "sha256": "sha256:3d0af14618533e0b704f087ffe92daa4d6c2a8c3ec82128848b51e2ce5f3b4b0",
+      "destructive": false
     }
   ]
 }

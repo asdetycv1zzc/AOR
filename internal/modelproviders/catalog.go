@@ -53,20 +53,21 @@ type CatalogModel struct {
 // The aliases cover the model names used by the classroom deployment while
 // keeping the provider credentials and endpoints out of source and Compose.
 func Catalog() []ProviderCatalog {
+	protocols := []Protocol{ProtocolOpenAIResponses, ProtocolAnthropic, ProtocolOpenAICompatible}
 	return cloneCatalog([]ProviderCatalog{
 		{
-			ID: ProviderOpenAI, DisplayName: "OpenAI", Protocol: ProtocolOpenAIResponses, Protocols: []Protocol{ProtocolOpenAIResponses, ProtocolOpenAICompatible},
+			ID: ProviderOpenAI, DisplayName: "OpenAI", Protocol: ProtocolOpenAIResponses, Protocols: protocols,
 			Models: openAIModels(),
 		},
 		{
-			ID: ProviderDeepSeek, DisplayName: "DeepSeek", Protocol: ProtocolOpenAICompatible, Protocols: []Protocol{ProtocolOpenAICompatible},
+			ID: ProviderDeepSeek, DisplayName: "DeepSeek", Protocol: ProtocolOpenAICompatible, Protocols: protocols,
 			Models: []CatalogModel{
 				{ID: "deepseek-v4-pro", MaxInput: 32768, MaxOutput: 8192, ToolCalls: true, JSONSchema: true, Streaming: true},
 				{ID: "deepseek-v4-flash", MaxInput: 32768, MaxOutput: 8192, ToolCalls: true, JSONSchema: true, Streaming: true},
 			},
 		},
 		{
-			ID: ProviderClaude, DisplayName: "Claude", Protocol: ProtocolAnthropic, Protocols: []Protocol{ProtocolAnthropic, ProtocolOpenAICompatible},
+			ID: ProviderClaude, DisplayName: "Claude", Protocol: ProtocolAnthropic, Protocols: protocols,
 			Models: []CatalogModel{
 				{ID: "claude-sonnet-4-5", MaxInput: 200000, MaxOutput: 8192, ToolCalls: true, JSONSchema: true},
 				{ID: "claude-sonnet-4-6", MaxInput: 200000, MaxOutput: 8192, ToolCalls: true, JSONSchema: true},
@@ -84,7 +85,7 @@ func Catalog() []ProviderCatalog {
 			},
 		},
 		{
-			ID: ProviderGrok, DisplayName: "Grok", Protocol: ProtocolOpenAICompatible, Protocols: []Protocol{ProtocolOpenAICompatible},
+			ID: ProviderGrok, DisplayName: "Grok", Protocol: ProtocolOpenAICompatible, Protocols: protocols,
 			Models: []CatalogModel{
 				{ID: "grok-4.5", MaxInput: 131072, MaxOutput: 8192, ToolCalls: true, JSONSchema: true, Streaming: true},
 			},

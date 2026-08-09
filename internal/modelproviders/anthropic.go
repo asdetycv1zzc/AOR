@@ -324,7 +324,7 @@ func (adapter *anthropicAdapter) encodeRequest(request modelgateway.NormalizedRe
 
 func validAnthropicEffort(value string) bool {
 	switch value {
-	case "", "low", "medium", "high", "xhigh", "max":
+	case "", "none", "low", "medium", "high", "xhigh", "max":
 		return true
 	default:
 		return false
