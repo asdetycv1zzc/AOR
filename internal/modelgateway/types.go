@@ -136,6 +136,9 @@ type NormalizedRequest struct {
 	ResponseSemanticValidator func(json.RawMessage) error `json:"-"`
 	MaxOutputTokens           int                         `json:"maxOutputTokens"`
 	Temperature               float64                     `json:"temperature"`
+	TopP                      float64                     `json:"topP,omitempty"`
+	TopK                      int                         `json:"topK,omitempty"`
+	ReasoningEffort           string                      `json:"reasoningEffort,omitempty"`
 	Seed                      *int64                      `json:"seed,omitempty"`
 	ProviderPolicy            string                      `json:"providerPolicy"`
 	DataClassification        string                      `json:"dataClassification"`

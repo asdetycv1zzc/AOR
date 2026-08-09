@@ -31,28 +31,30 @@ const (
 // Config binds one adapter instance to a single Chat Completions endpoint and
 // an explicitly configured set of model capabilities.
 type Config struct {
-	Endpoint            string
-	Credential          string
-	Models              map[string]modelgateway.ModelCapabilities
-	ReasoningEffort     string
-	HTTPClient          *http.Client
-	RequestTimeout      time.Duration
-	MaxRequestBytes     int64
-	MaxResponseBytes    int64
-	MaxStreamEventBytes int64
+	Endpoint                string
+	Credential              string
+	Models                  map[string]modelgateway.ModelCapabilities
+	ReasoningEffort         string
+	SupportsReasoningEffort bool
+	HTTPClient              *http.Client
+	RequestTimeout          time.Duration
+	MaxRequestBytes         int64
+	MaxResponseBytes        int64
+	MaxStreamEventBytes     int64
 }
 
 // Adapter never copies its credential into requests, responses, or errors.
 type Adapter struct {
-	endpoint            string
-	credential          string
-	models              map[string]modelgateway.ModelCapabilities
-	reasoningEffort     string
-	client              *http.Client
-	timeout             time.Duration
-	maxRequestBytes     int64
-	maxResponseBytes    int64
-	maxStreamEventBytes int64
+	endpoint                string
+	credential              string
+	models                  map[string]modelgateway.ModelCapabilities
+	reasoningEffort         string
+	supportsReasoningEffort bool
+	client                  *http.Client
+	timeout                 time.Duration
+	maxRequestBytes         int64
+	maxResponseBytes        int64
+	maxStreamEventBytes     int64
 
 	mu     sync.Mutex
 	active map[string]*responseStream
@@ -100,8 +102,8 @@ func New(config Config) (*Adapter, error) {
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &Adapter{
 		endpoint: endpoint, credential: config.Credential, models: models, client: client,
-		reasoningEffort: config.ReasoningEffort,
-		timeout:         config.RequestTimeout, maxRequestBytes: config.MaxRequestBytes,
+		reasoningEffort: config.ReasoningEffort, supportsReasoningEffort: config.SupportsReasoningEffort || config.ReasoningEffort != "",
+		timeout: config.RequestTimeout, maxRequestBytes: config.MaxRequestBytes,
 		maxResponseBytes: config.MaxResponseBytes, maxStreamEventBytes: config.MaxStreamEventBytes,
 		active: make(map[string]*responseStream),
 	}, nil
@@ -263,7 +265,7 @@ func (a *Adapter) validateRequest(request modelgateway.NormalizedRequest, requir
 		return modelgateway.ModelCapabilities{}, err
 	}
 	if request.Model == "" || len(request.Messages) == 0 || len(request.Messages) > modelgateway.MaximumMessages || len(request.Tools) > modelgateway.MaximumTools || request.MaxOutputTokens <= 0 || request.MaxOutputTokens > capabilities.MaxOutputTokens ||
-		request.Temperature < 0 || request.Temperature > 2 || !utf8.ValidString(request.Model) {
+		request.Temperature < 0 || request.Temperature > 2 || request.TopP < 0 || request.TopP > 1 || request.TopK < 0 || !validReasoningEffort(request.ReasoningEffort) || !utf8.ValidString(request.Model) {
 		return modelgateway.ModelCapabilities{}, modelgateway.ErrInvalidRequest
 	}
 	if request.Seed != nil && !capabilities.SupportsSeed {
@@ -319,7 +321,17 @@ func (a *Adapter) encodeRequest(request modelgateway.NormalizedRequest, stream b
 	if stream && requestUsesNativeTools(request) {
 		return nil, modelgateway.ErrProviderNotAllowed
 	}
-	value := chatRequest{Model: request.Model, MaxTokens: request.MaxOutputTokens, Temperature: request.Temperature, ReasoningEffort: a.reasoningEffort, Stream: stream}
+	reasoningEffort := ""
+	if a.supportsReasoningEffort {
+		reasoningEffort = request.ReasoningEffort
+		if reasoningEffort == "" {
+			reasoningEffort = a.reasoningEffort
+		}
+	}
+	value := chatRequest{
+		Model: request.Model, MaxTokens: request.MaxOutputTokens, Temperature: request.Temperature,
+		TopP: request.TopP, ReasoningEffort: reasoningEffort, Stream: stream,
+	}
 	if stream {
 		value.StreamOptions = &chatStreamOptions{IncludeUsage: true}
 	}
@@ -625,6 +637,7 @@ type chatRequest struct {
 	ResponseFormat  *chatResponseFormat `json:"response_format,omitempty"`
 	MaxTokens       int                 `json:"max_tokens"`
 	Temperature     float64             `json:"temperature"`
+	TopP            float64             `json:"top_p"`
 	ReasoningEffort string              `json:"reasoning_effort,omitempty"`
 	Seed            *int64              `json:"seed,omitempty"`
 	Stream          bool                `json:"stream,omitempty"`

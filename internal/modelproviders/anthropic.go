@@ -34,13 +34,20 @@ type anthropicAdapter struct {
 }
 
 type anthropicRequest struct {
-	Model       string               `json:"model"`
-	MaxTokens   int                  `json:"max_tokens"`
-	Temperature float64              `json:"temperature"`
-	System      string               `json:"system,omitempty"`
-	Messages    []anthropicMessage   `json:"messages"`
-	Tools       []anthropicTool      `json:"tools,omitempty"`
-	ToolChoice  *anthropicToolChoice `json:"tool_choice,omitempty"`
+	Model        string                 `json:"model"`
+	MaxTokens    int                    `json:"max_tokens"`
+	Temperature  float64                `json:"temperature"`
+	TopP         float64                `json:"top_p"`
+	TopK         int                    `json:"top_k,omitempty"`
+	OutputConfig *anthropicOutputConfig `json:"output_config,omitempty"`
+	System       string                 `json:"system,omitempty"`
+	Messages     []anthropicMessage     `json:"messages"`
+	Tools        []anthropicTool        `json:"tools,omitempty"`
+	ToolChoice   *anthropicToolChoice   `json:"tool_choice,omitempty"`
+}
+
+type anthropicOutputConfig struct {
+	Effort string `json:"effort"`
 }
 
 type anthropicMessage struct {
@@ -235,7 +242,7 @@ func (adapter *anthropicAdapter) validateRequest(ctx context.Context, request mo
 	if err != nil {
 		return modelgateway.ModelCapabilities{}, err
 	}
-	if requireID && request.RequestID == "" || len(request.Messages) == 0 || len(request.Messages) > modelgateway.MaximumMessages || len(request.Tools) > modelgateway.MaximumTools || request.MaxOutputTokens <= 0 || request.MaxOutputTokens > capabilities.MaxOutputTokens || request.Temperature < 0 || request.Temperature > 1 || request.Seed != nil {
+	if requireID && request.RequestID == "" || len(request.Messages) == 0 || len(request.Messages) > modelgateway.MaximumMessages || len(request.Tools) > modelgateway.MaximumTools || request.MaxOutputTokens <= 0 || request.MaxOutputTokens > capabilities.MaxOutputTokens || request.Temperature < 0 || request.Temperature > 1 || request.TopP < 0 || request.TopP > 1 || request.TopK < 0 || !validAnthropicEffort(request.ReasoningEffort) || request.Seed != nil {
 		return modelgateway.ModelCapabilities{}, modelgateway.ErrInvalidRequest
 	}
 	if len(request.Tools) != 0 && !capabilities.SupportsToolCalls || len(request.ResponseSchema) != 0 && (!capabilities.SupportsJSONSchema || !json.Valid(request.ResponseSchema)) {
@@ -263,7 +270,10 @@ func (adapter *anthropicAdapter) validateRequest(ctx context.Context, request mo
 }
 
 func (adapter *anthropicAdapter) encodeRequest(request modelgateway.NormalizedRequest) ([]byte, error) {
-	value := anthropicRequest{Model: request.Model, MaxTokens: request.MaxOutputTokens, Temperature: request.Temperature}
+	value := anthropicRequest{Model: request.Model, MaxTokens: request.MaxOutputTokens, Temperature: request.Temperature, TopP: request.TopP, TopK: request.TopK}
+	if effort := anthropicEffort(request.Model, request.ReasoningEffort); effort != "" {
+		value.OutputConfig = &anthropicOutputConfig{Effort: effort}
+	}
 	systems := make([]string, 0, 1)
 	for _, message := range request.Messages {
 		if message.Role == "system" {
@@ -304,6 +314,38 @@ func (adapter *anthropicAdapter) encodeRequest(request modelgateway.NormalizedRe
 		return nil, modelgateway.ErrInvalidRequest
 	}
 	return encoded, nil
+}
+
+func validAnthropicEffort(value string) bool {
+	switch value {
+	case "", "none", "minimal", "low", "medium", "high", "xhigh":
+		return true
+	default:
+		return false
+	}
+}
+
+func anthropicEffort(model, value string) string {
+	if !anthropicModelSupportsEffort(model) {
+		return ""
+	}
+	switch value {
+	case "minimal":
+		return "low"
+	case "low", "medium", "high", "xhigh":
+		return value
+	default:
+		return ""
+	}
+}
+
+func anthropicModelSupportsEffort(model string) bool {
+	switch model {
+	case "claude-opus-4-5", "claude-opus-4-6", "claude-sonnet-4-6", "claude-fable-4-6":
+		return true
+	default:
+		return false
+	}
 }
 
 func appendAnthropicMessage(messages []anthropicMessage, next anthropicMessage) []anthropicMessage {

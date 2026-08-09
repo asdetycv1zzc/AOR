@@ -44,7 +44,8 @@ func newAdapter(factory AdapterFactory, provider string, protocol Protocol, base
 		}
 		adapter, err := openaicompatible.New(openaicompatible.Config{
 			Endpoint: endpoint, Credential: apiKey, Models: capabilities,
-			HTTPClient: factory.HTTPClient, RequestTimeout: factory.RequestTimeout,
+			SupportsReasoningEffort: provider == ProviderOpenAI,
+			HTTPClient:              factory.HTTPClient, RequestTimeout: factory.RequestTimeout,
 		})
 		if err != nil {
 			return nil, err

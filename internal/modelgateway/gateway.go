@@ -45,6 +45,7 @@ type Gateway struct {
 	replayStore            ModelReplayStore
 	replayFinalizer        ModelCallReplayFinalizer
 	callLookup             ModelCallLookup
+	samplingSettings       SamplingSettingsStore
 	executions             map[string]*requestExecution
 }
 
@@ -67,6 +68,7 @@ type GatewayConfig struct {
 	ProviderEligibility    ProviderEligibility
 	ReplayStore            ModelReplayStore
 	CallLookup             ModelCallLookup
+	SamplingSettings       SamplingSettingsStore
 }
 
 type requestExecution struct {
@@ -123,7 +125,7 @@ func NewGatewayWithConfig(ledger BudgetLedgerBackend, clock func() time.Time, co
 	if config.ReplayStore == nil && replayStore != nil {
 		replayFinalizer, _ = ledger.(ModelCallReplayFinalizer)
 	}
-	return &Gateway{adapters: make(map[string]ModelAdapter), allowed: make(map[string]map[string]bool), pricing: make(map[string]Pricing), ledger: ledger, callFinalizer: finalizer, clock: clock, circuits: make(map[string]providerCircuit), initialProviderBackoff: config.InitialProviderBackoff, maximumProviderBackoff: config.MaximumProviderBackoff, backoffJitterRatio: config.BackoffJitterRatio, sleep: config.Sleep, policies: policies, eligibility: config.ProviderEligibility, replayStore: replayStore, replayFinalizer: replayFinalizer, callLookup: callLookup, executions: make(map[string]*requestExecution)}
+	return &Gateway{adapters: make(map[string]ModelAdapter), allowed: make(map[string]map[string]bool), pricing: make(map[string]Pricing), ledger: ledger, callFinalizer: finalizer, clock: clock, circuits: make(map[string]providerCircuit), initialProviderBackoff: config.InitialProviderBackoff, maximumProviderBackoff: config.MaximumProviderBackoff, backoffJitterRatio: config.BackoffJitterRatio, sleep: config.Sleep, policies: policies, eligibility: config.ProviderEligibility, replayStore: replayStore, replayFinalizer: replayFinalizer, callLookup: callLookup, samplingSettings: config.SamplingSettings, executions: make(map[string]*requestExecution)}
 }
 
 func (g *Gateway) Register(provider, model string, adapter ModelAdapter, pricing Pricing) error {
@@ -187,10 +189,14 @@ func (g *Gateway) Stream(ctx context.Context, request NormalizedRequest, options
 	if ctx == nil {
 		return nil, ErrInvalidRequest
 	}
+	var err error
+	request, err = g.applySamplingSettings(ctx, request)
+	if err != nil {
+		return nil, err
+	}
 	if requestUsesNativeTools(request) {
 		return nil, ErrProviderNotAllowed
 	}
-	var err error
 	options, err = normalizeGenerateOptions(options)
 	if err != nil {
 		return nil, err
@@ -388,10 +394,15 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 	if ctx == nil {
 		return NormalizedResponse{}, ErrInvalidRequest
 	}
+	var err error
+	request, err = g.applySamplingSettings(ctx, request)
+	if err != nil {
+		return NormalizedResponse{}, err
+	}
 	if err := validateRequest(request); err != nil {
 		return NormalizedResponse{}, err
 	}
-	options, err := normalizeGenerateOptions(options)
+	options, err = normalizeGenerateOptions(options)
 	if err != nil {
 		return NormalizedResponse{}, err
 	}
@@ -478,6 +489,30 @@ func normalizedRequestDigest(request NormalizedRequest, options GenerateOptions)
 		return "", ErrInvalidRequest
 	}
 	return canonicaljson.Digest(encoded)
+}
+
+func (g *Gateway) applySamplingSettings(ctx context.Context, request NormalizedRequest) (NormalizedRequest, error) {
+	if g.samplingSettings == nil {
+		return request, nil
+	}
+	if request.TenantID == "" {
+		return NormalizedRequest{}, ErrInvalidRequest
+	}
+	settings, found, err := g.samplingSettings.Get(ctx, request.TenantID)
+	if err != nil {
+		return NormalizedRequest{}, ErrProviderUnavailable
+	}
+	if !found {
+		settings = DefaultSamplingSettings()
+	}
+	if ValidateSamplingSettings(settings) != nil {
+		return NormalizedRequest{}, ErrProviderUnavailable
+	}
+	request.Temperature = settings.Temperature
+	request.TopP = settings.TopP
+	request.TopK = settings.TopK
+	request.ReasoningEffort = settings.ReasoningEffort
+	return request, nil
 }
 
 func (g *Gateway) loadReplay(ctx context.Context, request NormalizedRequest, digest string) (ModelReplay, bool, error) {
@@ -1612,6 +1647,9 @@ func requestUsesNativeTools(request NormalizedRequest) bool {
 
 func validateRequest(request NormalizedRequest) error {
 	if request.RequestID == "" || request.TenantID == "" || request.ProjectID == "" || request.AgentInstanceID == "" || request.Role == "" || request.Model == "" || request.PromptBundleVersion == "" || len(request.Messages) == 0 || len(request.Messages) > MaximumMessages || len(request.Tools) > MaximumTools || request.MaxOutputTokens <= 0 || request.DataClassification == "" {
+		return ErrInvalidRequest
+	}
+	if ValidateSamplingSettings(SamplingSettings{Temperature: request.Temperature, TopP: request.TopP, TopK: request.TopK, ReasoningEffort: request.ReasoningEffort}) != nil {
 		return ErrInvalidRequest
 	}
 	if len(request.ResponseSchema) > MaximumResponseSchemaBytes || len(request.ResponseSchema) != 0 && !json.Valid(request.ResponseSchema) {
