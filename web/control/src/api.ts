@@ -48,6 +48,17 @@ function dollarsToMinor(value: number): number {
   return rounded;
 }
 
+function idempotencyKey(): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  const bytes = globalThis.crypto?.getRandomValues(new Uint8Array(24));
+  if (!bytes) {
+    throw new Error("当前浏览器无法生成安全的请求标识");
+  }
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 function projectFromResponse(response: ProjectResponse): Project {
   const { budgetHardLimitMinor, budgetSoftLimitMinor, ...project } = response;
   return {
@@ -110,7 +121,7 @@ export class AorClient {
     };
     const response = await this.request<ProjectResponse>("/v1/projects", {
       method: "POST",
-      headers: { "Idempotency-Key": crypto.randomUUID() },
+      headers: { "Idempotency-Key": idempotencyKey() },
       body: JSON.stringify(request),
     });
     return projectFromResponse(response);
@@ -189,7 +200,7 @@ export class AorClient {
     return this.request(`/v1/projects/${encodeURIComponent(project.id)}/goal/messages`, {
       method: "POST",
       headers: {
-        "Idempotency-Key": crypto.randomUUID(),
+        "Idempotency-Key": idempotencyKey(),
         "If-Match": `"v${project.version}"`,
       },
       body: JSON.stringify({ expectedVersion: project.version, message }),
@@ -202,7 +213,7 @@ export class AorClient {
       {
         method: "POST",
         headers: {
-          "Idempotency-Key": crypto.randomUUID(),
+          "Idempotency-Key": idempotencyKey(),
           "If-Match": `"v${project.version}"`,
         },
         body: JSON.stringify({
