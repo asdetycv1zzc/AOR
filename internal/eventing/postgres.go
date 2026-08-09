@@ -13,6 +13,11 @@ import (
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
 )
 
+const (
+	projectBudgetMicrosPerMinor = int64(10_000)
+	maximumProjectBudgetMinor   = int64(1<<63-1) / projectBudgetMicrosPerMinor
+)
+
 type PostgresStore struct {
 	db *sql.DB
 }
@@ -661,6 +666,11 @@ func syncProjectRow(ctx context.Context, tx *sql.Tx, request TransactionRequest,
 		if projection.BudgetCurrency == "" {
 			projection.BudgetCurrency = "USD"
 		}
+		if projection.BudgetHardLimitMinor < 0 || projection.BudgetHardLimitMinor > maximumProjectBudgetMinor || projection.BudgetSoftLimitMinor < 0 || projection.BudgetSoftLimitMinor > projection.BudgetHardLimitMinor {
+			return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "project budget relational projection"})
+		}
+		hardLimitMicros := projection.BudgetHardLimitMinor * projectBudgetMicrosPerMinor
+		softLimitMicros := projection.BudgetSoftLimitMinor * projectBudgetMicrosPerMinor
 		deploymentTargets, err := json.Marshal(projection.DeploymentTargets)
 		if err != nil {
 			return err
@@ -679,7 +689,7 @@ INSERT INTO budget_accounts
   (tenant_id, id, scope_type, scope_id, currency, hard_limit_micros, soft_limit_micros,
    spent_micros, reserved_micros, period_start, version)
 VALUES ($1::uuid, $2, 'PROJECT', $2, $3, $4, $5, 0, 0, transaction_timestamp(), 1)`,
-			request.TenantID, projection.ID, projection.BudgetCurrency, projection.BudgetHardLimitMinor, projection.BudgetSoftLimitMinor)
+			request.TenantID, projection.ID, projection.BudgetCurrency, hardLimitMicros, softLimitMicros)
 		if err != nil {
 			return err
 		}

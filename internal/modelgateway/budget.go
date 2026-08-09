@@ -10,7 +10,10 @@ import (
 	"github.com/google/uuid"
 )
 
-const defaultReservationTTL = 24 * time.Hour
+const (
+	defaultReservationTTL = 24 * time.Hour
+	budgetMicrosPerMinor  = int64(10_000)
+)
 
 type BudgetAccount struct {
 	ID              string     `json:"id"`

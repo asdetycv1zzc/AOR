@@ -257,8 +257,8 @@ func persistBudgetAdjustment(ctx context.Context, tx *sql.Tx, occurredAt time.Ti
 		PreviousVersion  int64    `json:"previousVersion"`
 		AggregateVersion int64    `json:"aggregateVersion"`
 		Version          int64    `json:"version"`
-		HardLimitMicros  int64    `json:"hardLimitMinor"`
-		SoftLimitMicros  int64    `json:"softLimitMinor"`
+		HardLimitMinor   int64    `json:"hardLimitMinor"`
+		SoftLimitMinor   int64    `json:"softLimitMinor"`
 		Currency         string   `json:"currency"`
 		Reason           string   `json:"reason"`
 		ParameterDigest  string   `json:"parameterDigest,omitempty"`
@@ -271,7 +271,7 @@ func persistBudgetAdjustment(ctx context.Context, tx *sql.Tx, occurredAt time.Ti
 		PrincipalID: adjustment.PrincipalID, ProjectState: adjustment.ProjectState, ProjectVersion: adjustment.ProjectVersion,
 		PreviousVersion:  adjustment.ExpectedVersion,
 		AggregateVersion: result.Account.Version, Version: result.Account.Version,
-		HardLimitMicros: result.Account.LimitMicros, SoftLimitMicros: result.Account.SoftLimitMicros,
+		HardLimitMinor: result.Account.LimitMicros / budgetMicrosPerMinor, SoftLimitMinor: result.Account.SoftLimitMicros / budgetMicrosPerMinor,
 		Currency: result.Account.Currency, Reason: adjustment.Reason, ParameterDigest: adjustment.ParameterDigest,
 		PolicyVersion: adjustment.PolicyVersion, PolicyRuleID: adjustment.PolicyRuleID,
 		PolicyDecision: adjustment.PolicyDecision, PolicyReasons: append([]string(nil), adjustment.PolicyReasons...),

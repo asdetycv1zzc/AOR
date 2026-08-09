@@ -344,6 +344,13 @@
       "file": "000049_model_sampling_max_effort.up.sql",
       "sha256": "sha256:b6859909255832f1c16d7a9b9ad437cd11cc09b6847776b55d9acd1693586ad5",
       "destructive": false
+    },
+    {
+      "version": 50,
+      "mode": "EXPAND",
+      "file": "000050_project_budget_minor_units.up.sql",
+      "sha256": "sha256:0e54b2153fc35eccd06fd9b3b25e04503b0d66d51b8bc6d7f2e0436d7c0dbd43",
+      "destructive": false
     }
   ]
 }

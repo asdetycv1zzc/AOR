@@ -35,7 +35,11 @@ import (
 	"github.com/google/uuid"
 )
 
-const maximumRequestBytes = 1 << 20
+const (
+	maximumRequestBytes  = 1 << 20
+	budgetMicrosPerMinor = int64(10_000)
+	maximumBudgetMinor   = int64(1<<63-1) / budgetMicrosPerMinor
+)
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
@@ -1005,7 +1009,7 @@ func validateProjectCreate(body projectCreate) error {
 	if body.Name == "" || len(body.Name) > 256 || strings.TrimSpace(body.Name) != body.Name || strings.ContainsAny(body.Name, "\r\n\x00") || body.GoalAgentCount < 1 || body.GoalAgentCount > 2 || !oneOf(body.DataClassification, "PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED") {
 		return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "project create"})
 	}
-	if len(body.DeploymentTargets) == 0 || len(body.DeploymentTargets) > 16 || body.Budget.HardLimitMinor <= 0 || body.Budget.SoftLimitMinor < 0 || body.Budget.SoftLimitMinor > body.Budget.HardLimitMinor || !validCurrency(body.Budget.Currency) {
+	if len(body.DeploymentTargets) == 0 || len(body.DeploymentTargets) > 16 || body.Budget.HardLimitMinor <= 0 || body.Budget.HardLimitMinor > maximumBudgetMinor || body.Budget.SoftLimitMinor < 0 || body.Budget.SoftLimitMinor > body.Budget.HardLimitMinor || !validCurrency(body.Budget.Currency) {
 		return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "project initialization selection"})
 	}
 	seen := make(map[string]struct{}, len(body.DeploymentTargets))
@@ -1035,9 +1039,17 @@ func (handler *Handler) ensureProjectBudget(ctx context.Context, tenantID string
 	if currency == "" {
 		currency = "USD"
 	}
+	hardLimitMicros, ok := budgetMinorToMicros(selection.HardLimitMinor)
+	if !ok {
+		return modelgateway.ErrInvalidRequest
+	}
+	softLimitMicros, ok := budgetMinorToMicros(selection.SoftLimitMinor)
+	if !ok {
+		return modelgateway.ErrInvalidRequest
+	}
 	account := modelgateway.BudgetAccount{
 		ID: project.ID, TenantID: tenantID, ScopeType: "PROJECT", ScopeID: project.ID,
-		Currency: currency, LimitMicros: selection.HardLimitMinor, SoftLimitMicros: selection.SoftLimitMinor,
+		Currency: currency, LimitMicros: hardLimitMicros, SoftLimitMicros: softLimitMicros,
 		PeriodStart: handler.clock().UTC(), Version: 1,
 	}
 	if err := creator.CreateAccount(ctx, account); err == nil {
@@ -2468,6 +2480,16 @@ func (handler *Handler) adjustBudget(response http.ResponseWriter, request *http
 		writeError(response, request, err)
 		return
 	}
+	hardLimitMicros, ok := budgetMinorToMicros(body.HardLimitMinor)
+	if !ok {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "budget adjustment"}))
+		return
+	}
+	softLimitMicros, ok := budgetMinorToMicros(body.SoftLimitMinor)
+	if !ok {
+		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "budget adjustment"}))
+		return
+	}
 	result, err := handler.budgets.Adjust(request.Context(), modelgateway.BudgetAdjustment{
 		TenantID: principal.TenantID, ProjectID: project.ID, PrincipalID: principal.ID,
 		IdempotencyKey: idempotencyKey, Traceparent: traceparent, Tracestate: tracestate,
@@ -2476,7 +2498,7 @@ func (handler *Handler) adjustBudget(response http.ResponseWriter, request *http
 		ParameterDigest: digest,
 		ProjectState:    string(project.State), ProjectVersion: project.Version,
 		ExpectedVersion: body.ExpectedVersion,
-		HardLimitMicros: body.HardLimitMinor, SoftLimitMicros: body.SoftLimitMinor,
+		HardLimitMicros: hardLimitMicros, SoftLimitMicros: softLimitMicros,
 		Currency: body.Currency, Reason: body.Reason,
 	})
 	if err != nil {
@@ -2531,7 +2553,18 @@ func authorizeBudgetAdjustment(ctx context.Context, authorizer authz.PolicyEvalu
 }
 
 func validBudgetAdjustmentBody(body budgetAdjustmentBody) bool {
-	return body.ExpectedVersion >= 1 && body.HardLimitMinor >= 0 && body.SoftLimitMinor >= 0 && body.SoftLimitMinor <= body.HardLimitMinor && validCurrency(body.Currency) && body.Reason != "" && len(body.Reason) <= 2048 && strings.TrimSpace(body.Reason) == body.Reason && !strings.ContainsAny(body.Reason, "\r\n\x00")
+	return body.ExpectedVersion >= 1 && body.HardLimitMinor >= 0 && body.HardLimitMinor <= maximumBudgetMinor && body.SoftLimitMinor >= 0 && body.SoftLimitMinor <= body.HardLimitMinor && validCurrency(body.Currency) && body.Reason != "" && len(body.Reason) <= 2048 && strings.TrimSpace(body.Reason) == body.Reason && !strings.ContainsAny(body.Reason, "\r\n\x00")
+}
+
+func budgetMinorToMicros(value int64) (int64, bool) {
+	if value < 0 || value > maximumBudgetMinor {
+		return 0, false
+	}
+	return value * budgetMicrosPerMinor, true
+}
+
+func budgetMicrosToMinor(value int64) int64 {
+	return value / budgetMicrosPerMinor
 }
 
 func budgetAdjustmentDigest(body budgetAdjustmentBody) (string, error) {
@@ -2573,8 +2606,8 @@ func budgetAccountView(account modelgateway.BudgetAccount) budgetAccountResource
 	}
 	return budgetAccountResource{
 		ID: account.ID, ScopeType: account.ScopeType, ScopeID: account.ScopeID, Currency: account.Currency,
-		HardLimitMinor: account.LimitMicros, SoftLimitMinor: account.SoftLimitMicros,
-		SpentMinor: account.SpentMicros, ReservedMinor: account.ReservedMicros, RemainingMinor: remaining,
+		HardLimitMinor: budgetMicrosToMinor(account.LimitMicros), SoftLimitMinor: budgetMicrosToMinor(account.SoftLimitMicros),
+		SpentMinor: budgetMicrosToMinor(account.SpentMicros), ReservedMinor: budgetMicrosToMinor(account.ReservedMicros), RemainingMinor: budgetMicrosToMinor(remaining),
 		PeriodStart: account.PeriodStart, PeriodEnd: account.PeriodEnd, Version: account.Version,
 	}
 }
@@ -2582,10 +2615,10 @@ func budgetAccountView(account modelgateway.BudgetAccount) budgetAccountResource
 func budgetUsageView(projectID string, usage modelgateway.BudgetUsage) budgetUsageResource {
 	return budgetUsageResource{
 		ProjectID: projectID, AccountID: usage.AccountID, Currency: usage.Currency,
-		HardLimitMinor: usage.HardLimitMicros, SoftLimitMinor: usage.SoftLimitMicros,
-		SpentMinor: usage.SpentMicros, ReservedMinor: usage.ReservedMicros, RemainingMinor: usage.RemainingMicros,
+		HardLimitMinor: budgetMicrosToMinor(usage.HardLimitMicros), SoftLimitMinor: budgetMicrosToMinor(usage.SoftLimitMicros),
+		SpentMinor: budgetMicrosToMinor(usage.SpentMicros), ReservedMinor: budgetMicrosToMinor(usage.ReservedMicros), RemainingMinor: budgetMicrosToMinor(usage.RemainingMicros),
 		ReservationCount: usage.ReservationCount, CallCount: usage.CallCount,
-		InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, CostMinor: usage.CostMicros, Version: usage.Version,
+		InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, CostMinor: budgetMicrosToMinor(usage.CostMicros), Version: usage.Version,
 	}
 }
 

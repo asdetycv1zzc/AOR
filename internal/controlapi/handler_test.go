@@ -278,7 +278,7 @@ func TestCreateProjectInitializesSelectedBudgetKnowledgePromptsAndGoalAgents(t *
 		t.Fatalf("initialized project = %#v", project)
 	}
 	accounts, err := handler.budgets.ListAccounts(context.Background(), testTenantID, project.ID)
-	if err != nil || len(accounts) != 1 || accounts[0].LimitMicros != 100000 || accounts[0].SoftLimitMicros != 80000 || accounts[0].Currency != "USD" {
+	if err != nil || len(accounts) != 1 || accounts[0].LimitMicros != 1_000_000_000 || accounts[0].SoftLimitMicros != 800_000_000 || accounts[0].Currency != "USD" {
 		t.Fatalf("budget accounts=%#v err=%v", accounts, err)
 	}
 	if len(knowledgeReader.initialized) != 1 || knowledgeReader.initialized[0].ProjectID != project.ID || knowledgeReader.initialized[0].CreatedAt != controlAPITestTime {
@@ -967,7 +967,7 @@ func TestBudgetEndpointsReadAdjustAndReplayIdempotently(t *testing.T) {
 	project := createTestProject(t, handler)
 	if err := ledger.CreateAccount(context.Background(), modelgateway.BudgetAccount{
 		ID: "budget-account-1", TenantID: testTenantID, ScopeType: "PROJECT", ScopeID: project.ID, Currency: "USD",
-		LimitMicros: 100, SoftLimitMicros: 80, SpentMicros: 10, ReservedMicros: 5,
+		LimitMicros: 1_000_000, SoftLimitMicros: 800_000, SpentMicros: 100_000, ReservedMicros: 50_000,
 		PeriodStart: controlAPITestTime, Version: 1,
 	}); err != nil {
 		t.Fatal(err)
@@ -1022,7 +1022,7 @@ func TestBudgetEndpointsReadAdjustAndReplayIdempotently(t *testing.T) {
 		t.Fatalf("replay status=%d etag=%q body=%s", replayed.Code, replayed.Header().Get("ETag"), replayed.Body.String())
 	}
 	account, found := ledger.Account(testTenantID, "budget-account-1")
-	if !found || account.Version != 2 || account.LimitMicros != 250 {
+	if !found || account.Version != 2 || account.LimitMicros != 2_500_000 {
 		t.Fatalf("replayed account = %#v found=%v", account, found)
 	}
 }
@@ -1032,7 +1032,7 @@ func TestBudgetAdjustmentRejectsUnsafeOrConflictingCommands(t *testing.T) {
 	project := createTestProject(t, handler)
 	if err := ledger.CreateAccount(context.Background(), modelgateway.BudgetAccount{
 		ID: project.ID, TenantID: testTenantID, ScopeType: "PROJECT", ScopeID: project.ID, Currency: "USD",
-		LimitMicros: 100, SoftLimitMicros: 80, SpentMicros: 30, ReservedMicros: 20,
+		LimitMicros: 1_000_000, SoftLimitMicros: 800_000, SpentMicros: 300_000, ReservedMicros: 200_000,
 		PeriodStart: controlAPITestTime, Version: 1,
 	}); err != nil {
 		t.Fatal(err)
@@ -1060,7 +1060,7 @@ func TestBudgetAdjustmentRejectsUnsafeOrConflictingCommands(t *testing.T) {
 		t.Fatalf("denied adjustment status=%d body=%s", denied.Code, denied.Body.String())
 	}
 	account, _ := ledger.Account(testTenantID, project.ID)
-	if account.Version != 1 || account.LimitMicros != 100 {
+	if account.Version != 1 || account.LimitMicros != 1_000_000 {
 		t.Fatalf("denied adjustment mutated account: %#v", account)
 	}
 	authorizer.deny = false
