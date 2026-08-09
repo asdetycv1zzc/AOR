@@ -53,6 +53,10 @@ import type {
   AuditRun,
   GoalSpec,
   ModelProvider,
+  ModelProviderSettings,
+  ModelProviderSettingsInput,
+  ModelProviderTestInput,
+  ModelProviderTestResult,
   ModelRole,
   ModelRouteSettings,
   ModelRoutes,
@@ -119,6 +123,57 @@ const modelRoleLabels: Record<ModelRole, string> = {
   GLOBAL_AUDITOR: "全局审计",
   KNOWLEDGE_CURATOR: "知识管理",
 };
+
+const modelProviderRows = [
+  { key: "openai", label: "OpenAI" },
+  { key: "deepseek", label: "DeepSeek" },
+  { key: "claude", label: "Claude" },
+  { key: "grok", label: "Grok" },
+] as const;
+
+type ModelProviderKey = (typeof modelProviderRows)[number]["key"];
+
+type ModelProviderDraft = ModelProviderSettings & {
+  apiKey: string;
+  testModel: string;
+};
+
+type ModelProviderDrafts = Record<ModelProviderKey, ModelProviderDraft | undefined>;
+
+type ProviderTestState = {
+  status: "idle" | "testing" | "success" | "error";
+  message?: string;
+  latencyMs?: number;
+};
+
+type ModelProviderUpdate = {
+  id: string;
+  input: ModelProviderSettingsInput;
+};
+
+function emptyModelProviderDrafts(): ModelProviderDrafts {
+  return { openai: undefined, deepseek: undefined, claude: undefined, grok: undefined };
+}
+
+function modelProviderSetting(settings: ModelProviderSettings[], key: ModelProviderKey): ModelProviderSettings | undefined {
+  return settings.find((item) => item.provider.toLowerCase() === key || item.id.toLowerCase() === key);
+}
+
+function cloneModelProviderDrafts(settings: ModelProviderSettings[]): ModelProviderDrafts {
+  const drafts = emptyModelProviderDrafts();
+  for (const { key } of modelProviderRows) {
+    const setting = modelProviderSetting(settings, key);
+    if (!setting) continue;
+    drafts[key] = {
+      ...setting,
+      protocols: setting.protocols ? [...setting.protocols] : undefined,
+      models: [...setting.models],
+      apiKey: "",
+      testModel: setting.models[0] || "",
+    };
+  }
+  return drafts;
+}
 
 function cloneModelRoutes(routes?: ModelRoutes): ModelRoutes | undefined {
   if (!routes) return undefined;
@@ -242,6 +297,7 @@ function ControlConsole({ client }: { client: AorClient }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsBusy, setSettingsBusy] = useState(false);
   const [modelProviders, setModelProviders] = useState<ModelProvider[]>([]);
+  const [providerSettings, setProviderSettings] = useState<ModelProviderSettings[]>([]);
   const [routeSettings, setRouteSettings] = useState<ModelRouteSettings>();
   const [selectedTask, setSelectedTask] = useState("");
   const [audits, setAudits] = useState<Record<string, AuditRun[]>>({});
@@ -287,10 +343,11 @@ function ControlConsole({ client }: { client: AorClient }) {
 
   useEffect(() => {
     let active = true;
-    void Promise.all([client.getModelProviders(), client.getModelRouteSettings()])
-      .then(([providers, settings]) => {
+    void Promise.all([client.getModelProviders(), client.getModelProviderSettings(), client.getModelRouteSettings()])
+      .then(([providers, configuredProviders, settings]) => {
         if (!active) return;
         setModelProviders(providers.items);
+        setProviderSettings(configuredProviders.items);
         setRouteSettings(settings);
       })
       .catch((cause) => active && setError(errorMessage(cause)));
@@ -365,19 +422,38 @@ function ControlConsole({ client }: { client: AorClient }) {
     }
   }, [client, loadProject]);
 
-  const saveModelRoutes = useCallback(async (modelRoutes: ModelRoutes) => {
+  const saveModelSettings = useCallback(async (updates: ModelProviderUpdate[], modelRoutes: ModelRoutes) => {
     setSettingsBusy(true);
     setError("");
     try {
+      const savedProviders: ModelProviderSettings[] = [];
+      for (const update of updates) {
+        savedProviders.push(await client.putModelProviderSettings(update.id, update.input));
+      }
       const saved = await client.putModelRouteSettings(modelRoutes);
+      if (savedProviders.length > 0) {
+        setProviderSettings((current) => {
+          const next = [...current];
+          for (const provider of savedProviders) {
+            const index = next.findIndex((item) => item.id === provider.id);
+            if (index >= 0) next[index] = provider;
+            else next.push(provider);
+          }
+          return next;
+        });
+      }
       setRouteSettings(saved);
       setSettingsOpen(false);
-      setNotice("默认模型组合已更新");
+      setNotice("模型供应商与默认组合已更新");
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
       setSettingsBusy(false);
     }
+  }, [client]);
+
+  const testModelProvider = useCallback((providerId: string, input: ModelProviderTestInput): Promise<ModelProviderTestResult> => {
+    return client.testModelProvider(providerId, input);
   }, [client]);
 
   return (
@@ -433,7 +509,16 @@ function ControlConsole({ client }: { client: AorClient }) {
 
       <NewProjectDialog open={newOpen} busy={loading} providers={modelProviders} defaults={routeSettings} onClose={() => setNewOpen(false)} onSubmit={createProject} />
       <OpenProjectDialog open={openOpen} onClose={() => setOpenOpen(false)} onSubmit={(id) => { setOpenOpen(false); void loadProject(id); }} />
-      <ModelSettingsDialog open={settingsOpen} busy={settingsBusy} providers={modelProviders} settings={routeSettings} onClose={() => setSettingsOpen(false)} onSubmit={saveModelRoutes} />
+      <ModelSettingsDialog
+        open={settingsOpen}
+        busy={settingsBusy}
+        providers={modelProviders}
+        providerSettings={providerSettings}
+        settings={routeSettings}
+        onClose={() => setSettingsOpen(false)}
+        onTestProvider={testModelProvider}
+        onSubmit={saveModelSettings}
+      />
       <ResultDrawer result={bundle.result} project={project} open={resultOpen} onClose={() => setResultOpen(false)} />
     </div>
   );
@@ -838,33 +923,154 @@ function NewProjectDialog({ open, busy, providers, defaults, onClose, onSubmit }
   );
 }
 
-function ModelSettingsDialog({ open, busy, providers, settings, onClose, onSubmit }: {
+function ModelSettingsDialog({ open, busy, providers, providerSettings, settings, onClose, onTestProvider, onSubmit }: {
   open: boolean;
   busy: boolean;
   providers: ModelProvider[];
+  providerSettings: ModelProviderSettings[];
   settings?: ModelRouteSettings;
   onClose: () => void;
-  onSubmit: (routes: ModelRoutes) => Promise<void>;
+  onTestProvider: (providerId: string, input: ModelProviderTestInput) => Promise<ModelProviderTestResult>;
+  onSubmit: (updates: ModelProviderUpdate[], routes: ModelRoutes) => Promise<void>;
 }) {
   const [routes, setRoutes] = useState<ModelRoutes>();
+  const [drafts, setDrafts] = useState<ModelProviderDrafts>(emptyModelProviderDrafts);
+  const [testStates, setTestStates] = useState<Partial<Record<ModelProviderKey, ProviderTestState>>>({});
+
   useEffect(() => {
-    if (open) setRoutes(cloneModelRoutes(settings?.modelRoutes));
-  }, [open, settings?.version]);
+    if (!open) return;
+    setRoutes(cloneModelRoutes(settings?.modelRoutes));
+    setDrafts(cloneModelProviderDrafts(providerSettings));
+    setTestStates({});
+  }, [open, providerSettings, settings?.version]);
+
+  const updateDraft = (key: ModelProviderKey, patch: Partial<ModelProviderDraft>) => {
+    setDrafts((current) => {
+      const draft = current[key];
+      return draft ? { ...current, [key]: { ...draft, ...patch } } : current;
+    });
+  };
+
+  const testProvider = async (key: ModelProviderKey) => {
+    const draft = drafts[key];
+    if (!draft || !draft.baseUrl.trim() || !draft.testModel || busy) return;
+    setTestStates((current) => ({ ...current, [key]: { status: "testing" } }));
+    try {
+      const input: ModelProviderTestInput = {
+        baseUrl: draft.baseUrl.trim(),
+        protocol: draft.protocol,
+        model: draft.testModel,
+      };
+      if (draft.apiKey.trim()) input.apiKey = draft.apiKey.trim();
+      const result = await onTestProvider(draft.id, input);
+      setTestStates((current) => ({
+        ...current,
+        [key]: {
+          status: result.ok ? "success" : "error",
+          message: result.detail || (result.ok ? "连接成功" : "连接失败"),
+          latencyMs: result.latencyMs,
+        },
+      }));
+    } catch (cause) {
+      setTestStates((current) => ({ ...current, [key]: { status: "error", message: errorMessage(cause) } }));
+    }
+  };
+
+  const submit = () => {
+    if (!routes) return;
+    const updates: ModelProviderUpdate[] = [];
+    for (const { key } of modelProviderRows) {
+      const draft = drafts[key];
+      if (!draft) continue;
+      const input: ModelProviderSettingsInput = {
+        baseUrl: draft.baseUrl.trim(),
+        protocol: draft.protocol,
+        enabled: draft.enabled,
+      };
+      if (draft.apiKey.trim()) input.apiKey = draft.apiKey.trim();
+      updates.push({ id: draft.id, input });
+    }
+    void onSubmit(updates, routes);
+  };
+
   return (
     <Dialog open={open} onOpenChange={(_, data) => !data.open && onClose()}>
       <DialogSurface className="form-dialog model-settings-dialog">
         <DialogBody>
-          <DialogTitle>默认模型组合</DialogTitle>
+          <DialogTitle>模型设置</DialogTitle>
           <DialogContent className="dialog-form">
+            <ModelProviderSettingsEditor drafts={drafts} testStates={testStates} busy={busy} onChange={updateDraft} onTest={(key) => void testProvider(key)} />
             {routes ? <ModelRouteEditor routes={routes} providers={providers} onChange={setRoutes} /> : <Spinner label="正在读取模型目录" />}
           </DialogContent>
           <DialogActions>
             <Button appearance="secondary" onClick={onClose}>取消</Button>
-            <Button appearance="primary" disabled={busy || !routes} onClick={() => routes && void onSubmit(routes)}>{busy ? "保存中" : "保存"}</Button>
+            <Button appearance="primary" disabled={busy || !routes} onClick={submit}>{busy ? "保存中" : "保存"}</Button>
           </DialogActions>
         </DialogBody>
       </DialogSurface>
     </Dialog>
+  );
+}
+
+function ModelProviderSettingsEditor({ drafts, testStates, busy, onChange, onTest }: {
+  drafts: ModelProviderDrafts;
+  testStates: Partial<Record<ModelProviderKey, ProviderTestState>>;
+  busy: boolean;
+  onChange: (key: ModelProviderKey, patch: Partial<ModelProviderDraft>) => void;
+  onTest: (key: ModelProviderKey) => void;
+}) {
+  return (
+    <fieldset className="provider-settings-editor">
+      <legend>供应商</legend>
+      <div className="provider-settings-list">
+        {modelProviderRows.map(({ key, label }) => {
+          const draft = drafts[key];
+          const testState = testStates[key];
+          if (!draft) {
+            return (
+              <div className="provider-settings-row provider-settings-missing" key={key}>
+                <strong>{label}</strong><span>未提供配置</span>
+              </div>
+            );
+          }
+          const protocols = draft.protocols?.length ? draft.protocols : draft.protocol ? [draft.protocol] : [];
+          return (
+            <div className="provider-settings-row" key={key}>
+              <div className="provider-settings-heading">
+                <strong>{draft.displayName || label}</strong>
+                <span className={`provider-config-state ${draft.apiKeyConfigured ? "is-configured" : ""}`}>
+                  {draft.apiKeyConfigured ? "已配置" : "未配置"}
+                </span>
+              </div>
+              <Field label="Base URL">
+                <Input type="url" value={draft.baseUrl} onChange={(_, data) => onChange(key, { baseUrl: data.value })} />
+              </Field>
+              <Field label="API Key">
+                <Input type="password" autoComplete="new-password" value={draft.apiKey} placeholder={draft.apiKeyConfigured ? "留空保持不变" : "输入 API Key"} onChange={(_, data) => onChange(key, { apiKey: data.value })} />
+              </Field>
+              <Field label="协议">
+                {protocols.length > 1 ? (
+                  <select className="native-select" value={draft.protocol} onChange={(event) => onChange(key, { protocol: event.target.value })}>
+                    {protocols.map((protocol) => <option value={protocol} key={protocol}>{protocol}</option>)}
+                  </select>
+                ) : <span className="provider-protocol">{draft.protocol || "未指定"}</span>}
+              </Field>
+              <Field label="测试模型">
+                <select className="native-select" value={draft.testModel} disabled={draft.models.length === 0} onChange={(event) => onChange(key, { testModel: event.target.value })}>
+                  {draft.models.map((model) => <option value={model} key={model}>{model}</option>)}
+                </select>
+              </Field>
+              <label className="provider-enabled"><input type="checkbox" checked={draft.enabled} onChange={(event) => onChange(key, { enabled: event.target.checked })} /><span>启用</span></label>
+              <div className="provider-test-line">
+                <Button appearance="outline" size="small" icon={testState?.status === "testing" ? <Spinner size="tiny" /> : <ArrowClockwise />} disabled={busy || testState?.status === "testing" || !draft.baseUrl.trim() || !draft.testModel} onClick={() => onTest(key)}>测试连接</Button>
+                {testState?.status === "success" && <span className="provider-test-status is-success"><CheckCircle />{testState.message}{testState.latencyMs ? ` · ${testState.latencyMs} ms` : ""}</span>}
+                {testState?.status === "error" && <span className="provider-test-status is-error"><WarningCircle />{testState.message}</span>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </fieldset>
   );
 }
 

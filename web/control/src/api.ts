@@ -2,6 +2,11 @@ import type {
   AuditRun,
   GoalSpec,
   ModelProvider,
+  ModelProviderSettings,
+  ModelProviderSettingsInput,
+  ModelProviderSettingsPage,
+  ModelProviderTestInput,
+  ModelProviderTestResult,
   ModelRouteSettings,
   ModelRoutes,
   ModuleTask,
@@ -70,6 +75,24 @@ export class AorClient {
 
   getModelProviders(): Promise<Page<ModelProvider>> {
     return this.request("/v1/model-providers");
+  }
+
+  getModelProviderSettings(): Promise<ModelProviderSettingsPage> {
+    return this.request("/v1/settings/model-providers");
+  }
+
+  putModelProviderSettings(providerId: string, input: ModelProviderSettingsInput): Promise<ModelProviderSettings> {
+    return this.request(`/v1/settings/model-providers/${encodeURIComponent(providerId)}`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    });
+  }
+
+  testModelProvider(providerId: string, input: ModelProviderTestInput): Promise<ModelProviderTestResult> {
+    return this.request(`/v1/settings/model-providers/${encodeURIComponent(providerId)}:test`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
   }
 
   getModelRouteSettings(): Promise<ModelRouteSettings> {

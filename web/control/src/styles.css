@@ -1428,6 +1428,134 @@ button {
   font-weight: 680;
 }
 
+.provider-settings-editor {
+  min-width: 0;
+  margin: 0;
+  padding: 0 0 14px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.provider-settings-editor legend {
+  padding: 0 10px 0 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 680;
+}
+
+.provider-settings-list {
+  display: grid;
+  gap: 0;
+}
+
+.provider-settings-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 0.65fr) minmax(170px, 1.35fr) minmax(170px, 1.2fr) minmax(100px, 0.7fr) minmax(150px, 1fr);
+  gap: 10px;
+  align-items: end;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+
+.provider-settings-row:first-child {
+  border-top: 0;
+}
+
+.provider-settings-heading {
+  display: grid;
+  align-content: center;
+  gap: 5px;
+  min-height: 40px;
+}
+
+.provider-settings-heading strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.provider-config-state {
+  width: max-content;
+  padding: 2px 6px;
+  border: 1px solid var(--line-strong);
+  color: var(--quiet);
+  font-size: 9px;
+  line-height: 1.2;
+}
+
+.provider-config-state.is-configured {
+  border-color: #91b69d;
+  color: #2f6b43;
+}
+
+.provider-protocol {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: #f1f3ef;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.provider-enabled {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.provider-enabled input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--green);
+}
+
+.provider-test-line {
+  display: flex;
+  min-width: 0;
+  min-height: 32px;
+  align-items: center;
+  gap: 10px;
+  grid-column: 2 / -1;
+}
+
+.provider-test-status {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-test-status svg {
+  flex: 0 0 auto;
+}
+
+.provider-test-status.is-success {
+  color: #2f6b43;
+}
+
+.provider-test-status.is-error {
+  color: #a43d38;
+}
+
+.provider-settings-missing {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--quiet);
+  font-size: 11px;
+}
+
 .model-route-head,
 .model-route-row {
   display: grid;
@@ -1903,6 +2031,16 @@ button {
 
   .model-route-head {
     display: none;
+  }
+
+  .provider-settings-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .provider-test-line {
+    grid-column: auto;
+    flex-wrap: wrap;
   }
 
   .model-route-row {

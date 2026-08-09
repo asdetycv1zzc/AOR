@@ -60,6 +60,44 @@ export interface ModelProvider {
   modalities: string[];
 }
 
+export interface ModelProviderSettings {
+  id: string;
+  provider: string;
+  displayName?: string;
+  baseUrl: string;
+  protocol: string;
+  protocols?: string[];
+  models: string[];
+  apiKeyConfigured: boolean;
+  enabled: boolean;
+  version: number;
+}
+
+export interface ModelProviderSettingsPage {
+  items: ModelProviderSettings[];
+}
+
+export interface ModelProviderSettingsInput {
+  baseUrl: string;
+  protocol: string;
+  apiKey?: string;
+  enabled: boolean;
+}
+
+export interface ModelProviderTestInput {
+  baseUrl: string;
+  protocol: string;
+  apiKey?: string;
+  model: string;
+}
+
+export interface ModelProviderTestResult {
+  ok: boolean;
+  model: string;
+  latencyMs?: number;
+  detail?: string;
+}
+
 export interface ModelRouteSettings {
   modelRoutes: ModelRoutes;
   version: number;
