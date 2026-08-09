@@ -98,7 +98,7 @@ func openAIModels() []CatalogModel {
 		"gpt-5.5",
 		"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
 	}
-	result := []CatalogModel{{ID: "gpt-5.3-codex", MaxInput: 400000, MaxOutput: 128000, ToolCalls: true, JSONSchema: true, Streaming: true}}
+	result := make([]CatalogModel, 0, len(models))
 	for _, id := range models {
 		result = append(result, CatalogModel{ID: id, MaxInput: 128000, MaxOutput: 8192, ToolCalls: true, JSONSchema: true, Streaming: true})
 	}
