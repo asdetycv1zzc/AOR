@@ -41,6 +41,7 @@ var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-
 type Config struct {
 	Store                eventing.Store
 	Authenticator        authn.Authenticator
+	AnonymousPrincipal   *authn.Principal
 	Authorizer           authz.PolicyEvaluator
 	Database             *sql.DB
 	Budgets              modelgateway.BudgetAdministration
@@ -90,6 +91,7 @@ type Handler struct {
 	store                eventing.Store
 	events               eventing.EventLog
 	authenticator        authn.Authenticator
+	anonymousPrincipal   *authn.Principal
 	authorizer           authz.PolicyEvaluator
 	database             *sql.DB
 	budgets              modelgateway.BudgetAdministration
@@ -256,6 +258,13 @@ func New(config Config) (*Handler, error) {
 	if config.Store == nil || config.Authenticator == nil || config.Authorizer == nil {
 		return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "control api configuration"})
 	}
+	if config.AnonymousPrincipal != nil {
+		principal := *config.AnonymousPrincipal
+		if principal.Validate() != nil || principal.Type != authn.PrincipalUser || principal.Role != authn.RoleUser || principal.TenantID == "" || !uuidPattern.MatchString(strings.ToLower(principal.TenantID)) {
+			return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "anonymous principal"})
+		}
+		config.AnonymousPrincipal = &principal
+	}
 	if config.GoalPlan.Negotiator == nil != (config.GoalPlan.Planner == nil) {
 		return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "goal plan configuration"})
 	}
@@ -305,6 +314,7 @@ func New(config Config) (*Handler, error) {
 		orchestrator:         orchestrator.NewWithBoundaryAndMode(config.Store, config.Clock, boundary, config.ClassroomCore),
 		store:                config.Store,
 		authenticator:        config.Authenticator,
+		anonymousPrincipal:   config.AnonymousPrincipal,
 		authorizer:           config.Authorizer,
 		database:             config.Database,
 		budgets:              config.Budgets,
@@ -797,7 +807,13 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 }
 
 func (handler *Handler) authenticate(request *http.Request) (authn.Principal, error) {
-	if handler == nil || handler.authenticator == nil || request == nil {
+	if handler == nil || request == nil {
+		return authn.Principal{}, aorerrors.New(aorerrors.CodeUnauthorized, "", nil)
+	}
+	if handler.anonymousPrincipal != nil && request.Header.Get("Authorization") == "" {
+		return *handler.anonymousPrincipal, nil
+	}
+	if handler.authenticator == nil {
 		return authn.Principal{}, aorerrors.New(aorerrors.CodeUnauthorized, "", nil)
 	}
 	principal, err := authn.AuthenticateHTTPRequest(request, handler.authenticator)

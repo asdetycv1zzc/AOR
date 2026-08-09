@@ -27,10 +27,8 @@ import {
   FolderOpen,
   GearSix,
   ListChecks,
-  LockKey,
   Plus,
   ShieldCheck,
-  SignOut,
   Sparkle,
   Target,
   TreeStructure,
@@ -50,16 +48,6 @@ import {
   useState,
 } from "react";
 import { AorClient, ApiError } from "./api";
-import {
-  AuthConfig,
-  AuthSession,
-  beginLogin,
-  clearSession,
-  completeLogin,
-  loadAuthConfig,
-  loadSession,
-  usableSession,
-} from "./auth";
 import { modelRoles } from "./types";
 import type {
   AuditRun,
@@ -229,121 +217,8 @@ function StatusMark({ state }: { state: string }) {
 }
 
 export function App() {
-  const [config, setConfig] = useState<AuthConfig>();
-  const [session, setSession] = useState<AuthSession>();
-  const [booting, setBooting] = useState(true);
-  const [error, setError] = useState("");
-  const sessionRef = useRef<AuthSession | undefined>(undefined);
-
-  useEffect(() => {
-    let active = true;
-    void (async () => {
-      try {
-        const loadedConfig = await loadAuthConfig();
-        const callbackSession = await completeLogin(loadedConfig);
-        const loadedSession = callbackSession || loadSession();
-        if (!active) return;
-        setConfig(loadedConfig);
-        setSession(loadedSession);
-        sessionRef.current = loadedSession;
-      } catch (cause) {
-        if (active) setError(errorMessage(cause));
-      } finally {
-        if (active) setBooting(false);
-      }
-    })();
-    return () => { active = false; };
-  }, []);
-
-  const tokenProvider = useCallback(async () => {
-    if (!config || !sessionRef.current) {
-      throw new Error("请重新登录");
-    }
-    try {
-      const next = await usableSession(config, sessionRef.current);
-      if (next.accessToken !== sessionRef.current.accessToken) {
-        sessionRef.current = next;
-        setSession(next);
-      }
-      return next.accessToken;
-    } catch (cause) {
-      sessionRef.current = undefined;
-      setSession(undefined);
-      throw cause;
-    }
-  }, [config]);
-
-  const signOut = useCallback(() => {
-    clearSession();
-    sessionRef.current = undefined;
-    setSession(undefined);
-  }, []);
-
-  if (booting) {
-    return <LoadingScreen />;
-  }
-  if (!config) {
-    return <LoginScreen error={error || "WebUI 配置不可用"} onLogin={() => undefined} disabled />;
-  }
-  if (!session) {
-    return (
-      <LoginScreen
-        error={error}
-        onLogin={() => {
-          setError("");
-          void beginLogin(config).catch((cause) => setError(errorMessage(cause)));
-        }}
-      />
-    );
-  }
-  return <ControlConsole client={new AorClient(tokenProvider)} onSignOut={signOut} />;
-}
-
-function LoadingScreen() {
-  return (
-    <main className="loading-screen">
-      <div className="brand-lockup"><span className="brand-glyph">A</span><span>AOR</span></div>
-      <Spinner size="small" label="正在连接控制面" />
-    </main>
-  );
-}
-
-function LoginScreen({ error, onLogin, disabled = false }: { error: string; onLogin: () => void; disabled?: boolean }) {
-  const visualRef = useRef<HTMLDivElement>(null);
-  useGSAP(() => {
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    gsap.from(".login-step", { x: -22, autoAlpha: 0, stagger: 0.09, duration: 0.5, ease: "power2.out" });
-    gsap.from(".login-copy > *", { y: 20, autoAlpha: 0, stagger: 0.08, duration: 0.55, ease: "power2.out" });
-  }, { scope: visualRef });
-  return (
-    <main className="login-screen" ref={visualRef}>
-      <section className="login-visual" aria-label="AOR 工作流">
-        <div className="login-brand"><span className="brand-glyph brand-glyph-inverse">A</span><span>AOR</span></div>
-        <div className="login-flow" aria-hidden="true">
-          {[
-            ["01", "目标", "用户意图进入协商"],
-            ["02", "计划", "拆分模块与职责"],
-            ["03", "执行", "代理编写并提交"],
-            ["04", "审计", "独立验证结果"],
-          ].map(([number, name, detail]) => (
-            <div className="login-step" key={number}>
-              <span>{number}</span><strong>{name}</strong><small>{detail}</small>
-            </div>
-          ))}
-        </div>
-        <p className="login-index">AGENT ORGANIZATION RUNTIME · CONTROL PLANE</p>
-      </section>
-      <section className="login-copy">
-        <span className="eyebrow">本地测试环境</span>
-        <h1>AOR</h1>
-        <p>进入项目控制台</p>
-        <Button appearance="primary" size="large" icon={<LockKey weight="bold" />} onClick={onLogin} disabled={disabled}>
-          使用本地身份登录
-        </Button>
-        {error && <div className="inline-error" role="alert"><WarningCircle weight="fill" />{error}</div>}
-      </section>
-    </main>
-  );
+  const client = useMemo(() => new AorClient(), []);
+  return <ControlConsole client={client} />;
 }
 
 interface ProjectBundle {
@@ -354,7 +229,7 @@ interface ProjectBundle {
   result?: ProjectResult;
 }
 
-function ControlConsole({ client, onSignOut }: { client: AorClient; onSignOut: () => void }) {
+function ControlConsole({ client }: { client: AorClient }) {
   const [bundle, setBundle] = useState<ProjectBundle>({ goalSpecs: [], plans: [], tasks: [] });
   const [recent, setRecent] = useState(readRecentProjects);
   const [loading, setLoading] = useState(false);
@@ -519,7 +394,6 @@ function ControlConsole({ client, onSignOut }: { client: AorClient; onSignOut: (
           <IconButton label="默认模型组合" icon={<GearSix />} onClick={() => setSettingsOpen(true)} disabled={!routeSettings || modelProviders.length === 0} />
           <Button appearance="subtle" icon={<FolderOpen />} onClick={() => setOpenOpen(true)}>打开</Button>
           <Button appearance="primary" icon={<Plus weight="bold" />} onClick={() => setNewOpen(true)}>新建项目</Button>
-          <IconButton label="退出登录" icon={<SignOut />} onClick={onSignOut} />
         </div>
       </header>
 

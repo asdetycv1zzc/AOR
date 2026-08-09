@@ -24,30 +24,31 @@ const (
 type LookupEnv func(string) (string, bool)
 
 type Config struct {
-	Component           string
-	Environment         string
-	DeploymentProfile   string
-	LeaseSigningKeyRef  string
-	ListenAddress       string
-	KnowledgeRoot       string
-	KnowledgeCuratorURL string
-	RepositoryRoot      string
-	Database            DatabaseConfig
-	Temporal            TemporalConfig
-	NATS                NATSConfig
-	S3                  S3Config
-	OPA                 OPAConfig
-	Identity            IdentityConfig
-	ModelGateway        ModelGatewayConfig
-	ModelGatewayClient  ModelGatewayClientConfig
-	GoalPlan            GoalPlanConfig
-	ModuleAuditRoute    GoalPlanRouteConfig
-	GlobalAuditRoute    GoalPlanRouteConfig
-	Execution           ExecutionConfig
-	Integration         IntegrationConfig
-	Services            ServiceEndpoints
-	Sandbox             SandboxConfig
-	Telemetry           TelemetryConfig
+	Component                string
+	Environment              string
+	DeploymentProfile        string
+	AllowAnonymousControlAPI bool
+	LeaseSigningKeyRef       string
+	ListenAddress            string
+	KnowledgeRoot            string
+	KnowledgeCuratorURL      string
+	RepositoryRoot           string
+	Database                 DatabaseConfig
+	Temporal                 TemporalConfig
+	NATS                     NATSConfig
+	S3                       S3Config
+	OPA                      OPAConfig
+	Identity                 IdentityConfig
+	ModelGateway             ModelGatewayConfig
+	ModelGatewayClient       ModelGatewayClientConfig
+	GoalPlan                 GoalPlanConfig
+	ModuleAuditRoute         GoalPlanRouteConfig
+	GlobalAuditRoute         GoalPlanRouteConfig
+	Execution                ExecutionConfig
+	Integration              IntegrationConfig
+	Services                 ServiceEndpoints
+	Sandbox                  SandboxConfig
+	Telemetry                TelemetryConfig
 }
 
 type DatabaseConfig struct {
@@ -292,6 +293,10 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	config.AllowAnonymousControlAPI, err = boolean(lookup, "AOR_CONTROL_API_ALLOW_ANONYMOUS", false)
+	if err != nil {
+		return Config{}, err
+	}
 	config.ModelGateway.ReplayTTLHours, err = integer(lookup, "AOR_MODEL_REPLAY_TTL_HOURS", 24, 1, 30*24)
 	if err != nil {
 		return Config{}, err
@@ -428,6 +433,9 @@ func (config Config) Validate() error {
 		return ErrInvalidConfiguration
 	}
 	if config.Component == "aor-server" && (!validKnowledgeRoot(config.KnowledgeRoot) || !validKnowledgeCuratorURL(config.KnowledgeCuratorURL, config.Environment) || !validSecretReference(config.LeaseSigningKeyRef) || !validDeploymentProfile(config.DeploymentProfile)) {
+		return ErrInvalidConfiguration
+	}
+	if config.AllowAnonymousControlAPI && (config.Component != "aor-server" || !oneOf(config.Environment, EnvironmentDevelopment, EnvironmentTest) || config.Identity.DefaultTenantID == "" || config.Identity.DefaultRole != "USER") {
 		return ErrInvalidConfiguration
 	}
 	if config.Component == "aor-server" {

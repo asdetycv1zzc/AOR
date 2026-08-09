@@ -226,8 +226,16 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 		// mutations are routed to the writer process with the configured URL.
 		knowledgeCurator = nil
 	}
+	var anonymousPrincipal *authn.Principal
+	if config.AllowAnonymousControlAPI {
+		principal := authn.Principal{
+			ID: "local-user", Type: authn.PrincipalUser, Role: config.Identity.DefaultRole,
+			TenantID: config.Identity.DefaultTenantID, Issuer: config.Identity.Issuer, Subject: "local-user",
+		}
+		anonymousPrincipal = &principal
+	}
 	domain, err := controlapi.New(controlapi.Config{
-		Store: lifecycleStore, Authenticator: authenticator, Authorizer: authorizer,
+		Store: lifecycleStore, Authenticator: authenticator, AnonymousPrincipal: anonymousPrincipal, Authorizer: authorizer,
 		Database: clients.Database(), Artifacts: artifactPublisher, Knowledge: knowledgeService,
 		KnowledgeCurator: knowledgeCurator, KnowledgeCuratorURL: config.KnowledgeCuratorURL,
 		DecisionReportSigner: decisionReportSigner,

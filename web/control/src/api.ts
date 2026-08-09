@@ -32,7 +32,7 @@ export class ApiError extends Error {
   }
 }
 
-export type TokenProvider = () => Promise<string>;
+export type TokenProvider = () => Promise<string | undefined>;
 
 async function parseProblem(response: Response): Promise<ProblemResponse> {
   try {
@@ -43,11 +43,12 @@ async function parseProblem(response: Response): Promise<ProblemResponse> {
 }
 
 export class AorClient {
-  constructor(private readonly token: TokenProvider) {}
+  constructor(private readonly token: TokenProvider = async () => undefined) {}
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const headers = new Headers(init.headers);
-    headers.set("Authorization", `Bearer ${await this.token()}`);
+    const token = await this.token();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
     headers.set("Accept", "application/json");
     if (init.body && !headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json");

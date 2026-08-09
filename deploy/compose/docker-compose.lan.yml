@@ -1,21 +1,4 @@
 services:
-  identity:
-    volumes:
-      - ./dex.lan.yaml:/etc/dex/config.yaml:ro
-
   aor-api:
     environment:
       AOR_LISTEN_ADDR: 0.0.0.0:8090
-      AOR_OIDC_ISSUER: http://192.168.1.193:5556/dex
-
-  aor-curator:
-    environment:
-      AOR_OIDC_ISSUER: http://192.168.1.193:5556/dex
-
-  aor-model-gateway:
-    environment:
-      AOR_OIDC_ISSUER: http://192.168.1.193:5556/dex
-
-  aor-tool-broker:
-    environment:
-      AOR_OIDC_ISSUER: http://192.168.1.193:5556/dex

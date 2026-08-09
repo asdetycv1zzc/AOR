@@ -73,7 +73,7 @@ Individual stages are available as `make compose-pull`, `make compose-deps-up`, 
 
 ### LAN access on this test host
 
-The LAN override exposes only the WebUI/API and Dex login endpoint. On the current host, start or refresh it with:
+The LAN override exposes only the WebUI/API. The TEST profile uses the configured local tenant directly, so the console opens without a login step. Start or refresh it with:
 
 ```bash
 docker compose --parallel 1 \
@@ -82,7 +82,7 @@ docker compose --parallel 1 \
   --profile aor up -d --no-build
 ```
 
-Open `http://192.168.1.193:8090/ui/` from another machine on the same network. If this host address changes, update both `docker-compose.lan.yml` and `dex.lan.yaml` before restarting. Internal AOR and dependency ports remain bound to loopback.
+Open `http://192.168.1.193:8090/ui/` from another machine on the same network. Internal AOR, identity, and dependency ports remain bound to loopback.
 
 ## Local Endpoints
 
