@@ -81,6 +81,14 @@ func (store *ProjectLifecycleStore) ListProjections(ctx context.Context, tenantI
 	return projections.ListProjections(ctx, tenantID, projectID, aggregateType)
 }
 
+func (store *ProjectLifecycleStore) ListTenantProjections(ctx context.Context, tenantID string) ([]eventing.Projection, error) {
+	catalog, ok := store.store.(eventing.ProjectionCatalog)
+	if !ok {
+		return nil, fmt.Errorf("%w: projection catalog is unavailable", ErrProjectLifecycleSynchronization)
+	}
+	return catalog.ListTenantProjections(ctx, tenantID)
+}
+
 func (store *ProjectLifecycleStore) synchronize(ctx context.Context, events []eventing.DomainEvent) error {
 	if store == nil || store.store == nil || store.starter == nil || store.client == nil || ctx == nil {
 		return ErrProjectLifecycleSynchronization
@@ -169,3 +177,4 @@ func lifecycleProjection(event eventing.DomainEvent) (lifecycleProjectProjection
 var _ eventing.Store = (*ProjectLifecycleStore)(nil)
 var _ eventing.EventLog = (*ProjectLifecycleStore)(nil)
 var _ eventing.ProjectionList = (*ProjectLifecycleStore)(nil)
+var _ eventing.ProjectionCatalog = (*ProjectLifecycleStore)(nil)
