@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/akimisaka/aor/internal/agentruntime"
@@ -115,6 +116,7 @@ type Handler struct {
 	eraser               ProjectEraser
 	leases               LeaseAuthority
 	goalPlan             GoalPlanServices
+	goalNegotiations     sync.Map
 	defaultModelRoutes   map[string]state.ProjectModelRoute
 	modelProviders       []ModelProvider
 	providerSettings     modelproviders.SettingsStore
@@ -1110,6 +1112,7 @@ func (handler *Handler) getProject(response http.ResponseWriter, request *http.R
 		writeError(response, request, err)
 		return
 	}
+	handler.resumeGoalNegotiation(request.Context(), principal, project)
 	writeProject(response, http.StatusOK, project)
 }
 
@@ -1796,10 +1799,13 @@ func (handler *Handler) submitGoalMessage(response http.ResponseWriter, request 
 		return
 	}
 	if handler.goalPlan.Negotiator != nil {
-		project, negotiateErr := handler.negotiateGoal(request.Context(), principal, projectID, body, idempotencyKey)
-		if negotiateErr != nil {
-			writeError(response, request, normalizeGoalPlanError(negotiateErr))
+		project, negotiation, acceptErr := handler.acceptGoalNegotiation(request.Context(), principal, projectID, body, idempotencyKey)
+		if acceptErr != nil {
+			writeError(response, request, normalizeGoalPlanError(acceptErr))
 			return
+		}
+		if negotiation != nil {
+			handler.startGoalNegotiation(request.Context(), principal, *negotiation)
 		}
 		writeProject(response, http.StatusAccepted, project)
 		return

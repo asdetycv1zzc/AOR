@@ -750,6 +750,20 @@ function Workspace({ bundle, selectedTask, audits, auditLoading, onSelectTask, o
   const plan = latestByVersion(bundle.plans, (item) => item.planSpecVersion || 0);
   const [goalMessage, setGoalMessage] = useState("");
   const [action, setAction] = useState("");
+  const [acceptedGoalVersion, setAcceptedGoalVersion] = useState<number>();
+  const goalBusy = action === "goal" || project.goalProcessing;
+
+  useEffect(() => {
+    setGoalMessage("");
+    setAcceptedGoalVersion(undefined);
+    setAction("");
+  }, [project.id]);
+
+  useEffect(() => {
+    if (acceptedGoalVersion === undefined || project.goalProcessing || project.version <= acceptedGoalVersion || project.state === "GOAL_SUSPENDED") return;
+    setGoalMessage("");
+    setAcceptedGoalVersion(undefined);
+  }, [acceptedGoalVersion, project.goalProcessing, project.state, project.version]);
 
   const sendGoal = async () => {
     const message = goalMessage.trim();
@@ -758,7 +772,8 @@ function Workspace({ bundle, selectedTask, audits, auditLoading, onSelectTask, o
     try {
       const next = await client.sendGoal(project, message);
       onProjectChanged(next);
-      setGoalMessage("");
+      if (next.goalProcessing) setAcceptedGoalVersion(next.version);
+      else setGoalMessage("");
       onNotice("目标已提交，正在生成 GoalSpec");
       onReload();
     } catch (cause) {
@@ -836,22 +851,25 @@ function Workspace({ bundle, selectedTask, audits, auditLoading, onSelectTask, o
           </div>
           {(project.state === "CREATED" || project.state === "GOAL_NEGOTIATING" || project.state === "GOAL_SUSPENDED") && (
             <div className="goal-composer">
+              {project.goalProcessing && <PendingLine label="正在生成 GoalSpec" active />}
+              {project.state === "GOAL_SUSPENDED" && !project.goalProcessing && <PendingLine label="上一次目标处理未完成" active={false} />}
               <Field label="项目目标">
                 <Textarea
                   resize="vertical"
                   value={goalMessage}
                   onChange={(_, data) => setGoalMessage(data.value)}
                   placeholder="例如：实现一个支持四则运算、包含 README 和测试的 Go 计算器。"
+                  disabled={goalBusy}
                 />
               </Field>
               <Button
                 appearance="primary"
-                icon={action === "goal" ? <Spinner size="tiny" /> : <ArrowRight />}
+                icon={goalBusy ? <Spinner size="tiny" /> : <ArrowRight />}
                 iconPosition="after"
-                disabled={!goalMessage.trim() || action !== ""}
+                disabled={!goalMessage.trim() || action !== "" || project.goalProcessing}
                 onClick={() => void sendGoal()}
               >
-                提交目标
+                {goalBusy ? "正在处理中" : "提交目标"}
               </Button>
             </div>
           )}

@@ -25,6 +25,7 @@ type Project struct {
 	State                   contracts.ProjectState       `json:"state"`
 	Version                 int64                        `json:"version"`
 	GoalAgentCount          int                          `json:"goalAgentCount"`
+	GoalProcessing          bool                         `json:"goalProcessing"`
 	ModelRoutes             map[string]ProjectModelRoute `json:"modelRoutes,omitempty"`
 	Goal                    *GoalRecord                  `json:"goal,omitempty"`
 	Plan                    *contracts.SpecRef           `json:"plan,omitempty"`
@@ -279,6 +280,7 @@ type ProjectCommand struct {
 	ProjectID            string
 	ActorID              string
 	GoalAgentCount       int
+	AsyncGoalProcessing  bool
 	StartGoalNegotiation bool
 	Goal                 *GoalRecord
 	GoalSpec             *contracts.GoalSpec
@@ -372,13 +374,17 @@ func DecideProject(current Project, command ProjectCommand) (ProjectEvent, *aore
 		next.State = contracts.ProjectGoalNegotiating
 		eventType = "io.aor.goal.negotiation-started.v1"
 	case ProjectCommandSubmitGoalMessage:
-		if current.State != contracts.ProjectCreated && current.State != contracts.ProjectGoalNegotiating {
+		if current.State != contracts.ProjectCreated && current.State != contracts.ProjectGoalNegotiating && current.State != contracts.ProjectGoalSuspended {
 			return ProjectEvent{}, transitionProject(command, current.State)
+		}
+		if current.GoalProcessing {
+			return ProjectEvent{}, aorerrors.New(aorerrors.CodeConflict, "", map[string]any{"scope": "goal processing"})
 		}
 		if !validGoalMessage(command.GoalMessage, current, command) {
 			return ProjectEvent{}, invalidProject(command, "goal message artifact")
 		}
 		next.State = contracts.ProjectGoalNegotiating
+		next.GoalProcessing = command.AsyncGoalProcessing
 		eventType = "io.aor.goal.message-received.v1"
 	case ProjectCommandProposeGoal:
 		if current.State != contracts.ProjectGoalNegotiating || command.Goal == nil || command.Goal.ID == "" || command.Goal.Version < 1 || command.Goal.SHA256 == "" {
@@ -393,6 +399,7 @@ func DecideProject(current Project, command ProjectCommand) (ProjectEvent, *aore
 		goal.ApprovedBy = ""
 		goal.ApprovalRecordID = ""
 		next.Goal = &goal
+		next.GoalProcessing = false
 		eventType = "io.aor.goal.proposed.v1"
 	case ProjectCommandApproveGoal:
 		if current.State != contracts.ProjectGoalNegotiating || current.Goal == nil || command.Goal == nil || command.Approval == nil {
@@ -453,6 +460,7 @@ func DecideProject(current Project, command ProjectCommand) (ProjectEvent, *aore
 		goal.ApprovedBy = ""
 		goal.ApprovalRecordID = ""
 		next.Goal = &goal
+		next.GoalProcessing = false
 		next.Plan = nil
 		next.CoreSummary = nil
 		next.ReleaseApprovalRecordID = ""
@@ -535,6 +543,7 @@ func DecideProject(current Project, command ProjectCommand) (ProjectEvent, *aore
 		} else {
 			next.State = contracts.ProjectPaused
 		}
+		next.GoalProcessing = false
 		eventType = "io.aor.project.paused.v1"
 	case ProjectCommandResume:
 		if current.State != contracts.ProjectPaused && current.State != contracts.ProjectGoalSuspended {

@@ -40,89 +40,146 @@ type GoalPlanServices struct {
 	Recovery   GoalPlanningRecovery
 }
 
-func (handler *Handler) negotiateGoal(ctx context.Context, principal authn.Principal, projectID string, body goalMessageBody, idempotencyKey string) (state.Project, error) {
+func (handler *Handler) acceptGoalNegotiation(ctx context.Context, principal authn.Principal, projectID string, body goalMessageBody, idempotencyKey string) (state.Project, *goalplan.NegotiationRequest, error) {
 	project, found, err := handler.orchestrator.Project(ctx, principal.TenantID, projectID)
 	if err != nil {
-		return state.Project{}, err
+		return state.Project{}, nil, err
 	}
 	if !found {
-		return state.Project{}, aorerrors.New(aorerrors.CodeNotFound, "", nil)
+		return state.Project{}, nil, aorerrors.New(aorerrors.CodeNotFound, "", nil)
 	}
 	if err := authorizeRead(ctx, handler.authorizer, principal, projectID, authz.ActionProjectCommand, "project", projectID, string(project.State), project.Version, project.DataClassification); err != nil {
-		return state.Project{}, err
+		return state.Project{}, nil, err
 	}
 
+	outcome, err := handler.orchestrator.HandleProject(ctx, orchestrator.ProjectRequest{
+		TenantID: principal.TenantID, ProjectID: projectID, PrincipalID: principal.ID, IdempotencyKey: idempotencyKey, ExpectedVersion: body.ExpectedVersion,
+		Command: state.ProjectCommand{Type: state.ProjectCommandSubmitGoalMessage, AsyncGoalProcessing: true, GoalMessage: &state.GoalMessage{Kind: state.GoalMessageUser, Message: body.Message}},
+	})
+	if err != nil {
+		return state.Project{}, nil, err
+	}
+	if outcome.Duplicate {
+		if project.Version != outcome.Project.Version || !project.GoalProcessing {
+			return project, nil, nil
+		}
+		outcome.Project = project
+	}
+	if outcome.Project.Version != body.ExpectedVersion+1 || !outcome.Project.GoalProcessing {
+		return state.Project{}, nil, goalplan.ErrAgentOutput
+	}
+	messages, err := handler.orchestrator.GoalMessages(ctx, principal.TenantID, projectID)
+	if err != nil {
+		return state.Project{}, nil, err
+	}
+	message, found := acceptedGoalMessage(messages, principal.ID, body.Message)
+	if !found {
+		return state.Project{}, nil, goalplan.ErrArtifactNotFound
+	}
+	negotiation, err := goalNegotiationRequest(outcome.Project, message)
+	if err != nil {
+		return state.Project{}, nil, err
+	}
+	return outcome.Project, negotiation, nil
+}
+
+func acceptedGoalMessage(messages []state.GoalMessage, principalID, content string) (state.GoalMessage, bool) {
+	for index := len(messages) - 1; index >= 0; index-- {
+		message := messages[index]
+		if message.Kind == state.GoalMessageUser && message.CreatedBy == principalID && message.Message == content {
+			return message, true
+		}
+	}
+	return state.GoalMessage{}, false
+}
+
+func goalNegotiationRequest(project state.Project, message state.GoalMessage) (*goalplan.NegotiationRequest, error) {
+	if !project.GoalProcessing || project.State != contracts.ProjectGoalNegotiating || message.TenantID != project.TenantID || message.ProjectID != project.ID || message.CreatedBy == "" || message.Message == "" {
+		return nil, goalplan.ErrInvalidRequest
+	}
 	goalSpecID := ""
 	var previousRef *contracts.SpecRef
 	supersede := false
-	replay := project.Version == body.ExpectedVersion+1
 	if project.Goal != nil {
 		goalSpecID = project.Goal.ID
-		if replay {
-			previousVersion := project.Goal.Version - project.GoalAgentCount
-			if previousVersion > 0 {
-				previous, found, loadErr := handler.orchestrator.GoalSpec(ctx, principal.TenantID, projectID, previousVersion)
-				if loadErr != nil {
-					return state.Project{}, loadErr
-				}
-				if !found || previous.GoalSpecID != goalSpecID {
-					return state.Project{}, goalplan.ErrArtifactNotFound
-				}
-				ref := contracts.SpecRef{Version: previous.Spec.Content.Version, SHA256: previous.Spec.ContentSHA256}
-				previousRef = &ref
-				supersede = handler.replayedGoalSupersede(ctx, principal.TenantID, projectID, body.ExpectedVersion+1, previous.Spec.Status == contracts.GoalApproved)
-			}
-		} else {
-			ref := contracts.SpecRef{Version: project.Goal.Version, SHA256: project.Goal.SHA256}
-			previousRef = &ref
-			supersede = project.Goal.ApprovedBy != ""
-		}
+		ref := contracts.SpecRef{Version: project.Goal.Version, SHA256: project.Goal.SHA256}
+		previousRef = &ref
+		supersede = project.Goal.ApprovedBy != ""
 	} else {
-		goalVersion := 1
-		if project.GoalAgentCount == 2 {
-			goalVersion++
-		}
-		goalSpecID, _, err = handler.findGoalPlanArtifactSpecID(ctx, principal.TenantID, projectID, goalplan.ArtifactGoalDraft, goalVersion, nil)
+		var err error
+		goalSpecID, err = newRecordUUIDv7()
 		if err != nil {
-			return state.Project{}, err
-		}
-		if goalSpecID == "" {
-			goalSpecID, err = newRecordUUIDv7()
-			if err != nil {
-				return state.Project{}, err
-			}
+			return nil, err
 		}
 	}
-	messageID := ""
-	if replay {
-		messageID, _, err = handler.findGoalPlanArtifactSpecID(ctx, principal.TenantID, projectID, goalplan.ArtifactUserMessage, 1, func(artifact goalplan.SpecArtifact) bool {
-			return artifact.CreatedBy == principal.ID && string(artifact.Content) == body.Message
-		})
-		if err != nil {
-			return state.Project{}, err
-		}
+	return &goalplan.NegotiationRequest{
+		TenantID: project.TenantID, ProjectID: project.ID, GoalSpecID: goalSpecID, MessageID: message.ID,
+		UserPrincipalID: message.CreatedBy, UserInput: []byte(message.Message), GoalAgentCount: project.GoalAgentCount,
+		PreviousRef: previousRef, SupersedeApprovedGoal: supersede, ExpectedProjectVersion: project.Version,
+		IdempotencyKey:  goalPlanKey("negotiate", project.TenantID, project.ID, message.CreatedBy, message.ID),
+		MessageAccepted: true,
+	}, nil
+}
+
+func (handler *Handler) resumeGoalNegotiation(ctx context.Context, principal authn.Principal, project state.Project) {
+	if handler.goalPlan.Negotiator == nil || !project.GoalProcessing {
+		return
 	}
-	if messageID == "" {
-		messageID, err = newRecordUUIDv7()
-		if err != nil {
-			return state.Project{}, err
-		}
-	}
-	result, err := handler.goalPlan.Negotiator.Negotiate(ctx, goalplan.NegotiationRequest{
-		TenantID: principal.TenantID, ProjectID: projectID, GoalSpecID: goalSpecID,
-		MessageID:       messageID,
-		UserPrincipalID: principal.ID, UserInput: []byte(body.Message), GoalAgentCount: project.GoalAgentCount,
-		PreviousRef: previousRef, SupersedeApprovedGoal: supersede, ExpectedProjectVersion: body.ExpectedVersion,
-		IdempotencyKey: goalPlanKey("negotiate", principal.TenantID, projectID, principal.ID, idempotencyKey),
-	})
+	messages, err := handler.orchestrator.GoalMessages(ctx, project.TenantID, project.ID)
 	if err != nil {
-		return state.Project{}, err
+		return
 	}
-	outcome := result.Project.Project
-	if outcome.TenantID != principal.TenantID || outcome.ID != projectID || outcome.Version != body.ExpectedVersion+1 || outcome.State != contracts.ProjectGoalNegotiating || outcome.Goal == nil || outcome.Goal.ID != goalSpecID || outcome.Goal.Version != result.Goal.Content.Version || outcome.Goal.SHA256 != result.Goal.ContentSHA256 || result.Goal.Status != contracts.GoalDraft || result.Artifact.TenantID != principal.TenantID || result.Artifact.ProjectID != projectID || result.Artifact.Kind != goalplan.ArtifactGoalDraft || result.Artifact.SpecID != goalSpecID || result.Artifact.Version != result.Goal.Content.Version || result.Artifact.ContentSHA256 != result.Goal.ContentSHA256 {
-		return state.Project{}, goalplan.ErrAgentOutput
+	for index := len(messages) - 1; index >= 0; index-- {
+		message := messages[index]
+		if message.Kind != state.GoalMessageUser || message.CreatedBy != principal.ID {
+			continue
+		}
+		request, requestErr := goalNegotiationRequest(project, message)
+		if requestErr == nil {
+			handler.startGoalNegotiation(ctx, principal, *request)
+		}
+		return
 	}
-	return outcome, nil
+}
+
+func (handler *Handler) startGoalNegotiation(ctx context.Context, principal authn.Principal, request goalplan.NegotiationRequest) {
+	if _, running := handler.goalNegotiations.LoadOrStore(request.IdempotencyKey, struct{}{}); running {
+		return
+	}
+	go func() {
+		defer handler.goalNegotiations.Delete(request.IdempotencyKey)
+		handler.runGoalNegotiation(ctx, principal, request)
+	}()
+}
+
+func (handler *Handler) runGoalNegotiation(ctx context.Context, principal authn.Principal, request goalplan.NegotiationRequest) {
+	goalContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Minute)
+	defer cancel()
+	result, err := handler.goalPlan.Negotiator.Negotiate(goalContext, request)
+	if err == nil {
+		outcome := result.Project.Project
+		if outcome.TenantID != principal.TenantID || outcome.ID != request.ProjectID || outcome.Version != request.ExpectedProjectVersion+1 || outcome.State != contracts.ProjectGoalNegotiating || outcome.Goal == nil || outcome.Goal.ID != request.GoalSpecID || outcome.Goal.Version != result.Goal.Content.Version || outcome.Goal.SHA256 != result.Goal.ContentSHA256 || outcome.GoalProcessing || result.Goal.Status != contracts.GoalDraft || result.Artifact.TenantID != principal.TenantID || result.Artifact.ProjectID != request.ProjectID || result.Artifact.Kind != goalplan.ArtifactGoalDraft || result.Artifact.SpecID != request.GoalSpecID || result.Artifact.Version != result.Goal.Content.Version || result.Artifact.ContentSHA256 != result.Goal.ContentSHA256 {
+			err = goalplan.ErrAgentOutput
+		}
+	}
+	if err != nil {
+		handler.suspendFailedGoalNegotiation(goalContext, principal, request)
+	}
+}
+
+func (handler *Handler) suspendFailedGoalNegotiation(ctx context.Context, principal authn.Principal, request goalplan.NegotiationRequest) {
+	failureContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	project, found, err := handler.orchestrator.Project(failureContext, request.TenantID, request.ProjectID)
+	if err != nil || !found || project.Version != request.ExpectedProjectVersion || !project.GoalProcessing {
+		return
+	}
+	_, _ = handler.orchestrator.HandleProject(failureContext, orchestrator.ProjectRequest{
+		TenantID: request.TenantID, ProjectID: request.ProjectID, PrincipalID: principal.ID,
+		IdempotencyKey:  goalPlanKey("negotiation-failed", request.TenantID, request.ProjectID, principal.ID, request.IdempotencyKey),
+		ExpectedVersion: request.ExpectedProjectVersion,
+		Command:         state.ProjectCommand{Type: state.ProjectCommandPause},
+	})
 }
 
 func (handler *Handler) approveGoalAndPlan(ctx context.Context, principal authn.Principal, projectID string, projection orchestrator.GoalSpecProjection, body goalDecisionBody, idempotencyKey, reason string) (state.Project, error) {
@@ -223,24 +280,6 @@ func (handler *Handler) approveGoalAndPlan(ctx context.Context, principal authn.
 		return state.Project{}, goalplan.ErrAgentOutput
 	}
 	return outcome, nil
-}
-
-func (handler *Handler) replayedGoalSupersede(ctx context.Context, tenantID, projectID string, version int64, fallback bool) bool {
-	log, ok := handler.events.(eventing.EventLog)
-	if !ok {
-		return fallback
-	}
-	events, err := log.ListEvents(ctx, tenantID)
-	if err != nil {
-		return fallback
-	}
-	for _, event := range events {
-		if event.AggregateType != "project" || event.AggregateID != projectID || event.AggregateVersion != version {
-			continue
-		}
-		return event.Type == "io.aor.goal.superseded.v1"
-	}
-	return fallback
 }
 
 func (handler *Handler) findGoalPlanArtifactSpecID(ctx context.Context, tenantID, projectID string, kind goalplan.ArtifactKind, version int, matches func(goalplan.SpecArtifact) bool) (string, bool, error) {

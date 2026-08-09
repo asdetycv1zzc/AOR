@@ -1031,7 +1031,7 @@ components:
     Project:
       type: object
       additionalProperties: false
-      required: [tenantId, id, name, createdBy, dataClassification, riskTolerance, state, version, goalAgentCount]
+      required: [tenantId, id, name, createdBy, dataClassification, riskTolerance, state, version, goalAgentCount, goalProcessing]
       properties:
         tenantId: {type: string, format: uuid}
         id: {type: string, format: uuid}
@@ -1047,6 +1047,7 @@ components:
         state: {enum: [CREATED, GOAL_NEGOTIATING, GOAL_SUSPENDED, PLANNING, EXECUTING, INTEGRATING, GLOBAL_AUDIT, BLOCKED_USER_DECISION, PAUSED, COMPLETED, ABORTED, FAILED_SYSTEM, ARCHIVED]}
         version: {type: integer, format: int64, minimum: 1}
         goalAgentCount: {type: integer, minimum: 1, maximum: 2}
+        goalProcessing: {type: boolean}
         modelRoutes: {$ref: '#/components/schemas/ModelRoutes'}
         goal: {type: object, additionalProperties: true}
         plan: {type: object, additionalProperties: true}

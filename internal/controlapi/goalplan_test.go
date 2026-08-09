@@ -26,12 +26,16 @@ type recordingGoalNegotiator struct {
 	negotiationErr     error
 	approvalErr        error
 	calls              *[]string
+	called             chan struct{}
 }
 
 func (service *recordingGoalNegotiator) Negotiate(_ context.Context, request goalplan.NegotiationRequest) (goalplan.NegotiationResult, error) {
 	service.negotiationRequest = request
 	if service.calls != nil {
 		*service.calls = append(*service.calls, "negotiate")
+	}
+	if service.called != nil {
+		service.called <- struct{}{}
 	}
 	result := service.negotiationResult
 	if result.Artifact.SpecID == "" {
@@ -71,7 +75,7 @@ func (service *recordingGoalPlanner) BuildAndPublishAutomatic(_ context.Context,
 }
 
 func TestConfiguredGoalPlanServicesReplaceLegacyMessageOnlyPath(t *testing.T) {
-	negotiator := &recordingGoalNegotiator{}
+	negotiator := &recordingGoalNegotiator{called: make(chan struct{}, 1)}
 	planner := &recordingGoalPlanner{}
 	handler, _, authorizer := newGoalPlanTestHandler(t, negotiator, planner)
 	project := createTestProject(t, handler)
@@ -83,7 +87,7 @@ func TestConfiguredGoalPlanServicesReplaceLegacyMessageOnlyPath(t *testing.T) {
 			Version: 1, ContentSHA256: goal.ContentSHA256,
 		},
 		Project: orchestrator.ProjectOutcome{Project: state.Project{
-			TenantID: testTenantID, ID: project.ID, Version: 2, State: contracts.ProjectGoalNegotiating,
+			TenantID: testTenantID, ID: project.ID, Version: 3, State: contracts.ProjectGoalNegotiating,
 			Goal: &state.GoalRecord{Version: 1, SHA256: goal.ContentSHA256},
 		}},
 	}
@@ -92,14 +96,19 @@ func TestConfiguredGoalPlanServicesReplaceLegacyMessageOnlyPath(t *testing.T) {
 		"Authorization": "Bearer " + testBearer, "Content-Type": "application/json",
 		"Idempotency-Key": "goal-runtime-1", "If-Match": `"v1"`,
 	})
-	if response.Code != http.StatusAccepted || response.Header().Get("ETag") != `"v2"` || !strings.Contains(response.Body.String(), `"goal"`) {
+	if response.Code != http.StatusAccepted || response.Header().Get("ETag") != `"v2"` || !strings.Contains(response.Body.String(), `"goalProcessing":true`) {
 		t.Fatalf("response status=%d etag=%q body=%s", response.Code, response.Header().Get("ETag"), response.Body.String())
+	}
+	select {
+	case <-negotiator.called:
+	case <-time.After(time.Second):
+		t.Fatal("goal negotiation did not start")
 	}
 	request := negotiator.negotiationRequest
 	goalSpecID := request.GoalSpecID
 	requireGoalPlanUUIDv7(t, goalSpecID)
 	requireGoalPlanUUIDv7(t, request.MessageID)
-	if request.TenantID != testTenantID || request.ProjectID != project.ID || request.GoalSpecID != goalSpecID || request.UserPrincipalID != "user-1" || string(request.UserInput) != "build through the goal runtime" || request.GoalAgentCount != 1 || request.PreviousRef != nil || request.SupersedeApprovedGoal || request.ExpectedProjectVersion != 1 || request.MessageID == "" || request.IdempotencyKey == "goal-runtime-1" || len(request.IdempotencyKey) > 256 {
+	if request.TenantID != testTenantID || request.ProjectID != project.ID || request.GoalSpecID != goalSpecID || request.UserPrincipalID != "user-1" || string(request.UserInput) != "build through the goal runtime" || request.GoalAgentCount != 1 || request.PreviousRef != nil || request.SupersedeApprovedGoal || request.ExpectedProjectVersion != 2 || request.MessageID == "" || request.IdempotencyKey == "goal-runtime-1" || len(request.IdempotencyKey) > 256 || !request.MessageAccepted {
 		t.Fatalf("negotiation request = %#v", request)
 	}
 	if last := authorizer.inputs[len(authorizer.inputs)-1]; last.Action != "project.command" || last.Resource.Type != "project" || last.Resource.ID != project.ID {
@@ -107,7 +116,7 @@ func TestConfiguredGoalPlanServicesReplaceLegacyMessageOnlyPath(t *testing.T) {
 	}
 }
 
-func TestConfiguredGoalNegotiationRetryUsesOriginalGoalContext(t *testing.T) {
+func TestConfiguredGoalNegotiationAcceptanceUsesCurrentGoalContext(t *testing.T) {
 	negotiator := &recordingGoalNegotiator{}
 	handler, _, _ := newGoalPlanTestHandler(t, negotiator, &recordingGoalPlanner{})
 	project := createTestProject(t, handler)
@@ -117,21 +126,13 @@ func TestConfiguredGoalNegotiationRetryUsesOriginalGoalContext(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("load project: found=%t error=%v", found, err)
 	}
-	negotiator.negotiationResult = goalplan.NegotiationResult{
-		Goal: goal,
-		Artifact: goalplan.SpecArtifact{
-			TenantID: testTenantID, ProjectID: project.ID, Kind: goalplan.ArtifactGoalDraft,
-			SpecID: current.Goal.ID, Version: 1, ContentSHA256: goal.ContentSHA256,
-		},
-		Project: orchestrator.ProjectOutcome{Project: current},
-	}
 	principal := authn.Principal{ID: "user-1", Type: authn.PrincipalUser, Role: authn.RoleUser, TenantID: testTenantID}
-	if _, err := handler.negotiateGoal(context.Background(), principal, project.ID, goalMessageBody{ExpectedVersion: 1, Message: "build through the goal runtime"}, "goal-runtime-retry"); err != nil {
+	accepted, request, err := handler.acceptGoalNegotiation(context.Background(), principal, project.ID, goalMessageBody{ExpectedVersion: current.Version, Message: "refine the current goal"}, "goal-runtime-next")
+	if err != nil {
 		t.Fatal(err)
 	}
-	request := negotiator.negotiationRequest
-	if request.GoalSpecID != current.Goal.ID || request.PreviousRef != nil || request.SupersedeApprovedGoal {
-		t.Fatalf("retry negotiation request = %#v", request)
+	if accepted.Version != current.Version+1 || !accepted.GoalProcessing || request == nil || request.GoalSpecID != current.Goal.ID || request.PreviousRef == nil || request.PreviousRef.Version != current.Goal.Version || request.PreviousRef.SHA256 != current.Goal.SHA256 || request.SupersedeApprovedGoal || !request.MessageAccepted {
+		t.Fatalf("accepted project = %#v, negotiation request = %#v", accepted, request)
 	}
 }
 

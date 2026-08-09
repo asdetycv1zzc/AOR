@@ -87,6 +87,7 @@ type NegotiationRequest struct {
 	ImpactedTaskIDs        []string
 	ExpectedProjectVersion int64
 	IdempotencyKey         string
+	MessageAccepted        bool
 }
 
 type NegotiationResult struct {

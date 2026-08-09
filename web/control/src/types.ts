@@ -160,6 +160,7 @@ export interface Project {
   state: ProjectState;
   version: number;
   goalAgentCount: 1 | 2;
+  goalProcessing: boolean;
   modelRoutes?: ModelRoutes;
   goal?: { id?: string; version?: number; sha256?: string };
   plan?: SpecReference;

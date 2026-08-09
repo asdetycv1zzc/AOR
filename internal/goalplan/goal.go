@@ -212,7 +212,7 @@ func (n *Negotiator) validateNegotiation(ctx context.Context, request Negotiatio
 	if project.Version == request.ExpectedProjectVersion+1 && project.Goal != nil && project.Goal.ID == request.GoalSpecID && project.Goal.Version == finalVersion {
 		return project, nil, request.SupersedeApprovedGoal, true, nil
 	}
-	if project.Version != request.ExpectedProjectVersion {
+	if project.Version != request.ExpectedProjectVersion || request.MessageAccepted && !project.GoalProcessing {
 		return state.Project{}, nil, false, false, ErrInvalidRequest
 	}
 	if request.PreviousRef == nil {
@@ -260,10 +260,14 @@ func (n *Negotiator) publishGoal(ctx context.Context, request NegotiationRequest
 		commandType = state.ProjectCommandSupersedeGoal
 	}
 	record := &state.GoalRecord{ID: request.GoalSpecID, Version: goal.Content.Version, SHA256: goal.ContentSHA256, UnresolvedItems: append([]string(nil), goal.Content.UnresolvedItems...)}
+	var message *state.GoalMessage
+	if !request.MessageAccepted {
+		message = &state.GoalMessage{Kind: state.GoalMessageUser, Message: string(request.UserInput)}
+	}
 	return n.projects.HandleProject(ctx, orchestrator.ProjectRequest{
 		TenantID: request.TenantID, ProjectID: request.ProjectID, PrincipalID: request.UserPrincipalID,
 		IdempotencyKey: request.IdempotencyKey, ExpectedVersion: request.ExpectedProjectVersion,
-		Command: state.ProjectCommand{Type: commandType, Goal: record, GoalSpec: &goal, GoalMessage: &state.GoalMessage{Kind: state.GoalMessageUser, Message: string(request.UserInput)}, ImpactedTaskIDs: append([]string(nil), request.ImpactedTaskIDs...)},
+		Command: state.ProjectCommand{Type: commandType, Goal: record, GoalSpec: &goal, GoalMessage: message, ImpactedTaskIDs: append([]string(nil), request.ImpactedTaskIDs...)},
 	})
 }
 
