@@ -604,6 +604,17 @@ button {
   font-size: 10px;
 }
 
+.copy-id span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: left;
+  line-height: 1.4;
+}
+
+.copy-id svg {
+  flex: 0 0 auto;
+}
+
 .workflow-rail {
   display: grid;
   margin: 22px 0;
@@ -2029,11 +2040,8 @@ button {
   }
 
   .copy-id {
-    width: auto;
-  }
-
-  .copy-id span {
-    display: none;
+    width: 100%;
+    grid-column: 1 / -1;
   }
 
   .workflow-rail {

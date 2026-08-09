@@ -269,11 +269,16 @@ function readRecentProjects(): RecentProject[] {
   }
 }
 
-function rememberProject(project: Project): RecentProject[] {
+function displayedProjectState(project: Project, result?: ProjectResult): ProjectState {
+  if (result?.status === "COMPLETED" || project.coreSummary?.status === "COMPLETED") return "COMPLETED";
+  return project.state;
+}
+
+function rememberProject(project: Project, result?: ProjectResult): RecentProject[] {
   const item: RecentProject = {
     id: project.id,
     name: project.name,
-    state: project.state,
+    state: displayedProjectState(project, result),
     touchedAt: new Date().toISOString(),
   };
   const next = [item, ...readRecentProjects().filter((recent) => recent.id !== project.id)].slice(0, 8);
@@ -341,14 +346,19 @@ function IconButton({ label, icon, onClick, disabled }: {
   );
 }
 
-function StatusMark({ state }: { state: string }) {
+function StatusMark({ state, label }: { state: string; label?: string }) {
   const lower = state.toLowerCase();
   const tone = lower.includes("fail") || lower.includes("abort") || lower.includes("block")
     ? "danger"
     : lower.includes("pass") || lower.includes("complete") || lower.includes("approve") || lower.includes("integrated")
       ? "success"
       : "neutral";
-  return <span className={`status-mark status-${tone}`}>{taskStateLabels[state] || projectStateLabels[state as ProjectState] || state}</span>;
+  return <span className={`status-mark status-${tone}`}>{label || taskStateLabels[state] || projectStateLabels[state as ProjectState] || state}</span>;
+}
+
+function ProjectStatusMark({ project, result }: { project: Project; result?: ProjectResult }) {
+  const state = displayedProjectState(project, result);
+  return <StatusMark state={state} label={projectStateLabels[state]} />;
 }
 
 export function App() {
@@ -401,14 +411,15 @@ function ControlConsole({ client }: { client: AorClient }) {
         tasksRequest,
         client.getResult(projectId),
       ]);
+      const loadedResult = result.status === "fulfilled" ? result.value : undefined;
       setBundle({
         project: current,
         goalSpecs: goals.status === "fulfilled" ? goals.value.items : [],
         plans: plans.status === "fulfilled" ? plans.value.items : [],
         tasks: tasks.status === "fulfilled" ? tasks.value.items : [],
-        result: result.status === "fulfilled" ? result.value : undefined,
+        result: loadedResult,
       });
-      setRecent(rememberProject(current));
+      setRecent(rememberProject(current, loadedResult));
     } catch (cause) {
       if (!silent) setError(errorMessage(cause));
     } finally {
@@ -437,10 +448,10 @@ function ControlConsole({ client }: { client: AorClient }) {
   }, [client]);
 
   useEffect(() => {
-    if (!project || terminalProjectStates.has(project.state)) return;
+    if (!project || terminalProjectStates.has(displayedProjectState(project, bundle.result))) return;
     const timer = window.setInterval(() => void loadProject(project.id, true), 5_000);
     return () => window.clearInterval(timer);
-  }, [loadProject, project?.id, project?.state]);
+  }, [bundle.result, loadProject, project]);
 
   useEffect(() => {
     if (!notice) return;
@@ -539,14 +550,47 @@ function ControlConsole({ client }: { client: AorClient }) {
     return client.testModelProvider(providerId, input);
   }, [client]);
 
+  const returnHome = useCallback(() => {
+    localStorage.removeItem(activeProjectKey);
+    setBundle({ goalSpecs: [], plans: [], tasks: [] });
+    setSelectedTask("");
+    setAudits({});
+    setAuditLoading("");
+    setResultOpen(false);
+    setError("");
+    window.scrollTo({ top: 0 });
+  }, []);
+
+  const copyProjectID = useCallback(async (projectID: string) => {
+    try {
+      if (navigator.clipboard) {
+        await navigator.clipboard.writeText(projectID);
+      } else {
+        const field = document.createElement("textarea");
+        field.value = projectID;
+        field.readOnly = true;
+        field.style.position = "fixed";
+        field.style.opacity = "0";
+        document.body.appendChild(field);
+        field.select();
+        const copied = document.execCommand("copy");
+        field.remove();
+        if (!copied) throw new Error("当前浏览器不允许访问剪贴板");
+      }
+      setNotice("项目 ID 已复制");
+    } catch (cause) {
+      setError(errorMessage(cause));
+    }
+  }, []);
+
   return (
     <div className="console-shell" ref={mainRef}>
       <header className="topbar">
-        <button className="brand-button" onClick={() => project && window.scrollTo({ top: 0, behavior: "smooth" })}>
+        <button className="brand-button" onClick={returnHome} aria-label="返回首页">
           <span className="brand-glyph">A</span><span>AOR</span><small>CONTROL</small>
         </button>
         <div className="topbar-context">
-          {project ? <><strong>{project.name}</strong><StatusMark state={project.state} /></> : <span>未选择项目</span>}
+          {project ? <><strong>{project.name}</strong><ProjectStatusMark project={project} result={bundle.result} /></> : <span>未选择项目</span>}
         </div>
         <div className="topbar-actions">
           <IconButton label="刷新" icon={<ArrowClockwise className={refreshing ? "spin" : ""} />} onClick={() => project && void loadProject(project.id)} disabled={!project || refreshing} />
@@ -569,6 +613,7 @@ function ControlConsole({ client }: { client: AorClient }) {
             recent={recent}
             onSelect={(id) => void loadProject(id)}
             onResult={() => setResultOpen(true)}
+            onCopyID={(id) => void copyProjectID(id)}
           />
           <Workspace
             bundle={bundle}
@@ -628,7 +673,7 @@ function EmptyWorkspace({ onCreate, onOpen, recent, onSelect }: {
         <div className="recent-grid">
           {recent.map((item) => (
             <button key={item.id} onClick={() => onSelect(item.id)}>
-              <span><StatusMark state={item.state} /></span>
+              <span><StatusMark state={item.state} label={projectStateLabels[item.state]} /></span>
               <strong>{item.name}</strong>
               <small>{shortId(item.id, 12)}</small>
               <ArrowRight />
@@ -640,12 +685,13 @@ function EmptyWorkspace({ onCreate, onOpen, recent, onSelect }: {
   );
 }
 
-function ContextRail({ project, result, recent, onSelect, onResult }: {
+function ContextRail({ project, result, recent, onSelect, onResult, onCopyID }: {
   project: Project;
   result?: ProjectResult;
   recent: RecentProject[];
   onSelect: (id: string) => void;
   onResult: () => void;
+  onCopyID: (id: string) => void;
 }) {
   const stages = [
     { name: "目标", icon: <Target />, states: ["CREATED", "GOAL_NEGOTIATING", "GOAL_SUSPENDED"] },
@@ -661,8 +707,8 @@ function ContextRail({ project, result, recent, onSelect, onResult }: {
         <div className="project-index">
           <span className="eyebrow">当前项目</span>
           <strong>{project.name}</strong>
-          <button className="copy-id" onClick={() => void navigator.clipboard.writeText(project.id)} title="复制项目 ID">
-            <span>{shortId(project.id, 18)}</span><Copy />
+          <button className="copy-id" onClick={() => onCopyID(project.id)} title="复制项目 ID">
+            <span>{project.id}</span><Copy />
           </button>
         </div>
         <nav className="workflow-rail" aria-label="项目流程">
@@ -745,7 +791,7 @@ function Workspace({ bundle, selectedTask, audits, auditLoading, onSelectTask, o
           <h1>{project.name}</h1>
         </div>
         <dl className="project-facts">
-          <div><dt>状态</dt><dd><StatusMark state={project.state} /></dd></div>
+          <div><dt>状态</dt><dd><ProjectStatusMark project={project} result={bundle.result} /></dd></div>
           <div><dt>版本</dt><dd>v{project.version}</dd></div>
           <div><dt>目标 Agent</dt><dd>{project.goalAgentCount}</dd></div>
           <div><dt>数据级别</dt><dd>{dataClassificationLabels[project.dataClassification]}</dd></div>
@@ -1308,7 +1354,7 @@ function OpenProjectDialog({ open, client, onClose, onSubmit }: { open: boolean;
               <div className="project-picker" role="list">
                 {projects.map((item) => (
                   <button type="button" key={item.id} role="listitem" onClick={() => onSubmit(item.id)}>
-                    <span className="project-picker-main"><strong>{item.name}</strong><StatusMark state={item.state} /></span>
+                    <span className="project-picker-main"><strong>{item.name}</strong><ProjectStatusMark project={item} /></span>
                     <span className="project-picker-meta">{dataClassificationLabels[item.dataClassification]} · {shortId(item.id, 18)}</span>
                     <ArrowRight aria-hidden="true" />
                   </button>
