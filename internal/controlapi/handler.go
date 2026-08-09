@@ -61,6 +61,7 @@ type Config struct {
 	ModelProviders       []ModelProvider
 	ProviderSettings     modelproviders.SettingsStore
 	ProviderAdapter      modelproviders.AdapterFactory
+	SamplingSettings     modelgateway.SamplingSettingsStore
 	Clock                func() time.Time
 }
 
@@ -117,6 +118,8 @@ type Handler struct {
 	modelRouteSettings   modelRouteSettingsStore
 	autoBudget           bool
 	clock                func() time.Time
+
+	modelSamplingSettings modelgateway.SamplingSettingsStore
 }
 
 type projectCreate struct {
@@ -280,6 +283,9 @@ func New(config Config) (*Handler, error) {
 	if config.Clock == nil {
 		config.Clock = time.Now
 	}
+	if config.SamplingSettings == nil {
+		config.SamplingSettings = modelgateway.NewMemorySamplingSettingsStore()
+	}
 	if config.KnowledgeCuratorURL != "" {
 		if err := validateKnowledgeCuratorURL(config.KnowledgeCuratorURL); err != nil {
 			return nil, err
@@ -341,6 +347,8 @@ func New(config Config) (*Handler, error) {
 		modelRouteSettings:   newModelRouteSettingsStore(config.Database),
 		autoBudget:           autoBudget,
 		clock:                config.Clock,
+
+		modelSamplingSettings: config.SamplingSettings,
 	}
 	handler.publisher, _ = config.Artifacts.(artifact.Publisher)
 	handler.events, _ = config.Store.(eventing.EventLog)
@@ -411,6 +419,17 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 			handler.getModelRouteSettings(response, request, principal)
 		case http.MethodPut:
 			handler.putModelRouteSettings(response, request, principal)
+		default:
+			writeMethodNotAllowedWith(response, request, "GET, PUT")
+		}
+		return
+	}
+	if request.URL.Path == "/v1/settings/model-sampling" {
+		switch request.Method {
+		case http.MethodGet:
+			handler.getModelSamplingSettings(response, request, principal)
+		case http.MethodPut:
+			handler.putModelSamplingSettings(response, request, principal)
 		default:
 			writeMethodNotAllowedWith(response, request, "GET, PUT")
 		}

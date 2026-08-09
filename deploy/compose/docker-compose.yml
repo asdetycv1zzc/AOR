@@ -239,6 +239,10 @@ services:
         if [ "$$tenant_model_providers_installed" != "t" ]; then
           psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000047_tenant_model_providers.up.sql
         fi
+        tenant_model_sampling_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT to_regclass('public.tenant_model_sampling_settings') IS NOT NULL")"
+        if [ "$$tenant_model_sampling_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000048_tenant_model_sampling.up.sql
+        fi
         unset AOR_APP_PASSWORD
     secrets: [postgres_password, postgres_app_password]
     volumes:
@@ -289,6 +293,7 @@ services:
       - ../../migrations/postgres/000045_project_scoped_module_spec_uniqueness.up.sql:/migrations/000045_project_scoped_module_spec_uniqueness.up.sql:ro
       - ../../migrations/postgres/000046_tenant_model_routes.up.sql:/migrations/000046_tenant_model_routes.up.sql:ro
       - ../../migrations/postgres/000047_tenant_model_providers.up.sql:/migrations/000047_tenant_model_providers.up.sql:ro
+      - ../../migrations/postgres/000048_tenant_model_sampling.up.sql:/migrations/000048_tenant_model_sampling.up.sql:ro
       - ./postgres-app-password.sql:/migrations/postgres-app-password.sql:ro
     read_only: true
     tmpfs: [/tmp]

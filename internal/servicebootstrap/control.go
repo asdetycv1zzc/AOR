@@ -18,6 +18,7 @@ import (
 	"github.com/akimisaka/aor/internal/goalplan"
 	"github.com/akimisaka/aor/internal/knowledge"
 	"github.com/akimisaka/aor/internal/leaseauthority"
+	"github.com/akimisaka/aor/internal/modelgateway"
 	"github.com/akimisaka/aor/internal/modelproviders"
 	"github.com/akimisaka/aor/internal/observability"
 	"github.com/akimisaka/aor/internal/policy"
@@ -212,6 +213,10 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	if err != nil {
 		return nil, err
 	}
+	samplingSettings, err := modelgateway.NewPostgresSamplingSettingsStore(clients.Database())
+	if err != nil {
+		return nil, runtimeclient.ErrInvalidClientConfig
+	}
 	projectAgents, err := configuredGoalPlanServices(config, lifecycleStore, leaseService, authorizer, knowledgeService, knowledgeEvents)
 	if err != nil {
 		return nil, err
@@ -248,6 +253,7 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 		GoalPlan: projectAgents.goalPlan, ClassroomCore: config.DeploymentProfile == "TEST",
 		ModelProviders: modelProviders, DefaultModelRoutes: defaultModelRoutes, Clock: time.Now,
 		ProviderSettings: providerSettings, ProviderAdapter: modelproviders.AdapterFactory{},
+		SamplingSettings: samplingSettings,
 	})
 	if err != nil {
 		return nil, err

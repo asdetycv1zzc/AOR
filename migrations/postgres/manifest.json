@@ -330,6 +330,13 @@
       "file": "000047_tenant_model_providers.up.sql",
       "sha256": "sha256:ec389959e48e0e2c33da31a8395b452ff354da535f0255b3f2b999de91083405",
       "destructive": false
+    },
+    {
+      "version": 48,
+      "mode": "EXPAND",
+      "file": "000048_tenant_model_sampling.up.sql",
+      "sha256": "sha256:7fa05358305caad5e14810d1e1f0ced653e58dbb3584cf941634915031d524cc",
+      "destructive": false
     }
   ]
 }

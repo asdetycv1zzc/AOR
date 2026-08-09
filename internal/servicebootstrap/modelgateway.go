@@ -60,6 +60,11 @@ func ModelGateway(config runtimeconfig.Config, clients *runtimeclient.Clients) (
 		clearBytes(replayKey)
 		return nil, runtimeclient.ErrInvalidClientConfig
 	}
+	samplingSettings, err := modelgateway.NewPostgresSamplingSettingsStore(clients.Database())
+	if err != nil {
+		clearBytes(replayKey)
+		return nil, runtimeclient.ErrInvalidClientConfig
+	}
 	ledger, ledgerErr := modelgateway.NewPostgresBudgetLedgerWithReplay(clients.Database(), time.Now, modelGatewayReservationTTL, modelgateway.ReplayStoreConfig{
 		KeyID:         config.ModelGateway.ReplayKeyID,
 		EncryptionKey: replayKey,
@@ -72,6 +77,7 @@ func ModelGateway(config runtimeconfig.Config, clients *runtimeclient.Clients) (
 	allowed := make(map[string]map[string]struct{}, len(modelproviders.Catalog())+2)
 	var authorizer *modelGatewayAuthorizer
 	gateway := modelgateway.NewGatewayWithConfig(ledger, time.Now, modelgateway.GatewayConfig{
+		SamplingSettings: samplingSettings,
 		ProviderPolicies: map[string]modelgateway.ProviderPolicy{
 			"default": configuredCatalogProviderPolicy(),
 		},

@@ -101,6 +101,32 @@ paths:
       responses:
         '200': {$ref: '#/components/responses/ModelRouteSettings'}
         default: {$ref: '#/components/responses/Problem'}
+  /v1/settings/model-sampling:
+    get:
+      tags: [Settings]
+      operationId: getModelSamplingSettings
+      responses:
+        '200':
+          description: Tenant-global generation parameters used for subsequent model calls
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ModelSamplingSettings'}
+        default: {$ref: '#/components/responses/Problem'}
+    put:
+      tags: [Settings]
+      operationId: putModelSamplingSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ModelSamplingSettingsInput'}
+      responses:
+        '200':
+          description: Saved tenant-global generation parameters
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ModelSamplingSettings'}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/projects:
     post:
       tags: [Projects]
@@ -839,6 +865,25 @@ components:
       required: [modelRoutes, version]
       properties:
         modelRoutes: {$ref: '#/components/schemas/ModelRoutes'}
+        version: {type: integer, format: int64, minimum: 0}
+    ModelSamplingSettingsInput:
+      type: object
+      additionalProperties: false
+      required: [temperature, topP, topK, reasoningEffort]
+      properties:
+        temperature: {type: number, minimum: 0, maximum: 2}
+        topP: {type: number, minimum: 0, maximum: 1}
+        topK: {type: integer, minimum: 0, maximum: 500}
+        reasoningEffort: {enum: ['', none, minimal, low, medium, high, xhigh]}
+    ModelSamplingSettings:
+      type: object
+      additionalProperties: false
+      required: [temperature, topP, topK, reasoningEffort, version]
+      properties:
+        temperature: {type: number, minimum: 0, maximum: 2}
+        topP: {type: number, minimum: 0, maximum: 1}
+        topK: {type: integer, minimum: 0, maximum: 500}
+        reasoningEffort: {enum: ['', none, minimal, low, medium, high, xhigh]}
         version: {type: integer, format: int64, minimum: 0}
     ModelProvider:
       type: object
