@@ -628,6 +628,17 @@ func (g *Gateway) providerCandidates(request NormalizedRequest, options Generate
 	if options.Provider == "" {
 		return nil, ErrInvalidRequest
 	}
+	// The deployment's default route is an explicit project choice. It must
+	// retry that provider/model only; catalog entries are metadata, not hidden
+	// fallback targets. Named policies retain their explicit fallback lists.
+	if request.ProviderPolicy == "default" {
+		return []ProviderCandidate{{
+			Provider: options.Provider,
+			Model: request.Model,
+			CapabilityRank: 100,
+			AllowedDataClassifications: []string{"PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"},
+		}}, nil
+	}
 	candidates := make([]ProviderCandidate, 0, len(policy.Candidates)+1)
 	seen := make(map[string]struct{}, len(policy.Candidates)+1)
 	appendCandidate := func(candidate ProviderCandidate) error {

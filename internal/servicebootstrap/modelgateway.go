@@ -29,8 +29,8 @@ import (
 
 const (
 	modelGatewayReservationTTL  = 24 * time.Hour
-	modelProviderRequestTimeout = 90 * time.Second
-	modelGatewayClientTimeout   = 10 * time.Minute
+	modelProviderRequestTimeout = 4 * time.Minute
+	modelGatewayClientTimeout   = 25 * time.Minute
 )
 
 // ModelGateway constructs the authenticated, policy-authorized model service.
