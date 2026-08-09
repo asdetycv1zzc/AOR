@@ -520,7 +520,7 @@ services:
       AOR_ENVIRONMENT: test
       AOR_OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4318
       AOR_SERVER_MODE: CONTROL
-      AOR_LISTEN_ADDR: 127.0.0.1:8090
+      AOR_LISTEN_ADDR: 0.0.0.0:8090
       AOR_HEALTHCHECK_URL: http://127.0.0.1:8090/health/ready
       AOR_WEB_ROOT: /usr/local/share/aor-web
       AOR_CONTROL_API_ALLOW_ANONYMOUS: "true"
