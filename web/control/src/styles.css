@@ -1428,6 +1428,28 @@ button {
   font-weight: 680;
 }
 
+.model-sampling-editor {
+  min-width: 0;
+  margin: 0;
+  padding: 0 0 14px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.model-sampling-editor legend {
+  padding: 0 10px 0 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 680;
+}
+
+.model-sampling-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  padding-top: 10px;
+}
+
 .provider-settings-editor {
   min-width: 0;
   margin: 0;
@@ -2027,6 +2049,10 @@ button {
 
   .field-pair {
     grid-template-columns: 1fr;
+  }
+
+  .model-sampling-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .model-route-head {

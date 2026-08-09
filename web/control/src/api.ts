@@ -9,6 +9,8 @@ import type {
   ModelProviderTestResult,
   ModelRouteSettings,
   ModelRoutes,
+  ModelSamplingSettings,
+  ModelSamplingSettingsInput,
   ModuleTask,
   Page,
   PlanSpec,
@@ -103,6 +105,17 @@ export class AorClient {
     return this.request("/v1/settings/model-routes", {
       method: "PUT",
       body: JSON.stringify({ modelRoutes }),
+    });
+  }
+
+  getModelSamplingSettings(): Promise<ModelSamplingSettings> {
+    return this.request("/v1/settings/model-sampling");
+  }
+
+  putModelSamplingSettings(input: ModelSamplingSettingsInput): Promise<ModelSamplingSettings> {
+    return this.request("/v1/settings/model-sampling", {
+      method: "PUT",
+      body: JSON.stringify(input),
     });
   }
 

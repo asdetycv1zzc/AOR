@@ -103,6 +103,19 @@ export interface ModelRouteSettings {
   version: number;
 }
 
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
+export interface ModelSamplingSettingsInput {
+  temperature: number;
+  topP: number;
+  topK: number;
+  reasoningEffort: ReasoningEffort;
+}
+
+export interface ModelSamplingSettings extends ModelSamplingSettingsInput {
+  version: number;
+}
+
 export interface SpecReference {
   version: number;
   sha256: string;

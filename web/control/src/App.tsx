@@ -60,6 +60,8 @@ import type {
   ModelRole,
   ModelRouteSettings,
   ModelRoutes,
+  ModelSamplingSettings,
+  ModelSamplingSettingsInput,
   ModuleTask,
   PlanSpec,
   Project,
@@ -299,6 +301,7 @@ function ControlConsole({ client }: { client: AorClient }) {
   const [modelProviders, setModelProviders] = useState<ModelProvider[]>([]);
   const [providerSettings, setProviderSettings] = useState<ModelProviderSettings[]>([]);
   const [routeSettings, setRouteSettings] = useState<ModelRouteSettings>();
+  const [samplingSettings, setSamplingSettings] = useState<ModelSamplingSettings>();
   const [selectedTask, setSelectedTask] = useState("");
   const [audits, setAudits] = useState<Record<string, AuditRun[]>>({});
   const [auditLoading, setAuditLoading] = useState("");
@@ -343,12 +346,13 @@ function ControlConsole({ client }: { client: AorClient }) {
 
   useEffect(() => {
     let active = true;
-    void Promise.all([client.getModelProviders(), client.getModelProviderSettings(), client.getModelRouteSettings()])
-      .then(([providers, configuredProviders, settings]) => {
+    void Promise.all([client.getModelProviders(), client.getModelProviderSettings(), client.getModelRouteSettings(), client.getModelSamplingSettings()])
+      .then(([providers, configuredProviders, settings, sampling]) => {
         if (!active) return;
         setModelProviders(providers.items);
         setProviderSettings(configuredProviders.items);
         setRouteSettings(settings);
+        setSamplingSettings(sampling);
       })
       .catch((cause) => active && setError(errorMessage(cause)));
     return () => { active = false; };
@@ -422,7 +426,7 @@ function ControlConsole({ client }: { client: AorClient }) {
     }
   }, [client, loadProject]);
 
-  const saveModelSettings = useCallback(async (updates: ModelProviderUpdate[], modelRoutes: ModelRoutes) => {
+  const saveModelSettings = useCallback(async (updates: ModelProviderUpdate[], modelRoutes: ModelRoutes, sampling: ModelSamplingSettingsInput) => {
     setSettingsBusy(true);
     setError("");
     try {
@@ -431,6 +435,7 @@ function ControlConsole({ client }: { client: AorClient }) {
         savedProviders.push(await client.putModelProviderSettings(update.id, update.input));
       }
       const saved = await client.putModelRouteSettings(modelRoutes);
+      const savedSampling = await client.putModelSamplingSettings(sampling);
       if (savedProviders.length > 0) {
         setProviderSettings((current) => {
           const next = [...current];
@@ -443,8 +448,9 @@ function ControlConsole({ client }: { client: AorClient }) {
         });
       }
       setRouteSettings(saved);
+      setSamplingSettings(savedSampling);
       setSettingsOpen(false);
-      setNotice("模型供应商与默认组合已更新");
+      setNotice("模型设置已更新");
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
@@ -467,7 +473,7 @@ function ControlConsole({ client }: { client: AorClient }) {
         </div>
         <div className="topbar-actions">
           <IconButton label="刷新" icon={<ArrowClockwise className={refreshing ? "spin" : ""} />} onClick={() => project && void loadProject(project.id)} disabled={!project || refreshing} />
-          <IconButton label="默认模型组合" icon={<GearSix />} onClick={() => setSettingsOpen(true)} disabled={!routeSettings || modelProviders.length === 0} />
+          <IconButton label="模型设置" icon={<GearSix />} onClick={() => setSettingsOpen(true)} disabled={!routeSettings || !samplingSettings || modelProviders.length === 0} />
           <Button appearance="subtle" icon={<FolderOpen />} onClick={() => setOpenOpen(true)}>打开</Button>
           <Button appearance="primary" icon={<Plus weight="bold" />} onClick={() => setNewOpen(true)}>新建项目</Button>
         </div>
@@ -515,6 +521,7 @@ function ControlConsole({ client }: { client: AorClient }) {
         providers={modelProviders}
         providerSettings={providerSettings}
         settings={routeSettings}
+        samplingSettings={samplingSettings}
         onClose={() => setSettingsOpen(false)}
         onTestProvider={testModelProvider}
         onSubmit={saveModelSettings}
@@ -923,26 +930,40 @@ function NewProjectDialog({ open, busy, providers, defaults, onClose, onSubmit }
   );
 }
 
-function ModelSettingsDialog({ open, busy, providers, providerSettings, settings, onClose, onTestProvider, onSubmit }: {
+function ModelSettingsDialog({ open, busy, providers, providerSettings, settings, samplingSettings, onClose, onTestProvider, onSubmit }: {
   open: boolean;
   busy: boolean;
   providers: ModelProvider[];
   providerSettings: ModelProviderSettings[];
   settings?: ModelRouteSettings;
+  samplingSettings?: ModelSamplingSettings;
   onClose: () => void;
   onTestProvider: (providerId: string, input: ModelProviderTestInput) => Promise<ModelProviderTestResult>;
-  onSubmit: (updates: ModelProviderUpdate[], routes: ModelRoutes) => Promise<void>;
+  onSubmit: (updates: ModelProviderUpdate[], routes: ModelRoutes, sampling: ModelSamplingSettingsInput) => Promise<void>;
 }) {
   const [routes, setRoutes] = useState<ModelRoutes>();
+  const [sampling, setSampling] = useState<ModelSamplingSettingsInput>();
   const [drafts, setDrafts] = useState<ModelProviderDrafts>(emptyModelProviderDrafts);
   const [testStates, setTestStates] = useState<Partial<Record<ModelProviderKey, ProviderTestState>>>({});
+  const samplingValid = Boolean(
+    sampling &&
+    Number.isFinite(sampling.temperature) && sampling.temperature >= 0 && sampling.temperature <= 2 &&
+    Number.isFinite(sampling.topP) && sampling.topP >= 0 && sampling.topP <= 1 &&
+    Number.isInteger(sampling.topK) && sampling.topK >= 0 && sampling.topK <= 500,
+  );
 
   useEffect(() => {
     if (!open) return;
     setRoutes(cloneModelRoutes(settings?.modelRoutes));
+    setSampling(samplingSettings ? {
+      temperature: samplingSettings.temperature,
+      topP: samplingSettings.topP,
+      topK: samplingSettings.topK,
+      reasoningEffort: samplingSettings.reasoningEffort,
+    } : undefined);
     setDrafts(cloneModelProviderDrafts(providerSettings));
     setTestStates({});
-  }, [open, providerSettings, settings?.version]);
+  }, [open, providerSettings, samplingSettings?.version, settings?.version]);
 
   const updateDraft = (key: ModelProviderKey, patch: Partial<ModelProviderDraft>) => {
     setDrafts((current) => {
@@ -977,7 +998,7 @@ function ModelSettingsDialog({ open, busy, providers, providerSettings, settings
   };
 
   const submit = () => {
-    if (!routes) return;
+    if (!routes || !sampling || !samplingValid) return;
     const updates: ModelProviderUpdate[] = [];
     for (const { key } of modelProviderRows) {
       const draft = drafts[key];
@@ -990,7 +1011,7 @@ function ModelSettingsDialog({ open, busy, providers, providerSettings, settings
       if (draft.apiKey.trim()) input.apiKey = draft.apiKey.trim();
       updates.push({ id: draft.id, input });
     }
-    void onSubmit(updates, routes);
+    void onSubmit(updates, routes, sampling);
   };
 
   return (
@@ -1000,15 +1021,48 @@ function ModelSettingsDialog({ open, busy, providers, providerSettings, settings
           <DialogTitle>模型设置</DialogTitle>
           <DialogContent className="dialog-form">
             <ModelProviderSettingsEditor drafts={drafts} testStates={testStates} busy={busy} onChange={updateDraft} onTest={(key) => void testProvider(key)} />
+            {sampling ? <ModelSamplingSettingsEditor settings={sampling} onChange={setSampling} /> : <Spinner label="正在读取采样参数" />}
             {routes ? <ModelRouteEditor routes={routes} providers={providers} onChange={setRoutes} /> : <Spinner label="正在读取模型目录" />}
           </DialogContent>
           <DialogActions>
             <Button appearance="secondary" onClick={onClose}>取消</Button>
-            <Button appearance="primary" disabled={busy || !routes} onClick={submit}>{busy ? "保存中" : "保存"}</Button>
+            <Button appearance="primary" disabled={busy || !routes || !samplingValid} onClick={submit}>{busy ? "保存中" : "保存"}</Button>
           </DialogActions>
         </DialogBody>
       </DialogSurface>
     </Dialog>
+  );
+}
+
+function ModelSamplingSettingsEditor({ settings, onChange }: {
+  settings: ModelSamplingSettingsInput;
+  onChange: (settings: ModelSamplingSettingsInput) => void;
+}) {
+  return (
+    <fieldset className="model-sampling-editor">
+      <legend>生成参数</legend>
+      <div className="model-sampling-grid">
+        <Field label="温度">
+          <Input type="number" min={0} max={2} step={0.1} value={settings.temperature} onChange={(_, data) => onChange({ ...settings, temperature: Number(data.value) })} />
+        </Field>
+        <Field label="Top P">
+          <Input type="number" min={0} max={1} step={0.05} value={settings.topP} onChange={(_, data) => onChange({ ...settings, topP: Number(data.value) })} />
+        </Field>
+        <Field label="Top K（0 使用默认值）">
+          <Input type="number" min={0} max={500} step={1} value={settings.topK} onChange={(_, data) => onChange({ ...settings, topK: Number(data.value) })} />
+        </Field>
+        <Field label="推理深度">
+          <select className="native-select" value={settings.reasoningEffort} onChange={(event) => onChange({ ...settings, reasoningEffort: event.target.value as ModelSamplingSettingsInput["reasoningEffort"] })}>
+            <option value="none">关闭</option>
+            <option value="minimal">最小</option>
+            <option value="low">低</option>
+            <option value="medium">中</option>
+            <option value="high">高</option>
+            <option value="xhigh">极高</option>
+          </select>
+        </Field>
+      </div>
+    </fieldset>
   );
 }
 
