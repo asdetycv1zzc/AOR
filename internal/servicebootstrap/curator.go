@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/controlapi"
 	"github.com/akimisaka/aor/internal/eventing"
 	"github.com/akimisaka/aor/internal/knowledge"
@@ -58,8 +59,16 @@ func KnowledgeCuratorAPI(config runtimeconfig.Config, clients *runtimeclient.Cli
 	if err != nil {
 		return nil, err
 	}
+	var anonymousPrincipal *authn.Principal
+	if config.AllowAnonymousControlAPI {
+		principal := authn.Principal{
+			ID: "local-user", Type: authn.PrincipalUser, Role: config.Identity.DefaultRole,
+			TenantID: config.Identity.DefaultTenantID, Issuer: config.Identity.Issuer, Subject: "local-user",
+		}
+		anonymousPrincipal = &principal
+	}
 	domain, err := controlapi.NewKnowledgeCuratorHandler(controlapi.Config{
-		Store: store, Authenticator: authenticator, Authorizer: authorizer,
+		Store: store, Authenticator: authenticator, AnonymousPrincipal: anonymousPrincipal, Authorizer: authorizer,
 		Knowledge: service, KnowledgeCurator: agents.curator, Clock: time.Now,
 	})
 	if err != nil {
