@@ -1207,7 +1207,7 @@ function ModelChoice({ models, value, label, onChange }: {
   const custom = !models.includes(value);
   return (
     <div className="model-choice">
-      <select aria-label={label} className="native-select" value={custom ? customModelOption : value} onChange={(event) => onChange(event.target.value === customModelOption ? "" : event.target.value)}>
+      <select aria-label={label} className="native-select model-choice-select" value={custom ? customModelOption : value} onChange={(event) => onChange(event.target.value === customModelOption ? "" : event.target.value)}>
         {models.map((model) => <option value={model} key={model}>{model}</option>)}
         <option value={customModelOption}>自定义模型</option>
       </select>

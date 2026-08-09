@@ -22,12 +22,36 @@
   --red-soft: #f7dfdc;
   --blue: #28627d;
   --blue-soft: #dcebf0;
+  --scrollbar-thumb: #9da8a1;
+  --scrollbar-thumb-hover: #748078;
   --topbar-height: 64px;
 }
 
 * {
   box-sizing: border-box;
   letter-spacing: 0;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  min-height: 36px;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  background: var(--scrollbar-thumb) padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
 }
 
 html {
@@ -1366,10 +1390,14 @@ button {
   width: min(480px, calc(100vw - 32px)) !important;
 }
 
-.project-form-dialog,
-.model-settings-dialog {
+.project-form-dialog {
   width: min(820px, calc(100vw - 32px)) !important;
   max-width: 820px !important;
+}
+
+.model-settings-dialog {
+  width: min(1040px, calc(100vw - 32px)) !important;
+  max-width: 1040px !important;
 }
 
 .dialog-form {
@@ -1391,6 +1419,17 @@ button {
 .money-input .ui-input {
   width: 100%;
   padding-right: 30px;
+}
+
+.money-input input[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.money-input input[type="number"]::-webkit-inner-spin-button,
+.money-input input[type="number"]::-webkit-outer-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
 }
 
 .money-input > span {
@@ -1577,7 +1616,7 @@ button {
 
 .provider-settings-row {
   display: grid;
-  grid-template-columns: minmax(80px, 0.55fr) minmax(135px, 1.25fr) minmax(135px, 1.1fr) minmax(190px, 1fr) minmax(130px, 0.9fr);
+  grid-template-columns: minmax(80px, 0.5fr) minmax(135px, 1fr) minmax(135px, 1fr) minmax(190px, 1.1fr) minmax(220px, 1.35fr);
   gap: 10px;
   align-items: end;
   padding: 12px 0;
@@ -1664,6 +1703,10 @@ button {
   gap: 6px;
 }
 
+.model-choice-select {
+  min-width: 220px;
+}
+
 .provider-test-status {
   display: inline-flex;
   min-width: 0;
@@ -1700,7 +1743,7 @@ button {
 .model-route-head,
 .model-route-row {
   display: grid;
-  grid-template-columns: minmax(110px, 0.75fr) minmax(125px, 0.9fr) minmax(180px, 1.25fr) minmax(120px, 0.8fr);
+  grid-template-columns: minmax(110px, 0.7fr) minmax(125px, 0.8fr) minmax(240px, 1.5fr) minmax(120px, 0.8fr);
   gap: 10px;
   align-items: center;
 }
@@ -1964,6 +2007,18 @@ button {
   }
 }
 
+@media (max-width: 900px) {
+  .provider-settings-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .provider-test-line {
+    grid-column: auto;
+    flex-wrap: wrap;
+  }
+}
+
 @media (max-width: 760px) {
   :root {
     --topbar-height: 56px;
@@ -2173,16 +2228,6 @@ button {
 
   .model-route-head {
     display: none;
-  }
-
-  .provider-settings-row {
-    grid-template-columns: 1fr;
-    gap: 8px;
-  }
-
-  .provider-test-line {
-    grid-column: auto;
-    flex-wrap: wrap;
   }
 
   .model-route-row {
