@@ -31,6 +31,7 @@ export type ModelRole = (typeof modelRoles)[number];
 export interface ProjectModelRoute {
   provider: string;
   model: string;
+  reasoningEffort: ReasoningEffort;
   maxOutputTokens: number;
   temperature: number;
   seed?: number;
@@ -46,7 +47,6 @@ export interface ModelProvider {
   id: string;
   provider: string;
   models: string[];
-  reasoningEffort?: string;
   inputMicrosPerToken: number;
   outputMicrosPerToken: number;
   supportsStreaming: boolean;
@@ -91,6 +91,7 @@ export interface ModelProviderTestInput {
   protocol: string;
   apiKey?: string;
   model: string;
+  reasoningEffort: ReasoningEffort;
 }
 
 export interface ModelProviderTestResult {
@@ -105,13 +106,12 @@ export interface ModelRouteSettings {
   version: number;
 }
 
-export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export type ReasoningEffort = "" | "none" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface ModelSamplingSettingsInput {
   temperature: number;
   topP: number;
   topK: number;
-  reasoningEffort: ReasoningEffort;
 }
 
 export interface ModelSamplingSettings extends ModelSamplingSettingsInput {

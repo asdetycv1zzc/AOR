@@ -1539,7 +1539,7 @@ button {
 
 .model-sampling-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
   padding-top: 10px;
 }
@@ -1634,9 +1634,19 @@ button {
   display: flex;
   min-width: 0;
   min-height: 32px;
-  align-items: center;
+  align-items: flex-end;
   gap: 10px;
   grid-column: 2 / -1;
+}
+
+.provider-reasoning-field {
+  flex: 0 0 150px;
+}
+
+.model-choice {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
 }
 
 .provider-test-status {
@@ -1675,7 +1685,7 @@ button {
 .model-route-head,
 .model-route-row {
   display: grid;
-  grid-template-columns: minmax(118px, 0.75fr) minmax(160px, 1fr) minmax(210px, 1.35fr);
+  grid-template-columns: minmax(110px, 0.75fr) minmax(125px, 0.9fr) minmax(180px, 1.25fr) minmax(120px, 0.8fr);
   gap: 10px;
   align-items: center;
 }

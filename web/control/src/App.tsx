@@ -68,6 +68,7 @@ import type {
   ProjectCreateInput,
   ProjectResult,
   ProjectState,
+  ReasoningEffort,
   RecentProject,
 } from "./types";
 
@@ -142,9 +143,57 @@ const modelProviderRows = [
 
 type ModelProviderKey = (typeof modelProviderRows)[number]["key"];
 
+type ReasoningEffortOption = { value: ReasoningEffort; label: string };
+
+const customModelOption = "__aor_custom_model__";
+const reasoningEffortOptions: Record<ModelProviderKey, readonly ReasoningEffortOption[]> = {
+  openai: [
+    { value: "none", label: "关闭" },
+    { value: "low", label: "低" },
+    { value: "medium", label: "中" },
+    { value: "high", label: "高" },
+    { value: "xhigh", label: "极高" },
+    { value: "max", label: "最大" },
+  ],
+  claude: [
+    { value: "low", label: "低" },
+    { value: "medium", label: "中" },
+    { value: "high", label: "高" },
+    { value: "xhigh", label: "极高" },
+    { value: "max", label: "最大" },
+  ],
+  deepseek: [
+    { value: "high", label: "高" },
+    { value: "max", label: "最大" },
+  ],
+  grok: [{ value: "", label: "不指定" }],
+};
+
+const defaultReasoningEffort: Record<ModelProviderKey, ReasoningEffort> = {
+  openai: "medium",
+  claude: "medium",
+  deepseek: "high",
+  grok: "",
+};
+
+function modelProviderKey(provider: Pick<ModelProvider, "id" | "provider"> | string | undefined): ModelProviderKey | undefined {
+  const identity = typeof provider === "string" ? provider.toLowerCase() : `${provider?.id || ""} ${provider?.provider || ""}`.toLowerCase();
+  if (identity.includes("deepseek")) return "deepseek";
+  if (identity.includes("claude") || identity.includes("anthropic")) return "claude";
+  if (identity.includes("grok") || identity.includes("xai")) return "grok";
+  if (identity.includes("openai")) return "openai";
+  return undefined;
+}
+
+function normalizedReasoningEffort(key: ModelProviderKey | undefined, effort?: ReasoningEffort): ReasoningEffort {
+  if (!key) return effort || "";
+  return reasoningEffortOptions[key].some((option) => option.value === effort) ? effort! : defaultReasoningEffort[key];
+}
+
 type ModelProviderDraft = ModelProviderSettings & {
   apiKey: string;
   testModel: string;
+  testReasoningEffort: ReasoningEffort;
 };
 
 type ModelProviderDrafts = Record<ModelProviderKey, ModelProviderDraft | undefined>;
@@ -179,14 +228,36 @@ function cloneModelProviderDrafts(settings: ModelProviderSettings[]): ModelProvi
       models: [...setting.models],
       apiKey: "",
       testModel: setting.models[0] || "",
+      testReasoningEffort: defaultReasoningEffort[key],
     };
   }
   return drafts;
 }
 
-function cloneModelRoutes(routes?: ModelRoutes): ModelRoutes | undefined {
+function cloneModelRoutes(routes?: ModelRoutes, providers: ModelProvider[] = []): ModelRoutes | undefined {
   if (!routes) return undefined;
-  return Object.fromEntries(modelRoles.map((role) => [role, { ...routes[role] }])) as ModelRoutes;
+  return Object.fromEntries(modelRoles.map((role) => {
+    const route = routes[role];
+    const provider = providers.find((item) => item.id === route.provider);
+    const key = modelProviderKey(provider || route.provider);
+    return [role, { ...route, reasoningEffort: normalizedReasoningEffort(key, route.reasoningEffort) }];
+  })) as ModelRoutes;
+}
+
+function modelRoutesValid(routes: ModelRoutes | undefined, providers: ModelProvider[]): boolean {
+  if (!routes) return false;
+  return modelRoles.every((role) => {
+    const route = routes[role];
+    const provider = providers.find((item) => item.id === route.provider);
+    const key = modelProviderKey(provider || route.provider);
+    return Boolean(
+      key &&
+      route.model &&
+      route.model.length <= 256 &&
+      route.model.trim() === route.model &&
+      reasoningEffortOptions[key].some((option) => option.value === route.reasoningEffort),
+    );
+  });
 }
 
 function readRecentProjects(): RecentProject[] {
@@ -889,17 +960,18 @@ function NewProjectDialog({ open, busy, providers, defaults, onClose, onSubmit }
   const [soft, setSoft] = useState("800.00");
   const [routes, setRoutes] = useState<ModelRoutes>();
   useEffect(() => {
-    if (open) setRoutes(cloneModelRoutes(defaults?.modelRoutes));
-  }, [defaults?.version, open]);
+    if (open) setRoutes(cloneModelRoutes(defaults?.modelRoutes, providers));
+  }, [defaults?.version, open, providers]);
   const submit = (event: FormEvent) => {
     event.preventDefault();
+    if (routes && !modelRoutesValid(routes, providers)) return;
     void onSubmit({
       name: name.trim(),
       goalAgentCount: agents,
       dataClassification: classification,
       deploymentTargets: target.split(",").map((item) => item.trim()).filter(Boolean),
       budget: { hardLimitDollars: Number(hard), softLimitDollars: Number(soft), currency: "USD" },
-      modelRoutes: cloneModelRoutes(routes),
+      modelRoutes: cloneModelRoutes(routes, providers),
     });
   };
   return (
@@ -928,7 +1000,7 @@ function NewProjectDialog({ open, busy, providers, defaults, onClose, onSubmit }
               </div>
               {routes && providers.length > 0 && <ModelRouteEditor routes={routes} providers={providers} onChange={setRoutes} />}
             </DialogContent>
-            <DialogActions><Button appearance="secondary" onClick={onClose}>取消</Button><Button appearance="primary" type="submit" disabled={busy || !name.trim() || !target.trim() || Number(hard) <= 0 || Number(soft) > Number(hard)}>{busy ? "创建中" : "创建项目"}</Button></DialogActions>
+            <DialogActions><Button appearance="secondary" onClick={onClose}>取消</Button><Button appearance="primary" type="submit" disabled={busy || !name.trim() || !target.trim() || Number(hard) <= 0 || Number(soft) > Number(hard) || Boolean(routes && !modelRoutesValid(routes, providers))}>{busy ? "创建中" : "创建项目"}</Button></DialogActions>
           </DialogBody>
         </form>
       </DialogSurface>
@@ -960,16 +1032,15 @@ function ModelSettingsDialog({ open, busy, providers, providerSettings, settings
 
   useEffect(() => {
     if (!open) return;
-    setRoutes(cloneModelRoutes(settings?.modelRoutes));
+    setRoutes(cloneModelRoutes(settings?.modelRoutes, providers));
     setSampling(samplingSettings ? {
       temperature: samplingSettings.temperature,
       topP: samplingSettings.topP,
       topK: samplingSettings.topK,
-      reasoningEffort: samplingSettings.reasoningEffort,
     } : undefined);
     setDrafts(cloneModelProviderDrafts(providerSettings));
     setTestStates({});
-  }, [open, providerSettings, samplingSettings?.version, settings?.version]);
+  }, [open, providerSettings, providers, samplingSettings?.version, settings?.version]);
 
   const updateDraft = (key: ModelProviderKey, patch: Partial<ModelProviderDraft>) => {
     setDrafts((current) => {
@@ -987,6 +1058,7 @@ function ModelSettingsDialog({ open, busy, providers, providerSettings, settings
         baseUrl: draft.baseUrl.trim(),
         protocol: draft.protocol,
         model: draft.testModel,
+        reasoningEffort: draft.testReasoningEffort,
       };
       if (draft.apiKey.trim()) input.apiKey = draft.apiKey.trim();
       const result = await onTestProvider(draft.id, input);
@@ -1004,7 +1076,7 @@ function ModelSettingsDialog({ open, busy, providers, providerSettings, settings
   };
 
   const submit = () => {
-    if (!routes || !sampling || !samplingValid) return;
+    if (!routes || !sampling || !samplingValid || !modelRoutesValid(routes, providers)) return;
     const updates: ModelProviderUpdate[] = [];
     for (const { key } of modelProviderRows) {
       const draft = drafts[key];
@@ -1032,7 +1104,7 @@ function ModelSettingsDialog({ open, busy, providers, providerSettings, settings
           </DialogContent>
           <DialogActions>
             <Button appearance="secondary" onClick={onClose}>取消</Button>
-            <Button appearance="primary" disabled={busy || !routes || !samplingValid} onClick={submit}>{busy ? "保存中" : "保存"}</Button>
+            <Button appearance="primary" disabled={busy || !routes || !samplingValid || !modelRoutesValid(routes, providers)} onClick={submit}>{busy ? "保存中" : "保存"}</Button>
           </DialogActions>
         </DialogBody>
       </DialogSurface>
@@ -1057,19 +1129,26 @@ function ModelSamplingSettingsEditor({ settings, onChange }: {
         <Field label="Top K（0 使用默认值，需供应商支持）">
           <Input type="number" min={0} max={500} step={1} value={settings.topK} onChange={(_, data) => onChange({ ...settings, topK: Number(data.value) })} />
         </Field>
-        <Field label="推理深度">
-          <select className="native-select" value={settings.reasoningEffort} onChange={(event) => onChange({ ...settings, reasoningEffort: event.target.value as ModelSamplingSettingsInput["reasoningEffort"] })}>
-            <option value="none">关闭</option>
-            <option value="minimal">最小</option>
-            <option value="low">低</option>
-            <option value="medium">中</option>
-            <option value="high">高</option>
-            <option value="xhigh">极高</option>
-            <option value="max">最大</option>
-          </select>
-        </Field>
       </div>
     </fieldset>
+  );
+}
+
+function ModelChoice({ models, value, label, onChange }: {
+  models: string[];
+  value: string;
+  label: string;
+  onChange: (model: string) => void;
+}) {
+  const custom = !models.includes(value);
+  return (
+    <div className="model-choice">
+      <select aria-label={label} className="native-select" value={custom ? customModelOption : value} onChange={(event) => onChange(event.target.value === customModelOption ? "" : event.target.value)}>
+        {models.map((model) => <option value={model} key={model}>{model}</option>)}
+        <option value={customModelOption}>自定义模型</option>
+      </select>
+      {custom && <Input aria-label={`${label}名称`} value={value} maxLength={256} placeholder="输入模型名称" onChange={(_, data) => onChange(data.value)} />}
+    </div>
   );
 }
 
@@ -1117,12 +1196,17 @@ function ModelProviderSettingsEditor({ drafts, testStates, busy, onChange, onTes
                 ) : <span className="provider-protocol">{draft.protocol || "未指定"}</span>}
               </Field>
               <Field label="测试模型">
-                <select className="native-select" value={draft.testModel} disabled={draft.models.length === 0} onChange={(event) => onChange(key, { testModel: event.target.value })}>
-                  {draft.models.map((model) => <option value={model} key={model}>{model}</option>)}
-                </select>
+                <ModelChoice models={draft.models} value={draft.testModel} label={`${label} 测试模型`} onChange={(model) => onChange(key, { testModel: model })} />
               </Field>
               <label className="provider-enabled"><input type="checkbox" checked={draft.enabled} onChange={(event) => onChange(key, { enabled: event.target.checked })} /><span>启用</span></label>
               <div className="provider-test-line">
+                <div className="provider-reasoning-field">
+                  <Field label="测试思考深度">
+                    <select className="native-select" value={draft.testReasoningEffort} onChange={(event) => onChange(key, { testReasoningEffort: event.target.value as ReasoningEffort })}>
+                      {reasoningEffortOptions[key].map((option) => <option value={option.value} key={option.value || "empty"}>{option.label}</option>)}
+                    </select>
+                  </Field>
+                </div>
                 <Button appearance="outline" size="small" icon={testState?.status === "testing" ? <Spinner size="tiny" /> : <ArrowClockwise />} disabled={busy || testState?.status === "testing" || !draft.baseUrl.trim() || !draft.testModel} onClick={() => onTest(key)}>测试连接</Button>
                 {testState?.status === "success" && <span className="provider-test-status is-success"><CheckCircle />{testState.message}{testState.latencyMs ? ` · ${testState.latencyMs} ms` : ""}</span>}
                 {testState?.status === "error" && <span className="provider-test-status is-error"><WarningCircle />{testState.message}</span>}
@@ -1146,14 +1230,16 @@ function ModelRouteEditor({ routes, providers, onChange }: {
   );
   const updateProvider = (role: ModelRole, providerId: string) => {
     const provider = providers.find((item) => item.id === providerId);
-    if (!provider || provider.models.length === 0) return;
+    if (!provider) return;
     const current = routes[role];
+    const key = modelProviderKey(provider);
     onChange({
       ...routes,
       [role]: {
         ...current,
         provider: provider.id,
-        model: provider.models.includes(current.model) ? current.model : provider.models[0],
+        model: provider.models.includes(current.model) ? current.model : provider.models[0] || "",
+        reasoningEffort: normalizedReasoningEffort(key),
         maxOutputTokens: Math.min(current.maxOutputTokens, provider.maxOutputTokens),
         seed: provider.supportsSeed ? current.seed : undefined,
       },
@@ -1162,22 +1248,28 @@ function ModelRouteEditor({ routes, providers, onChange }: {
   const updateModel = (role: ModelRole, model: string) => {
     onChange({ ...routes, [role]: { ...routes[role], model } });
   };
+  const updateReasoningEffort = (role: ModelRole, reasoningEffort: ReasoningEffort) => {
+    onChange({ ...routes, [role]: { ...routes[role], reasoningEffort } });
+  };
   return (
     <fieldset className="model-route-editor">
       <legend>模型组合</legend>
-      <div className="model-route-head"><span>角色</span><span>供应商</span><span>模型</span></div>
+      <div className="model-route-head"><span>角色</span><span>供应商</span><span>模型</span><span>思考深度</span></div>
       {modelRoles.map((role) => {
         const route = routes[role];
         const eligibleProviders = providersForRole(role);
         const provider = eligibleProviders.find((item) => item.id === route.provider) || eligibleProviders[0];
+        const key = modelProviderKey(provider || route.provider);
+        const effortOptions = key ? reasoningEffortOptions[key] : [];
         return (
           <div className="model-route-row" key={role}>
             <label htmlFor={`provider-${role}`}>{modelRoleLabels[role]}</label>
             <select id={`provider-${role}`} className="native-select" value={route.provider} onChange={(event) => updateProvider(role, event.target.value)}>
               {eligibleProviders.map((item) => <option value={item.id} key={item.id}>{item.id}</option>)}
             </select>
-            <select aria-label={`${modelRoleLabels[role]}模型`} className="native-select" value={route.model} onChange={(event) => updateModel(role, event.target.value)}>
-              {(provider?.models || []).map((model) => <option value={model} key={model}>{model}</option>)}
+            <ModelChoice models={provider?.models || []} value={route.model} label={`${modelRoleLabels[role]}模型`} onChange={(model) => updateModel(role, model)} />
+            <select aria-label={`${modelRoleLabels[role]}思考深度`} className="native-select" value={route.reasoningEffort} disabled={!key} onChange={(event) => updateReasoningEffort(role, event.target.value as ReasoningEffort)}>
+              {effortOptions.map((option) => <option value={option.value} key={option.value || "empty"}>{option.label}</option>)}
             </select>
           </div>
         );
