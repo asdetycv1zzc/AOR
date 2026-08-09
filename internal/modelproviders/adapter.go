@@ -41,13 +41,18 @@ func newAdapter(factory AdapterFactory, provider string, protocol Protocol, base
 			BaseURL: baseURL, APIKey: apiKey, Models: capabilities,
 			HTTPClient: factory.HTTPClient, RequestTimeout: factory.RequestTimeout,
 		})
-	case ProtocolOpenAICompatible:
-		endpoint, err := openAIEndpoint(baseURL)
+	case ProtocolOpenAICompatible, ProtocolOpenAIResponses:
+		endpoint, err := openAIEndpoint(baseURL, protocol)
 		if err != nil {
 			return nil, err
 		}
+		wireFormat := openaicompatible.WireFormatChatCompletions
+		if protocol == ProtocolOpenAIResponses {
+			wireFormat = openaicompatible.WireFormatResponses
+		}
 		adapter, err := openaicompatible.New(openaicompatible.Config{
 			Endpoint: endpoint, Credential: apiKey, Models: capabilities,
+			WireFormat:              wireFormat,
 			SupportsReasoningEffort: provider != ProviderGrok,
 			HTTPClient:              factory.HTTPClient, RequestTimeout: factory.RequestTimeout,
 		})
@@ -60,14 +65,21 @@ func newAdapter(factory AdapterFactory, provider string, protocol Protocol, base
 	}
 }
 
-func openAIEndpoint(raw string) (string, error) {
+func openAIEndpoint(raw string, protocol Protocol) (string, error) {
 	parsed, err := parseProviderURL(raw)
 	if err != nil {
 		return "", err
 	}
 	path := strings.TrimRight(parsed.Path, "/")
-	if !strings.HasSuffix(path, "/chat/completions") {
+	path = strings.TrimSuffix(path, "/chat/completions")
+	path = strings.TrimSuffix(path, "/responses")
+	switch protocol {
+	case ProtocolOpenAICompatible:
 		path += "/chat/completions"
+	case ProtocolOpenAIResponses:
+		path += "/responses"
+	default:
+		return "", ErrInvalidSettings
 	}
 	parsed.Path, parsed.RawPath = path, ""
 	return parsed.String(), nil

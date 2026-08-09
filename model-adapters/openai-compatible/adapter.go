@@ -1,4 +1,5 @@
-// Package openaicompatible implements the OpenAI Chat Completions wire format.
+// Package openaicompatible implements the OpenAI Chat Completions and Responses
+// wire formats behind the provider-independent model gateway contract.
 package openaicompatible
 
 import (
@@ -28,12 +29,20 @@ const (
 	maximumBodyBytes           = 16 << 20
 )
 
-// Config binds one adapter instance to a single Chat Completions endpoint and
+type WireFormat string
+
+const (
+	WireFormatChatCompletions WireFormat = "chat-completions"
+	WireFormatResponses       WireFormat = "responses"
+)
+
+// Config binds one adapter instance to a single OpenAI-compatible endpoint and
 // an explicitly configured set of model capabilities.
 type Config struct {
 	Endpoint                string
 	Credential              string
 	Models                  map[string]modelgateway.ModelCapabilities
+	WireFormat              WireFormat
 	SupportsReasoningEffort bool
 	HTTPClient              *http.Client
 	RequestTimeout          time.Duration
@@ -47,6 +56,7 @@ type Adapter struct {
 	endpoint                string
 	credential              string
 	models                  map[string]modelgateway.ModelCapabilities
+	wireFormat              WireFormat
 	supportsReasoningEffort bool
 	client                  *http.Client
 	timeout                 time.Duration
@@ -54,13 +64,19 @@ type Adapter struct {
 	maxResponseBytes        int64
 	maxStreamEventBytes     int64
 
-	mu     sync.Mutex
-	active map[string]*responseStream
+	mu                         sync.Mutex
+	active                     map[string]*responseStream
+	responsesContinuations     map[string]responsesContinuation
+	responsesContinuationOrder []string
+	responsesContinuationBytes int
 }
 
 func New(config Config) (*Adapter, error) {
 	endpoint, err := validateEndpoint(config.Endpoint)
-	if err != nil || config.Credential == "" || len(config.Models) == 0 {
+	if config.WireFormat == "" {
+		config.WireFormat = WireFormatChatCompletions
+	}
+	if err != nil || config.Credential == "" || len(config.Models) == 0 || config.WireFormat != WireFormatChatCompletions && config.WireFormat != WireFormatResponses {
 		return nil, modelgateway.ErrInvalidRequest
 	}
 	models := make(map[string]modelgateway.ModelCapabilities, len(config.Models))
@@ -70,6 +86,10 @@ func New(config Config) (*Adapter, error) {
 		}
 		capabilities.DataResidency = append([]string(nil), capabilities.DataResidency...)
 		capabilities.Modalities = append([]string(nil), capabilities.Modalities...)
+		if config.WireFormat == WireFormatResponses {
+			capabilities.SupportsStreaming = false
+			capabilities.SupportsSeed = false
+		}
 		models[model] = capabilities
 	}
 	if config.RequestTimeout == 0 {
@@ -100,10 +120,12 @@ func New(config Config) (*Adapter, error) {
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &Adapter{
 		endpoint: endpoint, credential: config.Credential, models: models, client: client,
+		wireFormat:              config.WireFormat,
 		supportsReasoningEffort: config.SupportsReasoningEffort,
 		timeout:                 config.RequestTimeout, maxRequestBytes: config.MaxRequestBytes,
 		maxResponseBytes: config.MaxResponseBytes, maxStreamEventBytes: config.MaxStreamEventBytes,
-		active: make(map[string]*responseStream),
+		active:                 make(map[string]*responseStream),
+		responsesContinuations: make(map[string]responsesContinuation),
 	}, nil
 }
 
@@ -174,6 +196,9 @@ func (a *Adapter) Stream(ctx context.Context, request modelgateway.NormalizedReq
 	if err != nil {
 		return nil, err
 	}
+	if a.wireFormat == WireFormatResponses {
+		return nil, modelgateway.ErrProviderNotAllowed
+	}
 	if requestUsesNativeTools(request) {
 		return nil, modelgateway.ErrProviderNotAllowed
 	}
@@ -229,6 +254,8 @@ func (a *Adapter) NormalizeUsage(raw any) (modelgateway.Usage, error) {
 		usage = value
 	case chatUsage:
 		usage = modelgateway.Usage{InputTokens: value.PromptTokens, OutputTokens: value.CompletionTokens}
+	case responsesUsage:
+		usage = modelgateway.Usage{InputTokens: value.InputTokens, OutputTokens: value.OutputTokens}
 	case []byte:
 		var err error
 		usage, err = normalizeUsageJSON(value)
@@ -316,6 +343,13 @@ func (a *Adapter) requireInputLimit(ctx context.Context, request modelgateway.No
 }
 
 func (a *Adapter) encodeRequest(request modelgateway.NormalizedRequest, stream bool) ([]byte, error) {
+	if a.wireFormat == WireFormatResponses {
+		return a.encodeResponsesRequest(request, stream)
+	}
+	return a.encodeChatRequest(request, stream)
+}
+
+func (a *Adapter) encodeChatRequest(request modelgateway.NormalizedRequest, stream bool) ([]byte, error) {
 	if stream && requestUsesNativeTools(request) {
 		return nil, modelgateway.ErrProviderNotAllowed
 	}
@@ -436,6 +470,13 @@ func (a *Adapter) do(ctx context.Context, payload []byte) (*http.Response, conte
 }
 
 func (a *Adapter) decodeResponse(request modelgateway.NormalizedRequest, capabilities modelgateway.ModelCapabilities, payload []byte) (modelgateway.NormalizedResponse, error) {
+	if a.wireFormat == WireFormatResponses {
+		return a.decodeResponsesResponse(request, capabilities, payload)
+	}
+	return a.decodeChatResponse(request, capabilities, payload)
+}
+
+func (a *Adapter) decodeChatResponse(request modelgateway.NormalizedRequest, capabilities modelgateway.ModelCapabilities, payload []byte) (modelgateway.NormalizedResponse, error) {
 	if !utf8.Valid(payload) {
 		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
 	}
@@ -590,6 +631,13 @@ func normalizeUsageJSON(encoded []byte) (modelgateway.Usage, error) {
 			return modelgateway.Usage{}, modelgateway.ErrInvalidRequest
 		}
 		return modelgateway.Usage{InputTokens: value.PromptTokens, OutputTokens: value.CompletionTokens}, nil
+	}
+	if _, responses := fields["input_tokens"]; responses {
+		var value responsesUsage
+		if json.Unmarshal(encoded, &value) != nil {
+			return modelgateway.Usage{}, modelgateway.ErrInvalidRequest
+		}
+		return modelgateway.Usage{InputTokens: value.InputTokens, OutputTokens: value.OutputTokens}, nil
 	}
 	var usage modelgateway.Usage
 	if json.Unmarshal(encoded, &usage) != nil {

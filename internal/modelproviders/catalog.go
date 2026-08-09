@@ -35,6 +35,7 @@ type Protocol string
 
 const (
 	ProtocolOpenAICompatible Protocol = "openai-compatible"
+	ProtocolOpenAIResponses  Protocol = "openai-responses"
 	ProtocolAnthropic        Protocol = "anthropic-messages"
 )
 
@@ -54,7 +55,7 @@ type CatalogModel struct {
 func Catalog() []ProviderCatalog {
 	return cloneCatalog([]ProviderCatalog{
 		{
-			ID: ProviderOpenAI, DisplayName: "OpenAI", Protocol: ProtocolOpenAICompatible, Protocols: []Protocol{ProtocolOpenAICompatible},
+			ID: ProviderOpenAI, DisplayName: "OpenAI", Protocol: ProtocolOpenAIResponses, Protocols: []Protocol{ProtocolOpenAIResponses, ProtocolOpenAICompatible},
 			Models: openAIModels(),
 		},
 		{
@@ -97,7 +98,7 @@ func openAIModels() []CatalogModel {
 		"gpt-5.5",
 		"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
 	}
-	result := make([]CatalogModel, 0, len(models))
+	result := []CatalogModel{{ID: "gpt-5.3-codex", MaxInput: 400000, MaxOutput: 128000, ToolCalls: true, JSONSchema: true, Streaming: true}}
 	for _, id := range models {
 		result = append(result, CatalogModel{ID: id, MaxInput: 128000, MaxOutput: 8192, ToolCalls: true, JSONSchema: true, Streaming: true})
 	}

@@ -68,6 +68,69 @@ func TestGenerateUsesChatCompletionsWithoutCredentialLeakage(t *testing.T) {
 	}
 }
 
+func TestGenerateUsesResponsesAndPreservesToolHistory(t *testing.T) {
+	providerCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		providerCalls++
+		if request.Method != http.MethodPost || request.URL.Path != "/v1/responses" {
+			t.Fatalf("request = %s %s", request.Method, request.URL.Path)
+		}
+		var payload responsesRequest
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Model != "gpt-test" || payload.MaxOutputTokens != 16 || payload.Reasoning == nil || payload.Reasoning.Effort != "high" || payload.Temperature != nil || payload.TopP != nil || len(payload.Tools) != 1 || payload.Text == nil || payload.Text.Format.Type != "json_schema" {
+			t.Fatalf("payload = %#v", payload)
+		}
+		switch providerCalls {
+		case 1:
+			if len(payload.Input) != 2 || payload.Input[0].Role != "system" || payload.Input[1].Role != "user" {
+				t.Fatalf("first input = %#v", payload.Input)
+			}
+			_, _ = writer.Write([]byte(`{"id":"resp-1","model":"gpt-test-2026-08","status":"completed","output":[{"type":"reasoning","id":"rs-1","encrypted_content":"opaque-reasoning"},{"type":"function_call","id":"fc-1","call_id":"call-1","name":"repo.read","arguments":"{\"path\":\"README.md\"}"}],"usage":{"input_tokens":12,"output_tokens":5,"total_tokens":17}}`))
+		case 2:
+			if len(payload.Input) != 5 || payload.Input[2].Type != "reasoning" || payload.Input[2].EncryptedContent != "opaque-reasoning" {
+				t.Fatalf("continued input = %#v", payload.Input)
+			}
+			call, result := payload.Input[3], payload.Input[4]
+			if call.Type != "function_call" || call.ID != "fc-1" || call.CallID != "call-1" || call.Name != "repo.read" || call.Arguments != `{"path":"README.md"}` {
+				t.Fatalf("function call input = %#v", call)
+			}
+			if result.Type != "function_call_output" || result.CallID != "call-1" || result.Output != `{"content":"README"}` {
+				t.Fatalf("function output input = %#v", result)
+			}
+			_, _ = writer.Write([]byte(`{"id":"resp-2","model":"gpt-test-2026-08","status":"completed","output":[{"type":"reasoning","id":"rs-2"},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"{\"ok\":true}"}]}],"usage":{"input_tokens":20,"output_tokens":4,"total_tokens":24}}`))
+		default:
+			t.Fatalf("provider calls = %d", providerCalls)
+		}
+	}))
+	defer server.Close()
+
+	adapter := testAdapter(t, server.URL+"/v1/responses", Config{WireFormat: WireFormatResponses, SupportsReasoningEffort: true})
+	request := testRequest()
+	request.ReasoningEffort = "high"
+	request.TopP = 0.8
+	response, err := adapter.Generate(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Content) != 0 || len(response.ToolCalls) != 1 || response.ToolCalls[0].ID != "call-1" || response.ToolCalls[0].Name != "repo.read" || response.Usage.InputTokens != 12 || response.Usage.OutputTokens != 5 {
+		t.Fatalf("tool response = %#v", response)
+	}
+	request.RequestID = "request-2"
+	request.Messages = append(request.Messages,
+		modelgateway.Message{Role: "assistant", ToolCalls: response.ToolCalls},
+		modelgateway.Message{Role: "tool", ToolCallID: "call-1", Content: `{"content":"README"}`},
+	)
+	response, err = adapter.Generate(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(response.Content) != `{"ok":true}` || len(response.ToolCalls) != 0 || response.FinishReason != "stop" || response.ProviderRequestID != "resp-2" || response.Usage.InputTokens != 20 || response.Usage.OutputTokens != 4 {
+		t.Fatalf("final response = %#v", response)
+	}
+}
+
 func TestGenerateClassifiesHTTPAndNetworkFailuresWithoutProviderBody(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusTooManyRequests)
@@ -356,6 +419,7 @@ func testAdapter(t *testing.T, endpoint string, overrides Config) *Adapter {
 	if overrides.MaxResponseBytes != 0 {
 		config.MaxResponseBytes = overrides.MaxResponseBytes
 	}
+	config.WireFormat = overrides.WireFormat
 	config.SupportsReasoningEffort = overrides.SupportsReasoningEffort
 	adapter, err := New(config)
 	if err != nil {

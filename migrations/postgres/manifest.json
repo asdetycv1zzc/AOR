@@ -351,6 +351,13 @@
       "file": "000050_project_budget_minor_units.up.sql",
       "sha256": "sha256:0e54b2153fc35eccd06fd9b3b25e04503b0d66d51b8bc6d7f2e0436d7c0dbd43",
       "destructive": false
+    },
+    {
+      "version": 51,
+      "mode": "EXPAND",
+      "file": "000051_openai_responses_protocol.up.sql",
+      "sha256": "sha256:aea89fd406ee898d2a1db1483527a6c18618a5ce00efd8bc46c581bf3e77cb09",
+      "destructive": false
     }
   ]
 }

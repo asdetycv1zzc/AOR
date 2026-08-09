@@ -187,7 +187,7 @@ func (handler *Handler) testModelProvider(response http.ResponseWriter, request 
 	_, err = adapter.Generate(testContext, modelgateway.NormalizedRequest{
 		RequestID: uuid.NewString(), TenantID: principal.TenantID, Role: "MODEL_PROVIDER_TEST", Model: body.Model,
 		Messages:        []modelgateway.Message{{Role: "user", Content: "Reply with OK."}},
-		MaxOutputTokens: 8, Temperature: 0, ReasoningEffort: body.ReasoningEffort,
+		MaxOutputTokens: 256, Temperature: 0, ReasoningEffort: body.ReasoningEffort,
 	})
 	latency := time.Since(started).Milliseconds()
 	if err != nil {
