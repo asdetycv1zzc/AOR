@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/akimisaka/aor/internal/authn"
-	"github.com/akimisaka/aor/internal/authz"
 	"github.com/akimisaka/aor/internal/eventing"
 	"github.com/akimisaka/aor/internal/orchestrator"
 	"github.com/akimisaka/aor/internal/state"
@@ -32,12 +31,8 @@ func (handler *Handler) getTaskDecisionReport(response http.ResponseWriter, requ
 		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "decision report query"}))
 		return
 	}
-	project, task, err := handler.loadDecisionTask(request.Context(), principal, projectID, taskID)
+	project, task, err := handler.loadDecisionTask(request.Context(), principal, projectID, taskID, "task-decision-report")
 	if err != nil {
-		writeError(response, request, err)
-		return
-	}
-	if err := authorizeRead(request.Context(), handler.authorizer, principal, projectID, authz.ActionTaskRead, "task-decision-report", taskID, string(project.State), project.Version, project.DataClassification); err != nil {
 		writeError(response, request, err)
 		return
 	}
@@ -86,7 +81,7 @@ func (handler *Handler) decideTask(response http.ResponseWriter, request *http.R
 	if replayed {
 		return
 	}
-	project, task, err := handler.loadDecisionTask(request.Context(), principal, projectID, taskID)
+	project, task, err := handler.loadDecisionTask(request.Context(), principal, projectID, taskID, "task")
 	if err != nil {
 		writeError(response, request, err)
 		return
@@ -195,7 +190,7 @@ func writeTaskDecisionAccepted(response http.ResponseWriter, task state.ModuleTa
 	return false
 }
 
-func (handler *Handler) loadDecisionTask(ctx context.Context, principal authn.Principal, projectID, taskID string) (state.Project, state.ModuleTask, error) {
+func (handler *Handler) loadDecisionTask(ctx context.Context, principal authn.Principal, projectID, taskID, resourceType string) (state.Project, state.ModuleTask, error) {
 	project, found, err := handler.orchestrator.Project(ctx, principal.TenantID, projectID)
 	if err != nil {
 		return state.Project{}, state.ModuleTask{}, normalizeError(err)
@@ -210,7 +205,7 @@ func (handler *Handler) loadDecisionTask(ctx context.Context, principal authn.Pr
 	if !found {
 		return state.Project{}, state.ModuleTask{}, aorerrors.New(aorerrors.CodeNotFound, "", nil)
 	}
-	if err := authorizeTaskRead(ctx, handler.authorizer, principal, project, task); err != nil {
+	if err := authorizeTaskRead(ctx, handler.authorizer, principal, project, task, resourceType); err != nil {
 		return state.Project{}, state.ModuleTask{}, err
 	}
 	return project, task, nil

@@ -1510,7 +1510,7 @@ func (handler *Handler) getTask(response http.ResponseWriter, request *http.Requ
 		writeError(response, request, normalizeError(err))
 		return
 	}
-	if err := authorizeTaskRead(request.Context(), handler.authorizer, principal, project, task); err != nil {
+	if err := authorizeTaskRead(request.Context(), handler.authorizer, principal, project, task, "task"); err != nil {
 		writeError(response, request, err)
 		return
 	}
@@ -1577,10 +1577,7 @@ func (handler *Handler) authorizeTaskHistoryRead(ctx context.Context, principal 
 		}
 		return normalizeError(err)
 	}
-	if err := authorizeTaskRead(ctx, handler.authorizer, principal, project, task); err != nil {
-		return err
-	}
-	return authorizeRead(ctx, handler.authorizer, principal, projectID, authz.ActionTaskRead, resourceType, taskID, string(project.State), project.Version, project.DataClassification)
+	return authorizeTaskRead(ctx, handler.authorizer, principal, project, task, resourceType)
 }
 
 func (handler *Handler) listTasks(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string) {
@@ -1602,7 +1599,7 @@ func (handler *Handler) listTasks(response http.ResponseWriter, request *http.Re
 		writeError(response, request, normalizeError(err))
 		return
 	}
-	if err := authorizeRead(request.Context(), handler.authorizer, principal, projectID, authz.ActionTaskRead, "task-list", projectID, string(project.State), project.Version, project.DataClassification); err != nil {
+	if err := authorizeRead(request.Context(), handler.authorizer, principal, projectID, authz.ActionProjectRead, "task-list", projectID, string(project.State), project.Version, project.DataClassification); err != nil {
 		writeError(response, request, err)
 		return
 	}
@@ -1633,7 +1630,7 @@ func (handler *Handler) listTasks(response http.ResponseWriter, request *http.Re
 	}
 	items := make([]state.ModuleTask, 0, end-start)
 	for _, task := range tasks[start:end] {
-		if err := authorizeTaskRead(request.Context(), handler.authorizer, principal, project, task); err != nil {
+		if err := authorizeTaskRead(request.Context(), handler.authorizer, principal, project, task, "task"); err != nil {
 			writeError(response, request, err)
 			return
 		}
@@ -2850,13 +2847,13 @@ func authorizeVirtualProject(ctx context.Context, authorizer authz.PolicyEvaluat
 	return authorizeRead(ctx, authorizer, principal, projectID, action, "project", projectID, "CREATED", 0, classification)
 }
 
-func authorizeTaskRead(ctx context.Context, authorizer authz.PolicyEvaluator, principal authn.Principal, project state.Project, task state.ModuleTask) error {
+func authorizeTaskRead(ctx context.Context, authorizer authz.PolicyEvaluator, principal authn.Principal, project state.Project, task state.ModuleTask, resourceType string) error {
 	input := authz.PolicyInput{
 		Principal: principal,
 		Project:   authz.ProjectScope{TenantID: project.TenantID, ID: project.ID, State: string(project.State), StateVersion: project.Version, Classification: project.DataClassification},
 		Task:      authz.TaskScope{TenantID: task.TenantID, ProjectID: task.ProjectID, ID: task.ID, State: string(task.State), StateVersion: task.Version, SpecDigest: task.ModuleSpecRef.SHA256},
 		Action:    authz.ActionTaskRead,
-		Resource:  authz.Resource{Type: "task", ID: task.ID},
+		Resource:  authz.Resource{Type: resourceType, ID: task.ID},
 		Budget:    authz.BudgetScope{AccountID: "control-plane", Available: true},
 	}
 	decision, err := authorizer.Evaluate(ctx, input)
