@@ -1254,7 +1254,7 @@ function ModelProviderSettingsEditor({ drafts, testStates, busy, onChange, onTes
               </Field>
               <Field label="协议">
                 {protocols.length > 1 ? (
-                  <select className="native-select" value={draft.protocol} onChange={(event) => onChange(key, { protocol: event.target.value })}>
+                  <select className="native-select provider-protocol-select" value={draft.protocol} onChange={(event) => onChange(key, { protocol: event.target.value })}>
                     {protocols.map((protocol) => <option value={protocol} key={protocol}>{protocol}</option>)}
                   </select>
                 ) : <span className="provider-protocol">{draft.protocol || "未指定"}</span>}

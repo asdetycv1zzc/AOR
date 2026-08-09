@@ -1577,11 +1577,15 @@ button {
 
 .provider-settings-row {
   display: grid;
-  grid-template-columns: minmax(90px, 0.65fr) minmax(170px, 1.35fr) minmax(170px, 1.2fr) minmax(100px, 0.7fr) minmax(150px, 1fr);
+  grid-template-columns: minmax(80px, 0.55fr) minmax(135px, 1.25fr) minmax(135px, 1.1fr) minmax(190px, 1fr) minmax(130px, 0.9fr);
   gap: 10px;
   align-items: end;
   padding: 12px 0;
   border-top: 1px solid var(--line);
+}
+
+.provider-protocol-select {
+  min-width: 190px;
 }
 
 .provider-settings-row:first-child {
