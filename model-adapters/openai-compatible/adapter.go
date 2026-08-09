@@ -646,7 +646,7 @@ type chatRequest struct {
 
 func validReasoningEffort(value string) bool {
 	switch value {
-	case "", "none", "minimal", "low", "medium", "high", "xhigh":
+	case "", "none", "minimal", "low", "medium", "high", "xhigh", "max":
 		return true
 	default:
 		return false

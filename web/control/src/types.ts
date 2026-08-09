@@ -103,7 +103,7 @@ export interface ModelRouteSettings {
   version: number;
 }
 
-export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface ModelSamplingSettingsInput {
   temperature: number;

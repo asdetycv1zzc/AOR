@@ -430,12 +430,11 @@ function ControlConsole({ client }: { client: AorClient }) {
     setSettingsBusy(true);
     setError("");
     try {
-      const savedProviders: ModelProviderSettings[] = [];
-      for (const update of updates) {
-        savedProviders.push(await client.putModelProviderSettings(update.id, update.input));
-      }
-      const saved = await client.putModelRouteSettings(modelRoutes);
-      const savedSampling = await client.putModelSamplingSettings(sampling);
+      const [savedSampling, saved, savedProviders] = await Promise.all([
+        client.putModelSamplingSettings(sampling),
+        client.putModelRouteSettings(modelRoutes),
+        Promise.all(updates.map((update) => client.putModelProviderSettings(update.id, update.input))),
+      ]);
       if (savedProviders.length > 0) {
         setProviderSettings((current) => {
           const next = [...current];
@@ -1059,6 +1058,7 @@ function ModelSamplingSettingsEditor({ settings, onChange }: {
             <option value="medium">中</option>
             <option value="high">高</option>
             <option value="xhigh">极高</option>
+            <option value="max">最大</option>
           </select>
         </Field>
       </div>

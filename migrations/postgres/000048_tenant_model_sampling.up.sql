@@ -5,7 +5,7 @@ CREATE TABLE public.tenant_model_sampling_settings (
   temperature double precision NOT NULL CHECK (temperature >= 0 AND temperature <= 2),
   top_p double precision NOT NULL CHECK (top_p >= 0 AND top_p <= 1),
   top_k integer NOT NULL CHECK (top_k >= 0 AND top_k <= 500),
-  reasoning_effort text NOT NULL CHECK (reasoning_effort IN ('', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh')),
+  reasoning_effort text NOT NULL CHECK (reasoning_effort IN ('', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')),
   version bigint NOT NULL CHECK (version > 0),
   created_at timestamptz NOT NULL DEFAULT transaction_timestamp(),
   updated_at timestamptz NOT NULL DEFAULT transaction_timestamp()

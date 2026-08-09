@@ -874,7 +874,7 @@ components:
         temperature: {type: number, minimum: 0, maximum: 2}
         topP: {type: number, minimum: 0, maximum: 1}
         topK: {type: integer, minimum: 0, maximum: 500}
-        reasoningEffort: {enum: ['', none, minimal, low, medium, high, xhigh]}
+        reasoningEffort: {enum: ['', none, minimal, low, medium, high, xhigh, max]}
     ModelSamplingSettings:
       type: object
       additionalProperties: false
@@ -883,7 +883,7 @@ components:
         temperature: {type: number, minimum: 0, maximum: 2}
         topP: {type: number, minimum: 0, maximum: 1}
         topK: {type: integer, minimum: 0, maximum: 500}
-        reasoningEffort: {enum: ['', none, minimal, low, medium, high, xhigh]}
+        reasoningEffort: {enum: ['', none, minimal, low, medium, high, xhigh, max]}
         version: {type: integer, format: int64, minimum: 0}
     ModelProvider:
       type: object

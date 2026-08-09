@@ -36,9 +36,9 @@ type anthropicAdapter struct {
 type anthropicRequest struct {
 	Model        string                 `json:"model"`
 	MaxTokens    int                    `json:"max_tokens"`
-	Temperature  float64                `json:"temperature"`
-	TopP         float64                `json:"top_p"`
-	TopK         int                    `json:"top_k,omitempty"`
+	Temperature  *float64               `json:"temperature,omitempty"`
+	TopP         *float64               `json:"top_p,omitempty"`
+	TopK         *int                   `json:"top_k,omitempty"`
 	OutputConfig *anthropicOutputConfig `json:"output_config,omitempty"`
 	System       string                 `json:"system,omitempty"`
 	Messages     []anthropicMessage     `json:"messages"`
@@ -270,9 +270,15 @@ func (adapter *anthropicAdapter) validateRequest(ctx context.Context, request mo
 }
 
 func (adapter *anthropicAdapter) encodeRequest(request modelgateway.NormalizedRequest) ([]byte, error) {
-	value := anthropicRequest{Model: request.Model, MaxTokens: request.MaxOutputTokens, Temperature: request.Temperature, TopP: request.TopP, TopK: request.TopK}
+	value := anthropicRequest{Model: request.Model, MaxTokens: request.MaxOutputTokens}
 	if effort := anthropicEffort(request.Model, request.ReasoningEffort); effort != "" {
 		value.OutputConfig = &anthropicOutputConfig{Effort: effort}
+	} else {
+		value.Temperature = &request.Temperature
+		value.TopP = &request.TopP
+		if request.TopK > 0 {
+			value.TopK = &request.TopK
+		}
 	}
 	systems := make([]string, 0, 1)
 	for _, message := range request.Messages {
@@ -318,7 +324,7 @@ func (adapter *anthropicAdapter) encodeRequest(request modelgateway.NormalizedRe
 
 func validAnthropicEffort(value string) bool {
 	switch value {
-	case "", "none", "minimal", "low", "medium", "high", "xhigh":
+	case "", "none", "minimal", "low", "medium", "high", "xhigh", "max":
 		return true
 	default:
 		return false
@@ -332,7 +338,7 @@ func anthropicEffort(model, value string) string {
 	switch value {
 	case "minimal":
 		return "low"
-	case "low", "medium", "high", "xhigh":
+	case "low", "medium", "high", "xhigh", "max":
 		return value
 	default:
 		return ""
