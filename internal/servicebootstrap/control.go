@@ -18,6 +18,7 @@ import (
 	"github.com/akimisaka/aor/internal/goalplan"
 	"github.com/akimisaka/aor/internal/knowledge"
 	"github.com/akimisaka/aor/internal/leaseauthority"
+	"github.com/akimisaka/aor/internal/modelproviders"
 	"github.com/akimisaka/aor/internal/observability"
 	"github.com/akimisaka/aor/internal/policy"
 	"github.com/akimisaka/aor/internal/runtimeclient"
@@ -207,6 +208,10 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	if err != nil {
 		return nil, err
 	}
+	providerSettings, err := configuredControlProviderSettings(config, clients.Database())
+	if err != nil {
+		return nil, err
+	}
 	projectAgents, err := configuredGoalPlanServices(config, lifecycleStore, leaseService, authorizer, knowledgeService, knowledgeEvents)
 	if err != nil {
 		return nil, err
@@ -242,6 +247,7 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 		Eraser:               artifactProjectEraser{catalog: artifactCatalog}, Leases: leaseService,
 		GoalPlan: projectAgents.goalPlan, ClassroomCore: config.DeploymentProfile == "TEST",
 		ModelProviders: modelProviders, DefaultModelRoutes: defaultModelRoutes, Clock: time.Now,
+		ProviderSettings: providerSettings, ProviderAdapter: modelproviders.AdapterFactory{},
 	})
 	if err != nil {
 		return nil, err
@@ -351,6 +357,24 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 		dispatchDone: dispatchDone, retentionDone: retentionDone, schedulerDone: schedulerDone, moduleAuditDone: moduleAuditDone,
 		integrationDone: integrationDone, globalAuditDone: globalAuditDone, planningRecoveryDone: planningRecoveryDone,
 	}, nil
+}
+
+func configuredControlProviderSettings(config runtimeconfig.Config, database *sql.DB) (modelproviders.SettingsStore, error) {
+	if database == nil {
+		return nil, runtimeclient.ErrInvalidClientConfig
+	}
+	resolveContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	replayKey, err := credentials.NewSecretResolver(os.Getenv("AOR_SECRET_ROOT")).Resolve(resolveContext, config.ModelGateway.ReplayKeyRef)
+	cancel()
+	if err != nil {
+		return nil, runtimeconfig.ErrInvalidConfiguration
+	}
+	settings, err := modelproviders.NewPostgresStore(database, replayKey)
+	clearBytes(replayKey)
+	if err != nil {
+		return nil, runtimeconfig.ErrInvalidConfiguration
+	}
+	return settings, nil
 }
 
 func controlDecisionReportSigner(config runtimeconfig.Config) (controlapi.TaskDecisionReportSigner, error) {

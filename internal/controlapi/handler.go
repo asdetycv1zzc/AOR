@@ -24,6 +24,7 @@ import (
 	"github.com/akimisaka/aor/internal/eventing"
 	"github.com/akimisaka/aor/internal/knowledge"
 	"github.com/akimisaka/aor/internal/modelgateway"
+	"github.com/akimisaka/aor/internal/modelproviders"
 	"github.com/akimisaka/aor/internal/observability"
 	"github.com/akimisaka/aor/internal/orchestrator"
 	"github.com/akimisaka/aor/internal/state"
@@ -58,6 +59,8 @@ type Config struct {
 	ClassroomCore        bool
 	DefaultModelRoutes   map[string]state.ProjectModelRoute
 	ModelProviders       []ModelProvider
+	ProviderSettings     modelproviders.SettingsStore
+	ProviderAdapter      modelproviders.AdapterFactory
 	Clock                func() time.Time
 }
 
@@ -109,6 +112,8 @@ type Handler struct {
 	goalPlan             GoalPlanServices
 	defaultModelRoutes   map[string]state.ProjectModelRoute
 	modelProviders       []ModelProvider
+	providerSettings     modelproviders.SettingsStore
+	providerAdapter      modelproviders.AdapterFactory
 	modelRouteSettings   modelRouteSettingsStore
 	autoBudget           bool
 	clock                func() time.Time
@@ -331,6 +336,8 @@ func New(config Config) (*Handler, error) {
 		goalPlan:             config.GoalPlan,
 		defaultModelRoutes:   defaultRoutes,
 		modelProviders:       providers,
+		providerSettings:     config.ProviderSettings,
+		providerAdapter:      config.ProviderAdapter,
 		modelRouteSettings:   newModelRouteSettingsStore(config.Database),
 		autoBudget:           autoBudget,
 		clock:                config.Clock,
@@ -372,6 +379,30 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 			return
 		}
 		writeMethodNotAllowed(response, request)
+		return
+	}
+	if request.URL.Path == "/v1/settings/model-providers" {
+		if request.Method == http.MethodGet {
+			handler.getModelProviderSettings(response, request, principal)
+			return
+		}
+		writeMethodNotAllowedWith(response, request, "GET")
+		return
+	}
+	if providerID, test, ok := modelProviderSettingsPath(request.URL.Path); ok {
+		if test && request.Method == http.MethodPost {
+			handler.testModelProvider(response, request, principal, providerID)
+			return
+		}
+		if !test && request.Method == http.MethodPut {
+			handler.putModelProviderSettings(response, request, principal, providerID)
+			return
+		}
+		if test {
+			writeMethodNotAllowedWith(response, request, "POST")
+		} else {
+			writeMethodNotAllowedWith(response, request, "PUT")
+		}
 		return
 	}
 	if request.URL.Path == "/v1/settings/model-routes" {
