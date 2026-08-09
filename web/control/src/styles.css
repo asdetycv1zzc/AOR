@@ -1373,6 +1373,100 @@ button {
   gap: 12px;
 }
 
+.money-input {
+  position: relative;
+}
+
+.money-input .ui-input {
+  width: 100%;
+  padding-right: 30px;
+}
+
+.money-input > span {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.project-picker-content {
+  min-height: 180px;
+  max-height: min(520px, 65vh);
+  overflow-y: auto;
+}
+
+.project-picker-state {
+  min-height: 180px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.project-picker-state > svg {
+  width: 28px;
+  height: 28px;
+}
+
+.project-picker {
+  display: grid;
+  border-top: 1px solid var(--line);
+}
+
+.project-picker > button {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px 12px;
+  align-items: center;
+  min-height: 66px;
+  padding: 10px 4px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+
+.project-picker > button:hover,
+.project-picker > button:focus-visible {
+  background: var(--surface-soft);
+}
+
+.project-picker > button > svg {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  width: 18px;
+  height: 18px;
+  color: var(--green);
+}
+
+.project-picker-main {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.project-picker-main strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-picker-meta {
+  color: var(--quiet);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 10px;
+}
+
 .segment-control {
   display: grid;
   grid-template-columns: repeat(2, 1fr);

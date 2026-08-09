@@ -108,6 +108,13 @@ const taskStateLabels: Record<string, string> = {
   SUPERSEDED: "已替换",
 };
 
+const dataClassificationLabels: Record<Project["dataClassification"], string> = {
+  PUBLIC: "公开",
+  INTERNAL: "内部",
+  CONFIDENTIAL: "机密",
+  RESTRICTED: "受限",
+};
+
 const terminalProjectStates = new Set<ProjectState>([
   "COMPLETED",
   "ABORTED",
@@ -513,7 +520,7 @@ function ControlConsole({ client }: { client: AorClient }) {
       )}
 
       <NewProjectDialog open={newOpen} busy={loading} providers={modelProviders} defaults={routeSettings} onClose={() => setNewOpen(false)} onSubmit={createProject} />
-      <OpenProjectDialog open={openOpen} onClose={() => setOpenOpen(false)} onSubmit={(id) => { setOpenOpen(false); void loadProject(id); }} />
+      <OpenProjectDialog open={openOpen} client={client} onClose={() => setOpenOpen(false)} onSubmit={(id) => { setOpenOpen(false); void loadProject(id); }} />
       <ModelSettingsDialog
         open={settingsOpen}
         busy={settingsBusy}
@@ -670,7 +677,7 @@ function Workspace({ bundle, selectedTask, audits, auditLoading, onSelectTask, o
           <div><dt>状态</dt><dd><StatusMark state={project.state} /></dd></div>
           <div><dt>版本</dt><dd>v{project.version}</dd></div>
           <div><dt>目标 Agent</dt><dd>{project.goalAgentCount}</dd></div>
-          <div><dt>数据级别</dt><dd>{project.dataClassification}</dd></div>
+          <div><dt>数据级别</dt><dd>{dataClassificationLabels[project.dataClassification]}</dd></div>
         </dl>
       </header>
 
@@ -878,8 +885,8 @@ function NewProjectDialog({ open, busy, providers, defaults, onClose, onSubmit }
   const [agents, setAgents] = useState<1 | 2>(1);
   const [classification, setClassification] = useState<ProjectCreateInput["dataClassification"]>("INTERNAL");
   const [target, setTarget] = useState("test");
-  const [hard, setHard] = useState("100000");
-  const [soft, setSoft] = useState("80000");
+  const [hard, setHard] = useState("1000.00");
+  const [soft, setSoft] = useState("800.00");
   const [routes, setRoutes] = useState<ModelRoutes>();
   useEffect(() => {
     if (open) setRoutes(cloneModelRoutes(defaults?.modelRoutes));
@@ -891,7 +898,7 @@ function NewProjectDialog({ open, busy, providers, defaults, onClose, onSubmit }
       goalAgentCount: agents,
       dataClassification: classification,
       deploymentTargets: target.split(",").map((item) => item.trim()).filter(Boolean),
-      budget: { hardLimitMinor: Number(hard), softLimitMinor: Number(soft), currency: "USD" },
+      budget: { hardLimitDollars: Number(hard), softLimitDollars: Number(soft), currency: "USD" },
       modelRoutes: cloneModelRoutes(routes),
     });
   };
@@ -911,13 +918,13 @@ function NewProjectDialog({ open, busy, providers, defaults, onClose, onSubmit }
               </Field>
               <Field label="数据级别">
                 <select className="native-select" value={classification} onChange={(event) => setClassification(event.target.value as ProjectCreateInput["dataClassification"])}>
-                  <option value="PUBLIC">PUBLIC</option><option value="INTERNAL">INTERNAL</option><option value="CONFIDENTIAL">CONFIDENTIAL</option><option value="RESTRICTED">RESTRICTED</option>
+                  <option value="PUBLIC">公开</option><option value="INTERNAL">内部</option><option value="CONFIDENTIAL">机密</option><option value="RESTRICTED">受限</option>
                 </select>
               </Field>
               <Field label="部署目标"><Input value={target} onChange={(_, data) => setTarget(data.value)} /></Field>
               <div className="field-pair">
-                <Field label="预算上限（美分）"><Input type="number" min={1} value={hard} onChange={(_, data) => setHard(data.value)} /></Field>
-                <Field label="软预警（美分）"><Input type="number" min={0} value={soft} onChange={(_, data) => setSoft(data.value)} /></Field>
+                <Field label="预算上限（美元）"><div className="money-input"><Input type="number" min={0.01} step={0.01} value={hard} onChange={(_, data) => setHard(data.value)} /><span aria-hidden="true">$</span></div></Field>
+                <Field label="软预警（美元）"><div className="money-input"><Input type="number" min={0} step={0.01} value={soft} onChange={(_, data) => setSoft(data.value)} /><span aria-hidden="true">$</span></div></Field>
               </div>
               {routes && providers.length > 0 && <ModelRouteEditor routes={routes} providers={providers} onChange={setRoutes} />}
             </DialogContent>
@@ -1179,18 +1186,46 @@ function ModelRouteEditor({ routes, providers, onChange }: {
   );
 }
 
-function OpenProjectDialog({ open, onClose, onSubmit }: { open: boolean; onClose: () => void; onSubmit: (id: string) => void }) {
-  const [projectId, setProjectId] = useState("");
+function OpenProjectDialog({ open, client, onClose, onSubmit }: { open: boolean; client: AorClient; onClose: () => void; onSubmit: (id: string) => void }) {
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [reload, setReload] = useState(0);
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    setLoading(true);
+    setError("");
+    void client.getProjects()
+      .then((items) => active && setProjects(items))
+      .catch((cause) => active && setError(errorMessage(cause)))
+      .finally(() => active && setLoading(false));
+    return () => { active = false; };
+  }, [client, open, reload]);
   return (
     <Dialog open={open} onOpenChange={(_, data) => !data.open && onClose()}>
       <DialogSurface className="form-dialog compact-dialog">
-        <form onSubmit={(event) => { event.preventDefault(); onSubmit(projectId.trim()); }}>
-          <DialogBody>
-            <DialogTitle>打开项目</DialogTitle>
-            <DialogContent><Field label="Project ID" required><Input value={projectId} onChange={(_, data) => setProjectId(data.value)} autoFocus /></Field></DialogContent>
-            <DialogActions><Button onClick={onClose}>取消</Button><Button appearance="primary" type="submit" disabled={!projectId.trim()}>打开</Button></DialogActions>
-          </DialogBody>
-        </form>
+        <DialogBody>
+          <DialogTitle>打开项目</DialogTitle>
+          <DialogContent className="project-picker-content">
+            {loading ? <div className="project-picker-state"><Spinner label="正在读取项目" /></div> : error ? (
+              <div className="project-picker-state"><WarningCircle /><span>{error}</span><Button appearance="outline" size="small" onClick={() => setReload((value) => value + 1)}>重试</Button></div>
+            ) : projects.length === 0 ? (
+              <div className="project-picker-state"><FolderOpen /><span>当前没有项目</span></div>
+            ) : (
+              <div className="project-picker" role="list">
+                {projects.map((item) => (
+                  <button type="button" key={item.id} role="listitem" onClick={() => onSubmit(item.id)}>
+                    <span className="project-picker-main"><strong>{item.name}</strong><StatusMark state={item.state} /></span>
+                    <span className="project-picker-meta">{dataClassificationLabels[item.dataClassification]} · {shortId(item.id, 18)}</span>
+                    <ArrowRight aria-hidden="true" />
+                  </button>
+                ))}
+              </div>
+            )}
+          </DialogContent>
+          <DialogActions><Button onClick={onClose}>取消</Button></DialogActions>
+        </DialogBody>
       </DialogSurface>
     </Dialog>
   );

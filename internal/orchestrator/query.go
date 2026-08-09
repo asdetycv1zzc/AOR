@@ -2,11 +2,44 @@ package orchestrator
 
 import (
 	"context"
+	"sort"
 
 	"github.com/akimisaka/aor/internal/eventing"
 	"github.com/akimisaka/aor/internal/state"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
 )
+
+func (s *Service) Projects(ctx context.Context, tenantID string) ([]state.Project, error) {
+	if tenantID == "" {
+		return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "project list"})
+	}
+	catalog, ok := s.store.(eventing.ProjectionCatalog)
+	if !ok {
+		return nil, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "project list"})
+	}
+	projections, err := catalog.ListTenantProjections(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	projects := make([]state.Project, 0)
+	for _, projection := range projections {
+		if projection.AggregateType != "project" {
+			continue
+		}
+		project, decodeErr := decodeProject(projection.State)
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		if project.TenantID != tenantID || project.ID != projection.ProjectID || project.ID != projection.AggregateID {
+			return nil, aorerrors.New(aorerrors.CodeInternalError, "", map[string]any{"scope": "project projection"})
+		}
+		projects = append(projects, project)
+	}
+	sort.Slice(projects, func(left, right int) bool {
+		return projects[left].ID < projects[right].ID
+	})
+	return projects, nil
+}
 
 func (s *Service) Project(ctx context.Context, tenantID, projectID string) (state.Project, bool, error) {
 	if tenantID == "" || projectID == "" {

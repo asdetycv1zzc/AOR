@@ -437,11 +437,14 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 	}
 
 	if request.URL.Path == "/v1/projects" {
-		if request.Method == http.MethodPost {
+		switch request.Method {
+		case http.MethodGet:
+			handler.listProjects(response, request, principal)
+		case http.MethodPost:
 			handler.createProject(response, request, principal)
-			return
+		default:
+			writeMethodNotAllowed(response, request)
 		}
-		writeMethodNotAllowed(response, request)
 		return
 	}
 	parts, ok := splitProjectPath(request.URL.Path)
@@ -950,6 +953,52 @@ func (handler *Handler) createProject(response http.ResponseWriter, request *htt
 		return
 	}
 	writeProject(response, http.StatusCreated, outcome.Project)
+}
+
+func (handler *Handler) listProjects(response http.ResponseWriter, request *http.Request, principal authn.Principal) {
+	cursor, err := goalCursor(request, "project")
+	if err != nil {
+		writeError(response, request, err)
+		return
+	}
+	projects, err := handler.orchestrator.Projects(request.Context(), principal.TenantID)
+	if err != nil {
+		writeError(response, request, normalizeError(err))
+		return
+	}
+	start := 0
+	if cursor != "" {
+		found := false
+		for index := range projects {
+			if projectPageCursor(principal.TenantID, projects[index].ID) == cursor {
+				start = index + 1
+				found = true
+				break
+			}
+		}
+		if !found {
+			writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "project cursor"}))
+			return
+		}
+	}
+	const pageSize = 100
+	end := start + pageSize
+	if end > len(projects) {
+		end = len(projects)
+	}
+	items := make([]state.Project, 0, end-start)
+	for _, project := range projects[start:end] {
+		if err := authorizeRead(request.Context(), handler.authorizer, principal, project.ID, authz.ActionProjectRead, "project", project.ID, string(project.State), project.Version, project.DataClassification); err != nil {
+			writeError(response, request, err)
+			return
+		}
+		items = append(items, project)
+	}
+	result := page{Items: items}
+	if end < len(projects) {
+		result.NextCursor = projectPageCursor(principal.TenantID, projects[end-1].ID)
+	}
+	writeVersionedPage(response, request, result)
 }
 
 func validateProjectCreate(body projectCreate) error {
@@ -2969,6 +3018,11 @@ func oneOf(value string, options ...string) bool {
 
 func taskPageCursor(projectID, taskID string) string {
 	digest := sha256.Sum256([]byte(projectID + "\x00" + taskID))
+	return hex.EncodeToString(digest[:])
+}
+
+func projectPageCursor(tenantID, projectID string) string {
+	digest := sha256.Sum256([]byte(tenantID + "\x00" + projectID))
 	return hex.EncodeToString(digest[:])
 }
 

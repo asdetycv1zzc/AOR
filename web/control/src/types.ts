@@ -13,6 +13,8 @@ export type ProjectState =
   | "FAILED_SYSTEM"
   | "ARCHIVED";
 
+export type DataClassification = "PUBLIC" | "INTERNAL" | "CONFIDENTIAL" | "RESTRICTED";
+
 export const modelRoles = [
   "GOAL_PROPOSER",
   "GOAL_CHALLENGER",
@@ -148,11 +150,11 @@ export interface Project {
   id: string;
   name: string;
   createdBy: string;
-  dataClassification: "PUBLIC" | "INTERNAL" | "CONFIDENTIAL" | "RESTRICTED";
+  dataClassification: DataClassification;
   deploymentTargets?: string[];
   budgetCurrency?: string;
-  budgetHardLimitMinor?: number;
-  budgetSoftLimitMinor?: number;
+  budgetHardLimitDollars?: number;
+  budgetSoftLimitDollars?: number;
   promptBundleVersion?: string;
   riskTolerance: "LOW" | "MEDIUM" | "HIGH";
   state: ProjectState;
@@ -308,8 +310,8 @@ export interface ProjectCreateInput {
   dataClassification: Project["dataClassification"];
   deploymentTargets: string[];
   budget: {
-    hardLimitMinor: number;
-    softLimitMinor: number;
+    hardLimitDollars: number;
+    softLimitDollars: number;
     currency: "USD";
   };
   modelRoutes?: ModelRoutes;

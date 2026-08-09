@@ -25,6 +25,38 @@ interface ProblemResponse {
   error?: { code?: string; message?: string; retryable?: boolean; correlationId?: string };
 }
 
+type ProjectResponse = Omit<Project, "budgetHardLimitDollars" | "budgetSoftLimitDollars"> & {
+  budgetHardLimitMinor?: number;
+  budgetSoftLimitMinor?: number;
+};
+
+type ProjectCreateRequest = Omit<ProjectCreateInput, "budget"> & {
+  budget: {
+    hardLimitMinor: number;
+    softLimitMinor: number;
+    currency: "USD";
+  };
+};
+
+function dollarsToMinor(value: number): number {
+  const scaled = value * 100;
+  const rounded = Math.round(scaled);
+  const tolerance = Number.EPSILON * Math.max(1, Math.abs(scaled)) * 8;
+  if (!Number.isFinite(value) || value < 0 || !Number.isSafeInteger(rounded) || Math.abs(scaled - rounded) > tolerance) {
+    throw new Error("美元金额必须是非负数，且最多保留两位小数");
+  }
+  return rounded;
+}
+
+function projectFromResponse(response: ProjectResponse): Project {
+  const { budgetHardLimitMinor, budgetSoftLimitMinor, ...project } = response;
+  return {
+    ...project,
+    budgetHardLimitDollars: budgetHardLimitMinor === undefined ? undefined : budgetHardLimitMinor / 100,
+    budgetSoftLimitDollars: budgetSoftLimitMinor === undefined ? undefined : budgetSoftLimitMinor / 100,
+  };
+}
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code?: string;
@@ -67,12 +99,37 @@ export class AorClient {
     return (await response.json()) as T;
   }
 
-  createProject(input: ProjectCreateInput): Promise<Project> {
-    return this.request("/v1/projects", {
+  async createProject(input: ProjectCreateInput): Promise<Project> {
+    const request: ProjectCreateRequest = {
+      ...input,
+      budget: {
+        hardLimitMinor: dollarsToMinor(input.budget.hardLimitDollars),
+        softLimitMinor: dollarsToMinor(input.budget.softLimitDollars),
+        currency: input.budget.currency,
+      },
+    };
+    const response = await this.request<ProjectResponse>("/v1/projects", {
       method: "POST",
       headers: { "Idempotency-Key": crypto.randomUUID() },
-      body: JSON.stringify(input),
+      body: JSON.stringify(request),
     });
+    return projectFromResponse(response);
+  }
+
+  async getProjects(): Promise<Project[]> {
+    const projects: Project[] = [];
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
+    do {
+      const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+      const page = await this.request<Page<ProjectResponse>>(`/v1/projects${query}`);
+      projects.push(...page.items.map(projectFromResponse));
+      if (!page.nextCursor) break;
+      if (seenCursors.has(page.nextCursor)) throw new Error("项目列表返回了重复的游标");
+      seenCursors.add(page.nextCursor);
+      cursor = page.nextCursor;
+    } while (cursor);
+    return projects;
   }
 
   getModelProviders(): Promise<Page<ModelProvider>> {
@@ -119,8 +176,9 @@ export class AorClient {
     });
   }
 
-  getProject(projectId: string): Promise<Project> {
-    return this.request(`/v1/projects/${encodeURIComponent(projectId)}`);
+  async getProject(projectId: string): Promise<Project> {
+    const response = await this.request<ProjectResponse>(`/v1/projects/${encodeURIComponent(projectId)}`);
+    return projectFromResponse(response);
   }
 
   getGoalSpecs(projectId: string): Promise<Page<GoalSpec>> {
