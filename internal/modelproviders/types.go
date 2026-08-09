@@ -15,6 +15,7 @@ type ProviderSettings struct {
 	ID                         string     `json:"id"`
 	DisplayName                string     `json:"displayName"`
 	Provider                   string     `json:"provider"`
+	Custom                     bool       `json:"custom"`
 	BaseURL                    string     `json:"baseUrl"`
 	Protocol                   Protocol   `json:"protocol"`
 	Protocols                  []Protocol `json:"protocols"`
@@ -40,10 +41,12 @@ type ProviderSettings struct {
 // PutRequest is accepted by the settings API. An empty APIKey on an existing
 // row preserves its encrypted key; a new row must provide one.
 type PutRequest struct {
-	BaseURL  string   `json:"baseUrl"`
-	APIKey   string   `json:"apiKey"`
-	Protocol Protocol `json:"protocol"`
-	Enabled  bool     `json:"enabled"`
+	DisplayName string   `json:"displayName"`
+	BaseURL     string   `json:"baseUrl"`
+	APIKey      string   `json:"apiKey"`
+	Protocol    Protocol `json:"protocol"`
+	Models      []string `json:"models"`
+	Enabled     bool     `json:"enabled"`
 }
 
 type ResolvedSettings struct {

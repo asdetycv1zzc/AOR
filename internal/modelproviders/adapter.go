@@ -17,18 +17,24 @@ func newAdapter(factory AdapterFactory, provider string, protocol Protocol, base
 		return nil, ErrInvalidSettings
 	}
 	catalog, found := findCatalog(provider)
-	if !found || !validProtocol(catalog, protocol) {
+	if !safeProviderID(provider) || !validProtocolValue(protocol) || found && !validProtocol(catalog, protocol) {
 		return nil, ErrInvalidSettings
 	}
 	capabilities := make(map[string]modelgateway.ModelCapabilities, len(models))
 	for _, model := range models {
-		definition, found := findModel(catalog.ID, model)
-		if !found {
-			if !validModelName(model) || len(catalog.Models) == 0 {
-				return nil, ErrInvalidSettings
+		definition := genericModel(model)
+		if found {
+			var modelFound bool
+			definition, modelFound = findModel(catalog.ID, model)
+			if !modelFound {
+				if !validModelName(model) || len(catalog.Models) == 0 {
+					return nil, ErrInvalidSettings
+				}
+				definition = catalog.Models[0]
+				definition.ID = model
 			}
-			definition = catalog.Models[0]
-			definition.ID = model
+		} else if !validModelName(model) {
+			return nil, ErrInvalidSettings
 		}
 		capabilities[model] = modelCapabilities(definition)
 	}
@@ -116,7 +122,7 @@ type dynamicAdapterEntry struct {
 }
 
 func NewDynamicAdapter(provider, model string, store SettingsStore, factory AdapterFactory) (*DynamicAdapter, error) {
-	if _, found := findCatalog(provider); !found || store == nil || model != "*" && !validModelName(model) {
+	if !safeProviderID(provider) || store == nil || model != "*" && !validModelName(model) {
 		return nil, ErrInvalidSettings
 	}
 	return &DynamicAdapter{provider: provider, model: model, store: store, factory: factory, current: make(map[string]dynamicAdapterEntry)}, nil

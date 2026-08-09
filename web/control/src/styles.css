@@ -1614,6 +1614,12 @@ button {
   gap: 0;
 }
 
+.provider-settings-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 0 8px;
+}
+
 .provider-settings-row {
   display: grid;
   grid-template-columns: minmax(80px, 0.5fr) minmax(135px, 1fr) minmax(135px, 1fr) minmax(190px, 1.1fr) minmax(220px, 1.35fr);
@@ -1629,6 +1635,13 @@ button {
 
 .provider-settings-row:first-child {
   border-top: 0;
+}
+
+.custom-provider-identity {
+  display: grid;
+  grid-template-columns: minmax(160px, 0.7fr) minmax(180px, 0.9fr) minmax(280px, 1.4fr);
+  gap: 10px;
+  grid-column: 1 / -1;
 }
 
 .provider-settings-heading {
@@ -2022,6 +2035,10 @@ button {
 @media (max-width: 760px) {
   :root {
     --topbar-height: 56px;
+  }
+
+  .custom-provider-identity {
+    grid-template-columns: 1fr;
   }
 
   .login-screen {

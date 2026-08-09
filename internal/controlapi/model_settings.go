@@ -156,9 +156,13 @@ func cloneModelRoutes(routes map[string]state.ProjectModelRoute) map[string]stat
 }
 
 func (handler *Handler) resolveProjectModelRoutes(ctx context.Context, tenantID string, supplied map[string]state.ProjectModelRoute) (map[string]state.ProjectModelRoute, error) {
+	providers, err := handler.tenantModelProviders(ctx, tenantID)
+	if err != nil {
+		return nil, aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", err, map[string]any{"scope": "model provider settings"})
+	}
 	if supplied != nil {
 		supplied = normalizeModelProviderAliases(supplied)
-		if validateRoutesAgainstProviders(supplied, handler.modelProviders) != nil {
+		if validateRoutesAgainstProviders(supplied, providers) != nil {
 			return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "project model routes"})
 		}
 		return cloneModelRoutes(supplied), nil
@@ -171,7 +175,7 @@ func (handler *Handler) resolveProjectModelRoutes(ctx context.Context, tenantID 
 		routes = handler.defaultModelRoutes
 	}
 	routes = normalizeModelProviderAliases(routes)
-	if validateRoutesAgainstProviders(routes, handler.modelProviders) != nil {
+	if validateRoutesAgainstProviders(routes, providers) != nil {
 		return nil, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "model route configuration"})
 	}
 	return cloneModelRoutes(routes), nil
@@ -186,11 +190,16 @@ func (handler *Handler) listModelProviders(response http.ResponseWriter, request
 		writeError(response, request, err)
 		return
 	}
-	if len(handler.modelProviders) == 0 {
+	providers, err := handler.tenantModelProviders(request.Context(), principal.TenantID)
+	if err != nil {
+		writeError(response, request, aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", err, map[string]any{"scope": "model provider catalog"}))
+		return
+	}
+	if len(providers) == 0 {
 		writeError(response, request, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "model provider catalog"}))
 		return
 	}
-	writeJSON(response, http.StatusOK, modelProviderPage{Items: cloneModelProviders(handler.modelProviders)})
+	writeJSON(response, http.StatusOK, modelProviderPage{Items: providers})
 }
 
 func (handler *Handler) getModelRouteSettings(response http.ResponseWriter, request *http.Request, principal authn.Principal) {
@@ -212,7 +221,12 @@ func (handler *Handler) getModelRouteSettings(response http.ResponseWriter, requ
 		version = 0
 	}
 	routes = normalizeModelProviderAliases(routes)
-	if validateRoutesAgainstProviders(routes, handler.modelProviders) != nil {
+	providers, providerErr := handler.tenantModelProviders(request.Context(), principal.TenantID)
+	if providerErr != nil {
+		writeError(response, request, aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", providerErr, map[string]any{"scope": "model provider settings"}))
+		return
+	}
+	if validateRoutesAgainstProviders(routes, providers) != nil {
 		writeError(response, request, aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "model route configuration"}))
 		return
 	}
@@ -230,7 +244,12 @@ func (handler *Handler) putModelRouteSettings(response http.ResponseWriter, requ
 		return
 	}
 	body.ModelRoutes = normalizeModelProviderAliases(body.ModelRoutes)
-	if validateRoutesAgainstProviders(body.ModelRoutes, handler.modelProviders) != nil {
+	providers, providerErr := handler.tenantModelProviders(request.Context(), principal.TenantID)
+	if providerErr != nil {
+		writeError(response, request, aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", providerErr, map[string]any{"scope": "model provider settings"}))
+		return
+	}
+	if validateRoutesAgainstProviders(body.ModelRoutes, providers) != nil {
 		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "model route settings"}))
 		return
 	}
@@ -258,6 +277,42 @@ func (handler *Handler) putModelRouteSettings(response http.ResponseWriter, requ
 		return
 	}
 	writeModelRouteSettings(response, http.StatusOK, routes, version)
+}
+
+func (handler *Handler) tenantModelProviders(ctx context.Context, tenantID string) ([]ModelProvider, error) {
+	providers := cloneModelProviders(handler.modelProviders)
+	if handler.providerSettings == nil {
+		return providers, nil
+	}
+	settings, err := handler.providerSettings.List(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	known := make(map[string]struct{}, len(providers))
+	for _, provider := range providers {
+		known[provider.ID] = struct{}{}
+	}
+	for _, setting := range settings {
+		if !setting.Custom {
+			continue
+		}
+		if _, duplicate := known[setting.ID]; duplicate {
+			continue
+		}
+		known[setting.ID] = struct{}{}
+		providers = append(providers, ModelProvider{
+			ID: setting.ID, Provider: setting.Provider, Models: append([]string(nil), setting.Models...),
+			InputMicrosPerToken: setting.InputMicrosPerToken, OutputMicrosPerToken: setting.OutputMicrosPerToken,
+			SupportsStreaming: setting.SupportsStreaming, SupportsToolCalls: setting.SupportsToolCalls,
+			SupportsJSONSchema: setting.SupportsJSONSchema, SupportsSeed: setting.SupportsSeed,
+			SupportsPromptCaching: setting.SupportsPromptCaching, MaxInputTokens: setting.MaxInputTokens,
+			MaxOutputTokens:            setting.MaxOutputTokens,
+			AllowedDataClassifications: append([]string(nil), setting.AllowedDataClassifications...),
+			DataResidency:              append([]string(nil), setting.DataResidency...), RetentionPolicy: setting.RetentionPolicy,
+			Modalities: append([]string(nil), setting.Modalities...),
+		})
+	}
+	return providers, nil
 }
 
 func normalizeModelProviderAliases(routes map[string]state.ProjectModelRoute) map[string]state.ProjectModelRoute {

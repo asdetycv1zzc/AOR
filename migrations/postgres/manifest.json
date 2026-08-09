@@ -365,6 +365,13 @@
       "file": "000052_provider_protocol_selection.up.sql",
       "sha256": "sha256:3d0af14618533e0b704f087ffe92daa4d6c2a8c3ec82128848b51e2ce5f3b4b0",
       "destructive": false
+    },
+    {
+      "version": 53,
+      "mode": "EXPAND",
+      "file": "000053_custom_model_providers.up.sql",
+      "sha256": "sha256:aeb7df860f1fa01caefa013bba6a6c6a0bd20f910afcc79efa33ca05e7367c7e",
+      "destructive": false
     }
   ]
 }

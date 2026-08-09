@@ -76,8 +76,13 @@ func ModelGateway(config runtimeconfig.Config, clients *runtimeclient.Clients) (
 	}
 	allowed := make(map[string]map[string]struct{}, len(modelproviders.Catalog())+2)
 	var authorizer *modelGatewayAuthorizer
+	providerFactory := modelproviders.AdapterFactory{RequestTimeout: modelProviderRequestTimeout}
 	gateway := modelgateway.NewGatewayWithConfig(ledger, time.Now, modelgateway.GatewayConfig{
 		SamplingSettings: samplingSettings,
+		DynamicProvider: func(provider string) (modelgateway.ModelAdapter, error) {
+			return modelproviders.NewDynamicAdapter(provider, "*", providerSettings, providerFactory)
+		},
+		DynamicProviderPricing: modelgateway.Pricing{InputMicrosPerToken: 1, OutputMicrosPerToken: 4},
 		ProviderPolicies: map[string]modelgateway.ProviderPolicy{
 			"default": configuredCatalogProviderPolicy(),
 		},
@@ -86,7 +91,7 @@ func ModelGateway(config runtimeconfig.Config, clients *runtimeclient.Clients) (
 		},
 	})
 	for _, provider := range modelproviders.Catalog() {
-		adapter, adapterErr := modelproviders.NewDynamicAdapter(provider.ID, "*", providerSettings, modelproviders.AdapterFactory{RequestTimeout: modelProviderRequestTimeout})
+		adapter, adapterErr := modelproviders.NewDynamicAdapter(provider.ID, "*", providerSettings, providerFactory)
 		if adapterErr != nil {
 			return nil, runtimeclient.ErrInvalidClientConfig
 		}
@@ -102,6 +107,7 @@ func ModelGateway(config runtimeconfig.Config, clients *runtimeclient.Clients) (
 	}
 	authorizer = &modelGatewayAuthorizer{
 		db: clients.Database(), opa: opaClient, allowed: allowed, clock: time.Now,
+		providerSettings:  providerSettings,
 		allowHuman:        config.Environment == runtimeconfig.EnvironmentDevelopment || config.Environment == runtimeconfig.EnvironmentTest,
 		deploymentProfile: deploymentProfileForEnvironment(config.Environment), providerPolicy: "default",
 	}
@@ -261,6 +267,7 @@ type modelGatewayAuthorizer struct {
 	db                *sql.DB
 	opa               authz.PolicyEvaluator
 	allowed           map[string]map[string]struct{}
+	providerSettings  modelproviders.SettingsStore
 	clock             func() time.Time
 	allowHuman        bool
 	deploymentProfile string
@@ -292,7 +299,14 @@ func (authorizer *modelGatewayAuthorizer) AuthorizeModel(ctx context.Context, re
 	}
 	models, found := authorizer.allowed[request.Provider]
 	if !found {
-		return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
+		if authorizer.providerSettings == nil {
+			return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
+		}
+		setting, configured, err := authorizer.providerSettings.Get(ctx, principal.TenantID, request.Provider)
+		if err != nil || !configured || !setting.Custom || !setting.Enabled || !containsProviderModel(setting.Models, request.Model) {
+			return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
+		}
+		models = map[string]struct{}{request.Model: {}}
 	}
 	if _, found = models[request.Model]; !found {
 		if _, found = models["*"]; !found {
@@ -390,6 +404,15 @@ func (authorizer *modelGatewayAuthorizer) AuthorizeModel(ctx context.Context, re
 		return modelgateway.ModelAuthorization{}, modelgateway.ErrAuthorizationDenied
 	}
 	return modelgateway.ModelAuthorization{TenantID: principal.TenantID, ProjectID: projectID, TaskID: task.ID, AgentInstanceID: agentInstanceID, Role: role, Provider: request.Provider, AccountID: request.AccountID, DataClassification: project.Classification, ProviderPolicy: authorizer.providerPolicy, PolicyDigest: decision.PolicyVersion}, nil
+}
+
+func containsProviderModel(models []string, model string) bool {
+	for _, candidate := range models {
+		if candidate == model {
+			return true
+		}
+	}
+	return false
 }
 
 type modelAuthorizationDigest struct {

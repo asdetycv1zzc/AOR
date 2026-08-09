@@ -54,7 +54,7 @@ func (store *Store) List(ctx context.Context, tenantID string) ([]ProviderSettin
 	}
 	defer func() { _ = tx.Rollback() }()
 	rows, err := tx.QueryContext(ctx, `
-SELECT provider_id, provider, base_url, protocol, enabled, models_jsonb, version,
+SELECT provider_id, provider, display_name, base_url, protocol, enabled, models_jsonb, version,
        input_micros_per_token, output_micros_per_token,
        api_key_ciphertext IS NOT NULL
 FROM tenant_model_provider_settings
@@ -65,21 +65,26 @@ ORDER BY provider_id`, tenantID)
 	}
 	defer rows.Close()
 	configured := make(map[string]ProviderSettings, 4)
+	custom := make([]ProviderSettings, 0)
 	for rows.Next() {
-		var id, provider, baseURL string
+		var id, provider, displayName, baseURL string
 		var protocol Protocol
 		var enabled, hasAPIKey bool
 		var encoded []byte
 		var version, inputMicros, outputMicros int64
-		if err := rows.Scan(&id, &provider, &baseURL, &protocol, &enabled, &encoded, &version, &inputMicros, &outputMicros, &hasAPIKey); err != nil {
+		if err := rows.Scan(&id, &provider, &displayName, &baseURL, &protocol, &enabled, &encoded, &version, &inputMicros, &outputMicros, &hasAPIKey); err != nil {
 			return nil, err
 		}
-		settings, err := settingsFromCatalog(id, provider, baseURL, protocol, enabled, encoded, version, inputMicros, outputMicros)
+		settings, err := settingsFromStored(id, provider, displayName, baseURL, protocol, enabled, encoded, version, inputMicros, outputMicros)
 		if err != nil {
 			return nil, err
 		}
 		settings.APIKeyConfigured = hasAPIKey
-		configured[id] = settings
+		if settings.Custom {
+			custom = append(custom, settings)
+		} else {
+			configured[id] = settings
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -90,7 +95,7 @@ ORDER BY provider_id`, tenantID)
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	result := make([]ProviderSettings, 0, len(Catalog()))
+	result := make([]ProviderSettings, 0, len(Catalog())+len(custom))
 	for _, provider := range Catalog() {
 		settings, found := configured[provider.ID]
 		if !found {
@@ -98,6 +103,7 @@ ORDER BY provider_id`, tenantID)
 		}
 		result = append(result, settings)
 	}
+	result = append(result, custom...)
 	return result, nil
 }
 
@@ -113,30 +119,33 @@ func (store *Store) Get(ctx context.Context, tenantID, providerID string) (Provi
 		return ProviderSettings{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var id, provider, baseURL string
+	var id, provider, displayName, baseURL string
 	var protocol Protocol
 	var enabled bool
 	var encoded []byte
 	var version, inputMicros, outputMicros int64
 	var configured bool
 	err = tx.QueryRowContext(ctx, `
-SELECT provider_id, provider, base_url, protocol, enabled, models_jsonb, version,
+SELECT provider_id, provider, display_name, base_url, protocol, enabled, models_jsonb, version,
        input_micros_per_token, output_micros_per_token,
        api_key_ciphertext IS NOT NULL
 FROM tenant_model_provider_settings
 WHERE tenant_id = $1::uuid AND provider_id = $2`, tenantID, providerID).
-		Scan(&id, &provider, &baseURL, &protocol, &enabled, &encoded, &version, &inputMicros, &outputMicros, &configured)
+		Scan(&id, &provider, &displayName, &baseURL, &protocol, &enabled, &encoded, &version, &inputMicros, &outputMicros, &configured)
 	if errors.Is(err, sql.ErrNoRows) {
 		if commitErr := tx.Commit(); commitErr != nil {
 			return ProviderSettings{}, false, commitErr
 		}
-		catalog, _ := findCatalog(providerID)
+		catalog, found := findCatalog(providerID)
+		if !found {
+			return ProviderSettings{}, false, nil
+		}
 		return defaultSettings(catalog), true, nil
 	}
 	if err != nil {
 		return ProviderSettings{}, false, err
 	}
-	settings, err := settingsFromCatalog(id, provider, baseURL, protocol, enabled, encoded, version, inputMicros, outputMicros)
+	settings, err := settingsFromStored(id, provider, displayName, baseURL, protocol, enabled, encoded, version, inputMicros, outputMicros)
 	if err != nil {
 		return ProviderSettings{}, false, err
 	}
@@ -159,18 +168,18 @@ func (store *Store) Resolve(ctx context.Context, tenantID, providerID string) (R
 		return ResolvedSettings{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var id, provider, baseURL string
+	var id, provider, displayName, baseURL string
 	var protocol Protocol
 	var enabled bool
 	var encoded, nonce, ciphertext []byte
 	var version, inputMicros, outputMicros int64
 	err = tx.QueryRowContext(ctx, `
-SELECT provider_id, provider, base_url, protocol, enabled, models_jsonb, api_key_nonce,
+SELECT provider_id, provider, display_name, base_url, protocol, enabled, models_jsonb, api_key_nonce,
        api_key_ciphertext, version, input_micros_per_token,
        output_micros_per_token
 FROM tenant_model_provider_settings
 WHERE tenant_id = $1::uuid AND provider_id = $2`, tenantID, providerID).
-		Scan(&id, &provider, &baseURL, &protocol, &enabled, &encoded, &nonce, &ciphertext, &version, &inputMicros, &outputMicros)
+		Scan(&id, &provider, &displayName, &baseURL, &protocol, &enabled, &encoded, &nonce, &ciphertext, &version, &inputMicros, &outputMicros)
 	if errors.Is(err, sql.ErrNoRows) {
 		if commitErr := tx.Commit(); commitErr != nil {
 			return ResolvedSettings{}, false, commitErr
@@ -193,7 +202,7 @@ WHERE tenant_id = $1::uuid AND provider_id = $2`, tenantID, providerID).
 	if err != nil || len(key) == 0 {
 		return ResolvedSettings{}, false, ErrAPIKeyUnavailable
 	}
-	settings, err := settingsFromCatalog(id, provider, baseURL, protocol, enabled, encoded, version, inputMicros, outputMicros)
+	settings, err := settingsFromStored(id, provider, displayName, baseURL, protocol, enabled, encoded, version, inputMicros, outputMicros)
 	if err != nil {
 		return ResolvedSettings{}, false, err
 	}
@@ -212,14 +221,23 @@ func (store *Store) Put(ctx context.Context, tenantID, providerID string, reques
 	}
 	catalog, found := findCatalog(providerID)
 	if request.Protocol == "" {
-		request.Protocol = catalog.Protocol
+		if found {
+			request.Protocol = catalog.Protocol
+		} else {
+			request.Protocol = ProtocolOpenAICompatible
+		}
 	}
 	invalidURL := request.BaseURL != "" && validateURL(request.BaseURL) != nil
-	if !found || !safeProviderID(providerID) || !validProtocol(catalog, request.Protocol) || invalidURL || request.Enabled && request.BaseURL == "" || !validAPIKey(request.APIKey) && request.APIKey != "" {
+	if !safeProviderID(providerID) || !validProtocolValue(request.Protocol) || invalidURL || request.Enabled && request.BaseURL == "" || !validAPIKey(request.APIKey) && request.APIKey != "" {
 		return ProviderSettings{}, ErrInvalidSettings
 	}
+	displayName := catalog.DisplayName
 	models := normalizedModels(catalog, nil)
-	if len(models) == 0 || len(models) > maximumModels {
+	if !found {
+		displayName = strings.TrimSpace(request.DisplayName)
+		models = normalizedCustomModels(request.Models)
+	}
+	if displayName == "" || len(displayName) > 128 || strings.ContainsAny(displayName, "\r\n\x00") || len(models) == 0 || len(models) > maximumModels {
 		return ProviderSettings{}, ErrInvalidSettings
 	}
 	tx, err := store.begin(ctx, tenantID, false)
@@ -274,27 +292,28 @@ FOR UPDATE`, tenantID, providerID).Scan(&oldNonce, &oldCipher, &oldVersion)
 	}
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO tenant_model_provider_settings
-  (tenant_id, provider_id, provider, base_url, protocol, enabled, models_jsonb, api_key_nonce,
-   api_key_ciphertext, version, input_micros_per_token, output_micros_per_token,
-   updated_at)
-VALUES ($1::uuid, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, 1, 4, $11)
+	  (tenant_id, provider_id, provider, display_name, base_url, protocol, enabled, models_jsonb, api_key_nonce,
+	   api_key_ciphertext, version, input_micros_per_token, output_micros_per_token,
+	   updated_at)
+VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, 1, 4, $12)
 ON CONFLICT (tenant_id, provider_id) DO UPDATE SET
-  provider = EXCLUDED.provider,
-  base_url = EXCLUDED.base_url,
+	  provider = EXCLUDED.provider,
+	  display_name = EXCLUDED.display_name,
+	  base_url = EXCLUDED.base_url,
   protocol = EXCLUDED.protocol,
   enabled = EXCLUDED.enabled,
   models_jsonb = EXCLUDED.models_jsonb,
   api_key_nonce = EXCLUDED.api_key_nonce,
   api_key_ciphertext = EXCLUDED.api_key_ciphertext,
   version = EXCLUDED.version,
-  updated_at = EXCLUDED.updated_at`, tenantID, providerID, catalog.ID, request.BaseURL, request.Protocol, request.Enabled, encoded, nonce, ciphertext, nextVersion, store.clock().UTC())
+	  updated_at = EXCLUDED.updated_at`, tenantID, providerID, providerID, displayName, request.BaseURL, request.Protocol, request.Enabled, encoded, nonce, ciphertext, nextVersion, store.clock().UTC())
 	if err != nil {
 		return ProviderSettings{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return ProviderSettings{}, err
 	}
-	settings, err := settingsFromCatalog(providerID, catalog.ID, request.BaseURL, request.Protocol, request.Enabled, encoded, nextVersion, 1, 4)
+	settings, err := settingsFromStored(providerID, providerID, displayName, request.BaseURL, request.Protocol, request.Enabled, encoded, nextVersion, 1, 4)
 	if err != nil {
 		return ProviderSettings{}, err
 	}
@@ -330,11 +349,16 @@ func validTenantID(value string) bool {
 }
 
 func safeProviderID(value string) bool {
-	if value == "" || len(value) > 128 || strings.TrimSpace(value) != value || strings.ContainsAny(value, "\r\n\x00") {
+	if value == "" || len(value) > 128 || strings.ToLower(value) != value {
 		return false
 	}
-	_, found := findCatalog(value)
-	return found
+	for index, character := range value {
+		if character >= 'a' && character <= 'z' || character >= '0' && character <= '9' || index > 0 && (character == '-' || character == '_' || character == '.') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func validAPIKey(value string) bool {
@@ -367,26 +391,56 @@ func normalizedModels(catalog ProviderCatalog, requested []string) []string {
 	return result
 }
 
-func settingsFromCatalog(id, provider, baseURL string, protocol Protocol, enabled bool, encoded []byte, version, inputMicros, outputMicros int64) (ProviderSettings, error) {
+func normalizedCustomModels(requested []string) []string {
+	seen := make(map[string]struct{}, len(requested))
+	result := make([]string, 0, len(requested))
+	for _, model := range requested {
+		if !validModelName(model) {
+			return nil
+		}
+		if _, duplicate := seen[model]; duplicate {
+			return nil
+		}
+		seen[model] = struct{}{}
+		result = append(result, model)
+	}
+	return result
+}
+
+func settingsFromStored(id, provider, displayName, baseURL string, protocol Protocol, enabled bool, encoded []byte, version, inputMicros, outputMicros int64) (ProviderSettings, error) {
 	catalog, found := findCatalog(provider)
-	if !found || !validProtocol(catalog, protocol) {
+	if !safeProviderID(id) || id != provider || !validProtocolValue(protocol) {
 		return ProviderSettings{}, ErrInvalidSettings
 	}
 	var storedModels []string
 	if json.Unmarshal(encoded, &storedModels) != nil || len(storedModels) == 0 {
 		return ProviderSettings{}, ErrInvalidSettings
 	}
-	models := normalizedModels(catalog, nil)
-	capability := modelCapabilities(catalog.Models[0])
-	for _, model := range catalog.Models {
-		if model.ID == models[0] {
-			capability = modelCapabilities(model)
-			break
+	custom := !found
+	models := normalizedCustomModels(storedModels)
+	if len(models) == 0 {
+		return ProviderSettings{}, ErrInvalidSettings
+	}
+	capability := modelCapabilities(genericModel(models[0]))
+	if found {
+		if !validProtocol(catalog, protocol) {
+			return ProviderSettings{}, ErrInvalidSettings
 		}
+		displayName = catalog.DisplayName
+		models = normalizedModels(catalog, nil)
+		capability = modelCapabilities(catalog.Models[0])
+		for _, model := range catalog.Models {
+			if model.ID == models[0] {
+				capability = modelCapabilities(model)
+				break
+			}
+		}
+	} else if displayName == "" || len(displayName) > 128 || strings.TrimSpace(displayName) != displayName || strings.ContainsAny(displayName, "\r\n\x00") || len(models) == 0 {
+		return ProviderSettings{}, ErrInvalidSettings
 	}
 	return ProviderSettings{
-		ID: id, DisplayName: catalog.DisplayName, Provider: catalog.ID, BaseURL: baseURL,
-		Protocol: protocol, Protocols: append([]Protocol(nil), catalog.Protocols...), Enabled: enabled,
+		ID: id, DisplayName: displayName, Provider: provider, Custom: custom, BaseURL: baseURL,
+		Protocol: protocol, Protocols: supportedProtocols(), Enabled: enabled,
 		Models:              append([]string(nil), models...),
 		InputMicrosPerToken: inputMicros, OutputMicrosPerToken: outputMicros,
 		SupportsStreaming: capability.SupportsStreaming, SupportsToolCalls: capability.SupportsToolCalls,
@@ -403,7 +457,7 @@ func defaultSettings(catalog ProviderCatalog) ProviderSettings {
 		models = append(models, model.ID)
 	}
 	encoded, _ := json.Marshal(models)
-	settings, _ := settingsFromCatalog(catalog.ID, catalog.ID, "", catalog.Protocol, false, encoded, 0, 1, 4)
+	settings, _ := settingsFromStored(catalog.ID, catalog.ID, catalog.DisplayName, "", catalog.Protocol, false, encoded, 0, 1, 4)
 	return settings
 }
 

@@ -840,7 +840,7 @@ components:
     TaskId: {name: taskId, in: path, required: true, schema: {type: string, pattern: '^[A-Za-z][A-Za-z0-9_-]{2,127}$'}}
     ArtifactId: {name: artifactId, in: path, required: true, schema: {type: string, format: uuid, pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'}}
     HoldId: {name: holdId, in: path, required: true, schema: {type: string, pattern: '^[A-Za-z][A-Za-z0-9_-]{2,127}$'}}
-    ProviderId: {name: providerId, in: path, required: true, schema: {enum: [openai, deepseek, claude, grok]}}
+    ProviderId: {name: providerId, in: path, required: true, schema: {type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,127}$'}}
     Version: {name: version, in: path, required: true, schema: {type: integer, minimum: 1}}
     Cursor: {name: cursor, in: query, schema: {type: string, maxLength: 512}}
     IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 256}}
@@ -946,11 +946,12 @@ components:
     ModelProviderSettings:
       type: object
       additionalProperties: false
-      required: [id, provider, displayName, baseUrl, protocol, protocols, models, apiKeyConfigured, enabled, version]
+      required: [id, provider, displayName, custom, baseUrl, protocol, protocols, models, apiKeyConfigured, enabled, version]
       properties:
-        id: {enum: [openai, deepseek, claude, grok]}
-        provider: {enum: [openai, deepseek, claude, grok]}
-        displayName: {type: string, minLength: 1, maxLength: 64}
+        id: {type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,127}$'}
+        provider: {type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,127}$'}
+        displayName: {type: string, minLength: 1, maxLength: 128}
+        custom: {type: boolean}
         baseUrl: {type: string, maxLength: 2048}
         protocol: {enum: [openai-compatible, openai-responses, anthropic-messages]}
         protocols:
@@ -973,8 +974,6 @@ components:
       properties:
         items:
           type: array
-          minItems: 4
-          maxItems: 4
           items: {$ref: '#/components/schemas/ModelProviderSettings'}
     ModelProviderSettingsInput:
       type: object
@@ -982,8 +981,15 @@ components:
       required: [baseUrl, protocol, enabled]
       properties:
         baseUrl: {type: string, maxLength: 2048}
+        displayName: {type: string, minLength: 1, maxLength: 128}
         protocol: {enum: [openai-compatible, openai-responses, anthropic-messages]}
         apiKey: {type: string, minLength: 1, maxLength: 65536, writeOnly: true}
+        models:
+          type: array
+          minItems: 1
+          maxItems: 128
+          uniqueItems: true
+          items: {type: string, minLength: 1, maxLength: 256}
         enabled: {type: boolean}
     ModelProviderTestInput:
       type: object

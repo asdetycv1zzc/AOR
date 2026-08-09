@@ -20,9 +20,7 @@ const (
 	ProviderGrok     = "grok"
 )
 
-// ProviderCatalog is the non-secret, fixed catalog shown by the control UI.
-// Deployments can enable a subset of Models for a provider, but cannot create
-// an arbitrary provider family through this package.
+// ProviderCatalog is the non-secret built-in catalog shown by the control UI.
 type ProviderCatalog struct {
 	ID          string
 	DisplayName string
@@ -53,7 +51,7 @@ type CatalogModel struct {
 // The aliases cover the model names used by the classroom deployment while
 // keeping the provider credentials and endpoints out of source and Compose.
 func Catalog() []ProviderCatalog {
-	protocols := []Protocol{ProtocolOpenAIResponses, ProtocolAnthropic, ProtocolOpenAICompatible}
+	protocols := supportedProtocols()
 	return cloneCatalog([]ProviderCatalog{
 		{
 			ID: ProviderOpenAI, DisplayName: "OpenAI", Protocol: ProtocolOpenAIResponses, Protocols: protocols,
@@ -93,6 +91,19 @@ func Catalog() []ProviderCatalog {
 	})
 }
 
+func supportedProtocols() []Protocol {
+	return []Protocol{ProtocolOpenAIResponses, ProtocolAnthropic, ProtocolOpenAICompatible}
+}
+
+func validProtocolValue(protocol Protocol) bool {
+	for _, candidate := range supportedProtocols() {
+		if candidate == protocol {
+			return true
+		}
+	}
+	return false
+}
+
 func openAIModels() []CatalogModel {
 	models := []string{
 		"gpt-5.4", "gpt-5.4-mini",
@@ -123,6 +134,10 @@ func validProtocol(provider ProviderCatalog, protocol Protocol) bool {
 		}
 	}
 	return false
+}
+
+func genericModel(id string) CatalogModel {
+	return CatalogModel{ID: id, MaxInput: 1_000_000, MaxOutput: 1_000_000, ToolCalls: true, JSONSchema: true, Streaming: true}
 }
 
 func findCatalog(provider string) (ProviderCatalog, bool) {

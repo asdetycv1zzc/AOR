@@ -47,6 +47,8 @@ type Gateway struct {
 	replayFinalizer        ModelCallReplayFinalizer
 	callLookup             ModelCallLookup
 	samplingSettings       SamplingSettingsStore
+	dynamicProvider        func(string) (ModelAdapter, error)
+	dynamicProviderPricing Pricing
 	executions             map[string]*requestExecution
 }
 
@@ -70,6 +72,8 @@ type GatewayConfig struct {
 	ReplayStore            ModelReplayStore
 	CallLookup             ModelCallLookup
 	SamplingSettings       SamplingSettingsStore
+	DynamicProvider        func(string) (ModelAdapter, error)
+	DynamicProviderPricing Pricing
 }
 
 type requestExecution struct {
@@ -126,7 +130,7 @@ func NewGatewayWithConfig(ledger BudgetLedgerBackend, clock func() time.Time, co
 	if config.ReplayStore == nil && replayStore != nil {
 		replayFinalizer, _ = ledger.(ModelCallReplayFinalizer)
 	}
-	return &Gateway{adapters: make(map[string]ModelAdapter), allowed: make(map[string]map[string]bool), pricing: make(map[string]Pricing), ledger: ledger, callFinalizer: finalizer, clock: clock, circuits: make(map[string]providerCircuit), initialProviderBackoff: config.InitialProviderBackoff, maximumProviderBackoff: config.MaximumProviderBackoff, backoffJitterRatio: config.BackoffJitterRatio, sleep: config.Sleep, policies: policies, eligibility: config.ProviderEligibility, replayStore: replayStore, replayFinalizer: replayFinalizer, callLookup: callLookup, samplingSettings: config.SamplingSettings, executions: make(map[string]*requestExecution)}
+	return &Gateway{adapters: make(map[string]ModelAdapter), allowed: make(map[string]map[string]bool), pricing: make(map[string]Pricing), ledger: ledger, callFinalizer: finalizer, clock: clock, circuits: make(map[string]providerCircuit), initialProviderBackoff: config.InitialProviderBackoff, maximumProviderBackoff: config.MaximumProviderBackoff, backoffJitterRatio: config.BackoffJitterRatio, sleep: config.Sleep, policies: policies, eligibility: config.ProviderEligibility, replayStore: replayStore, replayFinalizer: replayFinalizer, callLookup: callLookup, samplingSettings: config.SamplingSettings, dynamicProvider: config.DynamicProvider, dynamicProviderPricing: config.DynamicProviderPricing, executions: make(map[string]*requestExecution)}
 }
 
 func (g *Gateway) Register(provider, model string, adapter ModelAdapter, pricing Pricing) error {
@@ -654,7 +658,17 @@ func (g *Gateway) providerCandidates(request NormalizedRequest, options Generate
 		}
 	}
 	if !preferredFound {
-		return nil, ErrProviderNotAllowed
+		g.mu.RLock()
+		dynamic := g.dynamicProvider != nil
+		g.mu.RUnlock()
+		if !dynamic {
+			return nil, ErrProviderNotAllowed
+		}
+		preferred = ProviderCandidate{
+			Provider: options.Provider, Model: request.Model, CapabilityRank: 100,
+			AllowedDataClassifications: []string{"PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"},
+			AllowedDataResidencies:     []string{"provider-defined"}, RetentionPolicy: "provider-defined",
+		}
 	}
 	if err := appendCandidate(preferred); err != nil {
 		return nil, err
@@ -1855,14 +1869,38 @@ func (g *Gateway) String() string {
 
 func (g *Gateway) provider(key, provider, model string) (ModelAdapter, Pricing, bool) {
 	g.mu.RLock()
-	defer g.mu.RUnlock()
 	adapter, pricing := g.adapters[key], g.pricing[key]
 	if adapter == nil {
 		wildcardKey := provider + "\x00*"
 		adapter, pricing = g.adapters[wildcardKey], g.pricing[wildcardKey]
 	}
 	allowed := g.allowed[provider]
-	return adapter, pricing, allowed[model] || allowed["*"]
+	dynamic := g.dynamicProvider
+	dynamicPricing := g.dynamicProviderPricing
+	permitted := allowed[model] || allowed["*"]
+	g.mu.RUnlock()
+	if adapter != nil || dynamic == nil {
+		return adapter, pricing, permitted
+	}
+	created, err := dynamic(provider)
+	if err != nil || created == nil || dynamicPricing.InputMicrosPerToken < 0 || dynamicPricing.OutputMicrosPerToken < 0 {
+		return nil, Pricing{}, false
+	}
+	wildcardKey := provider + "\x00*"
+	g.mu.Lock()
+	adapter = g.adapters[wildcardKey]
+	if adapter == nil {
+		adapter = created
+		g.adapters[wildcardKey] = adapter
+		g.pricing[wildcardKey] = dynamicPricing
+		if g.allowed[provider] == nil {
+			g.allowed[provider] = make(map[string]bool)
+		}
+		g.allowed[provider]["*"] = true
+	}
+	pricing = g.pricing[wildcardKey]
+	g.mu.Unlock()
+	return adapter, pricing, true
 }
 
 func (g *Gateway) providerReady(key string, now time.Time) bool {

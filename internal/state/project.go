@@ -93,7 +93,7 @@ func ValidModelReasoningEffort(provider, effort string) bool {
 	case "grok":
 		return effort == ""
 	default:
-		return effort == ""
+		return effort == "" || effort == "none" || effort == "low" || effort == "medium" || effort == "high" || effort == "xhigh" || effort == "max"
 	}
 }
 

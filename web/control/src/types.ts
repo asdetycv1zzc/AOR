@@ -66,6 +66,7 @@ export interface ModelProviderSettings {
   id: string;
   provider: string;
   displayName?: string;
+  custom: boolean;
   baseUrl: string;
   protocol: string;
   protocols?: string[];
@@ -81,8 +82,10 @@ export interface ModelProviderSettingsPage {
 
 export interface ModelProviderSettingsInput {
   baseUrl: string;
+  displayName?: string;
   protocol: string;
   apiKey?: string;
+  models?: string[];
   enabled: boolean;
 }
 

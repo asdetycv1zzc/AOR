@@ -134,14 +134,7 @@ const modelRoleLabels: Record<ModelRole, string> = {
   KNOWLEDGE_CURATOR: "知识管理",
 };
 
-const modelProviderRows = [
-  { key: "openai", label: "OpenAI" },
-  { key: "deepseek", label: "DeepSeek" },
-  { key: "claude", label: "Claude" },
-  { key: "grok", label: "Grok" },
-] as const;
-
-type ModelProviderKey = (typeof modelProviderRows)[number]["key"];
+type ModelProviderKey = "openai" | "deepseek" | "claude" | "grok";
 
 type ReasoningEffortOption = { value: ReasoningEffort; label: string };
 
@@ -169,6 +162,16 @@ const reasoningEffortOptions: Record<ModelProviderKey, readonly ReasoningEffortO
   grok: [{ value: "", label: "不指定" }],
 };
 
+const customReasoningEffortOptions: readonly ReasoningEffortOption[] = [
+  { value: "", label: "不指定" },
+  { value: "none", label: "关闭" },
+  { value: "low", label: "低" },
+  { value: "medium", label: "中" },
+  { value: "high", label: "高" },
+  { value: "xhigh", label: "极高" },
+  { value: "max", label: "最大" },
+];
+
 const defaultReasoningEffort: Record<ModelProviderKey, ReasoningEffort> = {
   openai: "medium",
   claude: "medium",
@@ -186,17 +189,19 @@ function modelProviderKey(provider: Pick<ModelProvider, "id" | "provider"> | str
 }
 
 function normalizedReasoningEffort(key: ModelProviderKey | undefined, effort?: ReasoningEffort): ReasoningEffort {
-  if (!key) return effort || "";
-  return reasoningEffortOptions[key].some((option) => option.value === effort) ? effort! : defaultReasoningEffort[key];
+  const options = key ? reasoningEffortOptions[key] : customReasoningEffortOptions;
+  return options.some((option) => option.value === effort) ? effort! : key ? defaultReasoningEffort[key] : "";
 }
 
 type ModelProviderDraft = ModelProviderSettings & {
+  draftKey: string;
   apiKey: string;
+  modelsText: string;
   testModel: string;
   testReasoningEffort: ReasoningEffort;
 };
 
-type ModelProviderDrafts = Record<ModelProviderKey, ModelProviderDraft | undefined>;
+type ModelProviderDrafts = ModelProviderDraft[];
 
 type ProviderTestState = {
   status: "idle" | "testing" | "success" | "error";
@@ -209,29 +214,56 @@ type ModelProviderUpdate = {
   input: ModelProviderSettingsInput;
 };
 
-function emptyModelProviderDrafts(): ModelProviderDrafts {
-  return { openai: undefined, deepseek: undefined, claude: undefined, grok: undefined };
-}
-
-function modelProviderSetting(settings: ModelProviderSettings[], key: ModelProviderKey): ModelProviderSettings | undefined {
-  return settings.find((item) => item.provider.toLowerCase() === key || item.id.toLowerCase() === key);
-}
-
 function cloneModelProviderDrafts(settings: ModelProviderSettings[]): ModelProviderDrafts {
-  const drafts = emptyModelProviderDrafts();
-  for (const { key } of modelProviderRows) {
-    const setting = modelProviderSetting(settings, key);
-    if (!setting) continue;
-    drafts[key] = {
+  return settings.map((setting) => {
+    const key = modelProviderKey(setting);
+    return {
       ...setting,
+      draftKey: setting.id,
       protocols: setting.protocols ? [...setting.protocols] : undefined,
       models: [...setting.models],
       apiKey: "",
+      modelsText: setting.models.join(", "),
       testModel: setting.models[0] || "",
-      testReasoningEffort: defaultReasoningEffort[key],
+      testReasoningEffort: normalizedReasoningEffort(key),
     };
-  }
-  return drafts;
+  });
+}
+
+function providerModels(value: string): string[] {
+  return [...new Set(value.split(/[,\n]/).map((model) => model.trim()).filter(Boolean))];
+}
+
+function customProviderDraft(draftKey: string): ModelProviderDraft {
+  return {
+    draftKey,
+    id: "",
+    provider: "",
+    displayName: "",
+    custom: true,
+    baseUrl: "",
+    protocol: "openai-compatible",
+    protocols: ["openai-responses", "anthropic-messages", "openai-compatible"],
+    models: [],
+    modelsText: "",
+    apiKey: "",
+    apiKeyConfigured: false,
+    enabled: true,
+    version: 0,
+    testModel: "",
+    testReasoningEffort: "",
+  };
+}
+
+function modelProviderDraftsValid(drafts: ModelProviderDrafts): boolean {
+  const ids = new Set<string>();
+  return drafts.every((draft) => {
+    if (!draft.id || !/^[a-z0-9][a-z0-9._-]{0,127}$/.test(draft.id) || ids.has(draft.id)) return false;
+    ids.add(draft.id);
+    if (!draft.custom) return true;
+    const models = providerModels(draft.modelsText);
+    return Boolean(draft.displayName?.trim() && draft.displayName.trim().length <= 128 && models.length > 0 && models.length <= 128 && models.every((model) => model.length <= 256));
+  });
 }
 
 function cloneModelRoutes(routes?: ModelRoutes, providers: ModelProvider[] = []): ModelRoutes | undefined {
@@ -251,11 +283,10 @@ function modelRoutesValid(routes: ModelRoutes | undefined, providers: ModelProvi
     const provider = providers.find((item) => item.id === route.provider);
     const key = modelProviderKey(provider || route.provider);
     return Boolean(
-      key &&
       route.model &&
       route.model.length <= 256 &&
       route.model.trim() === route.model &&
-      reasoningEffortOptions[key].some((option) => option.value === route.reasoningEffort),
+      (key ? reasoningEffortOptions[key] : customReasoningEffortOptions).some((option) => option.value === route.reasoningEffort),
     );
   });
 }
@@ -519,22 +550,15 @@ function ControlConsole({ client }: { client: AorClient }) {
     setSettingsBusy(true);
     setError("");
     try {
-      const [savedSampling, saved, savedProviders] = await Promise.all([
+      await Promise.all(updates.map((update) => client.putModelProviderSettings(update.id, update.input)));
+      const [savedSampling, saved, refreshedProviders, refreshedSettings] = await Promise.all([
         client.putModelSamplingSettings(sampling),
         client.putModelRouteSettings(modelRoutes),
-        Promise.all(updates.map((update) => client.putModelProviderSettings(update.id, update.input))),
+        client.getModelProviders(),
+        client.getModelProviderSettings(),
       ]);
-      if (savedProviders.length > 0) {
-        setProviderSettings((current) => {
-          const next = [...current];
-          for (const provider of savedProviders) {
-            const index = next.findIndex((item) => item.id === provider.id);
-            if (index >= 0) next[index] = provider;
-            else next.push(provider);
-          }
-          return next;
-        });
-      }
+      setModelProviders(refreshedProviders.items);
+      setProviderSettings(refreshedSettings.items);
       setRouteSettings(saved);
       setSamplingSettings(savedSampling);
       setSettingsOpen(false);
@@ -1085,14 +1109,43 @@ function ModelSettingsDialog({ open, busy, providers, providerSettings, settings
 }) {
   const [routes, setRoutes] = useState<ModelRoutes>();
   const [sampling, setSampling] = useState<ModelSamplingSettingsInput>();
-  const [drafts, setDrafts] = useState<ModelProviderDrafts>(emptyModelProviderDrafts);
-  const [testStates, setTestStates] = useState<Partial<Record<ModelProviderKey, ProviderTestState>>>({});
+  const [drafts, setDrafts] = useState<ModelProviderDrafts>([]);
+  const [testStates, setTestStates] = useState<Record<string, ProviderTestState>>({});
+  const customProviderSequence = useRef(0);
   const samplingValid = Boolean(
     sampling &&
     Number.isFinite(sampling.temperature) && sampling.temperature >= 0 && sampling.temperature <= 2 &&
     Number.isFinite(sampling.topP) && sampling.topP >= 0 && sampling.topP <= 1 &&
     Number.isInteger(sampling.topK) && sampling.topK >= 0 && sampling.topK <= 500,
   );
+  const draftProviders = useMemo(() => {
+    const next = [...providers];
+    const known = new Set(next.map((provider) => provider.id));
+    for (const draft of drafts) {
+      const models = providerModels(draft.modelsText);
+      if (!draft.custom || !draft.id || known.has(draft.id) || models.length === 0) continue;
+      known.add(draft.id);
+      next.push({
+        id: draft.id,
+        provider: draft.id,
+        models,
+        inputMicrosPerToken: 1,
+        outputMicrosPerToken: 4,
+        supportsStreaming: true,
+        supportsToolCalls: true,
+        supportsJsonSchema: true,
+        supportsSeed: false,
+        supportsPromptCaching: false,
+        maxInputTokens: 1_000_000,
+        maxOutputTokens: 1_000_000,
+        allowedDataClassifications: ["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"],
+        dataResidency: ["provider-defined"],
+        retentionPolicy: "provider-defined",
+        modalities: ["text"],
+      });
+    }
+    return next;
+  }, [drafts, providers]);
 
   useEffect(() => {
     if (!open) return;
@@ -1106,17 +1159,14 @@ function ModelSettingsDialog({ open, busy, providers, providerSettings, settings
     setTestStates({});
   }, [open, providerSettings, providers, samplingSettings?.version, settings?.version]);
 
-  const updateDraft = (key: ModelProviderKey, patch: Partial<ModelProviderDraft>) => {
-    setDrafts((current) => {
-      const draft = current[key];
-      return draft ? { ...current, [key]: { ...draft, ...patch } } : current;
-    });
+  const updateDraft = (draftKey: string, patch: Partial<ModelProviderDraft>) => {
+    setDrafts((current) => current.map((draft) => draft.draftKey === draftKey ? { ...draft, ...patch } : draft));
   };
 
-  const testProvider = async (key: ModelProviderKey) => {
-    const draft = drafts[key];
+  const testProvider = async (draftKey: string) => {
+    const draft = drafts.find((item) => item.draftKey === draftKey);
     if (!draft || !draft.baseUrl.trim() || !draft.testModel || busy) return;
-    setTestStates((current) => ({ ...current, [key]: { status: "testing" } }));
+    setTestStates((current) => ({ ...current, [draftKey]: { status: "testing" } }));
     try {
       const input: ModelProviderTestInput = {
         baseUrl: draft.baseUrl.trim(),
@@ -1128,28 +1178,35 @@ function ModelSettingsDialog({ open, busy, providers, providerSettings, settings
       const result = await onTestProvider(draft.id, input);
       setTestStates((current) => ({
         ...current,
-        [key]: {
+        [draftKey]: {
           status: result.ok ? "success" : "error",
           message: result.detail || (result.ok ? "连接成功" : "连接失败"),
           latencyMs: result.latencyMs,
         },
       }));
     } catch (cause) {
-      setTestStates((current) => ({ ...current, [key]: { status: "error", message: errorMessage(cause) } }));
+      setTestStates((current) => ({ ...current, [draftKey]: { status: "error", message: errorMessage(cause) } }));
     }
   };
 
+  const addProvider = () => {
+    customProviderSequence.current += 1;
+    setDrafts((current) => [...current, customProviderDraft(`custom-${customProviderSequence.current}`)]);
+  };
+
   const submit = () => {
-    if (!routes || !sampling || !samplingValid || !modelRoutesValid(routes, providers)) return;
+    if (!routes || !sampling || !samplingValid || !modelProviderDraftsValid(drafts) || !modelRoutesValid(routes, draftProviders)) return;
     const updates: ModelProviderUpdate[] = [];
-    for (const { key } of modelProviderRows) {
-      const draft = drafts[key];
-      if (!draft) continue;
+    for (const draft of drafts) {
       const input: ModelProviderSettingsInput = {
         baseUrl: draft.baseUrl.trim(),
         protocol: draft.protocol,
         enabled: draft.enabled,
       };
+      if (draft.custom) {
+        input.displayName = draft.displayName?.trim();
+        input.models = providerModels(draft.modelsText);
+      }
       if (draft.apiKey.trim()) input.apiKey = draft.apiKey.trim();
       updates.push({ id: draft.id, input });
     }
@@ -1162,13 +1219,13 @@ function ModelSettingsDialog({ open, busy, providers, providerSettings, settings
         <DialogBody>
           <DialogTitle>模型设置</DialogTitle>
           <DialogContent className="dialog-form">
-            <ModelProviderSettingsEditor drafts={drafts} testStates={testStates} busy={busy} onChange={updateDraft} onTest={(key) => void testProvider(key)} />
+            <ModelProviderSettingsEditor drafts={drafts} testStates={testStates} busy={busy} onChange={updateDraft} onTest={(draftKey) => void testProvider(draftKey)} onAdd={addProvider} />
             {sampling ? <ModelSamplingSettingsEditor settings={sampling} onChange={setSampling} /> : <Spinner label="正在读取采样参数" />}
-            {routes ? <ModelRouteEditor routes={routes} providers={providers} onChange={setRoutes} /> : <Spinner label="正在读取模型目录" />}
+            {routes ? <ModelRouteEditor routes={routes} providers={draftProviders} onChange={setRoutes} /> : <Spinner label="正在读取模型目录" />}
           </DialogContent>
           <DialogActions>
             <Button appearance="secondary" onClick={onClose}>取消</Button>
-            <Button appearance="primary" disabled={busy || !routes || !samplingValid || !modelRoutesValid(routes, providers)} onClick={submit}>{busy ? "保存中" : "保存"}</Button>
+            <Button appearance="primary" disabled={busy || !routes || !samplingValid || !modelProviderDraftsValid(drafts) || !modelRoutesValid(routes, draftProviders)} onClick={submit}>{busy ? "保存中" : "保存"}</Button>
           </DialogActions>
         </DialogBody>
       </DialogSurface>
@@ -1216,30 +1273,41 @@ function ModelChoice({ models, value, label, onChange }: {
   );
 }
 
-function ModelProviderSettingsEditor({ drafts, testStates, busy, onChange, onTest }: {
+function ModelProviderSettingsEditor({ drafts, testStates, busy, onChange, onTest, onAdd }: {
   drafts: ModelProviderDrafts;
-  testStates: Partial<Record<ModelProviderKey, ProviderTestState>>;
+  testStates: Record<string, ProviderTestState>;
   busy: boolean;
-  onChange: (key: ModelProviderKey, patch: Partial<ModelProviderDraft>) => void;
-  onTest: (key: ModelProviderKey) => void;
+  onChange: (draftKey: string, patch: Partial<ModelProviderDraft>) => void;
+  onTest: (draftKey: string) => void;
+  onAdd: () => void;
 }) {
   return (
     <fieldset className="provider-settings-editor">
       <legend>供应商</legend>
+      <div className="provider-settings-toolbar"><Button appearance="outline" size="small" icon={<Plus />} onClick={onAdd}>添加供应商</Button></div>
       <div className="provider-settings-list">
-        {modelProviderRows.map(({ key, label }) => {
-          const draft = drafts[key];
-          const testState = testStates[key];
-          if (!draft) {
-            return (
-              <div className="provider-settings-row provider-settings-missing" key={key}>
-                <strong>{label}</strong><span>未提供配置</span>
-              </div>
-            );
-          }
+        {drafts.map((draft) => {
+          const key = modelProviderKey(draft);
+          const label = draft.displayName || draft.id || "自定义供应商";
+          const testState = testStates[draft.draftKey];
           const protocols = draft.protocols?.length ? draft.protocols : draft.protocol ? [draft.protocol] : [];
+          const effortOptions = key ? reasoningEffortOptions[key] : customReasoningEffortOptions;
           return (
-            <div className="provider-settings-row" key={key}>
+            <div className="provider-settings-row" key={draft.draftKey}>
+              {draft.custom && <div className="custom-provider-identity">
+                <Field label="供应商 ID" required>
+                  <Input value={draft.id} disabled={draft.version > 0} maxLength={128} placeholder="例如 siliconflow" onChange={(_, data) => onChange(draft.draftKey, { id: data.value.toLowerCase(), provider: data.value.toLowerCase() })} />
+                </Field>
+                <Field label="显示名称" required>
+                  <Input value={draft.displayName || ""} maxLength={128} placeholder="例如 SiliconFlow" onChange={(_, data) => onChange(draft.draftKey, { displayName: data.value })} />
+                </Field>
+                <Field label="模型（逗号分隔）" required>
+                  <Input value={draft.modelsText} placeholder="model-a, model-b" onChange={(_, data) => {
+                    const models = providerModels(data.value);
+                    onChange(draft.draftKey, { modelsText: data.value, models, testModel: models.includes(draft.testModel) ? draft.testModel : models[0] || "" });
+                  }} />
+                </Field>
+              </div>}
               <div className="provider-settings-heading">
                 <strong>{draft.displayName || label}</strong>
                 <span className={`provider-config-state ${draft.apiKeyConfigured ? "is-configured" : ""}`}>
@@ -1247,31 +1315,31 @@ function ModelProviderSettingsEditor({ drafts, testStates, busy, onChange, onTes
                 </span>
               </div>
               <Field label="Base URL">
-                <Input type="url" value={draft.baseUrl} onChange={(_, data) => onChange(key, { baseUrl: data.value })} />
+                <Input type="url" value={draft.baseUrl} onChange={(_, data) => onChange(draft.draftKey, { baseUrl: data.value })} />
               </Field>
               <Field label="API Key">
-                <Input type="password" autoComplete="new-password" value={draft.apiKey} placeholder={draft.apiKeyConfigured ? "留空保持不变" : "输入 API Key"} onChange={(_, data) => onChange(key, { apiKey: data.value })} />
+                <Input type="password" autoComplete="new-password" value={draft.apiKey} placeholder={draft.apiKeyConfigured ? "留空保持不变" : "输入 API Key"} onChange={(_, data) => onChange(draft.draftKey, { apiKey: data.value })} />
               </Field>
               <Field label="协议">
                 {protocols.length > 1 ? (
-                  <select className="native-select provider-protocol-select" value={draft.protocol} onChange={(event) => onChange(key, { protocol: event.target.value })}>
+                  <select className="native-select provider-protocol-select" value={draft.protocol} onChange={(event) => onChange(draft.draftKey, { protocol: event.target.value })}>
                     {protocols.map((protocol) => <option value={protocol} key={protocol}>{protocol}</option>)}
                   </select>
                 ) : <span className="provider-protocol">{draft.protocol || "未指定"}</span>}
               </Field>
               <Field label="测试模型">
-                <ModelChoice models={draft.models} value={draft.testModel} label={`${label} 测试模型`} onChange={(model) => onChange(key, { testModel: model })} />
+                <ModelChoice models={draft.models} value={draft.testModel} label={`${label} 测试模型`} onChange={(model) => onChange(draft.draftKey, { testModel: model })} />
               </Field>
-              <label className="provider-enabled"><input type="checkbox" checked={draft.enabled} onChange={(event) => onChange(key, { enabled: event.target.checked })} /><span>启用</span></label>
+              <label className="provider-enabled"><input type="checkbox" checked={draft.enabled} onChange={(event) => onChange(draft.draftKey, { enabled: event.target.checked })} /><span>启用</span></label>
               <div className="provider-test-line">
                 <div className="provider-reasoning-field">
                   <Field label="测试思考深度">
-                    <select className="native-select" value={draft.testReasoningEffort} onChange={(event) => onChange(key, { testReasoningEffort: event.target.value as ReasoningEffort })}>
-                      {reasoningEffortOptions[key].map((option) => <option value={option.value} key={option.value || "empty"}>{option.label}</option>)}
+                    <select className="native-select" value={draft.testReasoningEffort} onChange={(event) => onChange(draft.draftKey, { testReasoningEffort: event.target.value as ReasoningEffort })}>
+                      {effortOptions.map((option) => <option value={option.value} key={option.value || "empty"}>{option.label}</option>)}
                     </select>
                   </Field>
                 </div>
-                <Button appearance="outline" size="small" icon={testState?.status === "testing" ? <Spinner size="tiny" /> : <ArrowClockwise />} disabled={busy || testState?.status === "testing" || !draft.baseUrl.trim() || !draft.testModel} onClick={() => onTest(key)}>测试连接</Button>
+                <Button appearance="outline" size="small" icon={testState?.status === "testing" ? <Spinner size="tiny" /> : <ArrowClockwise />} disabled={busy || testState?.status === "testing" || !draft.id || !draft.baseUrl.trim() || !draft.testModel} onClick={() => onTest(draft.draftKey)}>测试连接</Button>
                 {testState?.status === "success" && <span className="provider-test-status is-success"><CheckCircle />{testState.message}{testState.latencyMs ? ` · ${testState.latencyMs} ms` : ""}</span>}
                 {testState?.status === "error" && <span className="provider-test-status is-error"><WarningCircle />{testState.message}</span>}
               </div>
@@ -1324,7 +1392,7 @@ function ModelRouteEditor({ routes, providers, onChange }: {
         const eligibleProviders = providersForRole(role);
         const provider = eligibleProviders.find((item) => item.id === route.provider) || eligibleProviders[0];
         const key = modelProviderKey(provider || route.provider);
-        const effortOptions = key ? reasoningEffortOptions[key] : [];
+        const effortOptions = key ? reasoningEffortOptions[key] : customReasoningEffortOptions;
         return (
           <div className="model-route-row" key={role}>
             <label htmlFor={`provider-${role}`}>{modelRoleLabels[role]}</label>
@@ -1332,7 +1400,7 @@ function ModelRouteEditor({ routes, providers, onChange }: {
               {eligibleProviders.map((item) => <option value={item.id} key={item.id}>{item.id}</option>)}
             </select>
             <ModelChoice models={provider?.models || []} value={route.model} label={`${modelRoleLabels[role]}模型`} onChange={(model) => updateModel(role, model)} />
-            <select aria-label={`${modelRoleLabels[role]}思考深度`} className="native-select" value={route.reasoningEffort} disabled={!key} onChange={(event) => updateReasoningEffort(role, event.target.value as ReasoningEffort)}>
+            <select aria-label={`${modelRoleLabels[role]}思考深度`} className="native-select" value={route.reasoningEffort} onChange={(event) => updateReasoningEffort(role, event.target.value as ReasoningEffort)}>
               {effortOptions.map((option) => <option value={option.value} key={option.value || "empty"}>{option.label}</option>)}
             </select>
           </div>

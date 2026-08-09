@@ -24,6 +24,7 @@ type modelProviderSettingsResource struct {
 	ID               string   `json:"id"`
 	Provider         string   `json:"provider"`
 	DisplayName      string   `json:"displayName,omitempty"`
+	Custom           bool     `json:"custom"`
 	BaseURL          string   `json:"baseUrl"`
 	Protocol         string   `json:"protocol"`
 	Protocols        []string `json:"protocols,omitempty"`
@@ -38,10 +39,12 @@ type modelProviderSettingsPage struct {
 }
 
 type modelProviderSettingsBody struct {
-	BaseURL  string `json:"baseUrl"`
-	Protocol string `json:"protocol"`
-	APIKey   string `json:"apiKey,omitempty"`
-	Enabled  bool   `json:"enabled"`
+	DisplayName string   `json:"displayName,omitempty"`
+	BaseURL     string   `json:"baseUrl"`
+	Protocol    string   `json:"protocol"`
+	APIKey      string   `json:"apiKey,omitempty"`
+	Models      []string `json:"models,omitempty"`
+	Enabled     bool     `json:"enabled"`
 }
 
 type modelProviderTestBody struct {
@@ -78,14 +81,9 @@ func (handler *Handler) getModelProviderSettings(response http.ResponseWriter, r
 		writeError(response, request, unavailableModelProviderSettings(err))
 		return
 	}
-	byID := make(map[string]modelproviders.ProviderSettings, len(settings))
+	items := make([]modelProviderSettingsResource, 0, len(settings))
 	for _, setting := range settings {
-		byID[setting.ID] = setting
-	}
-	catalog := modelproviders.Catalog()
-	items := make([]modelProviderSettingsResource, 0, len(catalog))
-	for _, provider := range catalog {
-		items = append(items, modelProviderSettingsResourceFrom(provider, byID[provider.ID]))
+		items = append(items, modelProviderSettingsResourceFrom(setting))
 	}
 	writeJSON(response, http.StatusOK, modelProviderSettingsPage{Items: items})
 }
@@ -96,17 +94,12 @@ func (handler *Handler) putModelProviderSettings(response http.ResponseWriter, r
 		writeError(response, request, invalidModelProviderSettings("model provider settings query"))
 		return
 	}
-	catalog, found := modelProviderCatalog(providerID)
-	if !found {
-		writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
-		return
-	}
 	var body modelProviderSettingsBody
-	if decodeJSON(request, &body) != nil || !modelProviderCatalogHasProtocol(catalog, body.Protocol) {
+	if decodeJSON(request, &body) != nil || !validModelProviderProtocol(body.Protocol) {
 		writeError(response, request, invalidModelProviderSettings("model provider settings"))
 		return
 	}
-	digest, err := modelProviderSettingsDigest(providerID, body.BaseURL, body.Protocol, body.Enabled, "", "")
+	digest, err := modelProviderSettingsDigest(providerID, body.DisplayName, body.BaseURL, body.Protocol, body.Models, body.Enabled, "", "")
 	if err != nil {
 		writeError(response, request, invalidModelProviderSettings("model provider settings"))
 		return
@@ -124,13 +117,13 @@ func (handler *Handler) putModelProviderSettings(response http.ResponseWriter, r
 		return
 	}
 	setting, err := handler.providerSettings.Put(request.Context(), principal.TenantID, providerID, modelproviders.PutRequest{
-		BaseURL: body.BaseURL, Protocol: modelproviders.Protocol(body.Protocol), APIKey: body.APIKey, Enabled: body.Enabled,
+		DisplayName: body.DisplayName, BaseURL: body.BaseURL, Protocol: modelproviders.Protocol(body.Protocol), APIKey: body.APIKey, Models: body.Models, Enabled: body.Enabled,
 	})
 	if err != nil {
 		writeError(response, request, mapModelProviderSettingsError(err))
 		return
 	}
-	writeJSON(response, http.StatusOK, modelProviderSettingsResourceFrom(catalog, setting))
+	writeJSON(response, http.StatusOK, modelProviderSettingsResourceFrom(setting))
 }
 
 func (handler *Handler) testModelProvider(response http.ResponseWriter, request *http.Request, principal authn.Principal, providerID string) {
@@ -139,17 +132,12 @@ func (handler *Handler) testModelProvider(response http.ResponseWriter, request 
 		writeError(response, request, invalidModelProviderSettings("model provider test query"))
 		return
 	}
-	catalog, found := modelProviderCatalog(providerID)
-	if !found {
-		writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
-		return
-	}
 	var body modelProviderTestBody
-	if decodeJSON(request, &body) != nil || !modelProviderCatalogHasProtocol(catalog, body.Protocol) || !safeModelValue(body.Model, 256) || body.Model == "*" || !state.ValidModelReasoningEffort(providerID, body.ReasoningEffort) || !validModelProviderAPIKey(body.APIKey) {
+	if decodeJSON(request, &body) != nil || !validModelProviderProtocol(body.Protocol) || !safeModelValue(body.Model, 256) || body.Model == "*" || !state.ValidModelReasoningEffort(providerID, body.ReasoningEffort) || !validModelProviderAPIKey(body.APIKey) {
 		writeError(response, request, invalidModelProviderSettings("model provider test"))
 		return
 	}
-	digest, err := modelProviderSettingsDigest(providerID, body.BaseURL, body.Protocol, true, body.Model, body.ReasoningEffort)
+	digest, err := modelProviderSettingsDigest(providerID, "", body.BaseURL, body.Protocol, nil, true, body.Model, body.ReasoningEffort)
 	if err != nil {
 		writeError(response, request, invalidModelProviderSettings("model provider test"))
 		return
@@ -213,66 +201,38 @@ func modelProviderSettingsPath(path string) (string, bool, bool) {
 	return value, test, true
 }
 
-func modelProviderCatalog(providerID string) (modelproviders.ProviderCatalog, bool) {
-	for _, provider := range modelproviders.Catalog() {
-		if provider.ID == providerID {
-			return provider, true
-		}
-	}
-	return modelproviders.ProviderCatalog{}, false
-}
-
-func modelProviderCatalogModels(provider modelproviders.ProviderCatalog) []string {
-	models := make([]string, 0, len(provider.Models))
-	for _, model := range provider.Models {
-		models = append(models, model.ID)
-	}
-	return models
-}
-
-func modelProviderCatalogHasProtocol(provider modelproviders.ProviderCatalog, protocol string) bool {
-	for _, candidate := range provider.Protocols {
-		if string(candidate) == protocol {
-			return true
-		}
-	}
-	return false
+func validModelProviderProtocol(protocol string) bool {
+	return protocol == string(modelproviders.ProtocolOpenAICompatible) || protocol == string(modelproviders.ProtocolOpenAIResponses) || protocol == string(modelproviders.ProtocolAnthropic)
 }
 
 func validModelProviderAPIKey(value string) bool {
 	return value == "" || len(value) <= 64*1024 && strings.TrimSpace(value) == value && !strings.ContainsAny(value, "\r\n\x00")
 }
 
-func modelProviderSettingsResourceFrom(catalog modelproviders.ProviderCatalog, setting modelproviders.ProviderSettings) modelProviderSettingsResource {
-	protocol := string(catalog.Protocol)
-	if setting.Protocol != "" {
-		protocol = string(setting.Protocol)
-	}
-	protocols := make([]string, 0, len(catalog.Protocols))
-	for _, candidate := range catalog.Protocols {
+func modelProviderSettingsResourceFrom(setting modelproviders.ProviderSettings) modelProviderSettingsResource {
+	protocols := make([]string, 0, len(setting.Protocols))
+	for _, candidate := range setting.Protocols {
 		protocols = append(protocols, string(candidate))
 	}
-	models := setting.Models
-	if len(models) == 0 {
-		models = modelProviderCatalogModels(catalog)
-	}
 	return modelProviderSettingsResource{
-		ID: catalog.ID, Provider: catalog.ID, DisplayName: catalog.DisplayName,
-		BaseURL: setting.BaseURL, Protocol: protocol, Protocols: protocols,
-		Models: append([]string(nil), models...), APIKeyConfigured: setting.APIKeyConfigured,
+		ID: setting.ID, Provider: setting.Provider, DisplayName: setting.DisplayName, Custom: setting.Custom,
+		BaseURL: setting.BaseURL, Protocol: string(setting.Protocol), Protocols: protocols,
+		Models: append([]string(nil), setting.Models...), APIKeyConfigured: setting.APIKeyConfigured,
 		Enabled: setting.Enabled, Version: setting.Version,
 	}
 }
 
-func modelProviderSettingsDigest(providerID, baseURL, protocol string, enabled bool, model, reasoningEffort string) (string, error) {
+func modelProviderSettingsDigest(providerID, displayName, baseURL, protocol string, models []string, enabled bool, model, reasoningEffort string) (string, error) {
 	encoded, err := json.Marshal(struct {
-		ProviderID      string `json:"providerId"`
-		BaseURL         string `json:"baseUrl"`
-		Protocol        string `json:"protocol"`
-		Enabled         bool   `json:"enabled"`
-		Model           string `json:"model,omitempty"`
-		ReasoningEffort string `json:"reasoningEffort,omitempty"`
-	}{ProviderID: providerID, BaseURL: baseURL, Protocol: protocol, Enabled: enabled, Model: model, ReasoningEffort: reasoningEffort})
+		ProviderID      string   `json:"providerId"`
+		DisplayName     string   `json:"displayName,omitempty"`
+		BaseURL         string   `json:"baseUrl"`
+		Protocol        string   `json:"protocol"`
+		Models          []string `json:"models,omitempty"`
+		Enabled         bool     `json:"enabled"`
+		Model           string   `json:"model,omitempty"`
+		ReasoningEffort string   `json:"reasoningEffort,omitempty"`
+	}{ProviderID: providerID, DisplayName: displayName, BaseURL: baseURL, Protocol: protocol, Models: models, Enabled: enabled, Model: model, ReasoningEffort: reasoningEffort})
 	if err != nil {
 		return "", err
 	}
