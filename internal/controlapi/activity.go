@@ -456,7 +456,108 @@ func (handler *Handler) persistedActivityMessages(ctx context.Context, tenantID,
 		activity.Cursor = activityCursor(activity)
 		result = append(result, activity)
 	}
+	if handler.events != nil {
+		events, listErr := handler.events.ListEvents(ctx, tenantID)
+		if listErr != nil {
+			return nil, aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", listErr, map[string]any{"scope": "project activity events"})
+		}
+		for _, event := range events {
+			if event.ProjectID != projectID {
+				continue
+			}
+			flow, content, visible := systemActivityForEvent(event.Type)
+			if !visible {
+				continue
+			}
+			activity := projectActivityMessage{
+				ID: "system-event-" + event.EventID, ProjectID: projectID, TaskID: event.TaskID,
+				Flow: flow, Sender: activitySenderSystem, State: activityCompleted, Content: content,
+				CreatedAt: event.OccurredAt.UTC(), UpdatedAt: event.OccurredAt.UTC(),
+			}
+			activity.Cursor = activityCursor(activity)
+			result = append(result, activity)
+		}
+	}
 	return result, nil
+}
+
+func systemActivityForEvent(eventType string) (activityFlow, string, bool) {
+	switch eventType {
+	case "io.aor.goal.negotiation-started.v1":
+		return activityFlowGoal, "目标协商已开始", true
+	case "io.aor.goal.message-received.v1":
+		return activityFlowGoal, "后端已接收目标", true
+	case "io.aor.goal.proposed.v1":
+		return activityFlowGoal, "GoalSpec 已生成", true
+	case "io.aor.goal.approved.v1":
+		return activityFlowGoal, "目标已批准", true
+	case "io.aor.goal.rejected.v1":
+		return activityFlowGoal, "目标已拒绝", true
+	case "io.aor.goal.change-requested.v1":
+		return activityFlowGoal, "目标已进入修改流程", true
+	case "io.aor.plan.published.v1":
+		return activityFlowPlan, "计划已发布", true
+	case "io.aor.plan.core-progress-recorded.v1":
+		return activityFlowPlan, "计划进度已更新", true
+	case "io.aor.plan.core-summary-published.v1":
+		return activityFlowPlan, "核心流程摘要已生成", true
+	case "io.aor.module.planning-queued.v1":
+		return activityFlowPlan, "模块已进入规划队列", true
+	case "io.aor.module.planning-started.v1":
+		return activityFlowPlan, "模块规划已开始", true
+	case "io.aor.module.defined.v1":
+		return activityFlowPlan, "模块任务已创建", true
+	case "io.aor.module.spec-attached.v1":
+		return activityFlowPlan, "模块规格已就绪", true
+	case "io.aor.module.execution-ready.v1":
+		return activityFlowExecution, "模块已准备执行", true
+	case "io.aor.module.execution-leased.v1":
+		return activityFlowExecution, "执行 Agent 已接收模块", true
+	case "io.aor.module.execution-recovered.v1":
+		return activityFlowExecution, "模块执行已恢复", true
+	case "io.aor.module.implementation-submitted.v1":
+		return activityFlowExecution, "模块实现已提交", true
+	case "io.aor.module.integrated.v1":
+		return activityFlowExecution, "模块已完成集成", true
+	case "io.aor.module.rework-queued.v1":
+		return activityFlowExecution, "模块已进入返工队列", true
+	case "io.aor.module.blocked-dependency.v1":
+		return activityFlowExecution, "模块正在等待依赖", true
+	case "io.aor.module.unblocked-dependency.v1":
+		return activityFlowExecution, "模块依赖已满足", true
+	case "io.aor.module.blocked-user-decision.v1":
+		return activityFlowExecution, "模块正在等待用户决策", true
+	case "io.aor.module.deterministic-audit-started.v1":
+		return activityFlowAudit, "确定性审计已开始", true
+	case "io.aor.module.deterministic-audit-passed.v1":
+		return activityFlowAudit, "确定性审计已通过", true
+	case "io.aor.module.deterministic-audit-failed.v1":
+		return activityFlowAudit, "确定性审计未通过", true
+	case "io.aor.module.llm-audit-passed.v1":
+		return activityFlowAudit, "Agent 审计已通过", true
+	case "io.aor.module.llm-audit-failed.v1":
+		return activityFlowAudit, "Agent 审计未通过", true
+	case "io.aor.project.global-audit-started.v1":
+		return activityFlowAudit, "全局审计已开始", true
+	case "io.aor.project.global-audit-remediation-started.v1":
+		return activityFlowAudit, "全局审计整改已开始", true
+	case "io.aor.knowledge.updated.v1", "io.aor.knowledge.update-approved.v1":
+		return activityFlowKnowledge, "项目知识已更新", true
+	case "io.aor.project.integration-started.v1":
+		return activityFlowExecution, "集成流程已开始", true
+	case "io.aor.integration.summary-published.v1":
+		return activityFlowExecution, "集成摘要已生成", true
+	case "io.aor.project.completed.v1":
+		return activityFlowExecution, "项目已完成", true
+	case "io.aor.project.aborted.v1":
+		return activityFlowExecution, "项目已终止", true
+	case "io.aor.project.paused.v1":
+		return activityFlowExecution, "项目已暂停", true
+	case "io.aor.project.resumed.v1":
+		return activityFlowExecution, "项目已恢复", true
+	default:
+		return "", "", false
+	}
 }
 
 func mergeActivityMessages(live, persisted []projectActivityMessage) []projectActivityMessage {

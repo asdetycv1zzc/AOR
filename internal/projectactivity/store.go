@@ -229,13 +229,45 @@ LIMIT 1`, tenantID, principalID, idempotencyKey)
 	return message, true, nil
 }
 
-func (store *Store) ClaimQueued(ctx context.Context, tenantID, projectID string, flow Flow, agentID string, now time.Time) ([]Message, error) {
-	if tenantID == "" || projectID == "" || !validFlow(flow) || now.IsZero() {
+func (store *Store) ClaimQueued(ctx context.Context, tenantID, projectID string, flow Flow, agentID, requestID string, now time.Time) ([]Message, error) {
+	if tenantID == "" || projectID == "" || !validFlow(flow) || requestID == "" || now.IsZero() {
 		return nil, errors.New("invalid project activity claim scope")
 	}
 	var messages []Message
 	err := store.withTenantTx(ctx, tenantID, false, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `
+SELECT tenant_id::text, project_id::text, id, COALESCE(task_id::text, ''), COALESCE(request_id, ''),
+       flow, agent_instance_id, role, sender, state, content, error_code, provider,
+       model, input_tokens, output_tokens, latency_ms, output_sha256, principal_id,
+       idempotency_key, request_sha256, created_at, updated_at
+FROM project_activity_messages
+WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND flow = $3
+  AND sender = 'USER' AND claim_request_id = $4
+ORDER BY created_at, id
+FOR UPDATE`, tenantID, projectID, flow, requestID)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var message Message
+			if err := scanMessage(rows, &message); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			messages = append(messages, message)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		if len(messages) != 0 {
+			return nil
+		}
+
+		rows, err = tx.QueryContext(ctx, `
 WITH claimed AS (
   SELECT tenant_id, id
   FROM project_activity_messages
@@ -243,43 +275,85 @@ WITH claimed AS (
     AND sender = 'USER' AND state = 'QUEUED'
     AND ($4 = '' OR agent_instance_id = '' OR agent_instance_id = $4)
   ORDER BY created_at, id
+  LIMIT 1
   FOR UPDATE SKIP LOCKED
-), updated AS (
-  UPDATE project_activity_messages AS activity
-  SET state = 'STREAMING', updated_at = $5
-  FROM claimed
-  WHERE activity.tenant_id = claimed.tenant_id AND activity.id = claimed.id
-  RETURNING activity.*
 )
-SELECT tenant_id::text, project_id::text, id, COALESCE(task_id::text, ''), COALESCE(request_id, ''),
-       flow, agent_instance_id, role, sender, state, content, error_code, provider,
-       model, input_tokens, output_tokens, latency_ms, output_sha256, principal_id,
-       idempotency_key, request_sha256, created_at, updated_at
-FROM updated
-ORDER BY created_at, id`, tenantID, projectID, flow, agentID, now.UTC())
+UPDATE project_activity_messages AS activity
+SET state = 'STREAMING', claim_request_id = $5, updated_at = $6
+FROM claimed
+WHERE activity.tenant_id = claimed.tenant_id AND activity.id = claimed.id
+RETURNING activity.tenant_id::text, activity.project_id::text, activity.id,
+       COALESCE(activity.task_id::text, ''), COALESCE(activity.request_id, ''),
+       activity.flow, activity.agent_instance_id, activity.role, activity.sender,
+       activity.state, activity.content, activity.error_code, activity.provider,
+       activity.model, activity.input_tokens, activity.output_tokens, activity.latency_ms,
+       activity.output_sha256, activity.principal_id, activity.idempotency_key,
+       activity.request_sha256, activity.created_at, activity.updated_at`, tenantID, projectID, flow, agentID, requestID, now.UTC())
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
 		for rows.Next() {
 			var message Message
 			if err := scanMessage(rows, &message); err != nil {
+				_ = rows.Close()
 				return err
 			}
 			messages = append(messages, message)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		if len(messages) != 0 {
+			return nil
+		}
+
+		// Another request may have claimed the row while this transaction was
+		// waiting on SKIP LOCKED. Read its binding before returning an empty
+		// prompt, otherwise concurrent retries could produce different digests.
+		rows, err = tx.QueryContext(ctx, `
+SELECT tenant_id::text, project_id::text, id, COALESCE(task_id::text, ''), COALESCE(request_id, ''),
+       flow, agent_instance_id, role, sender, state, content, error_code, provider,
+       model, input_tokens, output_tokens, latency_ms, output_sha256, principal_id,
+       idempotency_key, request_sha256, created_at, updated_at
+FROM project_activity_messages
+WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND flow = $3
+  AND sender = 'USER' AND claim_request_id = $4
+ORDER BY created_at, id
+FOR UPDATE`, tenantID, projectID, flow, requestID)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var message Message
+			if err := scanMessage(rows, &message); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			messages = append(messages, message)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		return rows.Close()
 	})
 	return messages, err
 }
 
-func (store *Store) CompleteClaimed(ctx context.Context, tenantID, projectID string, ids []string, failed bool, now time.Time) error {
-	if tenantID == "" || projectID == "" || len(ids) == 0 || now.IsZero() {
+func (store *Store) CompleteClaimed(ctx context.Context, tenantID, projectID, requestID string, ids []string, failed, requeue bool, now time.Time) error {
+	if tenantID == "" || projectID == "" || requestID == "" || len(ids) == 0 || now.IsZero() {
 		return nil
 	}
 	stateValue := StateCompleted
 	if failed {
 		stateValue = StateFailed
+	}
+	if requeue {
+		stateValue = StateQueued
 	}
 	return store.withTenantTx(ctx, tenantID, false, func(tx *sql.Tx) error {
 		for _, id := range ids {
@@ -288,8 +362,10 @@ func (store *Store) CompleteClaimed(ctx context.Context, tenantID, projectID str
 			}
 			if _, err := tx.ExecContext(ctx, `
 UPDATE project_activity_messages
-SET state = $4, updated_at = GREATEST(updated_at, $5)
-WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND id = $3 AND state = 'STREAMING'`, tenantID, projectID, id, stateValue, now.UTC()); err != nil {
+SET state = $5, claim_request_id = CASE WHEN $7 THEN '' ELSE claim_request_id END,
+    updated_at = GREATEST(updated_at, $6::timestamptz)
+WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND id = $3
+  AND state = 'STREAMING' AND claim_request_id = $4`, tenantID, projectID, id, requestID, stateValue, now.UTC(), requeue); err != nil {
 				return err
 			}
 		}

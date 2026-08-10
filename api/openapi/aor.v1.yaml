@@ -812,6 +812,64 @@ paths:
             text/event-stream:
               schema: {type: string}
         default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}/activity:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      tags: [Projects]
+      operationId: getProjectActivity
+      responses:
+        '200':
+          description: Current project workflow, agent, and conversation activity
+          headers:
+            ETag: {$ref: '#/components/headers/ETag'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProjectActivitySnapshot'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}/activity/events:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      tags: [Projects]
+      operationId: streamProjectActivity
+      parameters:
+        - name: after
+          in: query
+          schema: {type: string, maxLength: 512}
+        - name: follow
+          in: query
+          schema: {type: boolean, default: false}
+      responses:
+        '200':
+          description: Live activity message updates; reconnects replay the mutable snapshot
+          content:
+            text/event-stream:
+              schema: {type: string}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}/activity/messages:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    post:
+      tags: [Projects]
+      operationId: queueProjectActivityMessage
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProjectActivityIntervention'}
+      responses:
+        '202':
+          description: User message queued for the selected workflow or agent
+          headers:
+            ETag: {$ref: '#/components/headers/ETag'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProjectActivityMessage'}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/admin/doctor:
     $ref: '#/components/pathItems/AdminCommand'
     x-operation-id: runDoctor
@@ -1177,6 +1235,67 @@ components:
       properties:
         expectedVersion: {type: integer, format: int64, minimum: 1}
         message: {type: string, minLength: 1, maxLength: 1048576}
+    ProjectActivityIntervention:
+      type: object
+      additionalProperties: false
+      required: [expectedVersion, flow, message]
+      properties:
+        expectedVersion: {type: integer, format: int64, minimum: 1}
+        flow: {enum: [GOAL, PLAN, EXECUTION, AUDIT, KNOWLEDGE]}
+        agentId: {type: string, maxLength: 256}
+        message: {type: string, minLength: 1, maxLength: 1048576}
+    ProjectActivityAgent:
+      type: object
+      additionalProperties: false
+      required: [id, role, flow, state, lastActiveAt]
+      properties:
+        id: {type: string, minLength: 1, maxLength: 512}
+        role: {type: string, minLength: 1, maxLength: 512}
+        flow: {enum: [GOAL, PLAN, EXECUTION, AUDIT, KNOWLEDGE]}
+        state: {enum: [QUEUED, STREAMING, COMPLETED, FAILED]}
+        lastActiveAt: {type: string, format: date-time}
+    ProjectActivityMessage:
+      type: object
+      additionalProperties: false
+      required: [id, cursor, projectId, flow, sender, state, content, createdAt, updatedAt]
+      properties:
+        id: {type: string, minLength: 1, maxLength: 512}
+        cursor: {type: string, minLength: 64, maxLength: 64}
+        projectId: {type: string, format: uuid}
+        taskId: {type: string, format: uuid}
+        flow: {enum: [GOAL, PLAN, EXECUTION, AUDIT, KNOWLEDGE]}
+        agentId: {type: string, maxLength: 512}
+        role: {type: string, maxLength: 512}
+        sender: {enum: [USER, AGENT, SYSTEM]}
+        state: {enum: [QUEUED, STREAMING, COMPLETED, FAILED]}
+        content: {type: string, maxLength: 4194304}
+        errorCode: {type: string, maxLength: 512}
+        provider: {type: string, maxLength: 512}
+        model: {type: string, maxLength: 512}
+        inputTokens: {type: integer, format: int64, minimum: 0}
+        outputTokens: {type: integer, format: int64, minimum: 0}
+        latencyMs: {type: integer, format: int64, minimum: 0}
+        outputSha256: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    ProjectActivitySnapshot:
+      type: object
+      additionalProperties: false
+      required: [projectId, projectVersion, goalProcessing, flows, agents, messages]
+      properties:
+        projectId: {type: string, format: uuid}
+        projectVersion: {type: integer, format: int64, minimum: 1}
+        goalProcessing: {type: boolean}
+        flows:
+          type: array
+          items: {enum: [GOAL, PLAN, EXECUTION, AUDIT, KNOWLEDGE]}
+        agents:
+          type: array
+          items: {$ref: '#/components/schemas/ProjectActivityAgent'}
+        messages:
+          type: array
+          items: {$ref: '#/components/schemas/ProjectActivityMessage'}
+        cursor: {type: string, maxLength: 64}
     GoalMessage:
       type: object
       additionalProperties: false

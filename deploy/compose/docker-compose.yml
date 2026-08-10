@@ -248,6 +248,10 @@ services:
         psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000051_openai_responses_protocol.up.sql
         psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000052_provider_protocol_selection.up.sql
         psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000053_custom_model_providers.up.sql
+        project_activity_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT to_regclass('public.project_activity_messages') IS NOT NULL AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'project_activity_messages' AND column_name = 'claim_request_id')")"
+        if [ "$$project_activity_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000054_project_activity_messages.up.sql
+        fi
         unset AOR_APP_PASSWORD
     secrets: [postgres_password, postgres_app_password]
     volumes:
@@ -304,6 +308,7 @@ services:
       - ../../migrations/postgres/000051_openai_responses_protocol.up.sql:/migrations/000051_openai_responses_protocol.up.sql:ro
       - ../../migrations/postgres/000052_provider_protocol_selection.up.sql:/migrations/000052_provider_protocol_selection.up.sql:ro
       - ../../migrations/postgres/000053_custom_model_providers.up.sql:/migrations/000053_custom_model_providers.up.sql:ro
+      - ../../migrations/postgres/000054_project_activity_messages.up.sql:/migrations/000054_project_activity_messages.up.sql:ro
       - ./postgres-app-password.sql:/migrations/postgres-app-password.sql:ro
     read_only: true
     tmpfs: [/tmp]
