@@ -170,6 +170,50 @@ export interface Project {
   coreSummary?: CoreSummary;
 }
 
+export type ProjectActivityFlow = "GOAL" | "PLAN" | "EXECUTION" | "AUDIT" | "KNOWLEDGE";
+
+export type ProjectActivityState = "QUEUED" | "STREAMING" | "COMPLETED" | "FAILED" | "IDLE" | "RUNNING";
+
+export interface ProjectActivityAgent {
+  id: string;
+  role: string;
+  flow: ProjectActivityFlow;
+  state: ProjectActivityState;
+  lastActiveAt: string;
+}
+
+export interface ProjectActivityMessage {
+  id: string;
+  cursor: string;
+  projectId: string;
+  taskId?: string;
+  flow: ProjectActivityFlow;
+  agentId?: string;
+  role?: string;
+  sender: "USER" | "AGENT" | "SYSTEM" | string;
+  state: ProjectActivityState;
+  content: string;
+  errorCode?: string;
+  provider?: string;
+  model?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  latencyMs?: number;
+  outputSha256?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface ProjectActivitySnapshot {
+  projectId: string;
+  projectVersion: number;
+  goalProcessing: boolean;
+  flows: ProjectActivityFlow[];
+  agents: ProjectActivityAgent[];
+  messages: ProjectActivityMessage[];
+  cursor?: string;
+}
+
 export interface GoalCriterion {
   id: string;
   statement: string;

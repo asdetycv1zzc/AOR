@@ -48,6 +48,7 @@ import {
   useState,
 } from "react";
 import { AorClient, ApiError } from "./api";
+import { ProjectWorkbench } from "./ProjectWorkbench";
 import { modelRoles } from "./types";
 import type {
   AuditRun,
@@ -424,6 +425,7 @@ function ControlConsole({ client }: { client: AorClient }) {
   const [selectedTask, setSelectedTask] = useState("");
   const [audits, setAudits] = useState<Record<string, AuditRun[]>>({});
   const [auditLoading, setAuditLoading] = useState("");
+  const [projectView, setProjectView] = useState<"workbench" | "details">("workbench");
   const mainRef = useRef<HTMLDivElement>(null);
   const project = bundle.project;
 
@@ -483,6 +485,10 @@ function ControlConsole({ client }: { client: AorClient }) {
     const timer = window.setInterval(() => void loadProject(project.id, true), 5_000);
     return () => window.clearInterval(timer);
   }, [bundle.result, loadProject, project]);
+
+  useEffect(() => {
+    setProjectView("workbench");
+  }, [project?.id]);
 
   useEffect(() => {
     if (!notice) return;
@@ -581,9 +587,14 @@ function ControlConsole({ client }: { client: AorClient }) {
     setAudits({});
     setAuditLoading("");
     setResultOpen(false);
+    setProjectView("workbench");
     setError("");
     window.scrollTo({ top: 0 });
   }, []);
+
+  const reloadActiveProject = useCallback(() => {
+    if (project) void loadProject(project.id, true);
+  }, [loadProject, project?.id]);
 
   const copyProjectID = useCallback(async (projectID: string) => {
     try {
@@ -635,25 +646,38 @@ function ControlConsole({ client }: { client: AorClient }) {
             project={project}
             result={bundle.result}
             recent={recent}
+            view={projectView}
+            onView={setProjectView}
             onSelect={(id) => void loadProject(id)}
             onResult={() => setResultOpen(true)}
             onCopyID={(id) => void copyProjectID(id)}
           />
-          <Workspace
-            bundle={bundle}
-            selectedTask={selectedTask}
-            audits={audits}
-            auditLoading={auditLoading}
-            onSelectTask={(id) => void selectTask(id)}
-            onProjectChanged={(next) => {
-              setBundle((current) => ({ ...current, project: next }));
-              setRecent(rememberProject(next));
-            }}
-            onReload={() => void loadProject(project.id)}
-            onNotice={setNotice}
-            onError={(cause) => setError(errorMessage(cause))}
-            client={client}
-          />
+          {projectView === "workbench" ? (
+            <ProjectWorkbench
+              project={project}
+              tasks={bundle.tasks}
+              result={bundle.result}
+              client={client}
+              onReload={reloadActiveProject}
+              onNotice={setNotice}
+            />
+          ) : (
+            <Workspace
+              bundle={bundle}
+              selectedTask={selectedTask}
+              audits={audits}
+              auditLoading={auditLoading}
+              onSelectTask={(id) => void selectTask(id)}
+              onProjectChanged={(next) => {
+                setBundle((current) => ({ ...current, project: next }));
+                setRecent(rememberProject(next));
+              }}
+              onReload={() => void loadProject(project.id)}
+              onNotice={setNotice}
+              onError={(cause) => setError(errorMessage(cause))}
+              client={client}
+            />
+          )}
         </div>
       ) : (
         <EmptyWorkspace onCreate={() => setNewOpen(true)} onOpen={() => setOpenOpen(true)} recent={recent} onSelect={(id) => void loadProject(id)} />
@@ -709,10 +733,12 @@ function EmptyWorkspace({ onCreate, onOpen, recent, onSelect }: {
   );
 }
 
-function ContextRail({ project, result, recent, onSelect, onResult, onCopyID }: {
+function ContextRail({ project, result, recent, view, onView, onSelect, onResult, onCopyID }: {
   project: Project;
   result?: ProjectResult;
   recent: RecentProject[];
+  view: "workbench" | "details";
+  onView: (view: "workbench" | "details") => void;
   onSelect: (id: string) => void;
   onResult: () => void;
   onCopyID: (id: string) => void;
@@ -734,6 +760,10 @@ function ContextRail({ project, result, recent, onSelect, onResult, onCopyID }: 
           <button className="copy-id" onClick={() => onCopyID(project.id)} title="复制项目 ID">
             <span>{project.id}</span><Copy />
           </button>
+          <div className="project-view-tabs" role="tablist" aria-label="项目视图">
+            <button role="tab" aria-selected={view === "workbench"} className={view === "workbench" ? "is-active" : ""} onClick={() => onView("workbench")}>工作台</button>
+            <button role="tab" aria-selected={view === "details"} className={view === "details" ? "is-active" : ""} onClick={() => onView("details")}>阶段详情</button>
+          </div>
         </div>
         <nav className="workflow-rail" aria-label="项目流程">
           {stages.map((stage, index) => (

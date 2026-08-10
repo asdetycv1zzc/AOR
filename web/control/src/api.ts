@@ -15,6 +15,9 @@ import type {
   Page,
   PlanSpec,
   Project,
+  ProjectActivityFlow,
+  ProjectActivityMessage,
+  ProjectActivitySnapshot,
   ProjectCreateInput,
   ProjectResult,
 } from "./types";
@@ -241,5 +244,64 @@ export class AorClient {
 
   getResult(projectId: string): Promise<ProjectResult> {
     return this.request(`/v1/projects/${encodeURIComponent(projectId)}/result`);
+  }
+
+  getProjectActivity(projectId: string): Promise<ProjectActivitySnapshot> {
+    return this.request(`/v1/projects/${encodeURIComponent(projectId)}/activity`);
+  }
+
+  sendProjectActivityMessage(project: Pick<Project, "id" | "version">, flow: ProjectActivityFlow, message: string, agentId = ""): Promise<ProjectActivityMessage> {
+    return this.request(`/v1/projects/${encodeURIComponent(project.id)}/activity/messages`, {
+      method: "POST",
+      headers: {
+        "Idempotency-Key": idempotencyKey(),
+        "If-Match": `"v${project.version}"`,
+      },
+      body: JSON.stringify({ expectedVersion: project.version, flow, agentId, message }),
+    });
+  }
+
+  subscribeProjectEvents(projectId: string, callbacks: {
+    onOpen?: () => void;
+    onEvent: (event: ProjectActivityMessage) => void;
+    onClose?: () => void;
+    onError?: (error: unknown) => void;
+  }, after = ""): () => void {
+    const controller = new AbortController();
+    void this.consumeProjectEvents(projectId, callbacks, after, controller.signal)
+      .then(() => { if (!controller.signal.aborted) callbacks.onClose?.(); })
+      .catch((cause) => { if (!controller.signal.aborted) callbacks.onError?.(cause); });
+    return () => controller.abort();
+  }
+
+  private async consumeProjectEvents(projectId: string, callbacks: {
+    onOpen?: () => void;
+    onEvent: (event: ProjectActivityMessage) => void;
+  }, after: string, signal: AbortSignal): Promise<void> {
+    const token = await this.token();
+    const headers = new Headers({ Accept: "text/event-stream" });
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    const query = new URLSearchParams({ follow: "true" });
+    if (after) query.set("after", after);
+    const response = await fetch(`/v1/projects/${encodeURIComponent(projectId)}/activity/events?${query}`, { headers, cache: "no-store", signal });
+    if (!response.ok) throw new ApiError(response.status, await parseProblem(response));
+    if (!response.body) throw new Error("事件流不可用");
+    callbacks.onOpen?.();
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (!signal.aborted) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary >= 0) {
+        const frame = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        const data = frame.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
+        if (data) callbacks.onEvent(JSON.parse(data) as ProjectActivityMessage);
+        boundary = buffer.indexOf("\n\n");
+      }
+    }
   }
 }
