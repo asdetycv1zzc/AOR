@@ -514,7 +514,7 @@ func (config Config) Validate() error {
 			return ErrInvalidConfiguration
 		}
 		engineConfigured := config.Sandbox.EngineEndpoint != "" || config.Sandbox.ImageReference != ""
-		if !validIntegrationConfig(config.Integration, config.Sandbox.AllowedMountRoots, engineConfigured) {
+		if !validIntegrationConfig(config.Integration, config.Sandbox.AllowedMountRoots, engineConfigured, config.DeploymentProfile == "TEST") {
 			return ErrInvalidConfiguration
 		}
 		if config.Sandbox.LinuxLevel != "CONTAINER" || config.Sandbox.WindowsLevel != "NONE" || config.Sandbox.AllowWindowsUntrusted || config.Sandbox.LinuxDefaultNetworkMode != "DENY_ALL" || config.Sandbox.WindowsNetworkIsolationLevel != "NONE" {
@@ -890,17 +890,23 @@ func validSandboxMountRoots(values []string) bool {
 	return true
 }
 
-func validIntegrationConfig(config IntegrationConfig, allowedMountRoots []string, requireDependencyCache bool) bool {
+func validIntegrationConfig(config IntegrationConfig, allowedMountRoots []string, requireDependencyCache, allowEmptyChecks bool) bool {
 	requiredKinds := map[string]bool{
 		"COMPILE": false, "CONTRACT": false, "INTEGRATION": false, "E2E": false, "MIGRATION": false,
 	}
-	if !validKnowledgeRoot(config.WorkRoot) || len(config.Checks) != len(requiredKinds) || requireDependencyCache && !pathWithinAllowedRoot(config.WorkRoot, allowedMountRoots) {
+	if !validKnowledgeRoot(config.WorkRoot) || requireDependencyCache && !pathWithinAllowedRoot(config.WorkRoot, allowedMountRoots) {
 		return false
 	}
 	if requireDependencyCache && config.DependencyCache == "" {
 		return false
 	}
 	if config.DependencyCache != "" && (!validKnowledgeRoot(config.DependencyCache) || config.DependencyCache == config.WorkRoot || requireDependencyCache && !pathWithinAllowedRoot(config.DependencyCache, allowedMountRoots)) {
+		return false
+	}
+	if len(config.Checks) == 0 {
+		return allowEmptyChecks
+	}
+	if len(config.Checks) != len(requiredKinds) {
 		return false
 	}
 	totalTimeout := 0

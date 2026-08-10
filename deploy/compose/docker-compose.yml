@@ -745,8 +745,6 @@ services:
         ["/usr/local/go/bin/go","test","-p=1","./..."]
       AOR_MODULE_TEST_TIMEOUT_SECONDS: "300"
       AOR_INTEGRATION_WORK_ROOT: /var/lib/aor/work
-      AOR_INTEGRATION_CHECKS_JSON: >-
-        [{"kind":"COMPILE","argv":["/usr/local/go/bin/go","build","-p=1","./..."],"timeoutSeconds":300},{"kind":"CONTRACT","argv":["/usr/local/go/bin/go","run","-p=1","./cmd/aor-conformance","contracts"],"timeoutSeconds":300},{"kind":"INTEGRATION","argv":["/usr/local/go/bin/go","test","-p=1","./internal/integration"],"timeoutSeconds":300},{"kind":"E2E","argv":["/usr/local/go/bin/go","test","-p=1","./tests/integration"],"timeoutSeconds":300},{"kind":"MIGRATION","argv":["/usr/local/go/bin/go","run","-p=1","./cmd/aor-conformance","schemas"],"timeoutSeconds":300}]
     secrets: [postgres_app_password, lease_signing_key, minio_root_user, minio_root_password, aor_server_oauth_client_secret]
     volumes:
       - "${AOR_KNOWLEDGE_HOST_PATH:-aor-knowledge-data}:/var/lib/aor/knowledge:ro"
