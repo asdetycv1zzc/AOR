@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -198,20 +199,30 @@ func (adapter *anthropicAdapter) Generate(ctx context.Context, request modelgate
 	return adapter.decodeResponse(request, capabilities, body)
 }
 
-func (adapter *anthropicAdapter) Stream(context.Context, modelgateway.NormalizedRequest) (modelgateway.ResponseStream, error) {
-	return nil, modelgateway.ErrProviderNotAllowed
-}
-
-func (adapter *anthropicAdapter) generateStream(ctx context.Context, request modelgateway.NormalizedRequest, capabilities modelgateway.ModelCapabilities) (modelgateway.NormalizedResponse, error) {
+func (adapter *anthropicAdapter) Stream(ctx context.Context, request modelgateway.NormalizedRequest) (modelgateway.ResponseStream, error) {
+	capabilities, err := adapter.validateRequest(ctx, request, true)
+	if err != nil {
+		return nil, err
+	}
+	if !capabilities.SupportsStreaming || anthropicRequestUsesNativeTools(request) {
+		return nil, modelgateway.ErrProviderNotAllowed
+	}
+	estimate, err := adapter.CountTokens(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	if estimate.InputTokens > int64(capabilities.MaxInputTokens) {
+		return nil, modelgateway.ErrInvalidRequest
+	}
 	payload, err := adapter.encodeRequestWithStream(request)
 	if err != nil {
-		return modelgateway.NormalizedResponse{}, err
+		return nil, err
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, adapter.timeout)
-	defer cancel()
 	httpRequest, err := http.NewRequestWithContext(requestCtx, http.MethodPost, adapter.endpoint, bytes.NewReader(payload))
 	if err != nil {
-		return modelgateway.NormalizedResponse{}, modelgateway.ErrInvalidRequest
+		cancel()
+		return nil, modelgateway.ErrInvalidRequest
 	}
 	httpRequest.Header.Set("x-api-key", adapter.apiKey)
 	httpRequest.Header.Set("anthropic-version", anthropicVersion)
@@ -219,130 +230,239 @@ func (adapter *anthropicAdapter) generateStream(ctx context.Context, request mod
 	httpRequest.Header.Set("Accept", "text/event-stream")
 	response, err := adapter.client.Do(httpRequest)
 	if err != nil {
+		contextErr := requestCtx.Err()
+		cancel()
+		if contextErr != nil {
+			return nil, contextErr
+		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return modelgateway.NormalizedResponse{}, requestCtx.Err()
+			return nil, err
 		}
-		return modelgateway.NormalizedResponse{}, anthropicUnknownFailure(errors.New("anthropic network request failed"))
+		return nil, anthropicUnknownFailure(errors.New("anthropic network request failed"))
 	}
-	defer response.Body.Close()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return modelgateway.NormalizedResponse{}, anthropicHTTPFailure(response.StatusCode)
+		cancel()
+		_ = response.Body.Close()
+		return nil, anthropicHTTPFailure(response.StatusCode)
 	}
-	if !strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream") {
-		body, readErr := io.ReadAll(io.LimitReader(response.Body, modelgateway.MaximumResponseBytes+1))
-		if readErr != nil {
-			if contextErr := requestCtx.Err(); contextErr != nil {
-				return modelgateway.NormalizedResponse{}, contextErr
+	stream := &anthropicResponseStream{
+		adapter: adapter, request: request, capabilities: capabilities,
+		body: response.Body, cancel: cancel, requestContext: requestCtx, activityContext: ctx,
+		jsonMode: !strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream"),
+		events:   make(chan json.RawMessage, 1), failures: make(chan error, 1),
+		done: make(chan struct{}), closed: make(chan struct{}), blocks: make(map[int]*anthropicStreamBlock),
+	}
+	go stream.read()
+	return stream, nil
+}
+
+func anthropicRequestUsesNativeTools(request modelgateway.NormalizedRequest) bool {
+	if len(request.Tools) != 0 {
+		return true
+	}
+	for _, message := range request.Messages {
+		if len(message.ToolCalls) != 0 || message.ToolCallID != "" {
+			return true
+		}
+	}
+	return false
+}
+
+type anthropicStreamBlock struct {
+	typeName     string
+	toolName     string
+	initialInput json.RawMessage
+	hasDelta     bool
+	stopped      bool
+}
+
+type anthropicResponseStream struct {
+	adapter         *anthropicAdapter
+	request         modelgateway.NormalizedRequest
+	capabilities    modelgateway.ModelCapabilities
+	body            io.ReadCloser
+	cancel          context.CancelFunc
+	requestContext  context.Context
+	activityContext context.Context
+	jsonMode        bool
+	events          chan json.RawMessage
+	failures        chan error
+	done            chan struct{}
+	closed          chan struct{}
+	closeOnce       sync.Once
+
+	stateMu          sync.RWMutex
+	providerID       string
+	modelVersion     string
+	stopReason       string
+	content          []byte
+	finalContent     json.RawMessage
+	usage            modelgateway.Usage
+	inputTokens      int64
+	outputTokens     int64
+	inputUsageFound  bool
+	outputUsageFound bool
+	messageStarted   bool
+	complete         bool
+	failed           bool
+	blocks           map[int]*anthropicStreamBlock
+}
+
+var _ modelgateway.UsageAwareStream = (*anthropicResponseStream)(nil)
+var _ modelgateway.FinalContentAwareStream = (*anthropicResponseStream)(nil)
+
+func (stream *anthropicResponseStream) Recv(ctx context.Context) (json.RawMessage, error) {
+	if ctx == nil {
+		return nil, modelgateway.ErrInvalidRequest
+	}
+	for {
+		select {
+		case event := <-stream.events:
+			if event != nil {
+				return append(json.RawMessage(nil), event...), nil
 			}
-			return modelgateway.NormalizedResponse{}, anthropicUnknownFailure(errors.New("anthropic response read failed"))
+		default:
 		}
-		if len(body) > modelgateway.MaximumResponseBytes {
-			return modelgateway.NormalizedResponse{}, anthropicUnknownFailure(modelgateway.ErrOutputTooLarge)
+		select {
+		case event := <-stream.events:
+			if event != nil {
+				return append(json.RawMessage(nil), event...), nil
+			}
+		case err := <-stream.failures:
+			if err != nil {
+				return nil, err
+			}
+		case <-ctx.Done():
+			_ = stream.Close()
+			return nil, ctx.Err()
+		case <-stream.done:
+			select {
+			case err := <-stream.failures:
+				if err != nil {
+					return nil, err
+				}
+			default:
+			}
+			return nil, io.EOF
 		}
-		return adapter.decodeResponse(request, capabilities, body)
 	}
-	reader := bufio.NewReaderSize(response.Body, 4096)
+}
+
+func (stream *anthropicResponseStream) Close() error {
+	var err error
+	stream.closeOnce.Do(func() {
+		close(stream.closed)
+		stream.cancel()
+		err = stream.body.Close()
+	})
+	return err
+}
+
+func (stream *anthropicResponseStream) FinalUsage() (modelgateway.Usage, bool) {
+	stream.stateMu.RLock()
+	defer stream.stateMu.RUnlock()
+	if !stream.complete || stream.failed {
+		return modelgateway.Usage{}, false
+	}
+	return stream.usage, true
+}
+
+func (stream *anthropicResponseStream) FinalContent() (json.RawMessage, bool) {
+	stream.stateMu.RLock()
+	defer stream.stateMu.RUnlock()
+	if !stream.complete || stream.failed {
+		return nil, false
+	}
+	return append(json.RawMessage(nil), stream.finalContent...), true
+}
+
+func (stream *anthropicResponseStream) read() {
+	defer close(stream.done)
+	defer func() { _ = stream.Close() }()
+	if stream.jsonMode {
+		stream.readJSON()
+		return
+	}
+	stream.readSSE()
+}
+
+func (stream *anthropicResponseStream) readJSON() {
+	body, err := io.ReadAll(io.LimitReader(stream.body, modelgateway.MaximumResponseBytes+1))
+	if err != nil {
+		stream.fail(stream.readFailure(err, "anthropic response read failed"))
+		return
+	}
+	if len(body) > modelgateway.MaximumResponseBytes {
+		stream.fail(anthropicUnknownFailure(modelgateway.ErrOutputTooLarge))
+		return
+	}
+	response, err := stream.adapter.decodeResponse(stream.request, stream.capabilities, body)
+	if err != nil {
+		stream.fail(err)
+		return
+	}
+	if len(response.Content) == 0 {
+		stream.fail(anthropicUnknownFailure(modelgateway.ErrOutputSchema))
+		return
+	}
+	stream.stateMu.Lock()
+	stream.providerID = response.ProviderRequestID
+	stream.modelVersion = response.ModelVersion
+	stream.stopReason = response.FinishReason
+	stream.finalContent = append(json.RawMessage(nil), response.Content...)
+	stream.usage = response.Usage
+	stream.complete = true
+	stream.stateMu.Unlock()
+	fragment := string(response.Content)
+	var text string
+	if json.Unmarshal(response.Content, &text) == nil {
+		fragment = text
+	}
+	event, encodeErr := encodeAnthropicStreamDelta(fragment)
+	if encodeErr != nil {
+		stream.fail(anthropicUnknownFailure(modelgateway.ErrOutputSchema))
+		return
+	}
+	modelgateway.ReportActivityDelta(stream.activityContext, fragment)
+	stream.send(event)
+}
+
+func (stream *anthropicResponseStream) readSSE() {
+	reader := bufio.NewReaderSize(stream.body, 4096)
 	var eventName string
 	var data strings.Builder
-	var text strings.Builder
-	var providerID, modelVersion, stopReason string
-	var inputTokens, outputTokens int64
-	var inputUsageFound, outputUsageFound bool
-	flush := func() error {
+	flush := func() (bool, error) {
 		if data.Len() == 0 {
 			eventName = ""
-			return nil
+			return false, nil
 		}
 		payload := []byte(data.String())
-		if !json.Valid(payload) || adapter.containsKey(string(payload)) {
-			return anthropicUnknownFailure(modelgateway.ErrOutputSchema)
-		}
-		if eventName == "" {
-			var envelope struct {
-				Type string `json:"type"`
-			}
-			if json.Unmarshal(payload, &envelope) == nil {
-				eventName = envelope.Type
-			}
-		}
-		switch eventName {
-		case "message_start":
-			var value struct {
-				Message struct {
-					ID    string          `json:"id"`
-					Model string          `json:"model"`
-					Usage json.RawMessage `json:"usage"`
-				} `json:"message"`
-			}
-			if json.Unmarshal(payload, &value) != nil {
-				return modelgateway.ErrOutputSchema
-			}
-			providerID, modelVersion = value.Message.ID, value.Message.Model
-			if anthropicUsageFieldsPresent(value.Message.Usage, "input_tokens") {
-				var usage anthropicUsage
-				if json.Unmarshal(value.Message.Usage, &usage) != nil {
-					return modelgateway.ErrOutputSchema
-				}
-				inputTokens = usage.InputTokens
-				inputUsageFound = true
-			}
-		case "content_block_delta":
-			var value struct {
-				Delta struct {
-					Type        string `json:"type"`
-					Text        string `json:"text"`
-					PartialJSON string `json:"partial_json"`
-				} `json:"delta"`
-			}
-			if json.Unmarshal(payload, &value) != nil {
-				return modelgateway.ErrOutputSchema
-			}
-			fragment := value.Delta.Text
-			if value.Delta.Type == "input_json_delta" {
-				fragment = value.Delta.PartialJSON
-			}
-			if fragment != "" {
-				if text.Len()+len(fragment) > modelgateway.MaximumResponseBytes {
-					return modelgateway.ErrOutputTooLarge
-				}
-				text.WriteString(fragment)
-				modelgateway.ReportActivityDelta(ctx, fragment)
-			}
-		case "message_delta":
-			var value struct {
-				Delta struct {
-					StopReason string `json:"stop_reason"`
-				} `json:"delta"`
-				Usage json.RawMessage `json:"usage"`
-			}
-			if json.Unmarshal(payload, &value) != nil {
-				return modelgateway.ErrOutputSchema
-			}
-			stopReason = value.Delta.StopReason
-			if anthropicUsageFieldsPresent(value.Usage, "output_tokens") {
-				var usage anthropicUsage
-				if json.Unmarshal(value.Usage, &usage) != nil {
-					return modelgateway.ErrOutputSchema
-				}
-				outputTokens = usage.OutputTokens
-				outputUsageFound = true
-			}
-		case "error":
-			return anthropicUnknownFailure(errors.New("anthropic provider returned an error"))
-		}
+		terminal, event, err := stream.observe(eventName, payload)
 		data.Reset()
 		eventName = ""
-		return nil
+		if err != nil {
+			return false, err
+		}
+		if len(event) != 0 && !stream.send(event) {
+			return true, nil
+		}
+		return terminal, nil
 	}
 	for {
 		lineBytes, readErr := readAnthropicSSELine(reader, modelgateway.MaximumResponseBytes)
 		if errors.Is(readErr, modelgateway.ErrOutputTooLarge) {
-			return modelgateway.NormalizedResponse{}, anthropicUnknownFailure(modelgateway.ErrOutputTooLarge)
+			stream.fail(anthropicUnknownFailure(modelgateway.ErrOutputTooLarge))
+			return
 		}
-		line := string(lineBytes)
+		line := strings.TrimSuffix(string(lineBytes), "\r")
 		if line == "" {
-			if flushErr := flush(); flushErr != nil {
-				return modelgateway.NormalizedResponse{}, flushErr
+			terminal, flushErr := flush()
+			if flushErr != nil {
+				stream.fail(stream.readFailure(flushErr, "anthropic stream event invalid"))
+				return
+			}
+			if terminal {
+				return
 			}
 		} else if strings.HasPrefix(line, "event:") {
 			eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
@@ -353,7 +473,8 @@ func (adapter *anthropicAdapter) generateStream(ctx context.Context, request mod
 				separatorLength = 1
 			}
 			if data.Len()+separatorLength+len(fragment) > modelgateway.MaximumResponseBytes {
-				return modelgateway.NormalizedResponse{}, anthropicUnknownFailure(modelgateway.ErrOutputTooLarge)
+				stream.fail(anthropicUnknownFailure(modelgateway.ErrOutputTooLarge))
+				return
 			}
 			if separatorLength != 0 {
 				data.WriteByte('\n')
@@ -362,37 +483,341 @@ func (adapter *anthropicAdapter) generateStream(ctx context.Context, request mod
 		}
 		if errors.Is(readErr, io.EOF) {
 			if data.Len() != 0 {
-				if flushErr := flush(); flushErr != nil {
-					return modelgateway.NormalizedResponse{}, flushErr
+				terminal, flushErr := flush()
+				if flushErr != nil {
+					stream.fail(stream.readFailure(flushErr, "anthropic stream event invalid"))
+					return
+				}
+				if terminal {
+					return
 				}
 			}
-			break
+			stream.fail(anthropicUnknownFailure(modelgateway.ErrOutputSchema))
+			return
 		}
 		if readErr != nil {
-			if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {
-				return modelgateway.NormalizedResponse{}, readErr
+			select {
+			case <-stream.closed:
+				return
+			default:
 			}
-			if contextErr := requestCtx.Err(); contextErr != nil {
-				return modelgateway.NormalizedResponse{}, contextErr
-			}
-			return modelgateway.NormalizedResponse{}, anthropicUnknownFailure(errors.New("anthropic stream read failed"))
+			stream.fail(stream.readFailure(readErr, "anthropic stream read failed"))
+			return
 		}
 	}
-	if providerID == "" || text.Len() == 0 || stopReason == "" || !inputUsageFound || !outputUsageFound || inputTokens < 0 || outputTokens < 0 {
-		return modelgateway.NormalizedResponse{}, anthropicUnknownFailure(modelgateway.ErrOutputSchema)
+}
+
+func (stream *anthropicResponseStream) observe(eventName string, payload []byte) (bool, json.RawMessage, error) {
+	if !utf8.Valid(payload) || !json.Valid(payload) {
+		return false, nil, modelgateway.ErrOutputSchema
 	}
-	content := json.RawMessage(text.String())
+	if stream.adapter.containsKey(string(payload)) {
+		return false, nil, modelgateway.ErrCredentialDetected
+	}
+	var envelope struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(payload, &envelope) != nil || envelope.Type == "" || eventName != "" && eventName != envelope.Type {
+		return false, nil, modelgateway.ErrOutputSchema
+	}
+	switch envelope.Type {
+	case "ping":
+		return false, nil, nil
+	case "error":
+		return false, nil, anthropicUnknownFailure(errors.New("anthropic provider returned an error"))
+	case "message_start":
+		return stream.observeMessageStart(payload)
+	case "content_block_start":
+		return stream.observeContentBlockStart(payload)
+	case "content_block_delta":
+		return stream.observeContentBlockDelta(payload)
+	case "content_block_stop":
+		return stream.observeContentBlockStop(payload)
+	case "message_delta":
+		return stream.observeMessageDelta(payload)
+	case "message_stop":
+		if err := stream.completeMessage(); err != nil {
+			return false, nil, err
+		}
+		return true, nil, nil
+	default:
+		return false, nil, modelgateway.ErrOutputSchema
+	}
+}
+
+func (stream *anthropicResponseStream) observeMessageStart(payload []byte) (bool, json.RawMessage, error) {
+	var value struct {
+		Message struct {
+			ID    string          `json:"id"`
+			Model string          `json:"model"`
+			Role  string          `json:"role"`
+			Usage json.RawMessage `json:"usage"`
+		} `json:"message"`
+	}
+	if json.Unmarshal(payload, &value) != nil || value.Message.Role != "assistant" || !validAnthropicStreamString(value.Message.ID, modelgateway.MaximumToolCallIDBytes) || value.Message.Model != "" && !validAnthropicStreamString(value.Message.Model, modelgateway.MaximumToolCallIDBytes) || !anthropicUsageFieldsPresent(value.Message.Usage, "input_tokens") {
+		return false, nil, modelgateway.ErrOutputSchema
+	}
+	var usage anthropicUsage
+	if json.Unmarshal(value.Message.Usage, &usage) != nil || usage.InputTokens < 0 {
+		return false, nil, modelgateway.ErrOutputSchema
+	}
+	stream.stateMu.Lock()
+	defer stream.stateMu.Unlock()
+	if stream.messageStarted || stream.complete {
+		return false, nil, modelgateway.ErrOutputSchema
+	}
+	stream.messageStarted = true
+	stream.providerID = value.Message.ID
+	stream.modelVersion = value.Message.Model
+	stream.inputTokens = usage.InputTokens
+	stream.inputUsageFound = true
+	return false, nil, nil
+}
+
+func (stream *anthropicResponseStream) observeContentBlockStart(payload []byte) (bool, json.RawMessage, error) {
+	var value struct {
+		Index        int                   `json:"index"`
+		ContentBlock anthropicContentBlock `json:"content_block"`
+	}
+	if json.Unmarshal(payload, &value) != nil || value.Index < 0 || !stream.messageHasStarted() {
+		return false, nil, modelgateway.ErrOutputSchema
+	}
+	if _, found := stream.blocks[value.Index]; found {
+		return false, nil, modelgateway.ErrOutputSchema
+	}
+	block := &anthropicStreamBlock{typeName: value.ContentBlock.Type}
+	stream.blocks[value.Index] = block
+	switch value.ContentBlock.Type {
+	case "text":
+		if len(stream.request.ResponseSchema) != 0 {
+			return false, nil, modelgateway.ErrOutputSchema
+		}
+		if value.ContentBlock.Text == "" {
+			return false, nil, nil
+		}
+		event, err := stream.appendContent(value.ContentBlock.Text)
+		return false, event, err
+	case "tool_use":
+		if len(stream.request.ResponseSchema) == 0 || value.ContentBlock.Name != "aor_response" || !validAnthropicStreamString(value.ContentBlock.ID, modelgateway.MaximumToolCallIDBytes) {
+			return false, nil, modelgateway.ErrOutputSchema
+		}
+		if len(value.ContentBlock.Input) != 0 && !json.Valid(value.ContentBlock.Input) {
+			return false, nil, modelgateway.ErrOutputSchema
+		}
+		block.toolName = value.ContentBlock.Name
+		block.initialInput = append(json.RawMessage(nil), value.ContentBlock.Input...)
+		return false, nil, nil
+	case "thinking", "redacted_thinking":
+		return false, nil, nil
+	default:
+		return false, nil, modelgateway.ErrOutputSchema
+	}
+}
+
+func (stream *anthropicResponseStream) observeContentBlockDelta(payload []byte) (bool, json.RawMessage, error) {
+	var value struct {
+		Index int `json:"index"`
+		Delta struct {
+			Type        string `json:"type"`
+			Text        string `json:"text"`
+			PartialJSON string `json:"partial_json"`
+		} `json:"delta"`
+	}
+	if json.Unmarshal(payload, &value) != nil || value.Index < 0 {
+		return false, nil, modelgateway.ErrOutputSchema
+	}
+	block, found := stream.blocks[value.Index]
+	if !found || block.stopped {
+		return false, nil, modelgateway.ErrOutputSchema
+	}
+	switch value.Delta.Type {
+	case "text_delta":
+		if block.typeName != "text" {
+			return false, nil, modelgateway.ErrOutputSchema
+		}
+		if value.Delta.Text == "" {
+			return false, nil, nil
+		}
+		event, err := stream.appendContent(value.Delta.Text)
+		return false, event, err
+	case "input_json_delta":
+		if block.typeName != "tool_use" || block.toolName != "aor_response" {
+			return false, nil, modelgateway.ErrOutputSchema
+		}
+		block.hasDelta = true
+		if value.Delta.PartialJSON == "" {
+			return false, nil, nil
+		}
+		event, err := stream.appendContent(value.Delta.PartialJSON)
+		return false, event, err
+	case "thinking_delta", "signature_delta":
+		if block.typeName != "thinking" && block.typeName != "redacted_thinking" {
+			return false, nil, modelgateway.ErrOutputSchema
+		}
+		return false, nil, nil
+	case "citations_delta":
+		if block.typeName != "text" {
+			return false, nil, modelgateway.ErrOutputSchema
+		}
+		return false, nil, nil
+	default:
+		return false, nil, modelgateway.ErrOutputSchema
+	}
+}
+
+func (stream *anthropicResponseStream) observeContentBlockStop(payload []byte) (bool, json.RawMessage, error) {
+	var value struct {
+		Index int `json:"index"`
+	}
+	if json.Unmarshal(payload, &value) != nil || value.Index < 0 {
+		return false, nil, modelgateway.ErrOutputSchema
+	}
+	block, found := stream.blocks[value.Index]
+	if !found || block.stopped {
+		return false, nil, modelgateway.ErrOutputSchema
+	}
+	block.stopped = true
+	if block.typeName != "tool_use" || block.hasDelta {
+		return false, nil, nil
+	}
+	if len(block.initialInput) == 0 {
+		return false, nil, modelgateway.ErrOutputSchema
+	}
+	event, err := stream.appendContent(string(block.initialInput))
+	return false, event, err
+}
+
+func (stream *anthropicResponseStream) observeMessageDelta(payload []byte) (bool, json.RawMessage, error) {
+	var value struct {
+		Delta struct {
+			StopReason string `json:"stop_reason"`
+		} `json:"delta"`
+		Usage json.RawMessage `json:"usage"`
+	}
+	if json.Unmarshal(payload, &value) != nil || !validAnthropicStreamString(value.Delta.StopReason, 128) || !anthropicUsageFieldsPresent(value.Usage, "output_tokens") {
+		return false, nil, modelgateway.ErrOutputSchema
+	}
+	var usage anthropicUsage
+	if json.Unmarshal(value.Usage, &usage) != nil || usage.OutputTokens < 0 {
+		return false, nil, modelgateway.ErrOutputSchema
+	}
+	stream.stateMu.Lock()
+	defer stream.stateMu.Unlock()
+	if !stream.messageStarted || stream.stopReason != "" || stream.complete {
+		return false, nil, modelgateway.ErrOutputSchema
+	}
+	stream.stopReason = value.Delta.StopReason
+	stream.outputTokens = usage.OutputTokens
+	stream.outputUsageFound = true
+	return false, nil, nil
+}
+
+func (stream *anthropicResponseStream) appendContent(fragment string) (json.RawMessage, error) {
+	if !utf8.ValidString(fragment) || stream.adapter.containsKey(fragment) {
+		return nil, modelgateway.ErrCredentialDetected
+	}
+	stream.stateMu.Lock()
+	if len(fragment) > modelgateway.MaximumResponseBytes-len(stream.content) {
+		stream.stateMu.Unlock()
+		return nil, modelgateway.ErrOutputTooLarge
+	}
+	stream.content = append(stream.content, fragment...)
+	stream.stateMu.Unlock()
+	encoded, err := encodeAnthropicStreamDelta(fragment)
+	if err != nil {
+		return nil, modelgateway.ErrOutputSchema
+	}
+	modelgateway.ReportActivityDelta(stream.activityContext, fragment)
+	return encoded, nil
+}
+
+func (stream *anthropicResponseStream) completeMessage() error {
+	for _, block := range stream.blocks {
+		if !block.stopped {
+			return modelgateway.ErrOutputSchema
+		}
+	}
+	stream.stateMu.Lock()
+	defer stream.stateMu.Unlock()
+	if !stream.messageStarted || stream.complete || stream.providerID == "" || stream.stopReason == "" || !stream.inputUsageFound || !stream.outputUsageFound || stream.inputTokens < 0 || stream.outputTokens < 0 || len(stream.content) == 0 {
+		return modelgateway.ErrOutputSchema
+	}
+	content := append(json.RawMessage(nil), stream.content...)
 	if !json.Valid(content) {
-		content, err = json.Marshal(text.String())
-		if err != nil {
-			return modelgateway.NormalizedResponse{}, anthropicUnknownFailure(modelgateway.ErrOutputSchema)
+		encoded, err := json.Marshal(string(stream.content))
+		if err != nil || len(encoded) > modelgateway.MaximumResponseBytes {
+			return modelgateway.ErrOutputSchema
 		}
+		content = encoded
 	}
+	modelVersion := stream.modelVersion
 	if modelVersion == "" {
-		modelVersion = capabilities.ActualModelVersion
+		modelVersion = stream.capabilities.ActualModelVersion
 	}
-	usage := modelgateway.Usage{InputTokens: inputTokens, OutputTokens: outputTokens, ProviderRequestID: providerID, ModelVersion: modelVersion}
-	return modelgateway.NormalizedResponse{RequestID: request.RequestID, ProviderRequestID: providerID, ModelVersion: modelVersion, Content: content, FinishReason: stopReason, Usage: usage}, nil
+	if modelVersion == "" || stream.adapter.containsKey(modelVersion) || stream.adapter.containsKey(stream.providerID) || stream.adapter.containsKey(stream.stopReason) {
+		return modelgateway.ErrCredentialDetected
+	}
+	stream.modelVersion = modelVersion
+	stream.finalContent = content
+	stream.usage = modelgateway.Usage{
+		InputTokens: stream.inputTokens, OutputTokens: stream.outputTokens,
+		ProviderRequestID: stream.providerID, ModelVersion: modelVersion,
+	}
+	stream.complete = true
+	return nil
+}
+
+func (stream *anthropicResponseStream) messageHasStarted() bool {
+	stream.stateMu.RLock()
+	defer stream.stateMu.RUnlock()
+	return stream.messageStarted && !stream.complete
+}
+
+func (stream *anthropicResponseStream) send(event json.RawMessage) bool {
+	select {
+	case stream.events <- append(json.RawMessage(nil), event...):
+		return true
+	case <-stream.closed:
+		return false
+	}
+}
+
+func (stream *anthropicResponseStream) fail(err error) {
+	stream.stateMu.Lock()
+	stream.failed = true
+	stream.stateMu.Unlock()
+	select {
+	case stream.failures <- err:
+	default:
+	}
+}
+
+func (stream *anthropicResponseStream) readFailure(err error, message string) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	if contextErr := stream.requestContext.Err(); contextErr != nil {
+		return contextErr
+	}
+	var providerFailure *modelgateway.ProviderFailure
+	if errors.As(err, &providerFailure) {
+		return err
+	}
+	if errors.Is(err, modelgateway.ErrOutputSchema) || errors.Is(err, modelgateway.ErrOutputTooLarge) || errors.Is(err, modelgateway.ErrCredentialDetected) {
+		return anthropicUnknownFailure(err)
+	}
+	return anthropicUnknownFailure(errors.New(message))
+}
+
+func validAnthropicStreamString(value string, maximum int) bool {
+	return strings.TrimSpace(value) != "" && len(value) <= maximum && utf8.ValidString(value) && !strings.ContainsAny(value, "\r\n\x00")
+}
+
+func encodeAnthropicStreamDelta(fragment string) (json.RawMessage, error) {
+	encoded, err := json.Marshal(struct {
+		Delta string `json:"delta"`
+	}{Delta: fragment})
+	return encoded, err
 }
 
 func readAnthropicSSELine(reader *bufio.Reader, maximum int) ([]byte, error) {
