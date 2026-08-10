@@ -21,7 +21,7 @@ func TestResponsesStreamPreservesTerminalResponse(t *testing.T) {
 		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
 		}
-		if !payload.Stream {
+		if !payload.Stream || payload.Text != nil {
 			t.Fatal("Responses stream request did not enable streaming")
 		}
 		writer.Header().Set("Content-Type", "text/event-stream")

@@ -234,15 +234,16 @@ func TestStreamParsesSSEAndCancelStopsTheRequest(t *testing.T) {
 func TestStreamAggregatesDeltasAndRequestsAuthoritativeUsage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		var payload struct {
-			Stream        bool `json:"stream"`
-			StreamOptions struct {
+			Stream         bool                `json:"stream"`
+			ResponseFormat *chatResponseFormat `json:"response_format"`
+			StreamOptions  struct {
 				IncludeUsage bool `json:"include_usage"`
 			} `json:"stream_options"`
 		}
 		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
 		}
-		if !payload.Stream || !payload.StreamOptions.IncludeUsage {
+		if !payload.Stream || !payload.StreamOptions.IncludeUsage || payload.ResponseFormat != nil {
 			t.Fatalf("stream request options = %#v", payload)
 		}
 		writer.Header().Set("Content-Type", "text/event-stream")

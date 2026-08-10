@@ -69,7 +69,7 @@ func (a *Adapter) encodeResponsesRequest(request modelgateway.NormalizedRequest,
 			Type: "function", Name: tool.Name, Description: tool.Description, Parameters: parameters,
 		})
 	}
-	if len(request.ResponseSchema) != 0 {
+	if len(request.ResponseSchema) != 0 && !stream {
 		providerSchema, err := compatibleResponseSchema(request.ResponseSchema)
 		if err != nil {
 			return nil, err

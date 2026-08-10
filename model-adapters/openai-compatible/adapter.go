@@ -446,7 +446,7 @@ func (a *Adapter) encodeChatRequest(request modelgateway.NormalizedRequest, stre
 	if request.Seed != nil {
 		value.Seed = request.Seed
 	}
-	if len(request.ResponseSchema) != 0 {
+	if len(request.ResponseSchema) != 0 && !stream {
 		providerSchema, err := compatibleResponseSchema(request.ResponseSchema)
 		if err != nil {
 			return nil, err
