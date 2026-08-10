@@ -171,6 +171,9 @@ func (store *projectActivityStore) append(message projectActivityMessage, tenant
 	key := activityProjectKey(tenantID, message.ProjectID)
 	for index := range store.messages[key] {
 		if store.messages[key][index].ID == message.ID {
+			if !activityMessageUpdateWins(store.messages[key][index], message) {
+				return cloneActivityMessage(store.messages[key][index])
+			}
 			store.messages[key][index] = message
 			return cloneActivityMessage(message)
 		}
@@ -188,16 +191,48 @@ func (store *projectActivityStore) update(tenantID, projectID, messageID string,
 		if message.ID != messageID {
 			continue
 		}
-		message.State = stateValue
+		candidate := *message
+		candidate.State = stateValue
 		if content != "" || stateValue == activityCompleted {
-			message.Content = content
+			candidate.Content = content
 		}
-		message.ErrorCode = errorCode
-		message.UpdatedAt = now.UTC()
-		message.Cursor = activityCursor(*message)
-		return cloneActivityMessage(*message), true
+		candidate.ErrorCode = errorCode
+		candidate.UpdatedAt = now.UTC()
+		candidate.Cursor = activityCursor(candidate)
+		if !activityMessageUpdateWins(*message, candidate) {
+			return cloneActivityMessage(*message), true
+		}
+		*message = candidate
+		return cloneActivityMessage(candidate), true
 	}
 	return projectActivityMessage{}, false
+}
+
+func activityMessageUpdateWins(current, candidate projectActivityMessage) bool {
+	if candidate.UpdatedAt.Before(current.UpdatedAt) {
+		return false
+	}
+	if activityStateTerminal(current.State) {
+		return candidate.State == current.State
+	}
+	return activityStateRank(candidate.State) >= activityStateRank(current.State)
+}
+
+func activityStateTerminal(state activityState) bool {
+	return state == activityCompleted || state == activityFailed
+}
+
+func activityStateRank(state activityState) int {
+	switch state {
+	case activityQueued:
+		return 0
+	case activityStreaming:
+		return 1
+	case activityCompleted, activityFailed:
+		return 2
+	default:
+		return -1
+	}
 }
 
 func (store *projectActivityStore) list(tenantID, projectID string) []projectActivityMessage {
@@ -288,6 +323,12 @@ func (handler *Handler) projectActivity(response http.ResponseWriter, request *h
 	if err != nil {
 		writeError(response, request, err)
 		return
+	}
+	if handler.goalPlan.Negotiator != nil && !snapshot.GoalProcessing {
+		handler.startNextGoalIntervention(request.Context(), principal.TenantID, projectID)
+		if refreshed, refreshErr := handler.activitySnapshot(request.Context(), principal, projectID); refreshErr == nil {
+			snapshot = refreshed
+		}
 	}
 	response.Header().Set("ETag", entityTag(snapshot.ProjectVersion))
 	writeJSON(response, http.StatusOK, snapshot)
@@ -428,34 +469,10 @@ func mergeActivityMessages(live, persisted []projectActivityMessage) []projectAc
 			}
 			continue
 		}
-		if message.Sender == activitySenderUser || message.Sender == activitySenderAgent {
-			duplicate := false
-			for _, existing := range result {
-				if message.Sender == activitySenderUser && existing.Sender == activitySenderUser && existing.PrincipalID == message.PrincipalID && existing.Content == message.Content && activityTimesClose(existing.CreatedAt, message.CreatedAt) {
-					duplicate = true
-					break
-				}
-				if message.Sender == activitySenderAgent && existing.Sender == activitySenderAgent && existing.Flow == message.Flow && existing.AgentID == message.AgentID && existing.Content == message.Content {
-					duplicate = true
-					break
-				}
-			}
-			if duplicate {
-				continue
-			}
-		}
 		byID[message.ID] = len(result)
 		result = append(result, cloneActivityMessage(message))
 	}
 	return result
-}
-
-func activityTimesClose(left, right time.Time) bool {
-	delta := left.Sub(right)
-	if delta < 0 {
-		delta = -delta
-	}
-	return delta <= 5*time.Second
 }
 
 func sortActivityMessages(messages []projectActivityMessage) {
@@ -527,21 +544,25 @@ func (handler *Handler) submitActivityIntervention(response http.ResponseWriter,
 		return
 	}
 	if handler.persistentActivity != nil {
-		stored, listErr := handler.persistentActivity.List(request.Context(), principal.TenantID, projectID)
-		if listErr != nil {
-			writeError(response, request, aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", listErr, map[string]any{"scope": "project activity"}))
+		requestSHA := activityRequestSHA(projectID, body)
+		storedMessage, found, lookupErr := handler.persistentActivity.FindByIdempotency(request.Context(), principal.TenantID, principal.ID, idempotencyKey)
+		if lookupErr != nil {
+			writeError(response, request, aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", lookupErr, map[string]any{"scope": "project activity idempotency"}))
 			return
 		}
-		requestSHA := activityRequestSHA(projectID, body)
-		for _, storedMessage := range stored {
-			if storedMessage.PrincipalID != principal.ID || storedMessage.IdempotencyKey != idempotencyKey {
-				continue
-			}
+		if found {
 			if storedMessage.RequestSHA256 != requestSHA {
 				writeError(response, request, aorerrors.New(aorerrors.CodeIdempotencyConflict, "", nil))
 				return
 			}
+			if storedMessage.ProjectID != projectID {
+				writeError(response, request, aorerrors.New(aorerrors.CodeIdempotencyConflict, "", nil))
+				return
+			}
 			message := activityFromStored(storedMessage)
+			if message.Sender == activitySenderUser && message.State == activityQueued {
+				message.QueuedPrincipal = principal
+			}
 			handler.activity.append(message, principal.TenantID)
 			if message.Flow == activityFlowGoal && message.State == activityQueued && !project.GoalProcessing {
 				handler.startNextGoalIntervention(request.Context(), principal.TenantID, projectID)
@@ -604,6 +625,7 @@ func (handler *Handler) startNextGoalIntervention(ctx context.Context, tenantID,
 			return
 		}
 		handler.updateActivity(ctx, tenantID, projectID, message.ID, activityCompleted, message.Content, "", handler.clock())
+		handler.startNextGoalIntervention(ctx, tenantID, projectID)
 		return
 	}
 	accepted, negotiation, err := handler.acceptGoalNegotiation(ctx, principal, projectID, body, goalPlanKey("intervention", tenantID, projectID, principal.ID, message.ID))
@@ -685,11 +707,13 @@ func (handler *Handler) projectActivityEvents(response http.ResponseWriter, requ
 	}
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+	idleTicks := 0
 	for {
 		select {
 		case <-request.Context().Done():
 			return
 		case <-ticker.C:
+			idleTicks++
 			latest, snapshotErr := handler.activitySnapshot(request.Context(), principal, projectID)
 			if snapshotErr != nil {
 				return
@@ -697,6 +721,17 @@ func (handler *Handler) projectActivityEvents(response http.ResponseWriter, requ
 			pending := changedActivityMessages(latest.Messages, seen)
 			if err := writeActivityMessages(response, pending); err != nil {
 				return
+			}
+			if len(pending) == 0 && idleTicks >= 15 {
+				if _, err := io.WriteString(response, ": heartbeat\n\n"); err != nil {
+					return
+				}
+				if flusher, ok := response.(http.Flusher); ok {
+					flusher.Flush()
+				}
+				idleTicks = 0
+			} else if len(pending) != 0 {
+				idleTicks = 0
 			}
 			seen = activityCursorMap(latest.Messages)
 			if len(latest.Messages) != 0 {
@@ -725,14 +760,10 @@ func changedActivityMessages(messages []projectActivityMessage, seen map[string]
 }
 
 func activityMessagesAfter(messages []projectActivityMessage, cursor string) []projectActivityMessage {
-	if cursor == "" {
-		return messages
-	}
-	for index := range messages {
-		if messages[index].Cursor == cursor {
-			return messages[index+1:]
-		}
-	}
+	// Messages are mutable while a model is streaming. A cursor identifies a
+	// row version, not an append-only position; replay the snapshot so a
+	// reconnect cannot miss an older row's completion update.
+	_ = cursor
 	return messages
 }
 
