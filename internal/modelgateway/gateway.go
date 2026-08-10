@@ -1019,7 +1019,7 @@ func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequ
 			if retryPending {
 				g.recordActivityAttempt(ctx, request, options, ActivityAttempt{
 					Attempt: attemptNumber, MaxAttempts: options.MaxAttempts,
-					Provider: selection.candidate.Provider, Model: request.Model,
+					Provider: selection.candidate.Provider, Model: selection.request.Model,
 					Phase: ActivityAttemptRetry, RetryAfter: retryAfter,
 				})
 				retryPending = false
@@ -1032,12 +1032,12 @@ func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequ
 				var providerFailure *ProviderFailure
 				knownProviderFailure := errors.As(generateErr, &providerFailure) && providerFailure.OutcomeKnown
 				retryCurrentProvider := knownProviderFailure && providerFailure.Retryable && attempt+1 < selectionAttempts
-				retryFallbackProvider := knownProviderFailure && providerFailure.Retryable && selectionIndex+1 < len(selections)
+				retryFallbackProvider := knownProviderFailure && providerFailure.Retryable && selectionIndex+1 < len(selections) && remainingAttempts > 0
 				retryDelay := time.Duration(0)
 				if retryCurrentProvider {
 					retryDelay = g.retryDelay(selection.key)
 				}
-				g.recordActivityAttemptFailure(ctx, request, options, attemptNumber, options.MaxAttempts, selection.candidate.Provider, generateErr, retryCurrentProvider || retryFallbackProvider, retryDelay)
+				g.recordActivityAttemptFailure(ctx, request, options, attemptNumber, options.MaxAttempts, selection.candidate.Provider, selection.request.Model, generateErr, retryCurrentProvider || retryFallbackProvider, retryDelay)
 				if !knownProviderFailure {
 					call.Status = ModelCallReconcile
 					call.CostMicros = incurred
@@ -1053,7 +1053,6 @@ func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequ
 				if attempt+1 < selectionAttempts {
 					retryAfter = g.retryDelay(selection.key)
 					if waitErr := g.waitForRetry(ctx, selection.key, providerFailure); waitErr != nil {
-						g.recordActivityAttemptFailure(ctx, request, options, attemptNumber+1, options.MaxAttempts, selection.candidate.Provider, waitErr, false, 0)
 						call.Status = ModelCallFailedProvider
 						call.CostMicros = incurred
 						call.LatencyMilliseconds = elapsedMilliseconds(startedAt, g.clock().UTC())
@@ -1112,6 +1111,11 @@ func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequ
 			call.CostMicros = incurred
 			if response.RequestID != "" && response.RequestID != request.RequestID {
 				lastErr = ErrOutputSchema
+				willRetry := attempt+1 < selectionAttempts || selectionIndex+1 < len(selections) && remainingAttempts > 0
+				g.recordActivityAttemptFailure(ctx, request, options, attemptNumber, options.MaxAttempts, selection.candidate.Provider, selection.request.Model, lastErr, willRetry, 0)
+				if willRetry {
+					retryPending = true
+				}
 				continue
 			}
 			validationErr := validateGeneratedResponse(request, response)
@@ -1133,6 +1137,11 @@ func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequ
 			}
 			if validationErr != nil {
 				lastErr = validationErr
+				willRetry := attempt+1 < selectionAttempts || selectionIndex+1 < len(selections) && remainingAttempts > 0
+				g.recordActivityAttemptFailure(ctx, request, options, attemptNumber, options.MaxAttempts, selection.candidate.Provider, selection.request.Model, validationErr, willRetry, 0)
+				if willRetry {
+					retryPending = true
+				}
 				continue
 			}
 			if response.Usage.ProviderRequestID == "" {
@@ -1150,7 +1159,7 @@ func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequ
 			}
 			return response, nil
 		}
-		if selectionIndex+1 < len(selections) && providerFallbackAllowed(lastErr) {
+		if selectionIndex+1 < len(selections) && remainingAttempts > 0 && providerFallbackAllowed(lastErr) {
 			retryPending = true
 			retryAfter = 0
 			continue
@@ -1298,11 +1307,13 @@ func (g *Gateway) generateSingle(ctx context.Context, request NormalizedRequest,
 			var providerFailure *ProviderFailure
 			knownProviderFailure := errors.As(generateErr, &providerFailure) && providerFailure.OutcomeKnown
 			retryCurrentProvider := knownProviderFailure && providerFailure.Retryable && attempt+1 < options.MaxAttempts
-			retryAfter = g.retryDelay(key)
-			g.recordActivityAttemptFailure(ctx, request, options, attemptNumber, options.MaxAttempts, options.Provider, generateErr, retryCurrentProvider, retryAfter)
+			retryAfter = time.Duration(0)
+			if retryCurrentProvider {
+				retryAfter = g.retryDelay(key)
+			}
+			g.recordActivityAttemptFailure(ctx, request, options, attemptNumber, options.MaxAttempts, options.Provider, request.Model, generateErr, retryCurrentProvider, retryAfter)
 			if retryCurrentProvider {
 				if waitErr := g.waitForRetry(ctx, key, providerFailure); waitErr != nil {
-					g.recordActivityAttemptFailure(ctx, request, options, attemptNumber+1, options.MaxAttempts, options.Provider, waitErr, false, 0)
 					call.Status = ModelCallFailedProvider
 					call.CostMicros = incurred
 					call.LatencyMilliseconds = elapsedMilliseconds(startedAt, g.clock().UTC())
@@ -1376,6 +1387,11 @@ func (g *Gateway) generateSingle(ctx context.Context, request NormalizedRequest,
 		call.CostMicros = incurred
 		if response.RequestID != "" && response.RequestID != request.RequestID {
 			lastErr = ErrOutputSchema
+			willRetry := attempt+1 < options.MaxAttempts
+			g.recordActivityAttemptFailure(ctx, request, options, attemptNumber, options.MaxAttempts, options.Provider, request.Model, lastErr, willRetry, 0)
+			if willRetry {
+				retryPending = true
+			}
 			continue
 		}
 		validationErr := validateGeneratedResponse(request, response)
@@ -1397,6 +1413,11 @@ func (g *Gateway) generateSingle(ctx context.Context, request NormalizedRequest,
 		}
 		if validationErr != nil {
 			lastErr = validationErr
+			willRetry := attempt+1 < options.MaxAttempts
+			g.recordActivityAttemptFailure(ctx, request, options, attemptNumber, options.MaxAttempts, options.Provider, request.Model, validationErr, willRetry, 0)
+			if willRetry {
+				retryPending = true
+			}
 			continue
 		}
 		if response.Usage.ProviderRequestID == "" {

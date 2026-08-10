@@ -523,6 +523,15 @@
   color: var(--blue);
 }
 
+.workbench-message.is-failed .message-bubble {
+  border-color: #d79a9a;
+  background: #fff8f7;
+}
+
+.workbench-message.is-model-attempt .message-bubble {
+  border-left: 3px solid var(--blue);
+}
+
 .message-avatar svg {
   width: 17px;
   height: 17px;

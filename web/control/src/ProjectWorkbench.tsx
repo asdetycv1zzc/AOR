@@ -369,7 +369,7 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
             }}
           >
             {visibleMessages.length ? visibleMessages.map((item) => (
-              <article className={`workbench-message is-${item.sender.toLowerCase()}`} key={item.id}>
+              <article className={`workbench-message is-${item.sender.toLowerCase()} is-${item.state.toLowerCase()}${item.id.startsWith("model-attempt:") ? " is-model-attempt" : ""}`} key={item.id}>
                 <div className="message-avatar">{messageAvatar(item.sender)}</div>
                 <div className="message-bubble"><header><strong>{messageSender(item)}</strong><span>{flowLabels[item.flow]}</span><time>{formatActivityTime(item.createdAt)}</time></header>
                 <p>{messageContent(item)}</p>

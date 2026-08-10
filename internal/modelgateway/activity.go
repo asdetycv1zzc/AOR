@@ -242,9 +242,12 @@ func (g *Gateway) recordActivityAttempt(ctx context.Context, request NormalizedR
 	_ = recorder.RecordAttempt(recordContext, request, options, attempt, g.clock().UTC())
 }
 
-func (g *Gateway) recordActivityAttemptFailure(ctx context.Context, request NormalizedRequest, options GenerateOptions, attempt, maxAttempts int, provider string, err error, willRetry bool, retryAfter time.Duration) {
+func (g *Gateway) recordActivityAttemptFailure(ctx context.Context, request NormalizedRequest, options GenerateOptions, attempt, maxAttempts int, provider, model string, err error, willRetry bool, retryAfter time.Duration) {
 	if err == nil {
 		return
+	}
+	if model == "" {
+		model = request.Model
 	}
 	redacted := redactError(err)
 	message := ""
@@ -252,7 +255,7 @@ func (g *Gateway) recordActivityAttemptFailure(ctx context.Context, request Norm
 		message = redacted.Error()
 	}
 	g.recordActivityAttempt(ctx, request, options, ActivityAttempt{
-		Attempt: attempt, MaxAttempts: maxAttempts, Provider: provider, Model: request.Model,
+		Attempt: attempt, MaxAttempts: maxAttempts, Provider: provider, Model: model,
 		Phase: ActivityAttemptFailure, ErrorCode: activityErrorCode(err), ErrorMessage: message,
 		WillRetry: willRetry, RetryAfter: retryAfter,
 	})
@@ -327,10 +330,12 @@ func modelActivityID(requestID string) string {
 }
 
 func modelAttemptActivityID(requestID string, attempt int, phase ActivityAttemptPhase) string {
+	digest := sha256.Sum256([]byte("model-attempt\x00" + requestID))
+	prefix := hex.EncodeToString(digest[:])
 	if phase == ActivityAttemptRetry {
-		return fmt.Sprintf("model:%s:retry:%d", requestID, attempt)
+		return fmt.Sprintf("model-attempt:%s:retry:%d", prefix, attempt)
 	}
-	return fmt.Sprintf("model:%s:attempt:%d", requestID, attempt)
+	return fmt.Sprintf("model-attempt:%s:attempt:%d", prefix, attempt)
 }
 
 func attemptContent(attempt ActivityAttempt) string {
