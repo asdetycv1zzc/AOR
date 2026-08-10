@@ -170,12 +170,9 @@ func (a *Adapter) Generate(ctx context.Context, request modelgateway.NormalizedR
 	if err := a.requireInputLimit(ctx, request, capabilities); err != nil {
 		return modelgateway.NormalizedResponse{}, err
 	}
-	// Generate is the durable, replayable request path.  Keep it on the
-	// provider's ordinary JSON response endpoint; streaming is opt-in through
-	// Gateway.Stream.  A number of OpenAI-compatible gateways advertise SSE
-	// but do not support stream_options/include_usage reliably, and treating a
-	// truncated stream as an unknown outcome would unnecessarily reconcile an
-	// otherwise idempotent call.
+	if capabilities.SupportsStreaming && !requestUsesNativeTools(request) {
+		return a.generateStream(ctx, request, capabilities)
+	}
 	body, err := a.encodeRequest(request, false)
 	if err != nil {
 		return modelgateway.NormalizedResponse{}, err
@@ -244,15 +241,10 @@ func (a *Adapter) Stream(ctx context.Context, request modelgateway.NormalizedReq
 	return stream, nil
 }
 
-func (a *Adapter) generateChatStream(ctx context.Context, request modelgateway.NormalizedRequest, capabilities modelgateway.ModelCapabilities) (modelgateway.NormalizedResponse, error) {
-	streamValue, err := a.Stream(ctx, request)
+func (a *Adapter) generateStream(ctx context.Context, request modelgateway.NormalizedRequest, capabilities modelgateway.ModelCapabilities) (modelgateway.NormalizedResponse, error) {
+	stream, err := a.Stream(ctx, request)
 	if err != nil {
 		return modelgateway.NormalizedResponse{}, err
-	}
-	stream, ok := streamValue.(*responseStream)
-	if !ok {
-		_ = streamValue.Close()
-		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
 	}
 	defer stream.Close()
 	for {
@@ -264,9 +256,15 @@ func (a *Adapter) generateChatStream(ctx context.Context, request modelgateway.N
 			return modelgateway.NormalizedResponse{}, receiveErr
 		}
 	}
-	contentBytes, contentFound := stream.FinalContent()
-	usage, usageFound := stream.FinalUsage()
-	finishReason, finishFound := stream.FinalFinishReason()
+	contentStream, contentOK := stream.(modelgateway.FinalContentAwareStream)
+	usageStream, usageOK := stream.(modelgateway.UsageAwareStream)
+	finishStream, finishOK := stream.(interface{ FinalFinishReason() (string, bool) })
+	if !contentOK || !usageOK || !finishOK {
+		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
+	}
+	contentBytes, contentFound := contentStream.FinalContent()
+	usage, usageFound := usageStream.FinalUsage()
+	finishReason, finishFound := finishStream.FinalFinishReason()
 	if !contentFound || !usageFound || !finishFound || len(contentBytes) == 0 {
 		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
 	}

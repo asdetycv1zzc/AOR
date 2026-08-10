@@ -66,6 +66,10 @@ func TestAnthropicStreamEmitsDeltasAndFinalState(t *testing.T) {
 	if !ready || usage.InputTokens != 7 || usage.OutputTokens != 2 || usage.ProviderRequestID != "msg_test" || usage.ModelVersion != "claude-test-v1" {
 		t.Fatalf("final usage = %#v, ready=%v", usage, ready)
 	}
+	response, err := adapter.Generate(context.Background(), anthropicStreamTestRequest())
+	if err != nil || string(response.Content) != `"hello world"` || response.ProviderRequestID != "msg_test" {
+		t.Fatalf("generated response = %#v, err=%v", response, err)
+	}
 }
 
 func TestAnthropicStreamAssemblesStructuredResponse(t *testing.T) {

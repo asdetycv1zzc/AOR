@@ -167,6 +167,9 @@ func (adapter *anthropicAdapter) Generate(ctx context.Context, request modelgate
 	if err != nil || estimate.InputTokens > int64(capabilities.MaxInputTokens) {
 		return modelgateway.NormalizedResponse{}, modelgateway.ErrInvalidRequest
 	}
+	if capabilities.SupportsStreaming && !anthropicRequestUsesNativeTools(request) {
+		return adapter.generateStream(ctx, request, capabilities)
+	}
 	payload, err := adapter.encodeRequest(request)
 	if err != nil {
 		return modelgateway.NormalizedResponse{}, err
@@ -374,6 +377,48 @@ func (stream *anthropicResponseStream) FinalContent() (json.RawMessage, bool) {
 		return nil, false
 	}
 	return append(json.RawMessage(nil), stream.finalContent...), true
+}
+
+func (stream *anthropicResponseStream) FinalFinishReason() (string, bool) {
+	stream.stateMu.RLock()
+	defer stream.stateMu.RUnlock()
+	return stream.stopReason, stream.complete && !stream.failed && stream.stopReason != ""
+}
+
+func (adapter *anthropicAdapter) generateStream(ctx context.Context, request modelgateway.NormalizedRequest, capabilities modelgateway.ModelCapabilities) (modelgateway.NormalizedResponse, error) {
+	streamValue, err := adapter.Stream(ctx, request)
+	if err != nil {
+		return modelgateway.NormalizedResponse{}, err
+	}
+	stream, ok := streamValue.(*anthropicResponseStream)
+	if !ok {
+		_ = streamValue.Close()
+		return modelgateway.NormalizedResponse{}, anthropicUnknownFailure(modelgateway.ErrOutputSchema)
+	}
+	defer stream.Close()
+	for {
+		_, receiveErr := stream.Recv(ctx)
+		if errors.Is(receiveErr, io.EOF) {
+			break
+		}
+		if receiveErr != nil {
+			return modelgateway.NormalizedResponse{}, receiveErr
+		}
+	}
+	content, contentReady := stream.FinalContent()
+	usage, usageReady := stream.FinalUsage()
+	finishReason, finishReady := stream.FinalFinishReason()
+	if !contentReady || !usageReady || !finishReady || len(content) == 0 {
+		return modelgateway.NormalizedResponse{}, anthropicUnknownFailure(modelgateway.ErrOutputSchema)
+	}
+	modelVersion := usage.ModelVersion
+	if modelVersion == "" {
+		modelVersion = capabilities.ActualModelVersion
+	}
+	return modelgateway.NormalizedResponse{
+		RequestID: request.RequestID, ProviderRequestID: usage.ProviderRequestID,
+		ModelVersion: modelVersion, Content: content, FinishReason: finishReason, Usage: usage,
+	}, nil
 }
 
 func (stream *anthropicResponseStream) read() {

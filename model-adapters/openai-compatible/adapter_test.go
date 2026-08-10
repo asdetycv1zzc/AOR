@@ -71,7 +71,7 @@ func TestGenerateUsesChatCompletionsWithoutCredentialLeakage(t *testing.T) {
 	}
 }
 
-func TestGenerateDoesNotForceStreamingForChatCompletions(t *testing.T) {
+func TestGenerateStreamsChatCompletionsWithoutTools(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		var payload struct {
 			Stream bool `json:"stream"`
@@ -79,15 +79,19 @@ func TestGenerateDoesNotForceStreamingForChatCompletions(t *testing.T) {
 		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
 		}
-		if payload.Stream {
-			t.Fatal("Generate unexpectedly requested an SSE response")
+		if !payload.Stream || request.Header.Get("Accept") != "text/event-stream" {
+			t.Fatal("Generate did not request an SSE response")
 		}
-		_, _ = writer.Write([]byte(`{"id":"chatcmpl-json","model":"gpt-test-v1","choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte("data: {\"id\":\"chatcmpl-stream\",\"model\":\"gpt-test-v1\",\"choices\":[{\"delta\":{\"content\":\"{\\\"ok\\\":true}\"},\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = writer.Write([]byte("data: {\"id\":\"chatcmpl-stream\",\"model\":\"gpt-test-v1\",\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n"))
+		_, _ = writer.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer server.Close()
 	adapter := testAdapter(t, server.URL, Config{})
 	request := streamingTestRequest()
-	if _, err := adapter.Generate(context.Background(), request); err != nil {
+	response, err := adapter.Generate(context.Background(), request)
+	if err != nil || string(response.Content) != `{"ok":true}` {
 		t.Fatal(err)
 	}
 }
