@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/akimisaka/aor/internal/modelgateway"
@@ -91,5 +92,25 @@ data: {"type":"response.completed","response":{"id":"resp-stream","model":"gpt-t
 	finishReason, ready := responsesStream.FinalFinishReason()
 	if !ready || finishReason != "stop" {
 		t.Fatalf("finish reason = %q, ready = %v", finishReason, ready)
+	}
+}
+
+func TestResponsesStreamClassifiesProviderFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte("event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error\",\"message\":\"secret provider detail\"}}}\n\n"))
+	}))
+	defer server.Close()
+
+	adapter := testAdapter(t, server.URL+"/v1/responses", Config{WireFormat: WireFormatResponses})
+	stream, err := adapter.Stream(context.Background(), streamingTestRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	_, err = stream.Recv(context.Background())
+	var failure *modelgateway.ProviderFailure
+	if !errors.As(err, &failure) || !failure.OutcomeKnown || !failure.Retryable || strings.Contains(err.Error(), "secret provider detail") {
+		t.Fatalf("failure = %v", err)
 	}
 }

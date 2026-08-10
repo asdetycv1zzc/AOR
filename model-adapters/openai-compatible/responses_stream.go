@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -20,6 +21,10 @@ type responsesResponseStream struct {
 	request      modelgateway.NormalizedRequest
 	capabilities modelgateway.ModelCapabilities
 	deltaBytes   int
+}
+
+type responsesStreamError struct {
+	Code string `json:"code"`
 }
 
 var _ modelgateway.ResponseStream = (*responsesResponseStream)(nil)
@@ -194,11 +199,12 @@ func (s *responsesResponseStream) observeResponsesEvent(eventName string, payloa
 		return nil, false, modelgateway.ErrCredentialDetected
 	}
 	var event struct {
-		Type     string          `json:"type"`
-		ID       string          `json:"id"`
-		Model    string          `json:"model"`
-		Delta    string          `json:"delta"`
-		Response json.RawMessage `json:"response"`
+		Type     string                `json:"type"`
+		ID       string                `json:"id"`
+		Model    string                `json:"model"`
+		Delta    string                `json:"delta"`
+		Error    *responsesStreamError `json:"error"`
+		Response json.RawMessage       `json:"response"`
 	}
 	if json.Unmarshal(payload, &event) != nil {
 		return nil, false, modelgateway.ErrOutputSchema
@@ -237,9 +243,43 @@ func (s *responsesResponseStream) observeResponsesEvent(eventName string, payloa
 		}
 		return nil, true, nil
 	case "response.failed", "error":
-		return nil, false, unknownFailure(errors.New("responses provider returned an error"))
+		return nil, false, responsesEventFailure(eventName, event.Error, event.Response)
 	}
 	return nil, false, nil
+}
+
+func responsesEventFailure(eventName string, direct *responsesStreamError, response json.RawMessage) error {
+	providerError := direct
+	if providerError == nil && len(response) != 0 {
+		var value struct {
+			Error *responsesStreamError `json:"error"`
+		}
+		if json.Unmarshal(response, &value) != nil {
+			return unknownFailure(modelgateway.ErrOutputSchema)
+		}
+		providerError = value.Error
+	}
+	code := "provider_error"
+	if providerError != nil && providerError.Code != "" {
+		code = strings.TrimSpace(providerError.Code)
+	}
+	if code == "" || len(code) > 128 || !utf8.ValidString(code) || strings.ContainsAny(code, "\r\n\x00") {
+		return unknownFailure(modelgateway.ErrOutputSchema)
+	}
+	return &modelgateway.ProviderFailure{
+		Cause:     fmt.Errorf("responses provider returned %s (%s)", eventName, code),
+		Retryable: responsesErrorRetryable(code), OutcomeKnown: true,
+	}
+}
+
+func responsesErrorRetryable(code string) bool {
+	code = strings.ToLower(code)
+	for _, marker := range []string{"server", "rate_limit", "timeout", "overload", "unavailable", "upstream", "temporar"} {
+		if strings.Contains(code, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *responsesResponseStream) observeResponsesMetadata(id, model string, rawResponse json.RawMessage) error {
