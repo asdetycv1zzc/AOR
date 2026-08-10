@@ -341,6 +341,7 @@ func (ledger *BudgetLedger) StoreModelReplay(ctx context.Context, tenantID, requ
 func cloneNormalizedResponse(response NormalizedResponse) NormalizedResponse {
 	response.Content = append(json.RawMessage(nil), response.Content...)
 	response.ToolCalls = append([]ToolCall(nil), response.ToolCalls...)
+	response.AppliedInterventions = append([]string(nil), response.AppliedInterventions...)
 	for index := range response.ToolCalls {
 		response.ToolCalls[index].Arguments = append(json.RawMessage(nil), response.ToolCalls[index].Arguments...)
 	}

@@ -30,13 +30,14 @@ func (r *Runtime) RunToolLoop(ctx context.Context, runID string, call ModelCall,
 	}
 	seenCallIDs := make(map[string]struct{})
 	for round := 0; ; round++ {
-		response, err := r.generate(ctx, runID, toolLoopModelCall(call, round), messages, false, true)
+		response, usedMessages, err := r.generateWithInterventions(ctx, runID, toolLoopModelCall(call, round), messages, false, true)
 		if err != nil {
 			if errors.Is(err, modelgateway.ErrOutputSchema) {
 				return r.finalizeToolLoop(ctx, runID, finalCall, messages)
 			}
 			return modelgateway.NormalizedResponse{}, err
 		}
+		messages = usedMessages
 		if len(response.ToolCalls) == 0 {
 			if len(response.Content) == 0 || len(response.Content) > modelgateway.MaximumResponseBytes || !json.Valid(response.Content) {
 				return r.finalizeToolLoop(ctx, runID, finalCall, messages)
@@ -44,6 +45,7 @@ func (r *Runtime) RunToolLoop(ctx context.Context, runID string, call ModelCall,
 			if err := r.validateToolLoopOutput(runID, response.Content); err != nil {
 				return r.finalizeToolLoop(ctx, runID, finalCall, messages)
 			}
+			response.RequestID = call.RequestID
 			return response, nil
 		}
 		if err := validateNativeToolCalls(response, allowed, seenCallIDs); err != nil {
@@ -78,6 +80,7 @@ func (r *Runtime) RunToolLoop(ctx context.Context, runID string, call ModelCall,
 				response.Content = manifest
 				response.ToolCalls = nil
 				response.FinishReason = "tool_result"
+				response.RequestID = call.RequestID
 				return response, nil
 			}
 			messages = append(messages, modelgateway.Message{Role: "tool", ToolCallID: nativeCall.ID, Content: content})
@@ -86,7 +89,7 @@ func (r *Runtime) RunToolLoop(ctx context.Context, runID string, call ModelCall,
 }
 
 func (r *Runtime) finalizeToolLoop(ctx context.Context, runID string, call ModelCall, messages []modelgateway.Message) (modelgateway.NormalizedResponse, error) {
-	response, err := r.generate(ctx, runID, call, messages, true, false)
+	response, _, err := r.generateWithInterventions(ctx, runID, call, messages, true, false)
 	if err != nil {
 		return modelgateway.NormalizedResponse{}, err
 	}
@@ -96,6 +99,7 @@ func (r *Runtime) finalizeToolLoop(ctx context.Context, runID string, call Model
 	if err := r.validateToolLoopOutput(runID, response.Content); err != nil {
 		return modelgateway.NormalizedResponse{}, err
 	}
+	response.RequestID = call.RequestID
 	return response, nil
 }
 

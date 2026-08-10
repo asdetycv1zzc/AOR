@@ -158,14 +158,16 @@ type Usage struct {
 }
 
 type NormalizedResponse struct {
-	RequestID         string          `json:"requestId"`
-	Provider          string          `json:"provider,omitempty"`
-	ProviderRequestID string          `json:"providerRequestId"`
-	ModelVersion      string          `json:"modelVersion"`
-	Content           json.RawMessage `json:"content,omitempty"`
-	ToolCalls         []ToolCall      `json:"toolCalls,omitempty"`
-	FinishReason      string          `json:"finishReason"`
-	Usage             Usage           `json:"usage"`
+	RequestID             string          `json:"requestId"`
+	Provider              string          `json:"provider,omitempty"`
+	ProviderRequestID     string          `json:"providerRequestId"`
+	ModelVersion          string          `json:"modelVersion"`
+	Content               json.RawMessage `json:"content,omitempty"`
+	ToolCalls             []ToolCall      `json:"toolCalls,omitempty"`
+	FinishReason          string          `json:"finishReason"`
+	Usage                 Usage           `json:"usage"`
+	AppliedInterventions  []string        `json:"appliedInterventions,omitempty"`
+	InterventionRequestID string          `json:"interventionRequestId,omitempty"`
 }
 
 type ResponseStream interface {

@@ -507,16 +507,19 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 			g.finishExecution(request, digest, execution, NormalizedResponse{}, validationErr)
 			return NormalizedResponse{}, validationErr
 		}
-		response = replay.Response
+		response = g.decorateActivityResponse(ctx, request, claimedInterventions, replay.Response)
 		resultErr = nil
 		finishActivity()
-		g.finishExecution(request, digest, execution, replay.Response, nil)
-		return replay.Response, nil
+		g.finishExecution(request, digest, execution, response, nil)
+		return response, nil
 	}
 	if g.activityRecorder == nil {
 		response, resultErr = g.generateOnce(ctx, request, options)
 		if resultErr == nil && response.RequestID == "" {
 			response.RequestID = request.RequestID
+		}
+		if resultErr == nil {
+			response = g.decorateActivityResponse(ctx, request, claimedInterventions, response)
 		}
 		finishActivity()
 		g.finishExecution(request, digest, execution, response, resultErr)
@@ -584,6 +587,7 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 		if response.RequestID == "" {
 			response.RequestID = request.RequestID
 		}
+		response = g.decorateActivityResponse(ctx, request, claimedInterventions, response)
 	}
 	stopActivityDeltas()
 	finishActivity()

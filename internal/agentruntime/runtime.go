@@ -263,7 +263,47 @@ func (r *Runtime) RenewLease(ctx context.Context, runID string) error {
 }
 
 func (r *Runtime) Generate(ctx context.Context, runID string, call ModelCall) (modelgateway.NormalizedResponse, error) {
-	return r.generate(ctx, runID, call, nil, true, true)
+	response, _, err := r.generateWithInterventions(ctx, runID, call, nil, true, true)
+	if err != nil {
+		return modelgateway.NormalizedResponse{}, err
+	}
+	response.RequestID = call.RequestID
+	return response, nil
+}
+
+func (r *Runtime) generateWithInterventions(ctx context.Context, runID string, call ModelCall, messages []modelgateway.Message, enforceResponseSchema, allowTools bool) (modelgateway.NormalizedResponse, []modelgateway.Message, error) {
+	conversation := cloneMessages(messages)
+	hasConversation := messages != nil
+	for {
+		response, err := r.generate(ctx, runID, call, conversation, enforceResponseSchema, allowTools)
+		if err != nil {
+			return modelgateway.NormalizedResponse{}, nil, err
+		}
+		if !hasConversation {
+			conversation, _, err = r.toolLoopContext(runID)
+			if err != nil {
+				return modelgateway.NormalizedResponse{}, nil, err
+			}
+			hasConversation = true
+		}
+		for _, intervention := range response.AppliedInterventions {
+			if intervention != "" {
+				conversation = append(conversation, modelgateway.Message{Role: "user", Content: intervention})
+			}
+		}
+		if response.InterventionRequestID == "" || len(response.Content) == 0 {
+			return response, conversation, nil
+		}
+		conversation = append(conversation, modelgateway.Message{Role: "assistant", Content: string(response.Content)})
+		call = interventionModelCall(call, response.InterventionRequestID)
+	}
+}
+
+func interventionModelCall(call ModelCall, requestID string) ModelCall {
+	digest := sha256.Sum256([]byte("activity-intervention-reservation\x00" + call.ReservationID + "\x00" + requestID))
+	call.RequestID = requestID
+	call.ReservationID = "activity-intervention-" + hex.EncodeToString(digest[:])
+	return call
 }
 
 func (r *Runtime) generate(ctx context.Context, runID string, call ModelCall, messages []modelgateway.Message, enforceResponseSchema, allowTools bool) (modelgateway.NormalizedResponse, error) {

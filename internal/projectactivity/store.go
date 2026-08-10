@@ -373,6 +373,27 @@ WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND id = $3
 	})
 }
 
+func (store *Store) HasQueuedOrClaimed(ctx context.Context, tenantID, projectID string, flow Flow, agentID, requestID string) (bool, error) {
+	if tenantID == "" || projectID == "" || !validFlow(flow) || requestID == "" {
+		return false, errors.New("invalid project activity pending scope")
+	}
+	var pending bool
+	err := store.withTenantTx(ctx, tenantID, true, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, `
+SELECT EXISTS (
+  SELECT 1
+  FROM project_activity_messages
+  WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND flow = $3
+    AND sender = 'USER'
+    AND (
+      claim_request_id = $5
+      OR state = 'QUEUED' AND ($4 = '' OR agent_instance_id = '' OR agent_instance_id = $4)
+    )
+)`, tenantID, projectID, flow, agentID, requestID).Scan(&pending)
+	})
+	return pending, err
+}
+
 type scanner interface {
 	Scan(...any) error
 }

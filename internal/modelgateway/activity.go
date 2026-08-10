@@ -2,6 +2,8 @@ package modelgateway
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -24,6 +26,7 @@ type ActivityIntervention struct {
 type ActivityInterventionSource interface {
 	Claim(context.Context, NormalizedRequest, time.Time) ([]ActivityIntervention, error)
 	Complete(context.Context, NormalizedRequest, []string, error, time.Time) error
+	Pending(context.Context, NormalizedRequest, string) (bool, error)
 }
 
 type PostgresActivityRecorder struct {
@@ -114,6 +117,14 @@ func (recorder *PostgresActivityRecorder) Complete(ctx context.Context, request 
 	return recorder.store.CompleteClaimed(ctx, request.TenantID, request.ProjectID, request.RequestID, messages, resultErr != nil, activityInterventionRetryable(resultErr), now)
 }
 
+func (recorder *PostgresActivityRecorder) Pending(ctx context.Context, request NormalizedRequest, continuationRequestID string) (bool, error) {
+	flow := activityFlowForRole(request.Role)
+	if request.TenantID == "" || request.ProjectID == "" || continuationRequestID == "" || flow == projectactivity.FlowGoal {
+		return false, nil
+	}
+	return recorder.store.HasQueuedOrClaimed(ctx, request.TenantID, request.ProjectID, flow, request.AgentInstanceID, continuationRequestID)
+}
+
 type activityDeltaContextKey struct{}
 
 func withActivityDeltaRecorder(ctx context.Context, callback func(string)) context.Context {
@@ -182,6 +193,27 @@ func (g *Gateway) completeActivityInterventions(ctx context.Context, request Nor
 	_ = g.activityInterventions.Complete(completeContext, request, ids, resultErr, g.clock().UTC())
 }
 
+func (g *Gateway) decorateActivityResponse(ctx context.Context, request NormalizedRequest, claimed []ActivityIntervention, response NormalizedResponse) NormalizedResponse {
+	response.AppliedInterventions = nil
+	response.InterventionRequestID = ""
+	for _, intervention := range claimed {
+		if intervention.Content != "" {
+			response.AppliedInterventions = append(response.AppliedInterventions, intervention.Content)
+		}
+	}
+	if g.activityInterventions == nil || len(response.Content) == 0 {
+		return response
+	}
+	continuationRequestID := activityContinuationRequestID(request.RequestID)
+	pendingContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	pending, err := g.activityInterventions.Pending(pendingContext, request, continuationRequestID)
+	if err == nil && pending {
+		response.InterventionRequestID = continuationRequestID
+	}
+	return response
+}
+
 func claimedInterventionMessages(interventions []ActivityIntervention) []Message {
 	result := make([]Message, 0, len(interventions))
 	for _, intervention := range interventions {
@@ -205,6 +237,11 @@ func claimedInterventionIDs(interventions []ActivityIntervention) []string {
 
 func modelActivityID(requestID string) string {
 	return "model:" + requestID
+}
+
+func activityContinuationRequestID(requestID string) string {
+	digest := sha256.Sum256([]byte("activity-intervention\x00" + requestID))
+	return "activity-intervention-" + hex.EncodeToString(digest[:])
 }
 
 func activityFlowForRole(role string) projectactivity.Flow {
