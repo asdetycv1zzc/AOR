@@ -406,17 +406,23 @@ func (handler *Handler) persistActivity(ctx context.Context, tenantID string, me
 }
 
 func (handler *Handler) appendActivity(ctx context.Context, tenantID string, message projectActivityMessage) projectActivityMessage {
+	message.CreatedAt = activityTimestamp(message.CreatedAt)
+	message.UpdatedAt = activityTimestamp(message.UpdatedAt)
 	message = handler.activity.append(message, tenantID)
 	_ = handler.persistActivity(ctx, tenantID, message)
 	return message
 }
 
 func (handler *Handler) updateActivity(ctx context.Context, tenantID, projectID, messageID string, stateValue activityState, content, errorCode string, now time.Time) (projectActivityMessage, bool) {
-	message, found := handler.activity.update(tenantID, projectID, messageID, stateValue, content, errorCode, now)
+	message, found := handler.activity.update(tenantID, projectID, messageID, stateValue, content, errorCode, activityTimestamp(now))
 	if found {
 		_ = handler.persistActivity(ctx, tenantID, message)
 	}
 	return message, found
+}
+
+func activityTimestamp(value time.Time) time.Time {
+	return value.UTC().Truncate(time.Microsecond)
 }
 
 func (handler *Handler) persistedActivityMessages(ctx context.Context, tenantID, projectID string) ([]projectActivityMessage, error) {
@@ -676,7 +682,7 @@ func (handler *Handler) submitActivityIntervention(response http.ResponseWriter,
 			return
 		}
 	}
-	message, _, err := handler.activity.appendIntervention(principal, projectID, body, idempotencyKey, handler.clock())
+	message, _, err := handler.activity.appendIntervention(principal, projectID, body, idempotencyKey, activityTimestamp(handler.clock()))
 	if err != nil {
 		writeError(response, request, err)
 		return
@@ -708,7 +714,7 @@ func (handler *Handler) startNextGoalIntervention(ctx context.Context, tenantID,
 		return
 	}
 	handler.hydrateQueuedInterventions(ctx, tenantID, projectID)
-	message, found := handler.activity.claimGoalIntervention(tenantID, projectID, handler.clock())
+	message, found := handler.activity.claimGoalIntervention(tenantID, projectID, activityTimestamp(handler.clock()))
 	if !found {
 		return
 	}
