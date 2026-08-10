@@ -236,16 +236,27 @@ func (store *Store) ClaimQueued(ctx context.Context, tenantID, projectID string,
 	var messages []Message
 	err := store.withTenantTx(ctx, tenantID, false, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `
+WITH claimed AS (
+  SELECT tenant_id, id
+  FROM project_activity_messages
+  WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND flow = $3
+    AND sender = 'USER' AND state = 'QUEUED'
+    AND ($4 = '' OR agent_instance_id = '' OR agent_instance_id = $4)
+  ORDER BY created_at, id
+  FOR UPDATE SKIP LOCKED
+), updated AS (
+  UPDATE project_activity_messages AS activity
+  SET state = 'STREAMING', updated_at = $5
+  FROM claimed
+  WHERE activity.tenant_id = claimed.tenant_id AND activity.id = claimed.id
+  RETURNING activity.*
+)
 SELECT tenant_id::text, project_id::text, id, COALESCE(task_id::text, ''), COALESCE(request_id, ''),
        flow, agent_instance_id, role, sender, state, content, error_code, provider,
        model, input_tokens, output_tokens, latency_ms, output_sha256, principal_id,
        idempotency_key, request_sha256, created_at, updated_at
-FROM project_activity_messages
-WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND flow = $3
-  AND sender = 'USER' AND state = 'QUEUED'
-  AND ($4 = '' OR agent_instance_id = '' OR agent_instance_id = $4)
-ORDER BY created_at, id
-FOR UPDATE SKIP LOCKED`, tenantID, projectID, flow, agentID)
+FROM updated
+ORDER BY created_at, id`, tenantID, projectID, flow, agentID, now.UTC())
 		if err != nil {
 			return err
 		}
@@ -255,14 +266,6 @@ FOR UPDATE SKIP LOCKED`, tenantID, projectID, flow, agentID)
 			if err := scanMessage(rows, &message); err != nil {
 				return err
 			}
-			if _, err := tx.ExecContext(ctx, `
-UPDATE project_activity_messages
-SET state = 'STREAMING', updated_at = $4
-WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND id = $3`, tenantID, projectID, message.ID, now.UTC()); err != nil {
-				return err
-			}
-			message.State = StateStreaming
-			message.UpdatedAt = now.UTC()
 			messages = append(messages, message)
 		}
 		return rows.Err()
