@@ -212,10 +212,36 @@ func (handler *Handler) testModelProvider(response http.ResponseWriter, request 
 	}
 	latency := time.Since(started).Milliseconds()
 	if err != nil {
-		writeJSON(response, http.StatusOK, modelProviderTestResource{OK: false, Model: body.Model, LatencyMS: latency, Detail: "connection failed"})
+		writeJSON(response, http.StatusOK, modelProviderTestResource{OK: false, Model: body.Model, LatencyMS: latency, Detail: modelProviderTestFailureDetail(err)})
 		return
 	}
-	writeJSON(response, http.StatusOK, modelProviderTestResource{OK: true, Model: body.Model, LatencyMS: latency, Detail: "connection succeeded"})
+	writeJSON(response, http.StatusOK, modelProviderTestResource{OK: true, Model: body.Model, LatencyMS: latency, Detail: "stream connection succeeded"})
+}
+
+func modelProviderTestFailureDetail(err error) string {
+	var providerFailure *modelgateway.ProviderFailure
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "stream timed out"
+	case errors.Is(err, context.Canceled):
+		return "stream was canceled"
+	case errors.Is(err, modelgateway.ErrProviderNotAllowed):
+		return "provider does not support this streaming request"
+	case errors.Is(err, modelgateway.ErrOutputTooLarge):
+		return "stream output exceeded the size limit"
+	case errors.Is(err, modelgateway.ErrCredentialDetected):
+		return "stream output contained credential-like data"
+	case errors.Is(err, modelgateway.ErrOutputSchema):
+		return "stream output did not match the required JSON schema"
+	case errors.As(err, &providerFailure) && !providerFailure.OutcomeKnown:
+		return "stream ended before the provider result could be confirmed"
+	case errors.As(err, &providerFailure) && providerFailure.Retryable:
+		return "provider temporarily rejected the streaming request"
+	case errors.As(err, &providerFailure):
+		return "provider rejected the streaming request"
+	default:
+		return "stream connection failed"
+	}
 }
 
 func modelProviderSettingsPath(path string) (string, bool, bool) {
