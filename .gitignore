@@ -1,5 +1,6 @@
 /bin/
 /.cache/
+/.gocache/
 /dist/
 /coverage/
 /release-evidence/
