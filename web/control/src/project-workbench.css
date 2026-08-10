@@ -40,9 +40,12 @@
   position: relative;
   width: 95vw;
   max-width: none;
+  min-height: 100dvh;
   min-width: 0;
   margin: 0 auto;
-  padding: 44px 0 64px;
+  padding: 44px 0 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .workbench-back {
@@ -163,6 +166,7 @@
 }
 
 .workbench-grid {
+  flex: 1 1 auto;
   display: grid;
   min-width: 0;
   grid-template-columns: minmax(180px, 0.22fr) minmax(250px, 0.3fr) minmax(420px, 1fr);
@@ -749,7 +753,7 @@
 @media (max-width: 620px) {
   .project-workbench {
     width: calc(100% - 32px);
-    padding: 42px 0 52px;
+    padding: 42px 0 0;
   }
 
   .project-index .project-view-tabs {
