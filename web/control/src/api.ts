@@ -20,6 +20,7 @@ import type {
   ProjectActivitySnapshot,
   ProjectCreateInput,
   ProjectResult,
+  ToolchainInventory,
 } from "./types";
 
 interface ProblemResponse {
@@ -148,6 +149,10 @@ export class AorClient {
 
   getModelProviders(): Promise<Page<ModelProvider>> {
     return this.request("/v1/model-providers");
+  }
+
+  getToolchains(): Promise<ToolchainInventory> {
+    return this.request("/v1/toolchains");
   }
 
   getModelProviderSettings(): Promise<ModelProviderSettingsPage> {

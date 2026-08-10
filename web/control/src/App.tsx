@@ -52,6 +52,7 @@ import { ProjectWorkbench } from "./ProjectWorkbench";
 import { modelRoles } from "./types";
 import type {
   AuditRun,
+  GoalToolchain,
   GoalSpec,
   ModelProvider,
   ModelProviderSettings,
@@ -71,6 +72,8 @@ import type {
   ProjectState,
   ReasoningEffort,
   RecentProject,
+  ToolchainInventory,
+  ToolchainInventoryTool,
 } from "./types";
 
 gsap.registerPlugin(ScrollTrigger, useGSAP);
@@ -115,6 +118,20 @@ const dataClassificationLabels: Record<Project["dataClassification"], string> = 
   INTERNAL: "内部",
   CONFIDENTIAL: "机密",
   RESTRICTED: "受限",
+};
+
+const toolchainKindLabels: Record<string, string> = {
+  COMPILER: "编译器",
+  RUNTIME: "运行时",
+  SDK: "SDK",
+  BUILD: "构建工具",
+  INTEROP: "跨语言工具",
+  TEST: "测试工具",
+};
+
+const toolchainPlatformLabels: Record<string, string> = {
+  LINUX: "Linux",
+  WINDOWS: "Windows",
 };
 
 const terminalProjectStates = new Set<ProjectState>([
@@ -422,6 +439,7 @@ function ControlConsole({ client }: { client: AorClient }) {
   const [providerSettings, setProviderSettings] = useState<ModelProviderSettings[]>([]);
   const [routeSettings, setRouteSettings] = useState<ModelRouteSettings>();
   const [samplingSettings, setSamplingSettings] = useState<ModelSamplingSettings>();
+  const [toolchainInventory, setToolchainInventory] = useState<ToolchainInventory>({ tools: [] });
   const [selectedTask, setSelectedTask] = useState("");
   const [audits, setAudits] = useState<Record<string, AuditRun[]>>({});
   const [auditLoading, setAuditLoading] = useState("");
@@ -475,6 +493,16 @@ function ControlConsole({ client }: { client: AorClient }) {
         setProviderSettings(configuredProviders.items);
         setRouteSettings(settings);
         setSamplingSettings(sampling);
+      })
+      .catch((cause) => active && setError(errorMessage(cause)));
+    return () => { active = false; };
+  }, [client]);
+
+  useEffect(() => {
+    let active = true;
+    void client.getToolchains()
+      .then((inventory) => {
+        if (active) setToolchainInventory(inventory);
       })
       .catch((cause) => active && setError(errorMessage(cause)));
     return () => { active = false; };
@@ -663,6 +691,7 @@ function ControlConsole({ client }: { client: AorClient }) {
             />
             <Workspace
               bundle={bundle}
+              toolchains={toolchainInventory.tools}
               selectedTask={selectedTask}
               audits={audits}
               auditLoading={auditLoading}
@@ -787,8 +816,9 @@ function ContextRail({ project, result, recent, view, onView, onSelect, onResult
   );
 }
 
-function Workspace({ bundle, selectedTask, audits, auditLoading, onSelectTask, onProjectChanged, onOpenWorkbench, onReload, onNotice, onError, client }: {
+function Workspace({ bundle, toolchains, selectedTask, audits, auditLoading, onSelectTask, onProjectChanged, onOpenWorkbench, onReload, onNotice, onError, client }: {
   bundle: ProjectBundle;
+  toolchains: ToolchainInventoryTool[];
   selectedTask: string;
   audits: Record<string, AuditRun[]>;
   auditLoading: string;
@@ -913,6 +943,7 @@ function Workspace({ bundle, selectedTask, audits, auditLoading, onSelectTask, o
             ) : (
               <div className="stage-empty"><Sparkle /><strong>尚未生成 GoalSpec</strong><span>提交目标后，目标层会整理范围与验收标准。</span></div>
             )}
+            <ToolchainSummary inventory={toolchains} selection={goal?.content.toolchain} />
           </div>
           {(project.state === "CREATED" || project.state === "GOAL_NEGOTIATING" || project.state === "GOAL_SUSPENDED") && (
             <div className="goal-composer">
@@ -1002,6 +1033,70 @@ function PendingLine({ label, active }: { label: string; active: boolean }) {
     <div className={`pending-line ${active ? "is-active" : ""}`}>
       {active ? <Spinner size="tiny" /> : <span className="pending-dot" />}
       <span>{label}</span>
+    </div>
+  );
+}
+
+function ToolchainSummary({ inventory, selection }: { inventory: ToolchainInventoryTool[]; selection?: GoalToolchain }) {
+  return (
+    <div className="toolchain-summary">
+      <div className="toolchain-block">
+        <div className="toolchain-heading">
+          <span className="rail-label">当前已安装工具链</span>
+          <span>{inventory.length} 项</span>
+        </div>
+        {inventory.length > 0 ? (
+          <div className="toolchain-list">
+            {inventory.map((tool) => (
+              <div className="toolchain-row" key={tool.id}>
+                <div className="toolchain-identity">
+                  <strong>{tool.name}</strong>
+                  <span>{tool.version}</span>
+                </div>
+                <span className="toolchain-detail">
+                  {toolchainKindLabels[tool.kind] || tool.kind} · {toolchainPlatformLabels[tool.platform] || tool.platform}/{tool.architecture} · {tool.languages.join(" / ")}
+                </span>
+                <span className="toolchain-state is-installed">已安装</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="toolchain-empty">当前库存中没有已安装工具链。</p>
+        )}
+      </div>
+
+      <div className="toolchain-block">
+        <div className="toolchain-heading">
+          <span className="rail-label">GoalSpec 最终工具链</span>
+          <span>{selection ? `${selection.tools.length} 项` : "尚未选择"}</span>
+        </div>
+        {selection ? (
+          <>
+            <div className="toolchain-languages">
+              <span>语言</span>
+              <strong>{selection.languages.map((language) => `${language.name} ${language.version}`).join(" · ") || "未声明"}</strong>
+            </div>
+            <div className="toolchain-list">
+              {selection.tools.map((tool, index) => (
+                <div className="toolchain-row" key={tool.inventoryId || `${tool.kind}-${tool.name}-${tool.version}-${index}`}>
+                  <div className="toolchain-identity">
+                    <strong>{tool.name}</strong>
+                    <span>{tool.version}</span>
+                  </div>
+                  <span className="toolchain-detail">
+                    {toolchainKindLabels[tool.kind] || tool.kind} · {toolchainPlatformLabels[tool.platform] || tool.platform}/{tool.architecture}
+                  </span>
+                  <span className={`toolchain-state ${tool.source === "INSTALL_REQUIRED" ? "needs-install" : "is-installed"}`}>
+                    {tool.source === "INSTALL_REQUIRED" ? "需安装" : "已安装"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : (
+          <p className="toolchain-empty">当前 GoalSpec 尚未确定语言、版本与工具链。</p>
+        )}
+      </div>
     </div>
   );
 }

@@ -1004,6 +1004,127 @@ button {
   justify-self: end;
 }
 
+.toolchain-summary {
+  display: grid;
+  gap: 24px;
+  margin-top: 28px;
+  padding-top: 24px;
+  border-top: 1px solid var(--line-strong);
+}
+
+.toolchain-block {
+  min-width: 0;
+}
+
+.toolchain-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.toolchain-heading > span:last-child {
+  color: var(--quiet);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.toolchain-list {
+  display: grid;
+}
+
+.toolchain-row {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(140px, 0.8fr) minmax(220px, 1.5fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.toolchain-identity {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.toolchain-identity strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.toolchain-identity span {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.toolchain-detail {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.toolchain-state {
+  justify-self: end;
+  padding: 3px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.toolchain-state.is-installed {
+  border-color: rgb(31 107 73 / 35%);
+  background: rgb(31 107 73 / 7%);
+  color: var(--green);
+}
+
+.toolchain-state.needs-install {
+  border-color: rgb(183 129 48 / 40%);
+  background: rgb(183 129 48 / 8%);
+  color: var(--amber);
+}
+
+.toolchain-languages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.toolchain-languages > span {
+  color: var(--muted);
+}
+
+.toolchain-languages > strong {
+  color: var(--ink);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.toolchain-empty {
+  margin: 0;
+  padding: 13px 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .stage-empty {
   display: grid;
   min-height: 170px;
@@ -2060,6 +2181,15 @@ button {
 @media (max-width: 760px) {
   :root {
     --topbar-height: 56px;
+  }
+
+  .toolchain-row {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+
+  .toolchain-state {
+    justify-self: start;
   }
 
   .custom-provider-identity {

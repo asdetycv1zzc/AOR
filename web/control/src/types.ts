@@ -220,6 +220,48 @@ export interface GoalCriterion {
   evidenceType: string;
 }
 
+export interface ToolchainExecutable {
+  name: string;
+  path: string;
+}
+
+export interface ToolchainInventoryTool {
+  schemaVersion: number;
+  id: string;
+  kind: string;
+  name: string;
+  version: string;
+  platform: string;
+  architecture: string;
+  languages: string[];
+  binDirs: string[];
+  executables: ToolchainExecutable[];
+}
+
+export interface ToolchainInventory {
+  tools: ToolchainInventoryTool[];
+}
+
+export interface GoalToolchainLanguage {
+  name: string;
+  version: string;
+}
+
+export interface GoalToolchainTool {
+  inventoryId?: string;
+  kind: string;
+  name: string;
+  version: string;
+  platform: string;
+  architecture: string;
+  source: "INSTALLED" | "INSTALL_REQUIRED";
+}
+
+export interface GoalToolchain {
+  languages: GoalToolchainLanguage[];
+  tools: GoalToolchainTool[];
+}
+
 export interface GoalSpecContent {
   goalSpecVersion: number;
   projectId: string;
@@ -235,6 +277,7 @@ export interface GoalSpecContent {
   riskTolerance: string;
   dataClassification: string;
   deploymentTargets: string[];
+  toolchain?: GoalToolchain;
   createdAt: string;
 }
 
