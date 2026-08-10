@@ -217,7 +217,7 @@ func (a *Adapter) Stream(ctx context.Context, request modelgateway.NormalizedReq
 	if err != nil {
 		return nil, err
 	}
-	response, cancel, err := a.do(ctx, body)
+	response, cancel, err := a.doWithAccept(ctx, body, "text/event-stream")
 	if err != nil {
 		return nil, err
 	}
@@ -507,6 +507,10 @@ func unsupportedSchemaKeyword(key string) bool {
 }
 
 func (a *Adapter) do(ctx context.Context, payload []byte) (*http.Response, context.CancelFunc, error) {
+	return a.doWithAccept(ctx, payload, "application/json")
+}
+
+func (a *Adapter) doWithAccept(ctx context.Context, payload []byte, accept string) (*http.Response, context.CancelFunc, error) {
 	if err := contextError(ctx); err != nil {
 		return nil, nil, err
 	}
@@ -518,7 +522,7 @@ func (a *Adapter) do(ctx context.Context, payload []byte) (*http.Response, conte
 	}
 	request.Header.Set("Authorization", "Bearer "+a.credential)
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Accept", "application/json, text/event-stream")
+	request.Header.Set("Accept", accept)
 	response, err := a.client.Do(request)
 	if err != nil {
 		cancel()

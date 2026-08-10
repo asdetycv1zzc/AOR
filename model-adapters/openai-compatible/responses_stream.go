@@ -16,7 +16,7 @@ func (a *Adapter) generateResponsesStream(ctx context.Context, request modelgate
 	if err != nil {
 		return modelgateway.NormalizedResponse{}, err
 	}
-	response, cancel, err := a.do(ctx, body)
+	response, cancel, err := a.doWithAccept(ctx, body, "text/event-stream")
 	if err != nil {
 		return modelgateway.NormalizedResponse{}, err
 	}

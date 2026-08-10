@@ -19,6 +19,9 @@ const testCredential = "credential-test-0123456789"
 
 func TestGenerateUsesChatCompletionsWithoutCredentialLeakage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("Accept") != "application/json" {
+			t.Fatalf("accept = %q", request.Header.Get("Accept"))
+		}
 		if request.Method != http.MethodPost || request.URL.Path != "/v1/chat/completions" {
 			t.Fatalf("request = %s %s", request.Method, request.URL.Path)
 		}
