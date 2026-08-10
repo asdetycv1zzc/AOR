@@ -201,9 +201,6 @@ func (a *Adapter) Stream(ctx context.Context, request modelgateway.NormalizedReq
 	if err != nil {
 		return nil, err
 	}
-	if a.wireFormat == WireFormatResponses {
-		return nil, modelgateway.ErrProviderNotAllowed
-	}
 	if requestUsesNativeTools(request) {
 		return nil, modelgateway.ErrProviderNotAllowed
 	}
@@ -225,6 +222,9 @@ func (a *Adapter) Stream(ctx context.Context, request modelgateway.NormalizedReq
 		cancel()
 		_ = response.Body.Close()
 		return nil, httpFailure(response.StatusCode)
+	}
+	if a.wireFormat == WireFormatResponses {
+		return a.newResponsesResponseStream(ctx, request, capabilities, response, cancel), nil
 	}
 	jsonMode := !strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream")
 	maxEventBytes := a.maxStreamEventBytes
