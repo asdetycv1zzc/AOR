@@ -146,15 +146,18 @@ func (s *responseStream) read() {
 					s.fail(modelgateway.ErrCredentialDetected)
 					return
 				}
-				if err := s.observe(data); err != nil {
+				delta, err := s.observe(data)
+				if err != nil {
 					s.fail(err)
 					return
 				}
 				s.registerProviderID(data)
-				select {
-				case s.events <- append(json.RawMessage(nil), data...):
-				case <-s.closed:
-					return
+				if len(delta) != 0 {
+					select {
+					case s.events <- delta:
+					case <-s.closed:
+						return
+					}
 				}
 				data = data[:0]
 			}
@@ -210,15 +213,18 @@ func (s *responseStream) readJSON() {
 		s.fail(modelgateway.ErrCredentialDetected)
 		return
 	}
-	if err := s.observe(data); err != nil {
+	delta, err := s.observe(data)
+	if err != nil {
 		s.fail(err)
 		return
 	}
 	s.registerProviderID(data)
-	select {
-	case s.events <- append(json.RawMessage(nil), data...):
-	case <-s.closed:
-		return
+	if len(delta) != 0 {
+		select {
+		case s.events <- delta:
+		case <-s.closed:
+			return
+		}
 	}
 	s.stateMu.Lock()
 	s.complete = true
@@ -235,17 +241,18 @@ func (s *responseStream) fail(err error) {
 	}
 }
 
-func (s *responseStream) observe(data []byte) error {
+func (s *responseStream) observe(data []byte) (json.RawMessage, error) {
 	var event streamEvent
 	if err := json.Unmarshal(data, &event); err != nil {
-		return modelgateway.ErrOutputSchema
+		return nil, modelgateway.ErrOutputSchema
 	}
 	if len(event.Choices) == 0 && event.Usage == nil {
-		return modelgateway.ErrOutputSchema
+		return nil, modelgateway.ErrOutputSchema
 	}
 	if s.adapter.containsCredential(event.ID) || s.adapter.containsCredential(event.Model) {
-		return modelgateway.ErrCredentialDetected
+		return nil, modelgateway.ErrCredentialDetected
 	}
+	var delta strings.Builder
 	for _, choice := range event.Choices {
 		content := choice.Delta.Content
 		if content == nil {
@@ -260,27 +267,28 @@ func (s *responseStream) observe(data []byte) error {
 			continue
 		}
 		if !utf8.ValidString(*content) || s.adapter.containsCredential(*content) {
-			return modelgateway.ErrCredentialDetected
+			return nil, modelgateway.ErrCredentialDetected
 		}
 		s.stateMu.Lock()
 		if int64(len(s.content)+len(*content)) > modelgateway.MaximumResponseBytes {
 			s.stateMu.Unlock()
-			return modelgateway.ErrOutputTooLarge
+			return nil, modelgateway.ErrOutputTooLarge
 		}
 		s.content = append(s.content, []byte(*content)...)
 		if choice.FinishReason != nil {
 			s.finishReason = *choice.FinishReason
 		}
 		s.stateMu.Unlock()
+		delta.WriteString(*content)
 		modelgateway.ReportActivityDelta(s.activityContext, *content)
 	}
 	if event.Usage != nil {
 		if !usageFieldsPresent(data, "prompt_tokens", "completion_tokens") {
-			return modelgateway.ErrOutputSchema
+			return nil, modelgateway.ErrOutputSchema
 		}
 		usage, err := s.adapter.NormalizeUsage(*event.Usage)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		s.stateMu.Lock()
 		if event.ID != "" {
@@ -297,7 +305,13 @@ func (s *responseStream) observe(data []byte) error {
 		s.usageFound = true
 		s.stateMu.Unlock()
 	}
-	return nil
+	if delta.Len() == 0 {
+		return nil, nil
+	}
+	value, _ := json.Marshal(struct {
+		Delta string `json:"delta"`
+	}{Delta: delta.String()})
+	return value, nil
 }
 
 func (s *responseStream) FinalFinishReason() (string, bool) {

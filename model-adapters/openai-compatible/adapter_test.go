@@ -215,7 +215,7 @@ func TestStreamParsesSSEAndCancelStopsTheRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	event, err := stream.Recv(context.Background())
-	if err != nil || !strings.Contains(string(event), "chatcmpl-stream") {
+	if err != nil || string(event) != `{"delta":"hello"}` {
 		t.Fatalf("stream event = %s, %v", event, err)
 	}
 	if err := adapter.Cancel(context.Background(), "chatcmpl-stream"); err != nil {
