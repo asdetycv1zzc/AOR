@@ -1,6 +1,5 @@
 import {
   ArrowLeft,
-  ArrowClockwise,
   ChatCircleText,
   Clock,
   GearSix,
@@ -15,13 +14,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AorClient, ApiError } from "./api";
 import type {
   ModelRole,
-  ModuleTask,
   Project,
   ProjectActivityAgent,
   ProjectActivityFlow,
   ProjectActivityMessage,
   ProjectActivitySnapshot,
-  ProjectResult,
 } from "./types";
 import { Button, Spinner, Textarea } from "./ui";
 import "./project-workbench.css";
@@ -184,10 +181,8 @@ function mergeActivitySnapshot(current: ProjectActivitySnapshot | undefined, can
   };
 }
 
-export function ProjectWorkbench({ project, tasks, result, client, onBack, onReload, onNotice }: {
+export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }: {
   project: Project;
-  tasks: ModuleTask[];
-  result?: ProjectResult;
   client: AorClient;
   onBack: () => void;
   onReload: () => void;
@@ -198,7 +193,6 @@ export function ProjectWorkbench({ project, tasks, result, client, onBack, onRel
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const [messageFlow, setMessageFlow] = useState<ProjectActivityFlow>(() => defaultFlow(project));
   const [activeFlow, setActiveFlow] = useState<ProjectActivityFlow>(() => defaultFlow(project));
   const [selectedAgent, setSelectedAgent] = useState("");
   const [sending, setSending] = useState(false);
@@ -226,7 +220,6 @@ export function ProjectWorkbench({ project, tasks, result, client, onBack, onRel
     setActivityAvailable(undefined);
     setError("");
     setMessage("");
-    setMessageFlow(defaultFlow(project));
     setActiveFlow(defaultFlow(project));
     setSelectedAgent("");
     void refreshActivity();
@@ -277,8 +270,6 @@ export function ProjectWorkbench({ project, tasks, result, client, onBack, onRel
   const flows = activity?.flows?.length ? activity.flows : fallbackFlows;
   const visibleAgents = agents.filter((agent) => agent.flow === activeFlow);
   const visibleMessages = messages.filter((item) => item.flow === activeFlow);
-  const completedTasks = tasks.filter((task) => task.state === "PASSED" || task.state === "INTEGRATED").length;
-  const latestActivityAt = messages.at(-1)?.updatedAt || messages.at(-1)?.createdAt;
   const visibleMessageVersion = visibleMessages.map((item) => `${item.id}:${item.updatedAt || item.createdAt}:${item.content.length}`).join("|");
 
   useEffect(() => {
@@ -293,8 +284,10 @@ export function ProjectWorkbench({ project, tasks, result, client, onBack, onRel
     setSending(true);
     setError("");
     try {
-      const targetAgent = activity?.agents?.some((agent) => agent.id === selectedAgent && agent.flow === messageFlow) ? selectedAgent : "";
-      await client.sendProjectActivityMessage({ id: project.id, version: activity?.projectVersion || project.version }, messageFlow, content, targetAgent);
+      const selected = activity?.agents?.find((agent) => agent.id === selectedAgent && agent.flow === activeFlow);
+      const targetFlow = selected?.flow || activeFlow;
+      const targetAgent = selected?.id || "";
+      await client.sendProjectActivityMessage({ id: project.id, version: activity?.projectVersion || project.version }, targetFlow, content, targetAgent);
       setMessage("");
       onNotice("消息已进入项目队列");
       await refreshActivity();
@@ -308,19 +301,15 @@ export function ProjectWorkbench({ project, tasks, result, client, onBack, onRel
 
   return (
     <main className="project-workbench">
-      <header className="workbench-header">
-        <div className="workbench-heading-group">
-          <Button appearance="subtle" size="small" icon={<ArrowLeft />} onClick={onBack} aria-label="返回项目总览" title="返回项目总览" />
-          <span className="workbench-kicker">PROJECT WORKBENCH</span>
-          <h1>{project.name}</h1>
-        </div>
-        <div className="workbench-live" aria-live="polite">
-          <span className={streaming ? "is-live" : ""} />
-          <strong>{streaming ? "实时" : "轮询"}</strong>
-          <small>{formatActivityTime(latestActivityAt)}</small>
-          <Button appearance="subtle" size="small" icon={<ArrowClockwise />} onClick={() => void refreshActivity()} aria-label="刷新活动" />
-        </div>
-      </header>
+      <Button
+        className="workbench-back"
+        appearance="subtle"
+        size="small"
+        icon={<ArrowLeft />}
+        onClick={onBack}
+        aria-label="返回阶段详情"
+        title="返回阶段详情"
+      />
 
       {error && <div className="workbench-error" role="alert"><WarningCircle weight="fill" /><span>{error}</span><button onClick={() => setError("")} aria-label="关闭">×</button></div>}
 
@@ -330,7 +319,7 @@ export function ProjectWorkbench({ project, tasks, result, client, onBack, onRel
           <nav className="workbench-flow-list">
             {flows.map((flow, index) => {
               const state = flowState(flow, agents, messages);
-              return <button key={flow} className={`workbench-flow-item${activeFlow === flow ? " is-selected" : ""}`} onClick={() => { setActiveFlow(flow); setMessageFlow(flow); setSelectedAgent(""); }}>
+              return <button key={flow} className={`workbench-flow-item${activeFlow === flow ? " is-selected" : ""}`} onClick={() => { setActiveFlow(flow); setSelectedAgent(""); }}>
                 <span className="flow-index">{String(index + 1).padStart(2, "0")}</span>
                 <span><strong>{flowLabels[flow]}</strong><small>{state === "STREAMING" ? "实时处理中" : state === "COMPLETED" ? "已完成" : state === "FAILED" ? "发生错误" : "等待中"}</small></span>
                 <WorkbenchState state={state} />
@@ -344,7 +333,7 @@ export function ProjectWorkbench({ project, tasks, result, client, onBack, onRel
             <header className="workbench-panel-heading"><Robot /><div><h2 id="workbench-agents-title">Agent</h2><span>{visibleAgents.length} 个</span></div></header>
             <div className="workbench-agent-list">
               {visibleAgents.length ? visibleAgents.map((agent) => (
-                <button className={`workbench-agent${selectedAgent === agent.id ? " is-selected" : ""}`} key={agent.id} aria-pressed={selectedAgent === agent.id} onClick={() => { setSelectedAgent(agent.id); setMessageFlow(agent.flow); }}>
+                <button className={`workbench-agent${selectedAgent === agent.id ? " is-selected" : ""}`} key={agent.id} aria-pressed={selectedAgent === agent.id} onClick={() => { setSelectedAgent(agent.id); setActiveFlow(agent.flow); }}>
                   <span className={`agent-signal is-${stateTone(agent.state)}`}><Pulse weight="bold" /></span>
                   <span><strong>{roleLabels[agent.role] || agent.role}</strong><small>{layerLabels[agent.role] || flowLabels[agent.flow]}</small></span>
                   <span className="agent-model"><strong>{project.modelRoutes?.[agent.role as ModelRole]?.provider || "-"}</strong><small>{project.modelRoutes?.[agent.role as ModelRole]?.model || formatActivityTime(agent.lastActiveAt)}</small></span>
@@ -390,26 +379,11 @@ export function ProjectWorkbench({ project, tasks, result, client, onBack, onRel
             )) : <div className="workbench-empty"><ChatCircleText /><span>暂无对话记录</span></div>}
           </div>
           <div className="workbench-composer">
-            <select className="native-select" value={messageFlow} onChange={(event) => { const flow = event.target.value as ProjectActivityFlow; setMessageFlow(flow); setActiveFlow(flow); setSelectedAgent(""); }} aria-label="消息目标层">
-              {flows.map((flow) => <option value={flow} key={flow}>{flowLabels[flow]}</option>)}
-            </select>
-            <Textarea value={message} resize="vertical" placeholder="向项目 Agent 发送消息" onChange={(_, data) => setMessage(data.value)} disabled={sending} />
+            <Textarea value={message} resize="vertical" placeholder={`向${selectedAgent ? "当前 Agent" : flowLabels[activeFlow]}发送消息`} onChange={(_, data) => setMessage(data.value)} disabled={sending} />
             <Button appearance="primary" icon={sending ? <Spinner size="tiny" /> : <PaperPlaneTilt />} disabled={!message.trim() || sending} onClick={() => void sendMessage()}>{sending ? "发送中" : "发送"}</Button>
           </div>
         </section>
       </div>
-
-      <section className="workbench-overview" aria-labelledby="workbench-overview-title">
-        <header className="workbench-panel-heading"><Pulse /><div><h2 id="workbench-overview-title">返回总览</h2><span>{result?.status || project.state}</span></div></header>
-        <div className="workbench-overview-body">
-          <div className="overview-metrics">
-            <span><strong>{completedTasks}</strong><small>已完成模块</small></span>
-            <span><strong>{tasks.length}</strong><small>模块总数</small></span>
-            <span><strong>{result?.artifactRef ? 1 : 0}</strong><small>返回产物</small></span>
-          </div>
-          <p>{result?.planSupervisorSummary?.overview || "项目完成后在此显示计划层返回。"}</p>
-        </div>
-      </section>
     </main>
   );
 }

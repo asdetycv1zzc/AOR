@@ -619,7 +619,7 @@ function ControlConsole({ client }: { client: AorClient }) {
   }, []);
 
   return (
-    <div className="console-shell" ref={mainRef}>
+    <div className={`console-shell${projectView === "workbench" ? " is-workbench" : ""}`} ref={mainRef}>
       <header className="topbar">
         <button className="brand-button" onClick={returnHome} aria-label="返回首页">
           <span className="brand-glyph">A</span><span>AOR</span><small>CONTROL</small>
@@ -644,8 +644,6 @@ function ControlConsole({ client }: { client: AorClient }) {
         projectView === "workbench" ? (
           <ProjectWorkbench
             project={project}
-            tasks={bundle.tasks}
-            result={bundle.result}
             client={client}
             onBack={() => setProjectView("details")}
             onReload={reloadActiveProject}
