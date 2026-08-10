@@ -155,6 +155,7 @@ func (handler *Handler) startGoalNegotiation(ctx context.Context, principal auth
 func (handler *Handler) runGoalNegotiation(ctx context.Context, principal authn.Principal, request goalplan.NegotiationRequest) {
 	goalContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Minute)
 	defer cancel()
+	activityID := handler.beginGoalActivity(goalContext, request)
 	result, err := handler.goalPlan.Negotiator.Negotiate(goalContext, request)
 	if err == nil {
 		outcome := result.Project.Project
@@ -165,6 +166,8 @@ func (handler *Handler) runGoalNegotiation(ctx context.Context, principal authn.
 	if err != nil {
 		handler.suspendFailedGoalNegotiation(goalContext, principal, request)
 	}
+	handler.completeGoalActivity(goalContext, request, activityID, result, err)
+	handler.startNextGoalIntervention(goalContext, request.TenantID, request.ProjectID)
 }
 
 func (handler *Handler) suspendFailedGoalNegotiation(ctx context.Context, principal authn.Principal, request goalplan.NegotiationRequest) {
@@ -264,7 +267,9 @@ func (handler *Handler) approveGoalAndPlan(ctx context.Context, principal authn.
 		ExpectedProjectVersion: approvedProjectVersion,
 		IdempotencyKey:         goalPlanKey("initial-plan", principal.TenantID, projectID, principal.ID, idempotencyKey),
 	}
+	activityID := handler.beginPlanActivity(ctx, planningRequest)
 	plan, err := handler.goalPlan.Planner.BuildAndPublishAutomatic(ctx, planningRequest)
+	handler.completePlanActivity(ctx, planningRequest, activityID, plan, err)
 	if err != nil {
 		if handler.goalPlan.Recovery != nil {
 			recoveryContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)

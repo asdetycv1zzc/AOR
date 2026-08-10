@@ -28,6 +28,7 @@ import (
 	"github.com/akimisaka/aor/internal/modelproviders"
 	"github.com/akimisaka/aor/internal/observability"
 	"github.com/akimisaka/aor/internal/orchestrator"
+	"github.com/akimisaka/aor/internal/projectactivity"
 	"github.com/akimisaka/aor/internal/state"
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 	"github.com/akimisaka/aor/pkg/contracts"
@@ -117,6 +118,8 @@ type Handler struct {
 	leases               LeaseAuthority
 	goalPlan             GoalPlanServices
 	goalNegotiations     sync.Map
+	activity             *projectActivityStore
+	persistentActivity   *projectactivity.Store
 	defaultModelRoutes   map[string]state.ProjectModelRoute
 	modelProviders       []ModelProvider
 	providerSettings     modelproviders.SettingsStore
@@ -327,6 +330,10 @@ func New(config Config) (*Handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	var persistentActivity *projectactivity.Store
+	if config.Database != nil {
+		persistentActivity, _ = projectactivity.NewStore(config.Database)
+	}
 	handler := &Handler{
 		orchestrator:         orchestrator.NewWithBoundaryAndMode(config.Store, config.Clock, boundary, config.ClassroomCore),
 		store:                config.Store,
@@ -346,6 +353,8 @@ func New(config Config) (*Handler, error) {
 		eraser:               config.Eraser,
 		leases:               config.Leases,
 		goalPlan:             config.GoalPlan,
+		activity:             newProjectActivityStore(),
+		persistentActivity:   persistentActivity,
 		defaultModelRoutes:   defaultRoutes,
 		modelProviders:       providers,
 		providerSettings:     config.ProviderSettings,
@@ -523,6 +532,42 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 			return
 		}
 		writeMethodNotAllowed(response, request)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "activity" {
+		if !validProjectID(projectID) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		if request.Method == http.MethodGet {
+			handler.projectActivity(response, request, principal, projectID)
+			return
+		}
+		writeMethodNotAllowedWith(response, request, "GET")
+		return
+	}
+	if len(parts) == 3 && parts[1] == "activity" && parts[2] == "events" {
+		if !validProjectID(projectID) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		if request.Method == http.MethodGet {
+			handler.projectActivityEvents(response, request, principal, projectID)
+			return
+		}
+		writeMethodNotAllowedWith(response, request, "GET")
+		return
+	}
+	if len(parts) == 3 && parts[1] == "activity" && parts[2] == "messages" {
+		if !validProjectID(projectID) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		if request.Method == http.MethodPost {
+			handler.submitActivityIntervention(response, request, principal, projectID)
+			return
+		}
+		writeMethodNotAllowedWith(response, request, "POST")
 		return
 	}
 	if len(parts) == 2 && parts[1] == "export" {
