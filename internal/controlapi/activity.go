@@ -543,12 +543,18 @@ func (handler *Handler) submitActivityIntervention(response http.ResponseWriter,
 			}
 			message := activityFromStored(storedMessage)
 			handler.activity.append(message, principal.TenantID)
+			if message.Flow == activityFlowGoal && message.State == activityQueued && !project.GoalProcessing {
+				handler.startNextGoalIntervention(request.Context(), principal.TenantID, projectID)
+				if refreshed, found := handler.activityMessage(principal.TenantID, projectID, message.ID); found {
+					message = refreshed
+				}
+			}
 			response.Header().Set("ETag", entityTag(project.Version))
 			writeJSON(response, http.StatusAccepted, message)
 			return
 		}
 	}
-	message, duplicate, err := handler.activity.appendIntervention(principal, projectID, body, idempotencyKey, handler.clock())
+	message, _, err := handler.activity.appendIntervention(principal, projectID, body, idempotencyKey, handler.clock())
 	if err != nil {
 		writeError(response, request, err)
 		return
@@ -557,7 +563,7 @@ func (handler *Handler) submitActivityIntervention(response http.ResponseWriter,
 		writeError(response, request, err)
 		return
 	}
-	if !duplicate && body.Flow == activityFlowGoal && !project.GoalProcessing {
+	if body.Flow == activityFlowGoal && !project.GoalProcessing && message.State == activityQueued {
 		handler.startNextGoalIntervention(request.Context(), principal.TenantID, projectID)
 		message, _ = handler.activityMessage(principal.TenantID, projectID, message.ID)
 	}
