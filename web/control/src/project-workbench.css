@@ -169,7 +169,8 @@
   flex: 1 1 auto;
   display: grid;
   min-width: 0;
-  grid-template-columns: minmax(180px, 0.22fr) minmax(250px, 0.3fr) minmax(420px, 1fr);
+  min-height: 0;
+  grid-template-columns: minmax(144px, 0.16fr) minmax(200px, 0.22fr) minmax(420px, 1fr);
   align-items: stretch;
   border-bottom: 1px solid var(--line-strong);
 }
@@ -192,7 +193,11 @@
 }
 
 .workbench-thread {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
   padding-left: 26px;
+  padding-bottom: 0;
 }
 
 .workbench-panel-heading {
@@ -469,9 +474,10 @@
 }
 
 .workbench-messages {
+  flex: 1 1 0;
   display: grid;
-  min-height: 320px;
-  max-height: 560px;
+  min-height: 0;
+  max-height: none;
   align-content: start;
   gap: 12px;
   margin-top: 18px;
@@ -698,7 +704,7 @@
 
 @media (max-width: 1240px) {
   .workbench-grid {
-    grid-template-columns: minmax(160px, 0.22fr) minmax(220px, 0.3fr) minmax(360px, 1fr);
+    grid-template-columns: minmax(128px, 0.16fr) minmax(176px, 0.22fr) minmax(360px, 1fr);
   }
 
   .workbench-flow-rail,
@@ -746,7 +752,7 @@
   }
 
   .workbench-thread {
-    padding: 24px 0 28px;
+    padding: 24px 0 0;
   }
 }
 
