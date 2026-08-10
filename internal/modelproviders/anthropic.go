@@ -166,9 +166,6 @@ func (adapter *anthropicAdapter) Generate(ctx context.Context, request modelgate
 	if err != nil || estimate.InputTokens > int64(capabilities.MaxInputTokens) {
 		return modelgateway.NormalizedResponse{}, modelgateway.ErrInvalidRequest
 	}
-	if len(request.Tools) == 0 {
-		return adapter.generateStream(ctx, request, capabilities)
-	}
 	payload, err := adapter.encodeRequest(request)
 	if err != nil {
 		return modelgateway.NormalizedResponse{}, err

@@ -68,6 +68,27 @@ func TestGenerateUsesChatCompletionsWithoutCredentialLeakage(t *testing.T) {
 	}
 }
 
+func TestGenerateDoesNotForceStreamingForChatCompletions(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var payload struct {
+			Stream bool `json:"stream"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Stream {
+			t.Fatal("Generate unexpectedly requested an SSE response")
+		}
+		_, _ = writer.Write([]byte(`{"id":"chatcmpl-json","model":"gpt-test-v1","choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+	adapter := testAdapter(t, server.URL, Config{})
+	request := streamingTestRequest()
+	if _, err := adapter.Generate(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestGenerateUsesResponsesAndPreservesToolHistory(t *testing.T) {
 	providerCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

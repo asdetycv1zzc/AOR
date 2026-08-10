@@ -170,12 +170,12 @@ func (a *Adapter) Generate(ctx context.Context, request modelgateway.NormalizedR
 	if err := a.requireInputLimit(ctx, request, capabilities); err != nil {
 		return modelgateway.NormalizedResponse{}, err
 	}
-	if a.wireFormat == WireFormatChatCompletions && capabilities.SupportsStreaming && !requestUsesNativeTools(request) {
-		return a.generateChatStream(ctx, request, capabilities)
-	}
-	if a.wireFormat == WireFormatResponses && !requestUsesNativeTools(request) {
-		return a.generateResponsesStream(ctx, request, capabilities)
-	}
+	// Generate is the durable, replayable request path.  Keep it on the
+	// provider's ordinary JSON response endpoint; streaming is opt-in through
+	// Gateway.Stream.  A number of OpenAI-compatible gateways advertise SSE
+	// but do not support stream_options/include_usage reliably, and treating a
+	// truncated stream as an unknown outcome would unnecessarily reconcile an
+	// otherwise idempotent call.
 	body, err := a.encodeRequest(request, false)
 	if err != nil {
 		return modelgateway.NormalizedResponse{}, err
