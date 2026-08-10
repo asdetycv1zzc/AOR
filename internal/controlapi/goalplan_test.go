@@ -127,7 +127,7 @@ func TestConfiguredGoalNegotiationAcceptanceUsesCurrentGoalContext(t *testing.T)
 		t.Fatalf("load project: found=%t error=%v", found, err)
 	}
 	principal := authn.Principal{ID: "user-1", Type: authn.PrincipalUser, Role: authn.RoleUser, TenantID: testTenantID}
-	accepted, request, err := handler.acceptGoalNegotiation(context.Background(), principal, project.ID, goalMessageBody{ExpectedVersion: current.Version, Message: "refine the current goal"}, "goal-runtime-next")
+	accepted, request, err := handler.acceptGoalNegotiation(contextWithPrincipal(context.Background(), principal), principal, project.ID, goalMessageBody{ExpectedVersion: current.Version, Message: "refine the current goal"}, "goal-runtime-next")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,8 +250,9 @@ func newGoalPlanTestHandler(t *testing.T, negotiator GoalNegotiationService, pla
 		}},
 		Authorizer: authorizer, Artifacts: &testArtifactCatalog{}, Knowledge: &testKnowledgeReader{},
 		DefaultModelRoutes: testControlModelRoutes(), ModelProviders: testControlModelProviders(),
-		GoalPlan: GoalPlanServices{Negotiator: negotiator, Planner: planner},
-		Clock:    func() time.Time { return controlAPITestTime },
+		Toolchains: testToolchainSource{},
+		GoalPlan:   GoalPlanServices{Negotiator: negotiator, Planner: planner},
+		Clock:      func() time.Time { return controlAPITestTime },
 	})
 	if err != nil {
 		t.Fatal(err)

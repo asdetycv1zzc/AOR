@@ -35,7 +35,7 @@ func TestRuntimeAgentInvokerExecutesAndReplaysCompletedRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("replay: %v", err)
 	}
-	if first.RunID != "run_goal" || first.AgentInstanceID != "agent_goal" || first.Role != agentruntime.RoleGoalProposer || string(first.Payload) != `{"ok":true}` {
+	if first.RunID != "run_goal" || first.AgentInstanceID != runtimeAgentID(request) || first.Role != agentruntime.RoleGoalProposer || string(first.Payload) != `{"ok":true}` {
 		t.Fatalf("unexpected record: %#v", first)
 	}
 	if string(second.Payload) != string(first.Payload) || gateway.Calls() != 1 {
@@ -122,6 +122,7 @@ func TestInitialGoalRuntimeRequiresUserInputContext(t *testing.T) {
 
 func initialGoalRuntimeInvocation(t *testing.T, now time.Time) RuntimeInvocation {
 	t.Helper()
+	agentID := runtimeAgentID(AgentInvocation{ProjectID: "project_goal", Role: agentruntime.RoleGoalProposer})
 	bundle, err := prompts.LoadBaseline(agentruntime.RoleGoalProposer)
 	if err != nil {
 		t.Fatal(err)
@@ -135,7 +136,7 @@ func initialGoalRuntimeInvocation(t *testing.T, now time.Time) RuntimeInvocation
 	manifest.SHA256 = agentruntime.DigestContextManifest(manifest)
 	responseSchema := json.RawMessage(`{"type":"object","required":["ok"],"properties":{"ok":{"type":"boolean"}},"additionalProperties":false}`)
 	declaration := agentruntime.Declaration{
-		RunID: "run_goal", TenantID: "tenant_goal", ProjectID: "project_goal", AgentInstanceID: "agent_goal", Role: agentruntime.RoleGoalProposer,
+		RunID: "run_goal", TenantID: "tenant_goal", ProjectID: "project_goal", AgentInstanceID: agentID, Role: agentruntime.RoleGoalProposer,
 		PromptBundle: bundle, ContextManifest: manifest, ResponseSchemaRef: "schema://goal-draft", ResponseSchema: responseSchema,
 		ResponseSemanticValidator: func(json.RawMessage) error { return nil },
 		ToolSchemaDigest:          agentruntime.DigestToolDefinitions(nil), PolicyVersion: "policy_v1", PolicyDigest: agentruntime.DigestContextContent("policy_v1"), DataClassification: "INTERNAL",
@@ -147,7 +148,7 @@ func initialGoalRuntimeInvocation(t *testing.T, now time.Time) RuntimeInvocation
 		},
 	}
 	lease := agentruntime.AgentLease{
-		LeaseID: "lease_goal", AgentInstanceID: "agent_goal", TenantID: "tenant_goal", ProjectID: "project_goal", Role: agentruntime.RoleGoalProposer,
+		LeaseID: "lease_goal", AgentInstanceID: agentID, TenantID: "tenant_goal", ProjectID: "project_goal", Role: agentruntime.RoleGoalProposer,
 		IssuedAt: now.Add(-time.Second), ExpiresAt: now.Add(5 * time.Minute), LastHeartbeatAt: now,
 		HeartbeatIntervalSeconds: agentruntime.DefaultHeartbeatSeconds, Capabilities: []string{"model.generate"}, PolicyVersion: "policy_v1",
 		BudgetAccountID: "budget_goal", Nonce: "nonce_goal", FencingToken: 1, Signature: "signature_goal",
