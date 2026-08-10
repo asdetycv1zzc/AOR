@@ -170,6 +170,8 @@ type NormalizedResponse struct {
 	InterventionRequestID string          `json:"interventionRequestId,omitempty"`
 }
 
+// ResponseStream emits one normalized {"delta": string} envelope per Recv.
+// Provider-specific envelopes must be consumed inside the adapter.
 type ResponseStream interface {
 	Recv(ctx context.Context) (json.RawMessage, error)
 	Close() error
@@ -185,8 +187,8 @@ type UsageAwareStream interface {
 }
 
 // FinalContentAwareStream exposes the provider's normalized response after a
-// stream has reached its terminal event. The gateway uses this value for
-// validation and never forwards individual provider envelopes to callers.
+// stream has reached its terminal event. The gateway uses this value for final
+// validation while forwarding only normalized delta envelopes to callers.
 type FinalContentAwareStream interface {
 	ResponseStream
 	FinalContent() (json.RawMessage, bool)

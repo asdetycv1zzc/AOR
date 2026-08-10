@@ -417,8 +417,9 @@ func TestGatewaySettlesAuthoritativeFinalStreamUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	stream := &hardeningUsageStream{
-		events: []json.RawMessage{json.RawMessage(`{"delta":"hello"}`)},
-		usage:  Usage{InputTokens: 2, OutputTokens: 3, CostMicros: 5, ProviderRequestID: "provider-stream", ModelVersion: "model-v2"},
+		events:  []json.RawMessage{json.RawMessage(`{"delta":"hello"}`)},
+		content: json.RawMessage(`"hello"`),
+		usage:   Usage{InputTokens: 2, OutputTokens: 3, CostMicros: 5, ProviderRequestID: "provider-stream", ModelVersion: "model-v2"},
 	}
 	adapter := &hardeningAdapter{stream: stream}
 	gateway := NewGateway(ledger, time.Now)
@@ -430,8 +431,8 @@ func TestGatewaySettlesAuthoritativeFinalStreamUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := responseStream.Recv(context.Background()); err != nil {
-		t.Fatal(err)
+	if value, err := responseStream.Recv(context.Background()); err != nil || string(value) != `{"delta":"hello"}` {
+		t.Fatalf("stream value=%s err=%v", value, err)
 	}
 	if _, err := responseStream.Recv(context.Background()); !errors.Is(err, io.EOF) {
 		t.Fatalf("terminal error = %v", err)
@@ -449,15 +450,15 @@ func TestGatewaySettlesAuthoritativeFinalStreamUsage(t *testing.T) {
 	}
 }
 
-func TestGatewayPublishesOnlyValidatedAggregatedStreamContent(t *testing.T) {
+func TestGatewayForwardsNormalizedDeltasBeforeTerminalValidation(t *testing.T) {
 	ledger := NewBudgetLedger(time.Now)
 	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "account", TenantID: "tenant", LimitMicros: 1_000}); err != nil {
 		t.Fatal(err)
 	}
 	stream := &aggregatedUsageStream{
 		events: []json.RawMessage{
-			json.RawMessage(`{"id":"provider-stream","choices":[{"delta":{"content":"{\\\"ok\\\""}}]}`),
-			json.RawMessage(`{"choices":[{"delta":{"content":":true}"}}]}`),
+			json.RawMessage(`{"delta":"{\"ok\""}`),
+			json.RawMessage(`{"delta":":true}"}`),
 		},
 		content: json.RawMessage(`{"ok":true}`),
 		usage:   Usage{InputTokens: 2, OutputTokens: 3, ProviderRequestID: "provider-stream", ModelVersion: "model-v2"},
@@ -472,11 +473,21 @@ func TestGatewayPublishesOnlyValidatedAggregatedStreamContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	value, err := responseStream.Recv(context.Background())
-	if err != nil || string(value) != `{"ok":true}` {
-		t.Fatalf("final stream value=%s err=%v", value, err)
+	if err != nil || string(value) != `{"delta":"{\"ok\""}` {
+		t.Fatalf("first stream value=%s err=%v", value, err)
 	}
-	if strings.Contains(string(value), "choices") || strings.Contains(string(value), "delta") {
+	stream.mu.Lock()
+	remaining := len(stream.events)
+	stream.mu.Unlock()
+	if remaining != 1 {
+		t.Fatalf("stream was drained before first delta returned: remaining=%d", remaining)
+	}
+	if strings.Contains(string(value), "choices") || strings.Contains(string(value), "provider-stream") {
 		t.Fatalf("provider envelope leaked: %s", value)
+	}
+	value, err = responseStream.Recv(context.Background())
+	if err != nil || string(value) != `{"delta":":true}"}` {
+		t.Fatalf("second stream value=%s err=%v", value, err)
 	}
 	if _, err := responseStream.Recv(context.Background()); !errors.Is(err, io.EOF) {
 		t.Fatalf("terminal error=%v", err)
@@ -487,12 +498,39 @@ func TestGatewayPublishesOnlyValidatedAggregatedStreamContent(t *testing.T) {
 	}
 }
 
-func TestGatewayDoesNotPublishStreamWithoutAuthoritativeUsage(t *testing.T) {
+func TestGatewayRejectsProviderSpecificStreamEnvelope(t *testing.T) {
 	ledger := NewBudgetLedger(time.Now)
 	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "account", TenantID: "tenant", LimitMicros: 1_000}); err != nil {
 		t.Fatal(err)
 	}
-	adapter := &hardeningAdapter{stream: &rawOnlyStream{events: []json.RawMessage{json.RawMessage(`{"ok":true}`)}}}
+	stream := &aggregatedUsageStream{
+		events:  []json.RawMessage{json.RawMessage(`{"id":"provider-stream","choices":[{"delta":{"content":"hello"}}]}`)},
+		content: json.RawMessage(`"hello"`),
+		usage:   Usage{InputTokens: 1, OutputTokens: 1},
+	}
+	gateway := NewGateway(ledger, time.Now)
+	if err := gateway.Register("primary", "model", &hardeningAdapter{stream: stream}, Pricing{InputMicrosPerToken: 1, OutputMicrosPerToken: 1}); err != nil {
+		t.Fatal(err)
+	}
+	responseStream, err := gateway.Stream(context.Background(), hardeningRequest("stream-provider-envelope"), GenerateOptions{Provider: "primary", AccountID: "account", ReservationID: "stream-provider-envelope-reservation", MaxAttempts: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, err := responseStream.Recv(context.Background()); !errors.Is(err, ErrOutputSchema) || len(value) != 0 {
+		t.Fatalf("provider envelope value=%s err=%v", value, err)
+	}
+	reservation, found := ledger.Reservation("tenant", "stream-provider-envelope-reservation")
+	if !found || reservation.State != ReservationReconcile {
+		t.Fatalf("reservation=%#v found=%v", reservation, found)
+	}
+}
+
+func TestGatewayReconcilesAtTerminalWithoutAuthoritativeUsage(t *testing.T) {
+	ledger := NewBudgetLedger(time.Now)
+	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "account", TenantID: "tenant", LimitMicros: 1_000}); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &hardeningAdapter{stream: &rawOnlyStream{events: []json.RawMessage{json.RawMessage(`{"delta":"true"}`)}}}
 	gateway := NewGateway(ledger, time.Now)
 	if err := gateway.Register("primary", "model", adapter, Pricing{InputMicrosPerToken: 1, OutputMicrosPerToken: 1}); err != nil {
 		t.Fatal(err)
@@ -502,8 +540,12 @@ func TestGatewayDoesNotPublishStreamWithoutAuthoritativeUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	value, err := responseStream.Recv(context.Background())
+	if err != nil || string(value) != `{"delta":"true"}` {
+		t.Fatalf("stream value=%s err=%v", value, err)
+	}
+	value, err = responseStream.Recv(context.Background())
 	if !errors.Is(err, ErrReconciliationRequired) || len(value) != 0 {
-		t.Fatalf("unverified stream value=%s err=%v", value, err)
+		t.Fatalf("terminal stream value=%s err=%v", value, err)
 	}
 	reservation, found := ledger.Reservation("tenant", "stream-no-usage-reservation")
 	if !found || reservation.State != ReservationReconcile {
@@ -517,8 +559,9 @@ func TestGatewayValidatesAggregatedStreamAtEOFBeforeSuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	stream := &hardeningUsageStream{
-		events: []json.RawMessage{json.RawMessage(`{"ok":false}`)},
-		usage:  Usage{InputTokens: 1, OutputTokens: 1, CostMicros: 4},
+		events:  []json.RawMessage{json.RawMessage(`{"delta":"{\"ok\":false}"}`)},
+		content: json.RawMessage(`{"ok":false}`),
+		usage:   Usage{InputTokens: 1, OutputTokens: 1, CostMicros: 4},
 	}
 	adapter := &hardeningAdapter{stream: stream}
 	gateway := NewGateway(ledger, time.Now)
@@ -539,6 +582,9 @@ func TestGatewayValidatesAggregatedStreamAtEOFBeforeSuccess(t *testing.T) {
 	responseStream, err := gateway.Stream(context.Background(), request, GenerateOptions{Provider: "primary", AccountID: "account", ReservationID: "stream-final-schema-reservation", MaxAttempts: 1})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if value, err := responseStream.Recv(context.Background()); err != nil || string(value) != `{"delta":"{\"ok\":false}"}` {
+		t.Fatalf("stream value=%s err=%v", value, err)
 	}
 	if _, err := responseStream.Recv(context.Background()); !errors.Is(err, ErrOutputSchema) {
 		t.Fatalf("stream schema error = %v", err)
@@ -571,6 +617,9 @@ func TestGatewayRejectsMalformedStreamEventBeforeFinalValidation(t *testing.T) {
 	responseStream, err := gateway.Stream(context.Background(), hardeningRequest("stream-invalid-event"), GenerateOptions{Provider: "primary", AccountID: "account", ReservationID: "stream-invalid-event-reservation", MaxAttempts: 1})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if value, err := responseStream.Recv(context.Background()); err != nil || string(value) != `{"delta":"valid"}` {
+		t.Fatalf("valid event value=%s err=%v", value, err)
 	}
 	if value, err := responseStream.Recv(context.Background()); !errors.Is(err, ErrOutputSchema) || len(value) != 0 {
 		t.Fatalf("malformed event value=%s err=%v", value, err)
@@ -787,10 +836,11 @@ func (adapter *hardeningAdapter) Calls() int {
 }
 
 type hardeningUsageStream struct {
-	mu     sync.Mutex
-	events []json.RawMessage
-	usage  Usage
-	closed bool
+	mu      sync.Mutex
+	events  []json.RawMessage
+	content json.RawMessage
+	usage   Usage
+	closed  bool
 }
 
 type aggregatedUsageStream struct {
@@ -879,5 +929,12 @@ func (stream *hardeningUsageStream) FinalUsage() (Usage, bool) {
 	return stream.usage, len(stream.events) == 0
 }
 
+func (stream *hardeningUsageStream) FinalContent() (json.RawMessage, bool) {
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	return append(json.RawMessage(nil), stream.content...), len(stream.events) == 0 && !stream.closed
+}
+
 var _ ModelAdapter = (*hardeningAdapter)(nil)
 var _ UsageAwareStream = (*hardeningUsageStream)(nil)
+var _ FinalContentAwareStream = (*hardeningUsageStream)(nil)

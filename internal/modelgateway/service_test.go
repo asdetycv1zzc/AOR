@@ -130,12 +130,37 @@ func TestHTTPServiceCapabilitiesCancelAndStreaming(t *testing.T) {
 	streamRequest.Header.Set("Content-Type", "application/json")
 	streamWriter := httptest.NewRecorder()
 	service.ServeHTTP(streamWriter, streamRequest)
-	if streamWriter.Code != http.StatusOK || streamWriter.Header().Get("Content-Type") != "text/event-stream" || !strings.Contains(streamWriter.Body.String(), "data: {\"delta\":\"ok\"}") || !strings.Contains(streamWriter.Body.String(), "data: [DONE]") {
+	body := streamWriter.Body.String()
+	firstDelta := strings.Index(body, "data: {\"delta\":\"o\"}")
+	secondDelta := strings.Index(body, "data: {\"delta\":\"k\"}")
+	done := strings.Index(body, "data: [DONE]")
+	if streamWriter.Code != http.StatusOK || streamWriter.Header().Get("Content-Type") != "text/event-stream" || firstDelta < 0 || secondDelta <= firstDelta || done <= secondDelta {
 		t.Fatalf("stream status=%d headers=%v body=%q", streamWriter.Code, streamWriter.Header(), streamWriter.Body.String())
 	}
 	reservation, found := ledger.Reservation("tenant", "stream-reservation")
 	if !found || reservation.State != ReservationSettled || reservation.SettledMicros != 3 {
 		t.Fatalf("stream reservation = %#v found=%v", reservation, found)
+	}
+}
+
+func TestHTTPServiceStreamsDeltaBeforeTerminalReconciliationError(t *testing.T) {
+	service, adapter, ledger := newHTTPService(t)
+	adapter.streamOverride = &rawOnlyStream{events: []json.RawMessage{json.RawMessage(`{"delta":"partial"}`)}}
+	body := marshalTransport(t, transportGenerateRequest{Request: transportRequest("stream-terminal-error"), Options: GenerateOptions{Provider: "provider", AccountID: "account", ReservationID: "stream-terminal-error-reservation", MaxAttempts: 1}})
+	request := httptest.NewRequest(http.MethodPost, "/v1/model/stream", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	writer := httptest.NewRecorder()
+	service.ServeHTTP(writer, request)
+
+	responseBody := writer.Body.String()
+	delta := strings.Index(responseBody, "data: {\"delta\":\"partial\"}")
+	terminalError := strings.Index(responseBody, "event: error")
+	if writer.Code != http.StatusOK || delta < 0 || terminalError <= delta || !strings.Contains(responseBody, "AOR_BUDGET_RESERVATION_FAILED") || strings.Contains(responseBody, "data: [DONE]") {
+		t.Fatalf("stream status=%d body=%q", writer.Code, responseBody)
+	}
+	reservation, found := ledger.Reservation("tenant", "stream-terminal-error-reservation")
+	if !found || reservation.State != ReservationReconcile {
+		t.Fatalf("reservation=%#v found=%v", reservation, found)
 	}
 }
 
@@ -288,9 +313,10 @@ func (serviceAuthorizer) AuthorizeModel(_ context.Context, request ModelAuthoriz
 }
 
 type serviceAdapter struct {
-	mu            sync.Mutex
-	generateCalls int
-	cancelCalls   int
+	mu             sync.Mutex
+	generateCalls  int
+	cancelCalls    int
+	streamOverride ResponseStream
 }
 
 func (a *serviceAdapter) Capabilities(context.Context, string) (ModelCapabilities, error) {
@@ -309,7 +335,14 @@ func (a *serviceAdapter) Generate(_ context.Context, request NormalizedRequest) 
 }
 
 func (a *serviceAdapter) Stream(context.Context, NormalizedRequest) (ResponseStream, error) {
-	return &serviceStream{events: []json.RawMessage{json.RawMessage(`{"delta":"ok"}`)}, usage: Usage{InputTokens: 2, OutputTokens: 1, ProviderRequestID: "provider-stream", ModelVersion: "model-v1"}}, nil
+	if a.streamOverride != nil {
+		return a.streamOverride, nil
+	}
+	return &serviceStream{
+		events:  []json.RawMessage{json.RawMessage(`{"delta":"o"}`), json.RawMessage(`{"delta":"k"}`)},
+		content: json.RawMessage(`"ok"`),
+		usage:   Usage{InputTokens: 2, OutputTokens: 1, ProviderRequestID: "provider-stream", ModelVersion: "model-v1"},
+	}, nil
 }
 
 func (a *serviceAdapter) Cancel(context.Context, string) error {
@@ -347,10 +380,11 @@ func (a *serviceAdapter) CancelCalls() int {
 }
 
 type serviceStream struct {
-	mu     sync.Mutex
-	events []json.RawMessage
-	usage  Usage
-	closed bool
+	mu      sync.Mutex
+	events  []json.RawMessage
+	content json.RawMessage
+	usage   Usage
+	closed  bool
 }
 
 func (s *serviceStream) Recv(context.Context) (json.RawMessage, error) {
@@ -383,7 +417,7 @@ func (s *serviceStream) FinalContent() (json.RawMessage, bool) {
 	if len(s.events) != 0 || s.closed {
 		return nil, false
 	}
-	return json.RawMessage(`{"delta":"ok"}`), true
+	return append(json.RawMessage(nil), s.content...), true
 }
 
 func newHTTPService(t *testing.T) (*HTTPService, *serviceAdapter, *BudgetLedger) {

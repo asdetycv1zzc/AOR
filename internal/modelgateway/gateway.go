@@ -1615,13 +1615,9 @@ type budgetedStream struct {
 	pricing           Pricing
 	worstCost         int64
 	recvMu            sync.Mutex
-	prepared          bool
-	delivered         bool
-	finalContent      json.RawMessage
+	terminal          bool
 	terminalErr       error
 	rawBytes          int
-	eventCount        int
-	lastEvent         json.RawMessage
 	once              sync.Once
 	finalizeErr       error
 }
@@ -1632,81 +1628,85 @@ func (s *budgetedStream) Recv(ctx context.Context) (json.RawMessage, error) {
 	}
 	s.recvMu.Lock()
 	defer s.recvMu.Unlock()
-	if s.terminalErr != nil {
-		return nil, s.terminalErr
-	}
-	if s.delivered {
-		return nil, io.EOF
-	}
-	if !s.prepared {
-		if err := s.drain(ctx); err != nil {
-			s.terminalErr = err
-			return nil, err
+	if s.terminal {
+		if s.terminalErr != nil {
+			return nil, s.terminalErr
 		}
-		s.prepared = true
-	}
-	if len(s.finalContent) == 0 {
-		s.delivered = true
 		return nil, io.EOF
 	}
-	s.delivered = true
-	return append(json.RawMessage(nil), s.finalContent...), nil
+	value, err := s.stream.Recv(ctx)
+	if err == nil {
+		if validationErr := s.validateEvent(value); validationErr != nil {
+			s.terminal = true
+			if finalizeErr := s.finalizeFailure(validationErr); finalizeErr != nil {
+				s.terminalErr = finalizeErr
+				return nil, finalizeErr
+			}
+			s.terminalErr = validationErr
+			return nil, validationErr
+		}
+		s.rawBytes += len(value)
+		return append(json.RawMessage(nil), value...), nil
+	}
+	s.terminal = true
+	if errors.Is(err, io.EOF) {
+		s.terminalErr = s.finalizeTerminal()
+		if s.terminalErr != nil {
+			return nil, s.terminalErr
+		}
+		return nil, io.EOF
+	}
+	if finalizeErr := s.finalizeFailure(err); finalizeErr != nil {
+		s.terminalErr = finalizeErr
+		return nil, finalizeErr
+	}
+	s.terminalErr = err
+	return nil, err
 }
 
 func (s *budgetedStream) Close() error {
 	closeErr := s.stream.Close()
 	s.recvMu.Lock()
 	defer s.recvMu.Unlock()
+	s.terminal = true
 	if finalizeErr := s.finalizeFailure(nil); finalizeErr != nil {
 		return finalizeErr
 	}
 	return closeErr
 }
 
-func (s *budgetedStream) drain(ctx context.Context) error {
-	for {
-		value, err := s.stream.Recv(ctx)
-		if err == nil {
-			if !utf8.Valid(value) || !json.Valid(value) || s.rawBytes+len(value) > s.maxResponseBytes {
-				_ = s.finalizeFailure(ErrOutputSchema)
-				return ErrOutputSchema
-			}
-			if containsCredentialLike(string(value)) {
-				_ = s.finalizeFailure(ErrCredentialDetected)
-				return ErrCredentialDetected
-			}
-			s.rawBytes += len(value)
-			s.eventCount++
-			s.lastEvent = append(s.lastEvent[:0], value...)
-			continue
-		}
-		if errors.Is(err, io.EOF) {
-			return s.finalizeTerminal()
-		}
-		if finalizeErr := s.finalizeFailure(err); finalizeErr != nil {
-			return finalizeErr
-		}
-		return err
+func (s *budgetedStream) validateEvent(value json.RawMessage) error {
+	if len(value) == 0 || s.maxResponseBytes <= 0 || len(value) > s.maxResponseBytes || s.rawBytes > s.maxResponseBytes-len(value) || !utf8.Valid(value) || !json.Valid(value) {
+		return ErrOutputSchema
 	}
+	if containsCredentialLike(string(value)) {
+		return ErrCredentialDetected
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(value, &fields); err != nil || len(fields) != 1 {
+		return ErrOutputSchema
+	}
+	delta, found := fields["delta"]
+	if !found {
+		return ErrOutputSchema
+	}
+	var fragment string
+	if err := json.Unmarshal(delta, &fragment); err != nil {
+		return ErrOutputSchema
+	}
+	return nil
 }
 
 func (s *budgetedStream) finalContentValue() ([]byte, error) {
-	if contentStream, ok := s.stream.(FinalContentAwareStream); ok {
-		content, ready := contentStream.FinalContent()
-		if !ready {
-			return nil, ErrReconciliationRequired
-		}
-		return append([]byte(nil), content...), nil
+	contentStream, ok := s.stream.(FinalContentAwareStream)
+	if !ok {
+		return nil, ErrReconciliationRequired
 	}
-	if s.eventCount == 0 {
-		return nil, nil
+	content, ready := contentStream.FinalContent()
+	if !ready {
+		return nil, ErrReconciliationRequired
 	}
-	if s.eventCount != 1 {
-		return nil, ErrOutputSchema
-	}
-	// Legacy adapters may expose one already-normalized event. Multiple raw
-	// provider envelopes are never concatenated.
-	return append([]byte(nil), s.lastEvent...), nil
+	return append([]byte(nil), content...), nil
 }
 
 func (s *budgetedStream) finalizeTerminal() error {
@@ -1768,9 +1768,6 @@ func (s *budgetedStream) finalizeTerminal() error {
 			ReservationID: s.reservationID, Disposition: ReservationDispositionSettle,
 			ActualMicros: cost, Call: call,
 		})
-		if s.finalizeErr == nil {
-			s.finalContent = append(json.RawMessage(nil), content...)
-		}
 	})
 	return s.finalizeErr
 }
