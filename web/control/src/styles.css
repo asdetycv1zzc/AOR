@@ -962,6 +962,31 @@ button {
   color: var(--green);
 }
 
+.unresolved-list {
+  display: grid;
+  gap: 10px;
+  margin: 24px 0;
+  padding: 16px;
+  border-left: 2px solid var(--amber);
+  background: rgb(183 129 48 / 7%);
+}
+
+.unresolved-list > div {
+  display: grid;
+  grid-template-columns: 24px 1fr;
+  align-items: start;
+  gap: 8px;
+  color: #4d4b42;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.unresolved-index {
+  color: var(--amber);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
 .goal-composer {
   align-self: start;
   display: grid;

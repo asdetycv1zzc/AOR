@@ -245,7 +245,7 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
           if (existing >= 0) messages[existing] = newerActivityMessage(messages[existing], event); else messages.push(event);
           return { ...current, messages, cursor: event.cursor };
         });
-        if (refreshTimer.current !== undefined) return;
+        if (event.state !== "COMPLETED" && event.state !== "FAILED" || refreshTimer.current !== undefined) return;
         refreshTimer.current = window.setTimeout(() => {
           refreshTimer.current = undefined;
           void refreshActivity();

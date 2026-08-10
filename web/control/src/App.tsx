@@ -891,6 +891,14 @@ function Workspace({ bundle, selectedTask, audits, auditLoading, onSelectTask, o
                     ))}
                   </div>
                 )}
+                {goal.content.unresolvedItems?.length > 0 && (
+                  <div className="unresolved-list">
+                    <span className="rail-label">未决事项</span>
+                    {goal.content.unresolvedItems.map((item, index) => (
+                      <div key={`${index}-${item}`}><span className="unresolved-index">{String(index + 1).padStart(2, "0")}</span><span>{item}</span></div>
+                    ))}
+                  </div>
+                )}
                 {goal.status === "DRAFT" && (
                   <Button
                     appearance="primary"

@@ -354,6 +354,7 @@ func (handler *Handler) activitySnapshot(ctx context.Context, principal authn.Pr
 		return projectActivitySnapshot{}, err
 	}
 	messages = mergeActivityMessages(messages, persisted)
+	messages = collapseConversationDuplicates(messages)
 	sortActivityMessages(messages)
 	agents := activityAgents(messages)
 	snapshot := projectActivitySnapshot{
@@ -580,6 +581,76 @@ func mergeActivityMessages(live, persisted []projectActivityMessage) []projectAc
 		result = append(result, cloneActivityMessage(message))
 	}
 	return result
+}
+
+// Activity contains both durable domain projections and runtime telemetry.
+// Keep the runtime row for live updates, while suppressing the corresponding
+// domain projection when both describe the same conversation turn.
+func collapseConversationDuplicates(messages []projectActivityMessage) []projectActivityMessage {
+	const matchWindow = 2 * time.Second
+	dropped := make(map[string]bool)
+	usedUsers := make(map[string]bool)
+	modelRows := make([]projectActivityMessage, 0)
+	for _, message := range messages {
+		if strings.HasPrefix(message.ID, "model:") && message.Sender == activitySenderAgent {
+			modelRows = append(modelRows, message)
+		}
+	}
+	for _, message := range messages {
+		if !strings.HasPrefix(message.ID, "goal-message-") || message.Sender != activitySenderUser {
+			continue
+		}
+		bestID := ""
+		bestDistance := time.Duration(1<<63 - 1)
+		for _, candidate := range messages {
+			if candidate.Sender != activitySenderUser || strings.HasPrefix(candidate.ID, "goal-message-") || usedUsers[candidate.ID] || candidate.Content != message.Content || candidate.Flow != message.Flow {
+				continue
+			}
+			distance := activityTimeDistance(candidate.CreatedAt, message.CreatedAt)
+			if distance <= matchWindow && distance < bestDistance {
+				bestID, bestDistance = candidate.ID, distance
+			}
+		}
+		if bestID != "" {
+			usedUsers[bestID] = true
+			dropped[message.ID] = true
+		}
+	}
+	for _, message := range messages {
+		if message.Sender != activitySenderAgent || message.Flow != activityFlowGoal {
+			continue
+		}
+		if strings.HasPrefix(message.ID, "goalplan:") && (strings.HasSuffix(message.ID, ":activity") || strings.HasSuffix(message.ID, ":challenge-activity")) {
+			for _, model := range modelRows {
+				if model.Flow == message.Flow && model.Role == message.Role && model.AgentID == message.AgentID && model.CreatedAt.Before(message.UpdatedAt.Add(matchWindow)) && !model.UpdatedAt.Before(message.CreatedAt.Add(-matchWindow)) {
+					dropped[message.ID] = true
+					break
+				}
+			}
+		}
+		if strings.HasPrefix(message.ID, "goal-spec-") && message.State == activityCompleted {
+			for _, model := range modelRows {
+				if model.Flow == message.Flow && model.Role == message.Role && model.AgentID == message.AgentID && activityTimeDistance(model.UpdatedAt, message.CreatedAt) <= matchWindow {
+					dropped[message.ID] = true
+					break
+				}
+			}
+		}
+	}
+	result := make([]projectActivityMessage, 0, len(messages)-len(dropped))
+	for _, message := range messages {
+		if !dropped[message.ID] {
+			result = append(result, message)
+		}
+	}
+	return result
+}
+
+func activityTimeDistance(left, right time.Time) time.Duration {
+	if left.After(right) {
+		return left.Sub(right)
+	}
+	return right.Sub(left)
 }
 
 func sortActivityMessages(messages []projectActivityMessage) {
