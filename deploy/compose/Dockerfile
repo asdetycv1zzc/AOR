@@ -4,6 +4,7 @@ ARG GO_IMAGE=golang:1.26.5-alpine3.23@sha256:622e56dbc11a8cfe87cafa2331e9a201877
 ARG NODE_IMAGE=node:22.19.0-alpine3.22@sha256:d2166de198f26e17e5a442f537754dd616ab069c47cc57b889310a717e0abbf9
 ARG RUNTIME_IMAGE=gcr.io/distroless/static-debian12:nonroot@sha256:f5b485ea962d9bd1186b2f6b3a061191539b905b82ec395de78cbfae51f20e35
 ARG ALPINE_IMAGE=alpine:3.23.3@sha256:25109184c71bdad752c8312a8623239686a9a2071e8825f20acb8f2198c3f659
+ARG WORKER_IMAGE=debian:13-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258
 
 FROM ${NODE_IMAGE} AS web-build
 WORKDIR /src
@@ -51,12 +52,18 @@ CMD ["serve"]
 FROM runtime AS server-runtime
 COPY --from=web-build --chown=65532:65532 /src/web/control/dist /usr/local/share/aor-web
 
-FROM ${GO_IMAGE} AS worker-runtime
+FROM ${WORKER_IMAGE} AS worker-runtime
 COPY --from=build /out/aor /usr/local/bin/aor
-RUN apk add --no-cache git=2.52.0-r0 && \
-    mkdir -p /var/lib/aor/knowledge \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && \
+    apt-get install --yes --no-install-recommends \
+      ca-certificates=20250419 \
+      git=1:2.47.3-0+deb13u1 && \
+    install -d -m 0755 -o 65532 -g 65532 \
+      /var/lib/aor/knowledge \
       /var/lib/aor/work && \
-    chown -R 65532:65532 /var/lib/aor
+    install -d -m 0555 /opt/aor/toolchains
 ENV HOME=/var/lib/aor/work
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/aor"]

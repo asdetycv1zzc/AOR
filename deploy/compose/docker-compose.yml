@@ -553,6 +553,7 @@ services:
       AOR_S3_ACCESS_KEY_REF: secret://minio_root_user
       AOR_S3_SECRET_KEY_REF: secret://minio_root_password
       AOR_KNOWLEDGE_ROOT: /var/lib/aor/knowledge
+      AOR_TOOLCHAIN_ROOT: /opt/aor/toolchains
       AOR_KNOWLEDGE_CURATOR_URL: http://127.0.0.1:8094
       AOR_OPA_URL: http://127.0.0.1:8181
       AOR_OIDC_ISSUER: http://127.0.0.1:5556/dex
@@ -572,6 +573,7 @@ services:
     secrets: [postgres_app_password, model_replay_key, lease_signing_key, minio_root_user, minio_root_password, aor_server_oauth_client_secret]
     volumes:
       - "${AOR_KNOWLEDGE_HOST_PATH:-aor-knowledge-data}:/var/lib/aor/knowledge:ro"
+      - "${AOR_TOOLCHAINS_HOST_PATH:-/opt/aor/toolchains}:/opt/aor/toolchains:ro"
 
   aor-curator:
     extends:
@@ -582,8 +584,10 @@ services:
       AOR_LISTEN_ADDR: 127.0.0.1:8094
       AOR_HEALTHCHECK_URL: http://127.0.0.1:8094/health/ready
       AOR_KNOWLEDGE_CURATOR_URL: ""
+      AOR_TOOLCHAIN_ROOT: /opt/aor/toolchains
     volumes: !override
       - "${AOR_KNOWLEDGE_HOST_PATH:-aor-knowledge-data}:/var/lib/aor/knowledge:rw"
+      - "${AOR_TOOLCHAINS_HOST_PATH:-/opt/aor/toolchains}:/opt/aor/toolchains:ro"
 
   aor-model-gateway:
     <<: *aor-common
@@ -729,6 +733,7 @@ services:
       AOR_MODEL_GATEWAY_URL: http://127.0.0.1:8091
       AOR_TOOL_BROKER_URL: http://127.0.0.1:8092
       AOR_KNOWLEDGE_ROOT: /var/lib/aor/knowledge
+      AOR_TOOLCHAIN_ROOT: /opt/aor/toolchains
       AOR_REPOSITORY_ROOT: /var/lib/aor/repositories
       AOR_MODEL_GATEWAY_OAUTH_TOKEN_ENDPOINT: http://127.0.0.1:5556/dex/token
       AOR_MODEL_GATEWAY_OAUTH_CLIENT_ID: aor-server
@@ -745,6 +750,7 @@ services:
     secrets: [postgres_app_password, lease_signing_key, minio_root_user, minio_root_password, aor_server_oauth_client_secret]
     volumes:
       - "${AOR_KNOWLEDGE_HOST_PATH:-aor-knowledge-data}:/var/lib/aor/knowledge:ro"
+      - "${AOR_TOOLCHAINS_HOST_PATH:-/opt/aor/toolchains}:/opt/aor/toolchains:ro"
       - "${AOR_PROJECTS_HOST_PATH:-../../projects}:/var/lib/aor/repositories"
     cap_drop: [ALL]
 

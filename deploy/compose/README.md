@@ -20,7 +20,23 @@ This profile requires the Docker Compose plugin with `--wait` and `--wait-timeou
 
 ## Classroom TEST Isolation
 
-The TEST profile runs the core Goal -> Plan -> Execution -> Audit path inside the Worker container. The Worker has no Docker socket, and no host sandbox engine or AppArmor setup is required. Tool Broker and Worker share the host directory `${AOR_PROJECTS_HOST_PATH}` at `/var/lib/aor/repositories`; when unset it defaults to this repository's `projects/` directory. Executor branches and project repositories remain visible on the host, while audit checkouts and Go build caches stay in the Worker's disposable overlay. Integration and GlobalAudit are disabled in this profile.
+The TEST profile runs the core Goal -> Plan -> Execution -> Audit path inside the Worker container. The Worker has no Docker socket, and no host sandbox engine or AppArmor setup is required. Tool Broker and Worker share the host directory `${AOR_PROJECTS_HOST_PATH}` at `/var/lib/aor/repositories`; when unset it defaults to this repository's `projects/` directory. Executor branches and project repositories remain visible on the host, while audit checkouts stay in the Worker's disposable overlay. Integration and GlobalAudit are disabled in this profile.
+
+## Toolchains
+
+The Worker image contains Git but no language compiler, SDK, runtime, or build system. Put globally installed tools below `${AOR_TOOLCHAINS_HOST_PATH:-/opt/aor/toolchains}` on the host. Compose mounts that directory read-only at `/opt/aor/toolchains` in the API, curator, and Worker so GoalSpec creation can list the available exact versions and execution can reuse the selected tools.
+
+Each immediate child directory is one inventory ID and must contain `toolchain.json`; the directory name and manifest `id` must match. All `binDirs` and executable paths are relative to that directory, remain inside it after symlink resolution, and must exist. See [`toolchain.example.json`](./toolchain.example.json) for the manifest shape. For example:
+
+```text
+/opt/aor/toolchains/
+  go-1.26.5-linux-amd64/
+    toolchain.json
+    bin/go
+    bin/gofmt
+```
+
+The mount is read-only. Install or update toolchains on the host before starting Compose; AOR does not download a missing toolchain unless the user explicitly requests that installation workflow.
 
 ## Secrets
 

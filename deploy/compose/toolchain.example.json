@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "go-1.26.5-linux-amd64",
+  "kind": "COMPILER",
+  "name": "Go",
+  "version": "1.26.5",
+  "platform": "LINUX",
+  "architecture": "amd64",
+  "languages": ["Go 1.26"],
+  "binDirs": ["bin"],
+  "executables": [
+    {"name": "go", "path": "bin/go"},
+    {"name": "gofmt", "path": "bin/gofmt"}
+  ]
+}
