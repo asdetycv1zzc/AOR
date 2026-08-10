@@ -993,6 +993,9 @@ func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequ
 	var incurred int64
 	var lastErr error
 	remainingAttempts := options.MaxAttempts
+	attemptNumber := 0
+	retryPending := false
+	retryAfter := time.Duration(0)
 	for selectionIndex, selection := range selections {
 		if remainingAttempts == 0 {
 			break
@@ -1012,12 +1015,30 @@ func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequ
 		}
 		for attempt := 0; attempt < selectionAttempts; attempt++ {
 			remainingAttempts--
+			attemptNumber++
+			if retryPending {
+				g.recordActivityAttempt(ctx, request, options, ActivityAttempt{
+					Attempt: attemptNumber, MaxAttempts: options.MaxAttempts,
+					Provider: selection.candidate.Provider, Model: request.Model,
+					Phase: ActivityAttemptRetry, RetryAfter: retryAfter,
+				})
+				retryPending = false
+				retryAfter = 0
+			}
 			response, generateErr := selection.adapter.Generate(ctx, selection.request)
 			if generateErr != nil {
 				lastErr = generateErr
 				g.recordProviderFailure(selection.key, generateErr)
 				var providerFailure *ProviderFailure
-				if !errors.As(generateErr, &providerFailure) || !providerFailure.OutcomeKnown {
+				knownProviderFailure := errors.As(generateErr, &providerFailure) && providerFailure.OutcomeKnown
+				retryCurrentProvider := knownProviderFailure && providerFailure.Retryable && attempt+1 < selectionAttempts
+				retryFallbackProvider := knownProviderFailure && providerFailure.Retryable && selectionIndex+1 < len(selections)
+				retryDelay := time.Duration(0)
+				if retryCurrentProvider {
+					retryDelay = g.retryDelay(selection.key)
+				}
+				g.recordActivityAttemptFailure(ctx, request, options, attemptNumber, options.MaxAttempts, selection.candidate.Provider, generateErr, retryCurrentProvider || retryFallbackProvider, retryDelay)
+				if !knownProviderFailure {
 					call.Status = ModelCallReconcile
 					call.CostMicros = incurred
 					call.LatencyMilliseconds = elapsedMilliseconds(startedAt, g.clock().UTC())
@@ -1030,7 +1051,9 @@ func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequ
 					break
 				}
 				if attempt+1 < selectionAttempts {
+					retryAfter = g.retryDelay(selection.key)
 					if waitErr := g.waitForRetry(ctx, selection.key, providerFailure); waitErr != nil {
+						g.recordActivityAttemptFailure(ctx, request, options, attemptNumber+1, options.MaxAttempts, selection.candidate.Provider, waitErr, false, 0)
 						call.Status = ModelCallFailedProvider
 						call.CostMicros = incurred
 						call.LatencyMilliseconds = elapsedMilliseconds(startedAt, g.clock().UTC())
@@ -1043,6 +1066,7 @@ func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequ
 						}
 						return NormalizedResponse{}, waitErr
 					}
+					retryPending = true
 					continue
 				}
 				break
@@ -1127,6 +1151,8 @@ func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequ
 			return response, nil
 		}
 		if selectionIndex+1 < len(selections) && providerFallbackAllowed(lastErr) {
+			retryPending = true
+			retryAfter = 0
 			continue
 		}
 		break
@@ -1163,22 +1189,24 @@ func (g *Gateway) waitForRetry(ctx context.Context, key string, failure *Provide
 	if failure == nil || !failure.Retryable {
 		return nil
 	}
+	if delay := g.retryDelay(key); delay > 0 {
+		return g.sleep(ctx, delay)
+	}
+	return nil
+}
+
+func (g *Gateway) retryDelay(key string) time.Duration {
 	g.mu.RLock()
 	circuit := g.circuits[key]
 	g.mu.RUnlock()
-	if !circuit.retryAt.IsZero() {
-		delay := time.Until(circuit.retryAt)
-		now := g.clock().UTC()
-		if circuit.retryAt.After(now) {
-			delay = circuit.retryAt.Sub(now)
-		} else {
-			delay = 0
-		}
-		if delay > 0 {
-			return g.sleep(ctx, delay)
-		}
+	if circuit.retryAt.IsZero() {
+		return 0
 	}
-	return nil
+	now := g.clock().UTC()
+	if !circuit.retryAt.After(now) {
+		return 0
+	}
+	return circuit.retryAt.Sub(now)
 }
 
 func (g *Gateway) generateSingle(ctx context.Context, request NormalizedRequest, options GenerateOptions) (NormalizedResponse, error) {
@@ -1250,13 +1278,31 @@ func (g *Gateway) generateSingle(ctx context.Context, request NormalizedRequest,
 	}
 	var lastErr error
 	var incurred int64
+	attemptNumber := 0
+	retryPending := false
+	retryAfter := time.Duration(0)
 	for attempt := 0; attempt < options.MaxAttempts; attempt++ {
+		attemptNumber++
+		if retryPending {
+			g.recordActivityAttempt(ctx, request, options, ActivityAttempt{
+				Attempt: attemptNumber, MaxAttempts: options.MaxAttempts,
+				Provider: options.Provider, Model: request.Model,
+				Phase: ActivityAttemptRetry, RetryAfter: retryAfter,
+			})
+			retryPending = false
+			retryAfter = 0
+		}
 		response, generateErr := adapter.Generate(ctx, request)
 		if generateErr != nil {
 			g.recordProviderFailure(key, generateErr)
 			var providerFailure *ProviderFailure
-			if errors.As(generateErr, &providerFailure) && providerFailure.OutcomeKnown && providerFailure.Retryable && attempt+1 < options.MaxAttempts {
+			knownProviderFailure := errors.As(generateErr, &providerFailure) && providerFailure.OutcomeKnown
+			retryCurrentProvider := knownProviderFailure && providerFailure.Retryable && attempt+1 < options.MaxAttempts
+			retryAfter = g.retryDelay(key)
+			g.recordActivityAttemptFailure(ctx, request, options, attemptNumber, options.MaxAttempts, options.Provider, generateErr, retryCurrentProvider, retryAfter)
+			if retryCurrentProvider {
 				if waitErr := g.waitForRetry(ctx, key, providerFailure); waitErr != nil {
+					g.recordActivityAttemptFailure(ctx, request, options, attemptNumber+1, options.MaxAttempts, options.Provider, waitErr, false, 0)
 					call.Status = ModelCallFailedProvider
 					call.CostMicros = incurred
 					call.LatencyMilliseconds = elapsedMilliseconds(startedAt, g.clock().UTC())
@@ -1269,6 +1315,7 @@ func (g *Gateway) generateSingle(ctx context.Context, request NormalizedRequest,
 					}
 					return NormalizedResponse{}, waitErr
 				}
+				retryPending = true
 				continue
 			}
 			disposition := ReservationDispositionReconcile

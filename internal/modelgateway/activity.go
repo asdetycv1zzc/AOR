@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -16,6 +17,35 @@ type ActivityRecorder interface {
 	Start(context.Context, NormalizedRequest, GenerateOptions, time.Time) error
 	AppendDelta(context.Context, NormalizedRequest, string, time.Time) error
 	Finish(context.Context, NormalizedRequest, GenerateOptions, NormalizedResponse, error, time.Time, time.Time) error
+}
+
+// ActivityAttemptRecorder is an optional extension for recorders that expose
+// provider attempts separately from the final model request summary. Keeping
+// it separate from ActivityRecorder preserves compatibility with existing
+// in-memory and test recorders.
+type ActivityAttemptRecorder interface {
+	RecordAttempt(context.Context, NormalizedRequest, GenerateOptions, ActivityAttempt, time.Time) error
+}
+
+type ActivityAttemptPhase string
+
+const (
+	ActivityAttemptFailure ActivityAttemptPhase = "FAILURE"
+	ActivityAttemptRetry   ActivityAttemptPhase = "RETRY"
+)
+
+// ActivityAttempt contains only already-redacted display data. Callers must
+// pass ErrorMessage from redactError and ErrorCode from activityErrorCode.
+type ActivityAttempt struct {
+	Attempt      int
+	MaxAttempts  int
+	Provider     string
+	Model        string
+	Phase        ActivityAttemptPhase
+	ErrorCode    string
+	ErrorMessage string
+	WillRetry    bool
+	RetryAfter   time.Duration
 }
 
 type ActivityIntervention struct {
@@ -91,6 +121,34 @@ func (recorder *PostgresActivityRecorder) Finish(ctx context.Context, request No
 		LatencyMS:    elapsedMilliseconds(startedAt, completedAt),
 		OutputSHA256: outputSHA256,
 		CreatedAt:    startedAt.UTC(), UpdatedAt: completedAt.UTC(),
+	})
+}
+
+func (recorder *PostgresActivityRecorder) RecordAttempt(ctx context.Context, request NormalizedRequest, options GenerateOptions, attempt ActivityAttempt, occurredAt time.Time) error {
+	if attempt.Attempt <= 0 || attempt.MaxAttempts <= 0 || attempt.Attempt > attempt.MaxAttempts || attempt.Provider == "" || attempt.Model == "" || occurredAt.IsZero() {
+		return errors.New("invalid model activity attempt")
+	}
+	if attempt.Phase != ActivityAttemptFailure && attempt.Phase != ActivityAttemptRetry {
+		return errors.New("invalid model activity attempt phase")
+	}
+	stateValue := projectactivity.StateFailed
+	id := modelAttemptActivityID(request.RequestID, attempt.Attempt, attempt.Phase)
+	content := attemptContent(attempt)
+	errorCode := attempt.ErrorCode
+	if attempt.Phase == ActivityAttemptRetry {
+		stateValue = projectactivity.StateCompleted
+		errorCode = ""
+	}
+	return recorder.store.Upsert(ctx, projectactivity.Message{
+		TenantID: request.TenantID, ProjectID: request.ProjectID,
+		ID: id, TaskID: request.TaskID,
+		// Attempt rows are activity events, not model-call identities. Leaving
+		// request_id empty avoids the model-call uniqueness constraint while the
+		// stable event ID retains the parent request binding.
+		RequestID: "", Flow: activityFlowForRole(request.Role),
+		Role: request.Role, Sender: projectactivity.SenderAgent, State: stateValue,
+		Content: content, ErrorCode: errorCode, Provider: attempt.Provider, Model: attempt.Model,
+		CreatedAt: occurredAt.UTC(), UpdatedAt: occurredAt.UTC(),
 	})
 }
 
@@ -171,6 +229,35 @@ func (g *Gateway) recordActivityFinish(ctx context.Context, request NormalizedRe
 	_ = g.activityRecorder.Finish(recordContext, request, options, response, resultErr, startedAt, g.clock().UTC())
 }
 
+func (g *Gateway) recordActivityAttempt(ctx context.Context, request NormalizedRequest, options GenerateOptions, attempt ActivityAttempt) {
+	if g.activityRecorder == nil {
+		return
+	}
+	recorder, ok := g.activityRecorder.(ActivityAttemptRecorder)
+	if !ok {
+		return
+	}
+	recordContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	_ = recorder.RecordAttempt(recordContext, request, options, attempt, g.clock().UTC())
+}
+
+func (g *Gateway) recordActivityAttemptFailure(ctx context.Context, request NormalizedRequest, options GenerateOptions, attempt, maxAttempts int, provider string, err error, willRetry bool, retryAfter time.Duration) {
+	if err == nil {
+		return
+	}
+	redacted := redactError(err)
+	message := ""
+	if redacted != nil {
+		message = redacted.Error()
+	}
+	g.recordActivityAttempt(ctx, request, options, ActivityAttempt{
+		Attempt: attempt, MaxAttempts: maxAttempts, Provider: provider, Model: request.Model,
+		Phase: ActivityAttemptFailure, ErrorCode: activityErrorCode(err), ErrorMessage: message,
+		WillRetry: willRetry, RetryAfter: retryAfter,
+	})
+}
+
 func (g *Gateway) claimActivityInterventions(ctx context.Context, request NormalizedRequest) ([]ActivityIntervention, error) {
 	if g.activityInterventions == nil {
 		return nil, nil
@@ -237,6 +324,34 @@ func claimedInterventionIDs(interventions []ActivityIntervention) []string {
 
 func modelActivityID(requestID string) string {
 	return "model:" + requestID
+}
+
+func modelAttemptActivityID(requestID string, attempt int, phase ActivityAttemptPhase) string {
+	if phase == ActivityAttemptRetry {
+		return fmt.Sprintf("model:%s:retry:%d", requestID, attempt)
+	}
+	return fmt.Sprintf("model:%s:attempt:%d", requestID, attempt)
+}
+
+func attemptContent(attempt ActivityAttempt) string {
+	prefix := fmt.Sprintf("Attempt %d/%d (%s/%s)", attempt.Attempt, attempt.MaxAttempts, attempt.Provider, attempt.Model)
+	if attempt.Phase == ActivityAttemptRetry {
+		if attempt.RetryAfter > 0 {
+			return fmt.Sprintf("%s retry started after %s backoff.", prefix, attempt.RetryAfter)
+		}
+		return prefix + " retry started."
+	}
+	message := strings.TrimSpace(attempt.ErrorMessage)
+	if message == "" {
+		message = "provider request failed"
+	}
+	if attempt.WillRetry {
+		if attempt.RetryAfter > 0 {
+			return fmt.Sprintf("%s failed: %s; retry scheduled in %s.", prefix, message, attempt.RetryAfter)
+		}
+		return fmt.Sprintf("%s failed: %s; retry scheduled.", prefix, message)
+	}
+	return fmt.Sprintf("%s failed: %s; no retry.", prefix, message)
 }
 
 func activityContinuationRequestID(requestID string) string {
