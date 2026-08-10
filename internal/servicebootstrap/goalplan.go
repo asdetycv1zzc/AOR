@@ -15,14 +15,16 @@ import (
 	"github.com/akimisaka/aor/internal/leaseauthority"
 	"github.com/akimisaka/aor/internal/orchestrator"
 	"github.com/akimisaka/aor/internal/runtimeconfig"
+	"github.com/akimisaka/aor/internal/toolchain"
 	aorworkflow "github.com/akimisaka/aor/internal/workflow"
 )
 
 const goalPlanAgentLimit = 8
 
 type configuredProjectAgents struct {
-	goalPlan controlapi.GoalPlanServices
-	curator  *knowledgecurator.Service
+	goalPlan   controlapi.GoalPlanServices
+	curator    *knowledgecurator.Service
+	toolchains *toolchain.Filesystem
 }
 
 func configuredGoalPlanServices(config runtimeconfig.Config, store *aorworkflow.ProjectLifecycleStore, leases *leaseauthority.Service, authorizer authz.PolicyEvaluator, knowledgeService knowledgecurator.KnowledgeService, knowledgeUpdates knowledge.KnowledgeUpdatedLookup) (configuredProjectAgents, error) {
@@ -32,6 +34,10 @@ func configuredGoalPlanServices(config runtimeconfig.Config, store *aorworkflow.
 	routes, err := configuredGoalPlanRoutes(config.GoalPlan)
 	if err != nil {
 		return configuredProjectAgents{}, err
+	}
+	toolchains, err := toolchain.NewFilesystem(config.ToolchainRoot)
+	if err != nil {
+		return configuredProjectAgents{}, runtimeconfig.ErrInvalidConfiguration
 	}
 	resolveContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	gateway, err := configuredModelGatewayClient(resolveContext, config, credentials.NewSecretResolver(os.Getenv("AOR_SECRET_ROOT")))
@@ -62,7 +68,7 @@ func configuredGoalPlanServices(config runtimeconfig.Config, store *aorworkflow.
 	}
 	preparer, err := goalplan.NewAuthoritativeRuntimePreparer(goalplan.RuntimePreparerConfig{
 		Artifacts: artifacts, Projects: projects, Tasks: projects, Leases: leases,
-		Routes: routes, LeaseTTL: 5 * time.Minute, Clock: time.Now,
+		Routes: routes, Toolchains: toolchains, LeaseTTL: 5 * time.Minute, Clock: time.Now,
 	})
 	if err != nil {
 		return configuredProjectAgents{}, err
@@ -88,7 +94,7 @@ func configuredGoalPlanServices(config runtimeconfig.Config, store *aorworkflow.
 	}
 	return configuredProjectAgents{
 		goalPlan: controlapi.GoalPlanServices{Negotiator: negotiator, Planner: planner},
-		curator:  curator,
+		curator:  curator, toolchains: toolchains,
 	}, nil
 }
 

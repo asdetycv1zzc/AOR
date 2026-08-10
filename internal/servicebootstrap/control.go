@@ -251,6 +251,7 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 		DecisionReportSigner: decisionReportSigner,
 		Eraser:               artifactProjectEraser{catalog: artifactCatalog}, Leases: leaseService,
 		GoalPlan: projectAgents.goalPlan, ClassroomCore: config.DeploymentProfile == "TEST",
+		Toolchains:     projectAgents.toolchains,
 		ModelProviders: modelProviders, DefaultModelRoutes: defaultModelRoutes, Clock: time.Now,
 		ProviderSettings: providerSettings, ProviderAdapter: modelproviders.AdapterFactory{},
 		SamplingSettings: samplingSettings,

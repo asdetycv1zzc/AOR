@@ -11,39 +11,32 @@ import (
 	"time"
 
 	"github.com/akimisaka/aor/internal/repository"
+	"github.com/akimisaka/aor/internal/toolchain"
 	"github.com/akimisaka/aor/pkg/contracts"
 )
 
 const moduleTestOutputLimit = 1 << 20
 
-// ModuleTestCheck runs one deployment-configured argv against the immutable
-// submission commit. The command is never interpreted by a shell.
+// ModuleTestCheck runs the plan-owned verification entrypoint from the
+// immutable submission commit.
 type ModuleTestCheck struct {
 	repositoryRoot string
 	workRoot       string
-	argv           []string
+	toolchains     toolchain.Resolver
 	timeout        time.Duration
 }
 
-func NewModuleTestCheck(repositoryRoot, workRoot string, argv []string, timeout time.Duration) (*ModuleTestCheck, error) {
-	if !validAbsoluteDirectoryRoot(repositoryRoot) || !validAbsoluteDirectoryRoot(workRoot) || filepath.Clean(repositoryRoot) == filepath.Clean(workRoot) || len(argv) == 0 || argv[0] == "" || timeout <= 0 {
+func NewModuleTestCheck(repositoryRoot, workRoot string, toolchains toolchain.Resolver, timeout time.Duration) (*ModuleTestCheck, error) {
+	if !validAbsoluteDirectoryRoot(repositoryRoot) || !validAbsoluteDirectoryRoot(workRoot) || filepath.Clean(repositoryRoot) == filepath.Clean(workRoot) || toolchains == nil || timeout <= 0 {
 		return nil, ErrInvalidInput
 	}
-	if isModuleTestShell(argv[0]) {
-		return nil, ErrInvalidInput
-	}
-	for _, value := range argv {
-		if value == "" || strings.ContainsRune(value, '\x00') {
-			return nil, ErrInvalidInput
-		}
-	}
-	return &ModuleTestCheck{repositoryRoot: repositoryRoot, workRoot: workRoot, argv: append([]string(nil), argv...), timeout: timeout}, nil
+	return &ModuleTestCheck{repositoryRoot: repositoryRoot, workRoot: workRoot, toolchains: toolchains, timeout: timeout}, nil
 }
 
 func (check *ModuleTestCheck) ID() string { return "module-tests" }
 
 func (check *ModuleTestCheck) Run(ctx context.Context, input DeterministicInput) CheckResult {
-	if check == nil || ctx == nil || ctx.Err() != nil || !commitID(input.Manifest.HeadCommit) || input.Manifest.ProjectID == "" || input.TenantID == "" {
+	if check == nil || ctx == nil || ctx.Err() != nil || !commitID(input.Manifest.HeadCommit) || input.Manifest.ProjectID == "" || input.TenantID == "" || input.ModuleSpec == nil || input.ModuleSpec.Validate() != nil || input.ModuleSpec.VerificationEntrypoint == "" || len(input.ModuleSpec.ToolchainIDs) == 0 {
 		return moduleTestFailure(StatusError, "invalid module test input", "module-test-input")
 	}
 	if pathResult := (pathCheck{}).Run(ctx, cloneDeterministicInput(input)); pathResult.Status != StatusPass {
@@ -59,7 +52,18 @@ func (check *ModuleTestCheck) Run(ctx context.Context, input DeterministicInput)
 	if err := os.MkdirAll(check.workRoot, 0o700); err != nil {
 		return moduleTestFailure(StatusError, "module test work root is unavailable", "module-test-work-root")
 	}
-	environment := moduleTestEnvironment(check.workRoot)
+	tools, err := check.toolchains.Resolve(ctx, input.ModuleSpec.ToolchainIDs)
+	if err != nil {
+		return moduleTestFailure(StatusError, "selected module toolchains are unavailable", "module-test-toolchains")
+	}
+	if err := toolchain.ValidateResolved(tools, input.ModuleSpec.Toolchains); err != nil {
+		return moduleTestFailure(StatusError, "selected module toolchain versions no longer match the approved specification", "module-test-toolchain-version")
+	}
+	binPaths, err := toolchain.BinPaths(check.toolchains.Root(), tools)
+	if err != nil {
+		return moduleTestFailure(StatusError, "selected module toolchains are invalid", "module-test-toolchains")
+	}
+	environment := moduleTestEnvironment(check.workRoot, check.toolchains.Root(), binPaths)
 	root, err := os.MkdirTemp(check.workRoot, "aor-module-test-")
 	if err != nil {
 		return moduleTestFailure(StatusError, "module test workspace could not be created", "module-test-workspace")
@@ -81,9 +85,18 @@ func (check *ModuleTestCheck) Run(ctx context.Context, input DeterministicInput)
 		return moduleTestFailure(StatusError, "submission commit could not be checked out", "module-test-checkout")
 	}
 
+	entrypoint := filepath.Join(workspace, filepath.FromSlash(input.ModuleSpec.VerificationEntrypoint))
+	entrypointInfo, err := os.Lstat(entrypoint)
+	if err != nil || !entrypointInfo.Mode().IsRegular() || entrypointInfo.Mode()&os.ModeSymlink != 0 {
+		return moduleTestFailure(StatusFail, "planned verification entrypoint is missing from the submission", "module-test-entrypoint")
+	}
+	argv, err := moduleTestCommand(input.Platform, input.ModuleSpec.VerificationEntrypoint)
+	if err != nil {
+		return moduleTestFailure(StatusError, "planned verification entrypoint cannot run on this worker", "module-test-platform")
+	}
 	testContext, cancel := context.WithTimeout(ctx, check.timeout)
 	defer cancel()
-	command := exec.CommandContext(testContext, check.argv[0], check.argv[1:]...)
+	command := exec.CommandContext(testContext, argv[0], argv[1:]...)
 	command.Dir = workspace
 	command.Env = environment
 	var stdout, stderr moduleTestOutput
@@ -102,36 +115,27 @@ func (check *ModuleTestCheck) Run(ctx context.Context, input DeterministicInput)
 		runErr = errors.New("module test output exceeded the configured limit")
 	}
 	encodedResult, marshalErr := json.Marshal(struct {
-		Command  []string `json:"command"`
-		ExitCode int      `json:"exitCode"`
-		Status   string   `json:"status"`
-	}{Command: append([]string(nil), check.argv...), ExitCode: moduleTestExitCode(runErr), Status: string(status)})
+		Command    []string                  `json:"command"`
+		Toolchains []contracts.VersionedTool `json:"toolchains"`
+		ExitCode   int                       `json:"exitCode"`
+		Status     string                    `json:"status"`
+	}{Command: append([]string(nil), argv...), Toolchains: append([]contracts.VersionedTool(nil), input.ModuleSpec.Toolchains...), ExitCode: moduleTestExitCode(runErr), Status: string(status)})
 	if marshalErr != nil {
 		return moduleTestFailure(StatusError, "module test result could not be encoded", "module-test-result")
 	}
 	checkResult := CheckResult{Status: status, Stdout: stdout.Bytes(), Stderr: stderr.Bytes(), Result: encodedResult}
 	if status != StatusPass {
-		reason := "configured module test failed"
+		reason := "planned module verification failed"
 		if testContext.Err() != nil {
 			reason = testContext.Err().Error()
 		}
-		checkResult.Findings = []contracts.AuditFinding{deterministicFinding(contracts.FindingHigh, "TEST", check.ID(), "", "module-test", "test-failed", "the configured module test passes", reason, "fix the implementation and rerun the configured test")}
+		checkResult.Findings = []contracts.AuditFinding{deterministicFinding(contracts.FindingHigh, "TEST", check.ID(), input.ModuleSpec.VerificationEntrypoint, "module-test", "test-failed", "the planned module verification passes", reason, "fix the implementation or verification framework and rerun the audit")}
 	}
 	return checkResult
 }
 
 func validAbsoluteDirectoryRoot(value string) bool {
 	return value != "" && filepath.IsAbs(value) && filepath.Clean(value) == value && !strings.ContainsRune(value, '\x00')
-}
-
-func isModuleTestShell(value string) bool {
-	base := strings.ToLower(filepath.Base(value))
-	switch base {
-	case "sh", "bash", "dash", "zsh", "fish", "cmd", "cmd.exe", "powershell", "powershell.exe":
-		return true
-	default:
-		return false
-	}
 }
 
 func runModuleGit(ctx context.Context, directory string, environment []string, arguments ...string) error {
@@ -154,13 +158,34 @@ func runModuleGitOutput(ctx context.Context, directory string, environment []str
 	return string(stdout.Bytes()), nil
 }
 
-func moduleTestEnvironment(workRoot string) []string {
+func moduleTestEnvironment(workRoot, toolchainRoot string, toolchainBinPaths []string) []string {
 	pathValue := os.Getenv("PATH")
-	environment := []string{"HOME=" + workRoot, "TMPDIR=" + workRoot, "LC_ALL=C", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_SYSTEM=/dev/null", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0", "GIT_NO_LAZY_FETCH=1", "GIT_PROTOCOL_FROM_USER=0", "GOTOOLCHAIN=local", "GOFLAGS=-mod=readonly", "GOMAXPROCS=1", "GOMEMLIMIT=384MiB"}
+	environment := []string{"HOME=" + workRoot, "TMPDIR=" + workRoot, "LC_ALL=C", "AOR_TOOLCHAIN_ROOT=" + toolchainRoot, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_SYSTEM=/dev/null", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0", "GIT_NO_LAZY_FETCH=1", "GIT_PROTOCOL_FROM_USER=0"}
+	pathParts := append([]string(nil), toolchainBinPaths...)
 	if pathValue != "" {
-		environment = append(environment, "PATH="+pathValue)
+		pathParts = append(pathParts, pathValue)
+	}
+	if len(pathParts) != 0 {
+		environment = append(environment, "PATH="+strings.Join(pathParts, string(os.PathListSeparator)))
 	}
 	return environment
+}
+
+func moduleTestCommand(platform contracts.ExecutionPlatform, entrypoint string) ([]string, error) {
+	switch platform {
+	case contracts.PlatformLinux:
+		if !strings.HasSuffix(strings.ToLower(entrypoint), ".sh") {
+			return nil, ErrInvalidInput
+		}
+		return []string{"/bin/sh", entrypoint}, nil
+	case contracts.PlatformWindows:
+		if !strings.HasSuffix(strings.ToLower(entrypoint), ".ps1") {
+			return nil, ErrInvalidInput
+		}
+		return []string{"powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", entrypoint}, nil
+	default:
+		return nil, ErrInvalidInput
+	}
 }
 
 func moduleTestExitCode(err error) int {
@@ -175,7 +200,7 @@ func moduleTestExitCode(err error) int {
 }
 
 func moduleTestFailure(status CheckStatus, reason, code string) CheckResult {
-	return CheckResult{Status: status, Findings: []contracts.AuditFinding{deterministicFinding(contracts.FindingHigh, "TEST", "module-tests", "", "module-test", code, "the configured module test can run against the immutable submission", reason, "repair the test environment or implementation")}}
+	return CheckResult{Status: status, Findings: []contracts.AuditFinding{deterministicFinding(contracts.FindingHigh, "TEST", "module-tests", "", "module-test", code, "the planned module verification can run against the immutable submission", reason, "repair the verification framework, toolchain inventory, or implementation")}}
 }
 
 type moduleTestOutput struct {

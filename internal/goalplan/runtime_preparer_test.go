@@ -12,6 +12,7 @@ import (
 	"github.com/akimisaka/aor/internal/authz"
 	"github.com/akimisaka/aor/internal/leaseauthority"
 	"github.com/akimisaka/aor/internal/state"
+	"github.com/akimisaka/aor/internal/toolchain"
 	"github.com/akimisaka/aor/pkg/aop"
 	"github.com/akimisaka/aor/pkg/contracts"
 	"github.com/akimisaka/aor/prompts"
@@ -44,7 +45,12 @@ func TestAuthoritativeRuntimePreparerBuildsInitialGoalInvocation(t *testing.T) {
 		t.Fatalf("goal envelope = %#v", prepared.Declaration.Envelope)
 	}
 	items := prepared.Declaration.ContextManifest.Items
-	if len(items) != 1 || items[0].Kind != agentruntime.ContextUserInput || items[0].Trust != agentruntime.TrustExternalUntrusted || items[0].Content != string(message.Content) {
+	foundInventory, foundMessage := false, false
+	for _, item := range items {
+		foundInventory = foundInventory || item.Reference == "aor://host/toolchains" && item.Trust == agentruntime.TrustCurated
+		foundMessage = foundMessage || item.Kind == agentruntime.ContextUserInput && item.Trust == agentruntime.TrustExternalUntrusted && item.Content == string(message.Content)
+	}
+	if len(items) != 2 || !foundInventory || !foundMessage {
 		t.Fatalf("goal context = %#v", items)
 	}
 	if issuer.request.Action != authz.ActionModelGenerate || issuer.request.TaskID != "" || issuer.request.BudgetAccountID != project.ID || issuer.request.ParameterDigest == "" {
@@ -291,6 +297,12 @@ type runtimePreparerReader struct {
 	task    state.ModuleTask
 }
 
+type runtimeToolchainSource struct{}
+
+func (runtimeToolchainSource) Snapshot(context.Context) (toolchain.Inventory, error) {
+	return toolchain.Inventory{Tools: []toolchain.InstalledTool{{SchemaVersion: 1, ID: "go-1.26.5-linux-amd64", Kind: contracts.ToolchainCompiler, Name: "Go", Version: "1.26.5", Platform: contracts.PlatformLinux, Architecture: "amd64", Languages: []string{"Go"}, BinDirs: []string{"bin"}, Executables: []toolchain.Executable{{Name: "go", Path: "bin/go"}}}}}, nil
+}
+
 func (reader runtimePreparerReader) Project(_ context.Context, tenantID, projectID string) (state.Project, bool, error) {
 	return reader.project, reader.project.TenantID == tenantID && reader.project.ID == projectID, nil
 }
@@ -333,7 +345,7 @@ func newRuntimePreparer(t *testing.T, now time.Time, project state.Project, task
 	t.Helper()
 	reader := runtimePreparerReader{project: project, task: task}
 	route := ModelRoute{
-		Provider: "openai-primary", Model: "model-test", MaxOutputTokens: 1024,
+		Provider: "openai-primary", Model: "model-test", ReasoningEffort: "medium", MaxOutputTokens: 1024,
 		Temperature: 0, ProviderPolicy: "default", CachePolicy: "NO_STORE",
 		WorstCaseCostMicros: 1000, MaxAttempts: 1,
 	}
@@ -344,7 +356,7 @@ func newRuntimePreparer(t *testing.T, now time.Time, project state.Project, task
 	}
 	preparer, err := NewAuthoritativeRuntimePreparer(RuntimePreparerConfig{
 		Artifacts: runtimePreparerArtifacts{values: artifacts}, Projects: reader, Tasks: reader,
-		Leases: issuer, Routes: routes, LeaseTTL: 5 * time.Minute, Clock: func() time.Time { return now },
+		Leases: issuer, Routes: routes, Toolchains: runtimeToolchainSource{}, LeaseTTL: 5 * time.Minute, Clock: func() time.Time { return now },
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -168,7 +168,7 @@ func (n *Negotiator) Approve(ctx context.Context, request ApprovalRequest) (orch
 		return orchestrator.ProjectOutcome{}, ErrArtifactNotFound
 	}
 	goal, err := decodeGoalArtifact(artifact)
-	if err != nil || goal.ContentSHA256 != request.GoalRef.SHA256 || len(goal.Content.UnresolvedItems) != 0 {
+	if err != nil || goal.ContentSHA256 != request.GoalRef.SHA256 || goal.Content.GoalSpecVersion != 2 || goal.Content.Toolchain == nil || goal.Content.Toolchain.RequiresInstallation() || len(goal.Content.UnresolvedItems) != 0 {
 		return orchestrator.ProjectOutcome{}, ErrInvalidRequest
 	}
 	approvedBy := &contracts.ApprovalActor{ActorID: request.UserPrincipalID, ApprovedAt: approval.IssuedAt.UTC().Format(time.RFC3339Nano)}
@@ -279,7 +279,7 @@ func normalizeGoalRecord(record AgentRecord, projectID string, version int, at t
 	if err := decodeStrict(record.Payload, &content); err != nil {
 		return contracts.GoalSpec{}, nil, ErrAgentOutput
 	}
-	content.GoalSpecVersion = 1
+	content.GoalSpecVersion = 2
 	content.ProjectID = projectID
 	content.Version = version
 	content.CreatedAt = at.UTC().Format(time.RFC3339Nano)

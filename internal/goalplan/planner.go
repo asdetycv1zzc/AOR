@@ -57,12 +57,16 @@ func (p *Planner) BuildAndPublish(ctx context.Context, request PlanningRequest) 
 		}
 		return PlanningResult{}, ErrArtifactNotFound
 	}
-	if _, err := decodeGoalArtifact(goalArtifact); err != nil {
+	goal, err := decodeGoalArtifact(goalArtifact)
+	if err != nil {
 		return PlanningResult{}, err
 	}
 
 	plan, planArtifact, err := p.loadOrGeneratePlan(ctx, request, goalArtifact)
 	if err != nil {
+		return PlanningResult{}, err
+	}
+	if err := validatePlanToolchains(plan, goal); err != nil {
 		return PlanningResult{}, err
 	}
 	if len(plan.Modules) > maximumPlanModules || len(request.ModuleTaskIDs) != len(plan.Modules) || len(request.AttemptSeriesIDs) != len(plan.Modules) || len(request.ModuleSpecVersions) != len(plan.Modules) {
@@ -108,7 +112,7 @@ func (p *Planner) BuildAndPublish(ctx context.Context, request PlanningRequest) 
 				return PlanningResult{}, startErr
 			}
 		}
-		moduleSpec, artifact, moduleErr := p.loadOrGenerateModule(ctx, request, goalArtifact, planArtifact, plan, module, retain)
+		moduleSpec, artifact, moduleErr := p.loadOrGenerateModule(ctx, request, goal, goalArtifact, planArtifact, plan, module, retain)
 		if moduleErr != nil {
 			return PlanningResult{}, moduleErr
 		}
@@ -290,12 +294,12 @@ func (p *Planner) loadOrGeneratePlan(ctx context.Context, request PlanningReques
 	return plan, artifact, err
 }
 
-func (p *Planner) loadOrGenerateModule(ctx context.Context, request PlanningRequest, goal, planArtifact SpecArtifact, plan contracts.PlanSpec, module contracts.PlanModule, retain bool) (contracts.ModuleSpec, SpecArtifact, error) {
+func (p *Planner) loadOrGenerateModule(ctx context.Context, request PlanningRequest, goal contracts.GoalSpec, goalArtifact, planArtifact SpecArtifact, plan contracts.PlanSpec, module contracts.PlanModule, retain bool) (contracts.ModuleSpec, SpecArtifact, error) {
 	moduleVersion := request.ModuleSpecVersions[module.ModuleID]
 	if artifact, found, err := p.artifacts.Get(ctx, request.TenantID, request.ProjectID, ArtifactModuleSpec, module.ModuleID, moduleVersion); err != nil {
 		return contracts.ModuleSpec{}, SpecArtifact{}, err
 	} else if found {
-		moduleSpec, decodeErr := decodeModuleArtifact(artifact, plan, module, !retain)
+		moduleSpec, decodeErr := decodeModuleArtifact(artifact, goal, plan, module, !retain)
 		return moduleSpec, artifact, decodeErr
 	} else if retain {
 		return contracts.ModuleSpec{}, SpecArtifact{}, ErrArtifactNotFound
@@ -304,12 +308,12 @@ func (p *Planner) loadOrGenerateModule(ctx context.Context, request PlanningRequ
 	record, err := p.invoker.Invoke(ctx, AgentInvocation{
 		InvocationID: request.IdempotencyKey + ":module-planner:" + module.ModuleID, TenantID: request.TenantID, ProjectID: request.ProjectID,
 		TaskID: request.ModuleTaskIDs[module.ModuleID], Role: agentruntime.RoleModulePlanner, Stage: "MODULE_SPEC",
-		Inputs: []ArtifactPointer{artifactPointer(goal), artifactPointer(planArtifact)}, Payload: payload,
+		Inputs: []ArtifactPointer{artifactPointer(goalArtifact), artifactPointer(planArtifact)}, Payload: payload,
 	})
 	if err != nil {
 		return contracts.ModuleSpec{}, SpecArtifact{}, err
 	}
-	moduleSpec, content, err := normalizeModuleRecord(record, request.ProjectID, plan, module, moduleVersion)
+	moduleSpec, content, err := normalizeModuleRecord(record, request.ProjectID, goal, plan, module, moduleVersion)
 	if err != nil {
 		return contracts.ModuleSpec{}, SpecArtifact{}, err
 	}
@@ -335,7 +339,7 @@ func normalizePlanRecord(record AgentRecord, projectID string, goalRef contracts
 	if len(plan.Modules) > maximumPlanModules {
 		return contracts.PlanSpec{}, nil, ErrAgentOutput
 	}
-	if err := validatePlanShape(plan); err != nil || validatePlanOwnership(plan) != nil {
+	if err := validatePlanShape(plan, true); err != nil || validatePlanOwnership(plan) != nil {
 		return contracts.PlanSpec{}, nil, ErrAgentOutput
 	}
 	content, err := json.Marshal(plan)
@@ -356,9 +360,76 @@ func normalizePlanRecord(record AgentRecord, projectID string, goalRef contracts
 	return plan, content, nil
 }
 
-func normalizeModuleRecord(record AgentRecord, projectID string, plan contracts.PlanSpec, planned contracts.PlanModule, moduleVersion int) (contracts.ModuleSpec, []byte, error) {
+func validatePlanToolchains(plan contracts.PlanSpec, goal contracts.GoalSpec) error {
+	if goal.Content.GoalSpecVersion == 1 {
+		for _, module := range plan.Modules {
+			if len(module.ToolchainIDs) != 0 || module.VerificationEntrypoint != "" {
+				return ErrAgentOutput
+			}
+		}
+		return nil
+	}
+	if goal.Content.GoalSpecVersion != 2 || goal.Content.Toolchain == nil {
+		return ErrAgentOutput
+	}
+	installed := make(map[string]contracts.VersionedTool, len(goal.Content.Toolchain.Tools))
+	for _, tool := range goal.Content.Toolchain.Tools {
+		if tool.Source != contracts.ToolchainInstalled || tool.InventoryID == "" {
+			return ErrAgentOutput
+		}
+		installed[tool.InventoryID] = tool
+	}
+	for _, module := range plan.Modules {
+		if len(module.ToolchainIDs) == 0 {
+			return ErrAgentOutput
+		}
+		seen := make(map[string]struct{}, len(module.ToolchainIDs))
+		for _, id := range module.ToolchainIDs {
+			tool, found := installed[id]
+			if !found || tool.Platform != module.ExecutionPlatform {
+				return ErrAgentOutput
+			}
+			if _, duplicate := seen[id]; duplicate {
+				return ErrAgentOutput
+			}
+			seen[id] = struct{}{}
+		}
+	}
+	return nil
+}
+
+func selectedModuleToolchains(goal contracts.GoalSpec, planned contracts.PlanModule) ([]contracts.VersionedTool, error) {
+	if goal.Content.Toolchain == nil {
+		return nil, ErrAgentOutput
+	}
+	installed := make(map[string]contracts.VersionedTool, len(goal.Content.Toolchain.Tools))
+	for _, selected := range goal.Content.Toolchain.Tools {
+		if selected.Source != contracts.ToolchainInstalled || selected.InventoryID == "" {
+			return nil, ErrAgentOutput
+		}
+		installed[selected.InventoryID] = selected
+	}
+	tools := make([]contracts.VersionedTool, 0, len(planned.ToolchainIDs))
+	for _, id := range planned.ToolchainIDs {
+		selected, found := installed[id]
+		if !found || selected.Platform != planned.ExecutionPlatform {
+			return nil, ErrAgentOutput
+		}
+		tools = append(tools, selected)
+	}
+	if len(tools) == 0 {
+		return nil, ErrAgentOutput
+	}
+	return tools, nil
+}
+
+func normalizeModuleRecord(record AgentRecord, projectID string, goal contracts.GoalSpec, plan contracts.PlanSpec, planned contracts.PlanModule, moduleVersion int) (contracts.ModuleSpec, []byte, error) {
 	if record.RunID == "" || record.AgentInstanceID == "" || record.Role != agentruntime.RoleModulePlanner || len(record.Payload) == 0 {
 		return contracts.ModuleSpec{}, nil, ErrAgentOutput
+	}
+	selectedToolchains, err := selectedModuleToolchains(goal, planned)
+	if err != nil {
+		return contracts.ModuleSpec{}, nil, err
 	}
 	var module contracts.ModuleSpec
 	if err := decodeStrict(record.Payload, &module); err != nil {
@@ -376,6 +447,9 @@ func normalizeModuleRecord(record AgentRecord, projectID string, plan contracts.
 	module.ForbiddenPaths = cloneStrings(planned.ForbiddenPaths)
 	module.Interfaces = cloneStrings(planned.PublicInterfaces)
 	module.AcceptanceCriteria = cloneStrings(planned.AcceptanceCriteria)
+	module.ToolchainIDs = cloneStrings(planned.ToolchainIDs)
+	module.Toolchains = append([]contracts.VersionedTool(nil), selectedToolchains...)
+	module.VerificationEntrypoint = planned.VerificationEntrypoint
 	module.Responsibilities = prependUnique(planned.Responsibility, module.Responsibilities)
 	module.SHA256 = ""
 	if err := validateModuleShape(module); err != nil {
@@ -401,15 +475,29 @@ func normalizeModuleRecord(record AgentRecord, projectID string, plan contracts.
 
 func decodePlanArtifact(artifact SpecArtifact, goalRef contracts.SpecRef) (contracts.PlanSpec, error) {
 	var plan contracts.PlanSpec
-	if err := decodeStrict(artifact.Content, &plan); err != nil || contracts.ValidatePlanJSON(artifact.Content) != nil || plan.SHA256 != artifact.ContentSHA256 || plan.GoalSpecRef != goalRef || len(plan.Modules) > maximumPlanModules || validatePlanShape(plan) != nil || validatePlanOwnership(plan) != nil {
+	if err := decodeStrict(artifact.Content, &plan); err != nil || contracts.ValidatePlanJSON(artifact.Content) != nil || plan.SHA256 != artifact.ContentSHA256 || plan.GoalSpecRef != goalRef || len(plan.Modules) > maximumPlanModules || validatePlanShape(plan, false) != nil || validatePlanOwnership(plan) != nil {
 		return contracts.PlanSpec{}, ErrAgentOutput
 	}
 	return plan, nil
 }
 
-func decodeModuleArtifact(artifact SpecArtifact, plan contracts.PlanSpec, planned contracts.PlanModule, requireCurrentPlan bool) (contracts.ModuleSpec, error) {
+func decodeModuleArtifact(artifact SpecArtifact, goal contracts.GoalSpec, plan contracts.PlanSpec, planned contracts.PlanModule, requireCurrentPlan bool) (contracts.ModuleSpec, error) {
+	legacyGoal := goal.Content.GoalSpecVersion == 1
+	var selectedToolchains []contracts.VersionedTool
+	if !legacyGoal {
+		var err error
+		selectedToolchains, err = selectedModuleToolchains(goal, planned)
+		if err != nil {
+			return contracts.ModuleSpec{}, err
+		}
+	}
 	var module contracts.ModuleSpec
 	if err := decodeStrict(artifact.Content, &module); err != nil || contracts.ValidateModuleJSON(artifact.Content) != nil || module.SHA256 != artifact.ContentSHA256 || module.ProjectID != plan.ProjectID || module.PlanVersion > plan.PlanSpecVersion || requireCurrentPlan && module.PlanVersion != plan.PlanSpecVersion || module.ModuleID != planned.ModuleID || module.ExecutionPlatform != planned.ExecutionPlatform || module.SandboxLevel != planned.SandboxLevel || !slices.Equal(module.Dependencies, planned.Dependencies) || !slices.Equal(module.AllowedPaths, planned.OwnedPaths) || !slices.Equal(module.ForbiddenPaths, planned.ForbiddenPaths) || !slices.Equal(module.Interfaces, planned.PublicInterfaces) || !slices.Equal(module.AcceptanceCriteria, planned.AcceptanceCriteria) {
+		return contracts.ModuleSpec{}, ErrAgentOutput
+	}
+	verificationMatches := legacyGoal && len(module.ToolchainIDs) == 0 && len(module.Toolchains) == 0 && module.VerificationEntrypoint == "" ||
+		!legacyGoal && slices.Equal(module.ToolchainIDs, planned.ToolchainIDs) && slices.Equal(module.Toolchains, selectedToolchains) && module.VerificationEntrypoint == planned.VerificationEntrypoint
+	if !verificationMatches {
 		return contracts.ModuleSpec{}, ErrAgentOutput
 	}
 	return module, nil

@@ -31,7 +31,7 @@ func decodeStrict(input []byte, target any) error {
 }
 
 func validateGoalContent(content contracts.GoalContent) error {
-	if content.GoalSpecVersion != 1 || content.ProjectID == "" || content.Version < 1 || strings.TrimSpace(content.Title) == "" || strings.TrimSpace(content.Summary) == "" || strings.TrimSpace(content.ProblemStatement) == "" {
+	if content.GoalSpecVersion != 2 || content.ProjectID == "" || content.Version < 1 || strings.TrimSpace(content.Title) == "" || strings.TrimSpace(content.Summary) == "" || strings.TrimSpace(content.ProblemStatement) == "" {
 		return ErrAgentOutput
 	}
 	if content.BusinessOutcomes == nil || content.Scope.Included == nil || content.Scope.Excluded == nil || content.UserPersonas == nil || content.FunctionalRequirements == nil || content.NonFunctionalRequirements.Security == nil || content.NonFunctionalRequirements.Privacy == nil || content.NonFunctionalRequirements.Performance == nil || content.NonFunctionalRequirements.Reliability == nil || content.NonFunctionalRequirements.Operability == nil || content.Constraints == nil || content.Assumptions == nil || content.Decisions == nil || content.UnresolvedItems == nil || content.AcceptanceCriteria == nil || content.HumanApprovalPoints == nil || content.DeploymentTargets == nil || content.SourceReferences == nil {
@@ -44,6 +44,9 @@ func validateGoalContent(content contracts.GoalContent) error {
 		return ErrAgentOutput
 	}
 	if content.DataClassification != contracts.DataPublic && content.DataClassification != contracts.DataInternal && content.DataClassification != contracts.DataConfidential && content.DataClassification != contracts.DataRestricted {
+		return ErrAgentOutput
+	}
+	if content.Toolchain == nil || content.Toolchain.Validate() != nil || content.Toolchain.RequiresInstallation() && len(content.UnresolvedItems) == 0 {
 		return ErrAgentOutput
 	}
 	seen := make(map[string]bool)
@@ -133,6 +136,22 @@ func validatePlanOwnership(plan contracts.PlanSpec) error {
 			seenPaths[clean] = true
 			owned = append(owned, owner{module: module.ModuleID, path: clean})
 		}
+		if module.VerificationEntrypoint != "" || module.ToolchainIDs != nil {
+			entrypoint, ok := cleanOwnedPath(module.VerificationEntrypoint)
+			if !ok || strings.ContainsAny(entrypoint, "*?[") {
+				return ErrOwnershipConflict
+			}
+			entrypointOwned := false
+			for ownedPath := range seenPaths {
+				if ownedPathCovers(ownedPath, entrypoint) {
+					entrypointOwned = true
+					break
+				}
+			}
+			if !entrypointOwned {
+				return ErrOwnershipConflict
+			}
+		}
 		for _, rawPath := range module.ForbiddenPaths {
 			clean, ok := cleanForbiddenPath(rawPath)
 			if !ok {
@@ -166,7 +185,7 @@ func validatePlanOwnership(plan contracts.PlanSpec) error {
 	return nil
 }
 
-func validatePlanShape(plan contracts.PlanSpec) error {
+func validatePlanShape(plan contracts.PlanSpec, requireToolchains bool) error {
 	if plan.Architecture.Components == nil || plan.Architecture.DataFlows == nil || plan.Architecture.TrustBoundaries == nil || plan.Architecture.DeploymentUnits == nil || plan.QualityAttributes == nil || plan.Modules == nil || plan.IntegrationPlan == nil || plan.ReleasePlan == nil || plan.TestStrategy == nil || plan.RollbackStrategy == nil || plan.OpenDecisions == nil || len(plan.OpenDecisions) != 0 {
 		return ErrAgentOutput
 	}
@@ -176,13 +195,16 @@ func validatePlanShape(plan contracts.PlanSpec) error {
 		if name == "" || names[name] || module.OwnedPaths == nil || len(module.OwnedPaths) == 0 || module.ForbiddenPaths == nil || module.PublicInterfaces == nil || module.Dependencies == nil || module.AcceptanceCriteria == nil {
 			return ErrAgentOutput
 		}
+		if requireToolchains && (module.ToolchainIDs == nil || len(module.ToolchainIDs) == 0 || strings.TrimSpace(module.VerificationEntrypoint) == "") {
+			return ErrAgentOutput
+		}
 		names[name] = true
 	}
 	return nil
 }
 
 func validateModuleShape(module contracts.ModuleSpec) error {
-	if strings.TrimSpace(module.Name) == "" || strings.TrimSpace(module.Purpose) == "" || module.Responsibilities == nil || len(module.Responsibilities) == 0 || module.NonResponsibilities == nil || module.Inputs == nil || module.Outputs == nil || module.Interfaces == nil || module.DataOwnership == nil || module.Dependencies == nil || module.AllowedPaths == nil || len(module.AllowedPaths) == 0 || module.ForbiddenPaths == nil || module.NetworkPolicy.Destinations == nil || module.ToolCapabilities == nil || module.KnowledgeRefs == nil || module.AcceptanceCriteria == nil || len(module.AcceptanceCriteria) == 0 || module.TestRequirements == nil || module.ObservabilityRequirements == nil || module.SecurityRequirements == nil || module.Budget.MaxInputTokens <= 0 || module.Budget.MaxOutputTokens <= 0 || module.Budget.MaxCost == "" || module.Budget.Currency == "" {
+	if strings.TrimSpace(module.Name) == "" || strings.TrimSpace(module.Purpose) == "" || module.Responsibilities == nil || len(module.Responsibilities) == 0 || module.NonResponsibilities == nil || module.Inputs == nil || module.Outputs == nil || module.Interfaces == nil || module.DataOwnership == nil || module.Dependencies == nil || module.AllowedPaths == nil || len(module.AllowedPaths) == 0 || module.ForbiddenPaths == nil || module.NetworkPolicy.Destinations == nil || module.ToolCapabilities == nil || module.ToolchainIDs == nil || len(module.ToolchainIDs) == 0 || module.Toolchains == nil || len(module.Toolchains) == 0 || strings.TrimSpace(module.VerificationEntrypoint) == "" || module.KnowledgeRefs == nil || module.AcceptanceCriteria == nil || len(module.AcceptanceCriteria) == 0 || module.TestRequirements == nil || module.ObservabilityRequirements == nil || module.SecurityRequirements == nil || module.Budget.MaxInputTokens <= 0 || module.Budget.MaxOutputTokens <= 0 || module.Budget.MaxCost == "" || module.Budget.Currency == "" {
 		return ErrAgentOutput
 	}
 	return nil
@@ -214,6 +236,16 @@ func cleanForbiddenPath(value string) (string, bool) {
 
 func pathContains(parent, child string) bool {
 	return child == parent || strings.HasPrefix(child, parent+"/")
+}
+
+func ownedPathCovers(owned, candidate string) bool {
+	for _, suffix := range []string{"/...", "/**"} {
+		if strings.HasSuffix(owned, suffix) {
+			owned = strings.TrimSuffix(owned, suffix)
+			break
+		}
+	}
+	return pathContains(owned, candidate)
 }
 
 func forbiddenPathConflicts(forbidden, owned string) bool {

@@ -1,6 +1,8 @@
 {
   "cases": [
     {"name": "goal draft", "schema": "api/json-schema/goal-spec.v1.schema.json", "instance": "conformance/contracts/valid/goal-spec.json", "valid": true},
+    {"name": "goal draft with exact toolchain", "schema": "api/json-schema/goal-spec.v2.schema.json", "instance": "conformance/contracts/valid/goal-spec-v2.json", "valid": true},
+    {"name": "goal draft rejects a toolchain version range", "schema": "api/json-schema/goal-spec.v2.schema.json", "instance": "conformance/contracts/invalid/goal-toolchain-version-range.json", "valid": false},
     {"name": "approved goal with unresolved work", "schema": "api/json-schema/goal-spec.v1.schema.json", "instance": "conformance/contracts/invalid/goal-approved-unresolved.json", "valid": false},
     {"name": "windows NONE disclosure", "schema": "api/json-schema/module-spec.v1.schema.json", "instance": "conformance/contracts/valid/module-windows.json", "valid": true},
     {"name": "windows network isolation claim", "schema": "api/json-schema/module-spec.v1.schema.json", "instance": "conformance/contracts/invalid/module-windows-allowlist.json", "valid": false},

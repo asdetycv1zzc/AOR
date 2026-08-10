@@ -60,6 +60,10 @@ func TestAgentResponseSchemaRejectsSystemOwnedFields(t *testing.T) {
 		"acceptanceCriteria":  []any{map[string]any{"id": "criterion_1", "statement": "Criterion", "evidenceType": "AUTOMATED"}},
 		"riskTolerance":       "LOW",
 		"humanApprovalPoints": []any{}, "dataClassification": "INTERNAL", "deploymentTargets": []any{"LINUX"}, "sourceReferences": []any{},
+		"toolchain": map[string]any{
+			"languages": []any{map[string]any{"name": "Go", "version": "1.26"}},
+			"tools":     []any{map[string]any{"inventoryId": "go-1.26.5-linux-amd64", "kind": "COMPILER", "name": "Go", "version": "1.26.5", "platform": "LINUX", "architecture": "amd64", "source": "INSTALLED"}},
+		},
 	}
 	if err := schema.Validate(instance); err != nil {
 		t.Fatalf("valid model-owned draft rejected: %v", err)

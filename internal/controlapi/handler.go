@@ -30,6 +30,7 @@ import (
 	"github.com/akimisaka/aor/internal/orchestrator"
 	"github.com/akimisaka/aor/internal/projectactivity"
 	"github.com/akimisaka/aor/internal/state"
+	"github.com/akimisaka/aor/internal/toolchain"
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 	"github.com/akimisaka/aor/pkg/contracts"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
@@ -68,6 +69,7 @@ type Config struct {
 	ProviderSettings     modelproviders.SettingsStore
 	ProviderAdapter      modelproviders.AdapterFactory
 	SamplingSettings     modelgateway.SamplingSettingsStore
+	Toolchains           toolchain.Source
 	Clock                func() time.Time
 }
 
@@ -125,6 +127,7 @@ type Handler struct {
 	providerSettings     modelproviders.SettingsStore
 	providerAdapter      modelproviders.AdapterFactory
 	modelRouteSettings   modelRouteSettingsStore
+	toolchains           toolchain.Source
 	autoBudget           bool
 	clock                func() time.Time
 
@@ -360,6 +363,7 @@ func New(config Config) (*Handler, error) {
 		providerSettings:     config.ProviderSettings,
 		providerAdapter:      config.ProviderAdapter,
 		modelRouteSettings:   newModelRouteSettingsStore(config.Database),
+		toolchains:           config.Toolchains,
 		autoBudget:           autoBudget,
 		clock:                config.Clock,
 
@@ -448,6 +452,14 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 		default:
 			writeMethodNotAllowedWith(response, request, "GET, PUT")
 		}
+		return
+	}
+	if request.URL.Path == "/v1/toolchains" {
+		if request.Method == http.MethodGet {
+			handler.listToolchains(response, request, principal)
+			return
+		}
+		writeMethodNotAllowedWith(response, request, "GET")
 		return
 	}
 

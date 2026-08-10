@@ -11,7 +11,7 @@ func responseSchemaFor(stage string) (agentResponseSchema, error) {
 	var schema agentResponseSchema
 	switch stage {
 	case "GOAL_DRAFT", "GOAL_REVISION":
-		schema = agentResponseSchema{Reference: "urn:aor:goalplan:goal-draft:v1", Document: json.RawMessage(goalDraftSchema)}
+		schema = agentResponseSchema{Reference: "urn:aor:goalplan:goal-draft:v2", Document: json.RawMessage(goalDraftSchema)}
 	case "GOAL_CHALLENGE":
 		schema = agentResponseSchema{Reference: "urn:aor:goalplan:goal-challenge:v1", Document: json.RawMessage(goalChallengeSchema)}
 	case "PLAN_DRAFT":
@@ -33,7 +33,7 @@ const goalDraftSchema = `{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["title", "summary", "problemStatement", "businessOutcomes", "scope", "userPersonas", "functionalRequirements", "nonFunctionalRequirements", "constraints", "assumptions", "decisions", "unresolvedItems", "acceptanceCriteria", "riskTolerance", "humanApprovalPoints", "dataClassification", "deploymentTargets", "sourceReferences"],
+  "required": ["title", "summary", "problemStatement", "businessOutcomes", "scope", "userPersonas", "functionalRequirements", "nonFunctionalRequirements", "constraints", "assumptions", "decisions", "unresolvedItems", "acceptanceCriteria", "riskTolerance", "humanApprovalPoints", "dataClassification", "deploymentTargets", "sourceReferences", "toolchain"],
   "properties": {
     "title": {"type": "string", "minLength": 1, "maxLength": 256},
     "summary": {"type": "string", "minLength": 1, "maxLength": 4096},
@@ -68,7 +68,16 @@ const goalDraftSchema = `{
     "humanApprovalPoints": {"$ref": "#/$defs/strings"},
     "dataClassification": {"enum": ["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]},
     "deploymentTargets": {"$ref": "#/$defs/strings"},
-    "sourceReferences": {"$ref": "#/$defs/strings"}
+    "sourceReferences": {"$ref": "#/$defs/strings"},
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["languages", "tools"],
+      "properties": {
+        "languages": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"$ref": "#/$defs/language"}},
+        "tools": {"type": "array", "minItems": 1, "maxItems": 128, "uniqueItems": true, "items": {"$ref": "#/$defs/tool"}}
+      }
+    }
   },
   "$defs": {
     "strings": {"type": "array", "maxItems": 1000, "items": {"type": "string", "minLength": 1, "maxLength": 4096}},
@@ -97,6 +106,33 @@ const goalDraftSchema = `{
         "statement": {"type": "string", "minLength": 1, "maxLength": 4096},
         "evidenceType": {"enum": ["AUTOMATED", "USER_APPROVAL", "EXTERNAL_CERTIFICATION"]}
       }
+    },
+    "language": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 128},
+        "version": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^*?<>^~|,]+$", "allOf": [{"not": {"pattern": "(^|[._+-])[xX]($|[._+-])"}}, {"not": {"enum": ["latest", "stable", "current", "default", "nightly", "next", "head", "main", "master", "dev", "snapshot", "preview"]}}], "description": "Exact language standard or edition; ranges and wildcard versions are forbidden."}
+      }
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "name", "version", "platform", "architecture", "source"],
+      "properties": {
+        "inventoryId": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9._-]+$"},
+        "kind": {"enum": ["COMPILER", "RUNTIME", "SDK", "BUILD", "INTEROP", "TEST"]},
+        "name": {"type": "string", "minLength": 1, "maxLength": 128},
+        "version": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^*?<>^~|,]+$", "allOf": [{"not": {"pattern": "(^|[._+-])[xX]($|[._+-])"}}, {"not": {"enum": ["latest", "stable", "current", "default", "nightly", "next", "head", "main", "master", "dev", "snapshot", "preview"]}}], "description": "Exact tool version; ranges and wildcard versions are forbidden."},
+        "platform": {"enum": ["LINUX", "WINDOWS"]},
+        "architecture": {"type": "string", "minLength": 1, "maxLength": 128},
+        "source": {"enum": ["INSTALLED", "INSTALL_REQUIRED"]}
+      },
+      "allOf": [
+        {"if": {"properties": {"source": {"const": "INSTALLED"}}, "required": ["source"]}, "then": {"required": ["inventoryId"]}},
+        {"if": {"properties": {"source": {"const": "INSTALL_REQUIRED"}}, "required": ["source"]}, "then": {"not": {"required": ["inventoryId"]}}}
+      ]
     }
   }
 }`
@@ -156,7 +192,7 @@ const planDraftSchema = `{
     "module": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["moduleId", "name", "responsibility", "executionPlatform", "sandboxLevel", "ownedPaths", "forbiddenPaths", "publicInterfaces", "dependencies", "acceptanceCriteria", "risk"],
+      "required": ["moduleId", "name", "responsibility", "executionPlatform", "sandboxLevel", "ownedPaths", "forbiddenPaths", "publicInterfaces", "dependencies", "acceptanceCriteria", "toolchainIds", "verificationEntrypoint", "risk"],
       "properties": {
         "moduleId": {"type": "string", "pattern": "^(?:[A-Za-z][A-Za-z0-9_-]{2,127}|[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$"},
         "name": {"type": "string", "minLength": 1, "maxLength": 128},
@@ -168,11 +204,13 @@ const planDraftSchema = `{
         "publicInterfaces": {"$ref": "#/$defs/strings"},
         "dependencies": {"type": "array", "maxItems": 1000, "items": {"type": "string", "minLength": 1, "maxLength": 128}},
         "acceptanceCriteria": {"type": "array", "minItems": 1, "maxItems": 1000, "items": {"type": "string", "minLength": 1, "maxLength": 4096}},
+        "toolchainIds": {"type": "array", "minItems": 1, "maxItems": 128, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9._-]+$"}},
+        "verificationEntrypoint": {"type": "string", "minLength": 1, "maxLength": 4096, "description": "Repository-relative verification script owned by this module. Linux uses a POSIX sh .sh file and Windows uses a PowerShell .ps1 file. The Executor implements it; the Auditor runs it from the immutable submission."},
         "risk": {"enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]}
       },
       "allOf": [
-        {"if": {"properties": {"executionPlatform": {"const": "LINUX"}}, "required": ["executionPlatform"]}, "then": {"properties": {"sandboxLevel": {"const": "CONTAINER"}}}},
-        {"if": {"properties": {"executionPlatform": {"const": "WINDOWS"}}, "required": ["executionPlatform"]}, "then": {"properties": {"sandboxLevel": {"const": "NONE"}}}}
+        {"if": {"properties": {"executionPlatform": {"const": "LINUX"}}, "required": ["executionPlatform"]}, "then": {"properties": {"sandboxLevel": {"const": "CONTAINER"}, "verificationEntrypoint": {"pattern": "\\.sh$"}}}},
+        {"if": {"properties": {"executionPlatform": {"const": "WINDOWS"}}, "required": ["executionPlatform"]}, "then": {"properties": {"sandboxLevel": {"const": "NONE"}, "verificationEntrypoint": {"pattern": "\\.ps1$"}}}}
       ]
     }
   }

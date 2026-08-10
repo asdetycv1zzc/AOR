@@ -741,8 +741,6 @@ services:
       AOR_MODEL_GATEWAY_OAUTH_SCOPES: audience:server:client_id:aor-control-plane
       AOR_MODEL_GATEWAY_OAUTH_AUDIENCE: aor-control-plane
       AOR_EXECUTOR_MAX_TOOL_ROUNDS: "8"
-      AOR_MODULE_TEST_COMMAND_JSON: >-
-        ["/usr/local/go/bin/go","test","-p=1","./..."]
       AOR_MODULE_TEST_TIMEOUT_SECONDS: "300"
       AOR_INTEGRATION_WORK_ROOT: /var/lib/aor/work
     secrets: [postgres_app_password, lease_signing_key, minio_root_user, minio_root_password, aor_server_oauth_client_secret]

@@ -219,7 +219,7 @@ func negotiationHarness(t *testing.T, agentCount int) (*Negotiator, *scriptedGoa
 
 func validGoalContent(title string) contracts.GoalContent {
 	return contracts.GoalContent{
-		GoalSpecVersion: 1, Title: title, Summary: "summary", ProblemStatement: "problem",
+		GoalSpecVersion: 2, Title: title, Summary: "summary", ProblemStatement: "problem",
 		BusinessOutcomes: []contracts.Outcome{{ID: "outcome_1", Statement: "measurable outcome"}},
 		Scope:            contracts.Scope{Included: []string{"service"}, Excluded: []string{}}, UserPersonas: []string{"operator"},
 		FunctionalRequirements:    []string{"serve requests"},
@@ -228,6 +228,10 @@ func validGoalContent(title string) contracts.GoalContent {
 		AcceptanceCriteria: []contracts.AcceptanceCriterion{{ID: "criterion_1", Statement: "tests pass", EvidenceType: "AUTOMATED"}},
 		RiskTolerance:      contracts.RiskLow, HumanApprovalPoints: []string{"goal"}, DataClassification: contracts.DataInternal,
 		DeploymentTargets: []string{"linux"}, SourceReferences: []string{},
+		Toolchain: &contracts.GoalToolchain{
+			Languages: []contracts.LanguageRequirement{{Name: "Go", Version: "1.26"}},
+			Tools:     []contracts.VersionedTool{{InventoryID: "go-1.26.5-linux-amd64", Kind: contracts.ToolchainCompiler, Name: "Go", Version: "1.26.5", Platform: contracts.PlatformLinux, Architecture: "amd64", Source: contracts.ToolchainInstalled}},
+		},
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 
 	"github.com/akimisaka/aor/internal/knowledge"
 	"github.com/akimisaka/aor/internal/state"
+	"github.com/akimisaka/aor/internal/toolchain"
 	"github.com/akimisaka/aor/pkg/contracts"
 )
 
@@ -33,10 +34,19 @@ type knowledgeDraftOutput struct {
 	ChangeSummary string `json:"changeSummary"`
 }
 
-func goalDraftSemanticValidator(request AgentInvocation) func(json.RawMessage) error {
+func goalDraftSemanticValidator(request AgentInvocation, inventory *toolchain.Inventory) func(json.RawMessage) error {
 	return func(content json.RawMessage) error {
-		_, _, err := normalizeGoalRecord(responseAgentRecord(request, content), request.ProjectID, 1, time.Unix(0, 0).UTC())
-		return err
+		goal, _, err := normalizeGoalRecord(responseAgentRecord(request, content), request.ProjectID, 1, time.Unix(0, 0).UTC())
+		if err != nil {
+			return err
+		}
+		if inventory == nil {
+			return ErrAgentOutput
+		}
+		if err := toolchain.ValidateSelection(*inventory, *goal.Content.Toolchain); err != nil {
+			return ErrAgentOutput
+		}
+		return nil
 	}
 }
 
@@ -47,10 +57,13 @@ func challengeSemanticValidator(request AgentInvocation, goalRef contracts.SpecR
 	}
 }
 
-func planDraftSemanticValidator(request AgentInvocation, goalRef contracts.SpecRef) func(json.RawMessage) error {
+func planDraftSemanticValidator(request AgentInvocation, goalRef contracts.SpecRef, goal contracts.GoalSpec) func(json.RawMessage) error {
 	return func(content json.RawMessage) error {
-		_, _, err := normalizePlanRecord(responseAgentRecord(request, content), request.ProjectID, goalRef, 1)
-		return err
+		plan, _, err := normalizePlanRecord(responseAgentRecord(request, content), request.ProjectID, goalRef, 1)
+		if err != nil || validatePlanToolchains(plan, goal) != nil {
+			return ErrAgentOutput
+		}
+		return nil
 	}
 }
 
@@ -64,9 +77,9 @@ func planCompletionSemanticValidator(core state.CoreSummary) func(json.RawMessag
 	}
 }
 
-func moduleDraftSemanticValidator(request AgentInvocation, plan contracts.PlanSpec, planned contracts.PlanModule) func(json.RawMessage) error {
+func moduleDraftSemanticValidator(request AgentInvocation, goal contracts.GoalSpec, plan contracts.PlanSpec, planned contracts.PlanModule) func(json.RawMessage) error {
 	return func(content json.RawMessage) error {
-		_, _, err := normalizeModuleRecord(responseAgentRecord(request, content), request.ProjectID, plan, planned, 1)
+		_, _, err := normalizeModuleRecord(responseAgentRecord(request, content), request.ProjectID, goal, plan, planned, 1)
 		return err
 	}
 }

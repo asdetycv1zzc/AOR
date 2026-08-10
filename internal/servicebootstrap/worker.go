@@ -34,6 +34,7 @@ import (
 	"github.com/akimisaka/aor/internal/runtimeconfig"
 	"github.com/akimisaka/aor/internal/sandbox"
 	"github.com/akimisaka/aor/internal/toolbroker"
+	"github.com/akimisaka/aor/internal/toolchain"
 	aorworkflow "github.com/akimisaka/aor/internal/workflow"
 	"github.com/google/uuid"
 )
@@ -664,7 +665,11 @@ func configuredModuleAudit(config runtimeconfig.Config, clients *runtimeclient.C
 	}
 	var checks []audit.Check
 	if local {
-		moduleTest, testErr := audit.NewModuleTestCheck(config.RepositoryRoot, config.Integration.WorkRoot, config.Execution.ModuleTestCommand, time.Duration(config.Execution.ModuleTestTimeoutSeconds)*time.Second)
+		toolchains, toolchainErr := toolchain.NewFilesystem(config.ToolchainRoot)
+		if toolchainErr != nil {
+			return nil, ErrWorkerConfiguration
+		}
+		moduleTest, testErr := audit.NewModuleTestCheck(config.RepositoryRoot, config.Integration.WorkRoot, toolchains, time.Duration(config.Execution.ModuleTestTimeoutSeconds)*time.Second)
 		if testErr != nil {
 			return nil, testErr
 		}

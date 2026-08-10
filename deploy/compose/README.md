@@ -24,9 +24,9 @@ The TEST profile runs the core Goal -> Plan -> Execution -> Audit path inside th
 
 ## Toolchains
 
-The Worker image contains Git but no language compiler, SDK, runtime, or build system. Put globally installed tools below `${AOR_TOOLCHAINS_HOST_PATH:-/opt/aor/toolchains}` on the host. Compose mounts that directory read-only at `/opt/aor/toolchains` in the API, curator, and Worker so GoalSpec creation can list the available exact versions and execution can reuse the selected tools.
+The Worker image contains Git but no language compiler, SDK, runtime, or build system. Put the AOR-wide host toolchain inventory below `${AOR_TOOLCHAINS_HOST_PATH:-/opt/aor/toolchains}` on the host. Compose mounts that directory read-only at `/opt/aor/toolchains` in the API, curator, and Worker so GoalSpec creation can list the available exact versions and execution can reuse the selected tools. AOR deliberately scans this managed global inventory rather than executing arbitrary binaries found elsewhere on the host `PATH`.
 
-Each immediate child directory is one inventory ID and must contain `toolchain.json`; the directory name and manifest `id` must match. All `binDirs` and executable paths are relative to that directory, remain inside it after symlink resolution, and must exist. See [`toolchain.example.json`](./toolchain.example.json) for the manifest shape. For example:
+Each immediate child directory is one inventory ID and must contain `toolchain.json`; the directory name and manifest `id` must match. All `binDirs` and executable paths are relative to that directory, remain inside it after symlink resolution, and must exist. Directories must be readable and traversable by UID 65532, and Linux executables must retain their executable bits. See [`toolchain.example.json`](./toolchain.example.json) for the manifest shape. For example:
 
 ```text
 /opt/aor/toolchains/
@@ -36,7 +36,7 @@ Each immediate child directory is one inventory ID and must contain `toolchain.j
     bin/gofmt
 ```
 
-The mount is read-only. Install or update toolchains on the host before starting Compose; AOR does not download a missing toolchain unless the user explicitly requests that installation workflow.
+The mount is read-only. A missing requested toolchain remains an unresolved `INSTALL_REQUIRED` item. Install it on the host, add its manifest, then continue Goal negotiation so AOR rescans the inventory; AOR never mutates the host toolchain directory from a container.
 
 ## Secrets
 

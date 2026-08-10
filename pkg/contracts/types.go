@@ -2,6 +2,7 @@ package contracts
 
 import (
 	"fmt"
+	"path"
 	"regexp"
 	"strings"
 	"time"
@@ -88,6 +89,24 @@ const (
 	PlatformWindows ExecutionPlatform = "WINDOWS"
 )
 
+type ToolchainSource string
+
+const (
+	ToolchainInstalled       ToolchainSource = "INSTALLED"
+	ToolchainInstallRequired ToolchainSource = "INSTALL_REQUIRED"
+)
+
+type ToolchainKind string
+
+const (
+	ToolchainCompiler ToolchainKind = "COMPILER"
+	ToolchainRuntime  ToolchainKind = "RUNTIME"
+	ToolchainSDK      ToolchainKind = "SDK"
+	ToolchainBuild    ToolchainKind = "BUILD"
+	ToolchainInterop  ToolchainKind = "INTEROP"
+	ToolchainTest     ToolchainKind = "TEST"
+)
+
 type IsolationLevel string
 
 const (
@@ -166,6 +185,26 @@ type Assumption struct {
 	Status    string `json:"status"`
 }
 
+type LanguageRequirement struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+type VersionedTool struct {
+	InventoryID  string            `json:"inventoryId,omitempty"`
+	Kind         ToolchainKind     `json:"kind"`
+	Name         string            `json:"name"`
+	Version      string            `json:"version"`
+	Platform     ExecutionPlatform `json:"platform"`
+	Architecture string            `json:"architecture"`
+	Source       ToolchainSource   `json:"source"`
+}
+
+type GoalToolchain struct {
+	Languages []LanguageRequirement `json:"languages"`
+	Tools     []VersionedTool       `json:"tools"`
+}
+
 // GoalContent is the canonical immutable GoalSpec content shape.
 type GoalContent struct {
 	GoalSpecVersion           int                       `json:"goalSpecVersion"`
@@ -189,6 +228,7 @@ type GoalContent struct {
 	DataClassification        DataClassification        `json:"dataClassification"`
 	DeploymentTargets         []string                  `json:"deploymentTargets"`
 	SourceReferences          []string                  `json:"sourceReferences"`
+	Toolchain                 *GoalToolchain            `json:"toolchain,omitempty"`
 	CreatedAt                 string                    `json:"createdAt"`
 	CreatedBy                 AgentIdentity             `json:"createdBy"`
 }
@@ -210,17 +250,19 @@ type Architecture struct {
 }
 
 type PlanModule struct {
-	ModuleID           string            `json:"moduleId"`
-	Name               string            `json:"name"`
-	Responsibility     string            `json:"responsibility"`
-	ExecutionPlatform  ExecutionPlatform `json:"executionPlatform"`
-	SandboxLevel       IsolationLevel    `json:"sandboxLevel"`
-	OwnedPaths         []string          `json:"ownedPaths"`
-	ForbiddenPaths     []string          `json:"forbiddenPaths"`
-	PublicInterfaces   []string          `json:"publicInterfaces"`
-	Dependencies       []string          `json:"dependencies"`
-	AcceptanceCriteria []string          `json:"acceptanceCriteria"`
-	Risk               string            `json:"risk"`
+	ModuleID               string            `json:"moduleId"`
+	Name                   string            `json:"name"`
+	Responsibility         string            `json:"responsibility"`
+	ExecutionPlatform      ExecutionPlatform `json:"executionPlatform"`
+	SandboxLevel           IsolationLevel    `json:"sandboxLevel"`
+	OwnedPaths             []string          `json:"ownedPaths"`
+	ForbiddenPaths         []string          `json:"forbiddenPaths"`
+	PublicInterfaces       []string          `json:"publicInterfaces"`
+	Dependencies           []string          `json:"dependencies"`
+	AcceptanceCriteria     []string          `json:"acceptanceCriteria"`
+	ToolchainIDs           []string          `json:"toolchainIds,omitempty"`
+	VerificationEntrypoint string            `json:"verificationEntrypoint,omitempty"`
+	Risk                   string            `json:"risk"`
 }
 
 type PlanSpec struct {
@@ -266,6 +308,9 @@ type ModuleSpec struct {
 	NetworkPolicy             NetworkPolicy     `json:"networkPolicy"`
 	WorkloadProfile           WorkloadProfile   `json:"workloadProfile"`
 	ToolCapabilities          []string          `json:"toolCapabilities"`
+	ToolchainIDs              []string          `json:"toolchainIds,omitempty"`
+	Toolchains                []VersionedTool   `json:"toolchains,omitempty"`
+	VerificationEntrypoint    string            `json:"verificationEntrypoint,omitempty"`
 	KnowledgeRefs             []string          `json:"knowledgeRefs"`
 	AcceptanceCriteria        []string          `json:"acceptanceCriteria"`
 	TestRequirements          []string          `json:"testRequirements"`
@@ -457,6 +502,174 @@ func validPlatformIsolation(platform ExecutionPlatform, isolation IsolationLevel
 	return (platform == PlatformLinux && isolation == IsolationContainer) || (platform == PlatformWindows && isolation == IsolationNone)
 }
 
+func validVerificationEntrypoint(value string) bool {
+	if value == "" || strings.ContainsAny(value, "\r\n\x00") || strings.ContainsAny(value, "*?[") {
+		return false
+	}
+	normalized := strings.ReplaceAll(value, "\\", "/")
+	clean := path.Clean(normalized)
+	return clean == normalized && clean != "." && !strings.HasPrefix(clean, "/") && clean != ".." && !strings.HasPrefix(clean, "../") && clean != ".git" && !strings.HasPrefix(clean, ".git/")
+}
+
+func validVerificationEntrypointForPlatform(platform ExecutionPlatform, value string) bool {
+	if !validVerificationEntrypoint(value) {
+		return false
+	}
+	switch platform {
+	case PlatformLinux:
+		return strings.HasSuffix(strings.ToLower(value), ".sh")
+	case PlatformWindows:
+		return strings.HasSuffix(strings.ToLower(value), ".ps1")
+	default:
+		return false
+	}
+}
+
+func validToolchainIDs(ids []string) bool {
+	if len(ids) == 0 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if !validExactToolchainValue(id, 128) || strings.ContainsAny(id, "/\\") {
+			return false
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return false
+		}
+		seen[id] = struct{}{}
+	}
+	return true
+}
+
+func ownedPathCoversEntrypoint(owned, entrypoint string) bool {
+	normalized := strings.ReplaceAll(owned, "\\", "/")
+	for _, suffix := range []string{"/...", "/**"} {
+		if strings.HasSuffix(normalized, suffix) {
+			normalized = strings.TrimSuffix(normalized, suffix)
+			break
+		}
+	}
+	normalized = path.Clean(normalized)
+	return entrypoint == normalized || strings.HasPrefix(entrypoint, normalized+"/")
+}
+
+func entrypointOwned(entrypoint string, owned []string) bool {
+	for _, candidate := range owned {
+		if ownedPathCoversEntrypoint(candidate, entrypoint) {
+			return true
+		}
+	}
+	return false
+}
+
+func validExactToolchainValue(value string, maximum int) bool {
+	return value != "" && len(value) <= maximum && strings.TrimSpace(value) == value && !strings.ContainsAny(value, "\r\n\x00*?")
+}
+
+func validExactToolchainVersion(value string, maximum int) bool {
+	if !validExactToolchainValue(value, maximum) || strings.ContainsAny(value, "<>^~|,") || strings.Contains(value, " - ") {
+		return false
+	}
+	switch strings.ToLower(value) {
+	case "latest", "stable", "current", "default", "nightly", "next", "head", "main", "master", "dev", "snapshot", "preview":
+		return false
+	default:
+		segments := strings.Fields(strings.NewReplacer(".", " ", "-", " ", "_", " ", "+", " ").Replace(strings.ToLower(value)))
+		for _, segment := range segments {
+			if segment == "x" {
+				return false
+			}
+		}
+		return true
+	}
+}
+
+func (selection GoalToolchain) Validate() error {
+	if len(selection.Languages) == 0 || len(selection.Tools) == 0 {
+		return fmt.Errorf("goal toolchain languages and tools are required")
+	}
+	languages := make(map[string]struct{}, len(selection.Languages))
+	for _, language := range selection.Languages {
+		if !validExactToolchainValue(language.Name, 128) || !validExactToolchainVersion(language.Version, 256) {
+			return fmt.Errorf("goal language and version must be exact")
+		}
+		key := strings.ToLower(language.Name)
+		if _, duplicate := languages[key]; duplicate {
+			return fmt.Errorf("goal languages must be unique")
+		}
+		languages[key] = struct{}{}
+	}
+	tools := make(map[string]struct{}, len(selection.Tools))
+	for _, tool := range selection.Tools {
+		if err := validateVersionedTool(tool); err != nil {
+			return err
+		}
+		key := strings.ToLower(string(tool.Kind) + "\x00" + tool.Name + "\x00" + tool.Version + "\x00" + string(tool.Platform) + "\x00" + tool.Architecture)
+		if _, duplicate := tools[key]; duplicate {
+			return fmt.Errorf("goal toolchains must be unique")
+		}
+		tools[key] = struct{}{}
+	}
+	return nil
+}
+
+func validateVersionedTool(tool VersionedTool) error {
+	if !validExactToolchainValue(tool.Name, 128) || !validExactToolchainVersion(tool.Version, 256) ||
+		!validExactToolchainValue(tool.Architecture, 128) || tool.Platform != PlatformLinux && tool.Platform != PlatformWindows {
+		return fmt.Errorf("goal toolchain metadata must be exact")
+	}
+	switch tool.Kind {
+	case ToolchainCompiler, ToolchainRuntime, ToolchainSDK, ToolchainBuild, ToolchainInterop, ToolchainTest:
+	default:
+		return fmt.Errorf("goal toolchain kind is invalid")
+	}
+	switch tool.Source {
+	case ToolchainInstalled:
+		if !validExactToolchainValue(tool.InventoryID, 128) {
+			return fmt.Errorf("installed toolchain requires an inventory ID")
+		}
+	case ToolchainInstallRequired:
+		if tool.InventoryID != "" {
+			return fmt.Errorf("uninstalled toolchain cannot claim an inventory ID")
+		}
+	default:
+		return fmt.Errorf("goal toolchain source is invalid")
+	}
+	return nil
+}
+
+func validPinnedToolchains(ids []string, tools []VersionedTool) bool {
+	if !validToolchainIDs(ids) || len(tools) != len(ids) {
+		return false
+	}
+	byID := make(map[string]struct{}, len(tools))
+	for _, tool := range tools {
+		if validateVersionedTool(tool) != nil || tool.Source != ToolchainInstalled {
+			return false
+		}
+		if _, duplicate := byID[tool.InventoryID]; duplicate {
+			return false
+		}
+		byID[tool.InventoryID] = struct{}{}
+	}
+	for _, id := range ids {
+		if _, found := byID[id]; !found {
+			return false
+		}
+	}
+	return true
+}
+
+func (selection GoalToolchain) RequiresInstallation() bool {
+	for _, tool := range selection.Tools {
+		if tool.Source == ToolchainInstallRequired {
+			return true
+		}
+	}
+	return false
+}
+
 func (m ModuleSpec) Validate() error {
 	if m.ModuleSpecVersion < 1 || m.PlanVersion < 1 || m.ModuleID == "" || m.ProjectID == "" {
 		return fmt.Errorf("module identity and versions are required")
@@ -476,6 +689,11 @@ func (m ModuleSpec) Validate() error {
 	}
 	if m.WorkloadProfile.Trust != WorkloadTrusted && m.WorkloadProfile.Trust != WorkloadUntrusted {
 		return fmt.Errorf("workload trust must be declared")
+	}
+	if m.VerificationEntrypoint != "" || m.ToolchainIDs != nil || m.Toolchains != nil {
+		if !validVerificationEntrypointForPlatform(m.ExecutionPlatform, m.VerificationEntrypoint) || !validPinnedToolchains(m.ToolchainIDs, m.Toolchains) || !entrypointOwned(m.VerificationEntrypoint, m.AllowedPaths) {
+			return fmt.Errorf("module verification entrypoint or toolchains are invalid")
+		}
 	}
 	if err := validateDigest(m.SHA256); err != nil {
 		return err
@@ -546,8 +764,16 @@ func (e EvidenceBundle) Validate() error {
 }
 
 func (g GoalSpec) Validate() error {
-	if g.Content.GoalSpecVersion < 1 || g.Content.ProjectID == "" || g.Content.Version < 1 || g.Content.Title == "" || g.Content.Summary == "" || g.Content.ProblemStatement == "" {
+	if g.Content.GoalSpecVersion < 1 || g.Content.GoalSpecVersion > 2 || g.Content.ProjectID == "" || g.Content.Version < 1 || g.Content.Title == "" || g.Content.Summary == "" || g.Content.ProblemStatement == "" {
 		return fmt.Errorf("goal identity and versions are required")
+	}
+	if g.Content.GoalSpecVersion == 2 {
+		if g.Content.Toolchain == nil {
+			return fmt.Errorf("goal toolchain is required")
+		}
+		if err := g.Content.Toolchain.Validate(); err != nil {
+			return err
+		}
 	}
 	switch g.Status {
 	case GoalDraft, GoalApproved, GoalSuperseded, GoalRejected:
@@ -561,7 +787,7 @@ func (g GoalSpec) Validate() error {
 		return fmt.Errorf("goal createdAt must be RFC3339")
 	}
 	if g.Status == GoalApproved {
-		if len(g.Content.UnresolvedItems) != 0 || g.ApprovedBy == nil {
+		if len(g.Content.UnresolvedItems) != 0 || g.ApprovedBy == nil || g.Content.GoalSpecVersion == 2 && g.Content.Toolchain.RequiresInstallation() {
 			return fmt.Errorf("approved goal must have no unresolved items and must be user approved")
 		}
 	}
@@ -579,6 +805,11 @@ func (p PlanSpec) Validate() error {
 	for _, module := range p.Modules {
 		if module.ModuleID == "" || module.Name == "" || module.Responsibility == "" || len(module.AcceptanceCriteria) == 0 || !validPlatformIsolation(module.ExecutionPlatform, module.SandboxLevel) {
 			return fmt.Errorf("plan module identity, ownership, acceptance, or platform is invalid")
+		}
+		if module.VerificationEntrypoint != "" || module.ToolchainIDs != nil {
+			if !validVerificationEntrypointForPlatform(module.ExecutionPlatform, module.VerificationEntrypoint) || !validToolchainIDs(module.ToolchainIDs) || !entrypointOwned(module.VerificationEntrypoint, module.OwnedPaths) {
+				return fmt.Errorf("plan module verification entrypoint or toolchains are invalid")
+			}
 		}
 		switch module.Risk {
 		case "LOW", "MEDIUM", "HIGH", "CRITICAL":

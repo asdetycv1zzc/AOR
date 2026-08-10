@@ -6,7 +6,7 @@
   "version": "1.26.5",
   "platform": "LINUX",
   "architecture": "amd64",
-  "languages": ["Go 1.26"],
+  "languages": ["Go"],
   "binDirs": ["bin"],
   "executables": [
     {"name": "go", "path": "bin/go"},

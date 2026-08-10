@@ -1,0 +1,33 @@
+{
+  "content": {
+    "goalSpecVersion": 2,
+    "projectId": "018f3f25-9c42-7a11-8a42-1234567890ab",
+    "version": 1,
+    "title": "Build a Rust service",
+    "summary": "Implement a service with the installed Rust toolchain.",
+    "problemStatement": "The project requires an exact and reproducible language toolchain.",
+    "businessOutcomes": [{"id": "outcome_1", "statement": "Auditable delivery"}],
+    "scope": {"included": ["service"], "excluded": ["production deployment"]},
+    "userPersonas": ["operator"],
+    "functionalRequirements": ["versioned goals"],
+    "nonFunctionalRequirements": {"security": ["fail closed"], "privacy": [], "performance": [], "reliability": [], "operability": []},
+    "constraints": ["reuse installed toolchains"],
+    "assumptions": [],
+    "decisions": ["Use Rust 2024"],
+    "unresolvedItems": [],
+    "acceptanceCriteria": [{"id": "criterion_1", "statement": "contracts validate", "evidenceType": "AUTOMATED"}],
+    "riskTolerance": "LOW",
+    "humanApprovalPoints": ["goal approval"],
+    "dataClassification": "INTERNAL",
+    "deploymentTargets": ["linux"],
+    "sourceReferences": [],
+    "toolchain": {
+      "languages": [{"name": "Rust", "version": "2024"}],
+      "tools": [{"inventoryId": "rust-1.89.0-linux-amd64", "kind": "COMPILER", "name": "rustc", "version": "1.89.0", "platform": "LINUX", "architecture": "amd64", "source": "INSTALLED"}]
+    },
+    "createdAt": "2030-01-01T00:00:00Z",
+    "createdBy": {"agentInstanceId": "agt_1", "role": "GOAL_PROPOSER"}
+  },
+  "status": "DRAFT",
+  "contentSha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+}

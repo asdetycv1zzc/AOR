@@ -35,6 +35,7 @@ type Config struct {
 	KnowledgeRoot            string
 	KnowledgeCuratorURL      string
 	RepositoryRoot           string
+	ToolchainRoot            string
 	Database                 DatabaseConfig
 	Temporal                 TemporalConfig
 	NATS                     NATSConfig
@@ -130,7 +131,6 @@ type GoalPlanConfig struct {
 type ExecutionConfig struct {
 	Route                    GoalPlanRouteConfig
 	MaxToolRounds            int
-	ModuleTestCommand        []string
 	ModuleTestTimeoutSeconds int
 }
 
@@ -215,12 +215,10 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 		KnowledgeRoot:       strictValue(lookup, "AOR_KNOWLEDGE_ROOT", "/var/lib/aor/knowledge"),
 		KnowledgeCuratorURL: value(lookup, "AOR_KNOWLEDGE_CURATOR_URL", ""),
 		RepositoryRoot:      strictValue(lookup, "AOR_REPOSITORY_ROOT", "/var/lib/aor/repositories"),
+		ToolchainRoot:       strictValue(lookup, "AOR_TOOLCHAIN_ROOT", "/opt/aor/toolchains"),
 		Integration: IntegrationConfig{
 			WorkRoot:        strictValue(lookup, "AOR_INTEGRATION_WORK_ROOT", ""),
 			DependencyCache: strictValue(lookup, "AOR_INTEGRATION_DEPENDENCY_CACHE", ""),
-		},
-		Execution: ExecutionConfig{
-			ModuleTestCommand: []string{"/usr/local/go/bin/go", "test", "-p=1", "./..."},
 		},
 		Database: DatabaseConfig{
 			Host:        value(lookup, "AOR_DATABASE_HOST", "postgres"),
@@ -376,15 +374,6 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 			return Config{}, configurationError("AOR_EXECUTOR_ROUTE_JSON")
 		}
 	}
-	if raw, found := lookup("AOR_MODULE_TEST_COMMAND_JSON"); found && strings.TrimSpace(raw) != "" {
-		decoder := json.NewDecoder(strings.NewReader(raw))
-		if err := decoder.Decode(&config.Execution.ModuleTestCommand); err != nil {
-			return Config{}, configurationError("AOR_MODULE_TEST_COMMAND_JSON")
-		}
-		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-			return Config{}, configurationError("AOR_MODULE_TEST_COMMAND_JSON")
-		}
-	}
 	if raw, found := lookup("AOR_GLOBAL_AUDITOR_ROUTE_JSON"); found && strings.TrimSpace(raw) != "" {
 		decoder := json.NewDecoder(strings.NewReader(raw))
 		decoder.DisallowUnknownFields()
@@ -434,7 +423,7 @@ func (config Config) Validate() error {
 	if config.Component == "aor-tool-broker" && (!validSecretReference(config.LeaseSigningKeyRef) || !validDeploymentProfile(config.DeploymentProfile) || !validKnowledgeRoot(config.RepositoryRoot)) {
 		return ErrInvalidConfiguration
 	}
-	if config.Component == "aor-server" && (!validKnowledgeRoot(config.KnowledgeRoot) || !validKnowledgeCuratorURL(config.KnowledgeCuratorURL, config.Environment) || !validSecretReference(config.LeaseSigningKeyRef) || !validDeploymentProfile(config.DeploymentProfile)) {
+	if config.Component == "aor-server" && (!validKnowledgeRoot(config.KnowledgeRoot) || !validKnowledgeRoot(config.ToolchainRoot) || !validKnowledgeCuratorURL(config.KnowledgeCuratorURL, config.Environment) || !validSecretReference(config.LeaseSigningKeyRef) || !validDeploymentProfile(config.DeploymentProfile)) {
 		return ErrInvalidConfiguration
 	}
 	if config.AllowAnonymousControlAPI && (config.Component != "aor-server" || !oneOf(config.Environment, EnvironmentDevelopment, EnvironmentTest) || config.Identity.DefaultTenantID == "" || config.Identity.DefaultRole != "USER") {
@@ -501,10 +490,10 @@ func (config Config) Validate() error {
 		}
 	}
 	if config.Component == "aor-worker" {
-		if !validSecretReference(config.LeaseSigningKeyRef) || !validDeploymentProfile(config.DeploymentProfile) || !validKnowledgeRoot(config.KnowledgeRoot) || !validKnowledgeRoot(config.RepositoryRoot) || !validURL(config.Services.API, "http", "https") || !validURL(config.Services.ModelGateway, "http", "https") || !validURL(config.Services.ToolBroker, "http", "https") || globalAuditRouteConfigured(config.Execution.Route) && !validGoalPlanRoute(config.Execution.Route) || config.Execution.MaxToolRounds < 2 || config.Execution.MaxToolRounds > 8 {
+		if !validSecretReference(config.LeaseSigningKeyRef) || !validDeploymentProfile(config.DeploymentProfile) || !validKnowledgeRoot(config.KnowledgeRoot) || !validKnowledgeRoot(config.RepositoryRoot) || !validKnowledgeRoot(config.ToolchainRoot) || !validURL(config.Services.API, "http", "https") || !validURL(config.Services.ModelGateway, "http", "https") || !validURL(config.Services.ToolBroker, "http", "https") || globalAuditRouteConfigured(config.Execution.Route) && !validGoalPlanRoute(config.Execution.Route) || config.Execution.MaxToolRounds < 2 || config.Execution.MaxToolRounds > 8 {
 			return ErrInvalidConfiguration
 		}
-		if !validModuleTestCommand(config.Execution.ModuleTestCommand) || config.Execution.ModuleTestTimeoutSeconds < 1 || config.Execution.ModuleTestTimeoutSeconds > 900 {
+		if config.Execution.ModuleTestTimeoutSeconds < 1 || config.Execution.ModuleTestTimeoutSeconds > 900 {
 			return ErrInvalidConfiguration
 		}
 		if globalAuditRouteConfigured(config.GlobalAuditRoute) && !validGoalPlanRoute(config.GlobalAuditRoute) {
@@ -1013,21 +1002,6 @@ func validSandboxHoldCommand(command []string) bool {
 		return false
 	}
 	for _, argument := range command {
-		if argument == "" || len(argument) > 4096 || strings.ContainsAny(argument, "\r\n\x00") {
-			return false
-		}
-	}
-	return true
-}
-
-func validModuleTestCommand(command []string) bool {
-	if len(command) == 0 || len(command) > 64 || !validIntegrationExecutable(command[0]) {
-		return false
-	}
-	if oneOf(strings.ToLower(filepath.Base(command[0])), "sh", "bash", "dash", "zsh", "fish", "cmd", "cmd.exe", "powershell", "powershell.exe") {
-		return false
-	}
-	for _, argument := range command[1:] {
 		if argument == "" || len(argument) > 4096 || strings.ContainsAny(argument, "\r\n\x00") {
 			return false
 		}

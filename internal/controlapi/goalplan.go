@@ -17,6 +17,7 @@ import (
 	"github.com/akimisaka/aor/internal/modelgateway"
 	"github.com/akimisaka/aor/internal/orchestrator"
 	"github.com/akimisaka/aor/internal/state"
+	"github.com/akimisaka/aor/internal/toolchain"
 	"github.com/akimisaka/aor/pkg/contracts"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
 )
@@ -211,6 +212,16 @@ func (handler *Handler) approveGoalAndPlan(ctx context.Context, principal authn.
 		}
 	} else {
 		if project.Version != body.ExpectedVersion {
+			return state.Project{}, goalplan.ErrInvalidRequest
+		}
+		if projection.Spec.Content.GoalSpecVersion != 2 || projection.Spec.Content.Toolchain == nil || handler.toolchains == nil {
+			return state.Project{}, goalplan.ErrInvalidRequest
+		}
+		inventory, inventoryErr := handler.toolchains.Snapshot(ctx)
+		if inventoryErr != nil {
+			return state.Project{}, aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", inventoryErr, map[string]any{"scope": "toolchain inventory"})
+		}
+		if toolchain.ValidateSelection(inventory, *projection.Spec.Content.Toolchain) != nil || projection.Spec.Content.Toolchain.RequiresInstallation() {
 			return state.Project{}, goalplan.ErrInvalidRequest
 		}
 		issuedAt := handler.clock().UTC()

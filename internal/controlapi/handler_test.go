@@ -22,11 +22,21 @@ import (
 	"github.com/akimisaka/aor/internal/modelgateway"
 	"github.com/akimisaka/aor/internal/orchestrator"
 	"github.com/akimisaka/aor/internal/state"
+	"github.com/akimisaka/aor/internal/toolchain"
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 	"github.com/akimisaka/aor/pkg/cloudevents"
 	"github.com/akimisaka/aor/pkg/contracts"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
 )
+
+type testToolchainSource struct{}
+
+func (testToolchainSource) Snapshot(context.Context) (toolchain.Inventory, error) {
+	return toolchain.Inventory{Tools: []toolchain.InstalledTool{{
+		SchemaVersion: 1, ID: "go-1.26.5-linux-amd64", Kind: contracts.ToolchainCompiler, Name: "Go", Version: "1.26.5",
+		Platform: contracts.PlatformLinux, Architecture: "amd64", Languages: []string{"Go"}, BinDirs: []string{"bin"}, Executables: []toolchain.Executable{{Name: "go", Path: "bin/go"}},
+	}}}, nil
+}
 
 const (
 	testTenantID = "11111111-1111-4111-8111-111111111111"
@@ -1093,6 +1103,7 @@ func newBudgetTestHandler(t *testing.T) (*Handler, *modelgateway.BudgetLedger, *
 		Budgets:            ledger,
 		Artifacts:          &testArtifactCatalog{},
 		Knowledge:          &testKnowledgeReader{},
+		Toolchains:         testToolchainSource{},
 		DefaultModelRoutes: testControlModelRoutes(),
 		ModelProviders:     testControlModelProviders(),
 		Clock:              func() time.Time { return controlAPITestTime },
@@ -1115,6 +1126,7 @@ func newTestHandler(t *testing.T) (*Handler, *eventing.MemoryStore, *recordingAu
 		Authorizer:         authorizer,
 		Artifacts:          &testArtifactCatalog{},
 		Knowledge:          &testKnowledgeReader{},
+		Toolchains:         testToolchainSource{},
 		DefaultModelRoutes: testControlModelRoutes(),
 		ModelProviders:     testControlModelProviders(),
 		Clock:              func() time.Time { return controlAPITestTime },
@@ -1141,7 +1153,7 @@ func createTestProject(t *testing.T, handler http.Handler) state.Project {
 }
 
 func testControlModelRoutes() map[string]state.ProjectModelRoute {
-	route := state.ProjectModelRoute{Provider: "provider", Model: "model", MaxOutputTokens: 4096, ProviderPolicy: "default", CachePolicy: "NO_STORE", MaxAttempts: 3}
+	route := state.ProjectModelRoute{Provider: "provider", Model: "model", ReasoningEffort: "medium", MaxOutputTokens: 4096, ProviderPolicy: "default", CachePolicy: "NO_STORE", MaxAttempts: 3}
 	return map[string]state.ProjectModelRoute{
 		"GOAL_PROPOSER": route, "GOAL_CHALLENGER": route, "PLAN_SUPERVISOR": route, "MODULE_PLANNER": route,
 		"EXECUTOR": route, "MODULE_AUDITOR": route, "GLOBAL_AUDITOR": route, "KNOWLEDGE_CURATOR": route,
@@ -1151,7 +1163,7 @@ func testControlModelRoutes() map[string]state.ProjectModelRoute {
 func testControlModelProviders() []ModelProvider {
 	return []ModelProvider{{
 		ID: "provider", Provider: "provider-family", Models: []string{"model"},
-		MaxInputTokens: 8192, MaxOutputTokens: 4096, SupportsSeed: true,
+		MaxInputTokens: 8192, MaxOutputTokens: 4096, SupportsSeed: true, SupportsJSONSchema: true, SupportsToolCalls: true,
 		AllowedDataClassifications: []string{"PUBLIC", "INTERNAL"}, DataResidency: []string{"test"},
 		RetentionPolicy: "test", Modalities: []string{"text"},
 	}}
@@ -1174,7 +1186,7 @@ func seedGoalSpec(t *testing.T, handler *Handler, projectID string, expectedVers
 func controlGoalSpec(t *testing.T, projectID string, version int, unresolved []string) contracts.GoalSpec {
 	t.Helper()
 	content := contracts.GoalContent{
-		GoalSpecVersion: 1, ProjectID: projectID, Version: version, Title: "Goal", Summary: "Summary", ProblemStatement: "Problem",
+		GoalSpecVersion: 2, ProjectID: projectID, Version: version, Title: "Goal", Summary: "Summary", ProblemStatement: "Problem",
 		BusinessOutcomes: []contracts.Outcome{{ID: "outcome-1", Statement: "Outcome"}}, Scope: contracts.Scope{Included: []string{"api"}, Excluded: []string{}},
 		UserPersonas: []string{}, FunctionalRequirements: []string{"serve requests"},
 		NonFunctionalRequirements: contracts.NonFunctionalRequirements{Security: []string{}, Privacy: []string{}, Performance: []string{}, Reliability: []string{}, Operability: []string{}},
@@ -1183,6 +1195,10 @@ func controlGoalSpec(t *testing.T, projectID string, version int, unresolved []s
 		RiskTolerance:      contracts.RiskLow, HumanApprovalPoints: []string{}, DataClassification: contracts.DataInternal,
 		DeploymentTargets: []string{"test"}, SourceReferences: []string{}, CreatedAt: controlAPITestTime.Format(time.RFC3339),
 		CreatedBy: contracts.AgentIdentity{AgentInstanceID: "agent-goal", Role: "GOAL_PROPOSER"},
+		Toolchain: &contracts.GoalToolchain{
+			Languages: []contracts.LanguageRequirement{{Name: "Go", Version: "1.26"}},
+			Tools:     []contracts.VersionedTool{{InventoryID: "go-1.26.5-linux-amd64", Kind: contracts.ToolchainCompiler, Name: "Go", Version: "1.26.5", Platform: contracts.PlatformLinux, Architecture: "amd64", Source: contracts.ToolchainInstalled}},
+		},
 	}
 	encoded, err := json.Marshal(content)
 	if err != nil {

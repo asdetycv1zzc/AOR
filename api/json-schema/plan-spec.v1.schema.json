@@ -32,11 +32,17 @@
           "publicInterfaces": {"type": "array"},
           "dependencies": {"type": "array"},
           "acceptanceCriteria": {"type": "array", "minItems": 1},
+          "toolchainIds": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9._-]+$"}},
+          "verificationEntrypoint": {"type": "string", "minLength": 1, "maxLength": 4096, "description": "Linux uses a POSIX sh .sh file; Windows uses a PowerShell .ps1 file."},
           "risk": {"enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]}
         },
+        "dependentRequired": {
+          "toolchainIds": ["verificationEntrypoint"],
+          "verificationEntrypoint": ["toolchainIds"]
+        },
         "allOf": [
-          {"if": {"properties": {"executionPlatform": {"const": "LINUX"}}}, "then": {"properties": {"sandboxLevel": {"const": "CONTAINER"}}}},
-          {"if": {"properties": {"executionPlatform": {"const": "WINDOWS"}}}, "then": {"properties": {"sandboxLevel": {"const": "NONE"}}}}
+          {"if": {"properties": {"executionPlatform": {"const": "LINUX"}}}, "then": {"properties": {"sandboxLevel": {"const": "CONTAINER"}, "verificationEntrypoint": {"pattern": "\\.sh$"}}}},
+          {"if": {"properties": {"executionPlatform": {"const": "WINDOWS"}}}, "then": {"properties": {"sandboxLevel": {"const": "NONE"}, "verificationEntrypoint": {"pattern": "\\.ps1$"}}}}
         ]
       }
     },
