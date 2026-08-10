@@ -438,9 +438,6 @@ func settingsFromStored(id, provider, displayName, baseURL string, protocol Prot
 	} else if displayName == "" || len(displayName) > 128 || strings.TrimSpace(displayName) != displayName || strings.ContainsAny(displayName, "\r\n\x00") || len(models) == 0 {
 		return ProviderSettings{}, ErrInvalidSettings
 	}
-	if protocol != ProtocolOpenAICompatible {
-		capability.SupportsStreaming = false
-	}
 	return ProviderSettings{
 		ID: id, DisplayName: displayName, Provider: provider, Custom: custom, BaseURL: baseURL,
 		Protocol: protocol, Protocols: supportedProtocols(), Enabled: enabled,
