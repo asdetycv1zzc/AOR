@@ -425,7 +425,7 @@ function ControlConsole({ client }: { client: AorClient }) {
   const [selectedTask, setSelectedTask] = useState("");
   const [audits, setAudits] = useState<Record<string, AuditRun[]>>({});
   const [auditLoading, setAuditLoading] = useState("");
-  const [projectView, setProjectView] = useState<"workbench" | "details">("workbench");
+  const [projectView, setProjectView] = useState<"workbench" | "details">("details");
   const mainRef = useRef<HTMLDivElement>(null);
   const project = bundle.project;
 
@@ -487,7 +487,7 @@ function ControlConsole({ client }: { client: AorClient }) {
   }, [bundle.result, loadProject, project]);
 
   useEffect(() => {
-    setProjectView("workbench");
+    setProjectView(project?.goalProcessing ? "workbench" : "details");
   }, [project?.id]);
 
   useEffect(() => {
@@ -587,7 +587,7 @@ function ControlConsole({ client }: { client: AorClient }) {
     setAudits({});
     setAuditLoading("");
     setResultOpen(false);
-    setProjectView("workbench");
+    setProjectView("details");
     setError("");
     window.scrollTo({ top: 0 });
   }, []);
@@ -641,27 +641,28 @@ function ControlConsole({ client }: { client: AorClient }) {
       {loading && !project ? (
         <div className="workspace-loading"><Spinner label="正在读取项目" /></div>
       ) : project ? (
-        <div className="console-layout">
-          <ContextRail
+        projectView === "workbench" ? (
+          <ProjectWorkbench
             project={project}
+            tasks={bundle.tasks}
             result={bundle.result}
-            recent={recent}
-            view={projectView}
-            onView={setProjectView}
-            onSelect={(id) => void loadProject(id)}
-            onResult={() => setResultOpen(true)}
-            onCopyID={(id) => void copyProjectID(id)}
+            client={client}
+            onBack={() => setProjectView("details")}
+            onReload={reloadActiveProject}
+            onNotice={setNotice}
           />
-          {projectView === "workbench" ? (
-            <ProjectWorkbench
+        ) : (
+          <div className="console-layout">
+            <ContextRail
               project={project}
-              tasks={bundle.tasks}
               result={bundle.result}
-              client={client}
-              onReload={reloadActiveProject}
-              onNotice={setNotice}
+              recent={recent}
+              view={projectView}
+              onView={setProjectView}
+              onSelect={(id) => void loadProject(id)}
+              onResult={() => setResultOpen(true)}
+              onCopyID={(id) => void copyProjectID(id)}
             />
-          ) : (
             <Workspace
               bundle={bundle}
               selectedTask={selectedTask}
@@ -672,13 +673,14 @@ function ControlConsole({ client }: { client: AorClient }) {
                 setBundle((current) => ({ ...current, project: next }));
                 setRecent(rememberProject(next));
               }}
+              onOpenWorkbench={() => setProjectView("workbench")}
               onReload={() => void loadProject(project.id)}
               onNotice={setNotice}
               onError={(cause) => setError(errorMessage(cause))}
               client={client}
             />
-          )}
-        </div>
+          </div>
+        )
       ) : (
         <EmptyWorkspace onCreate={() => setNewOpen(true)} onOpen={() => setOpenOpen(true)} recent={recent} onSelect={(id) => void loadProject(id)} />
       )}
@@ -787,13 +789,14 @@ function ContextRail({ project, result, recent, view, onView, onSelect, onResult
   );
 }
 
-function Workspace({ bundle, selectedTask, audits, auditLoading, onSelectTask, onProjectChanged, onReload, onNotice, onError, client }: {
+function Workspace({ bundle, selectedTask, audits, auditLoading, onSelectTask, onProjectChanged, onOpenWorkbench, onReload, onNotice, onError, client }: {
   bundle: ProjectBundle;
   selectedTask: string;
   audits: Record<string, AuditRun[]>;
   auditLoading: string;
   onSelectTask: (id: string) => void;
   onProjectChanged: (project: Project) => void;
+  onOpenWorkbench: () => void;
   onReload: () => void;
   onNotice: (notice: string) => void;
   onError: (error: unknown) => void;
@@ -826,6 +829,7 @@ function Workspace({ bundle, selectedTask, audits, auditLoading, onSelectTask, o
     try {
       const next = await client.sendGoal(project, message);
       onProjectChanged(next);
+      onOpenWorkbench();
       if (next.goalProcessing) setAcceptedGoalVersion(next.version);
       else setGoalMessage("");
       onNotice("目标已提交，正在生成 GoalSpec");
@@ -843,6 +847,7 @@ function Workspace({ bundle, selectedTask, audits, auditLoading, onSelectTask, o
     try {
       const next = await client.approveGoal(project, goal);
       onProjectChanged(next);
+      onOpenWorkbench();
       onNotice("GoalSpec 已批准，规划已启动");
       onReload();
     } catch (cause) {
