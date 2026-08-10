@@ -157,6 +157,33 @@ function flowState(flow: ProjectActivityFlow, agents: ProjectActivityAgent[], me
   return "QUEUED";
 }
 
+function activityStateRank(state: ProjectActivityMessage["state"]): number {
+  if (state === "COMPLETED" || state === "FAILED") return 2;
+  if (state === "STREAMING" || state === "RUNNING") return 1;
+  return 0;
+}
+
+function newerActivityMessage(current: ProjectActivityMessage | undefined, candidate: ProjectActivityMessage): ProjectActivityMessage {
+  if (!current) return candidate;
+  const currentTime = new Date(current.updatedAt || current.createdAt).getTime();
+  const candidateTime = new Date(candidate.updatedAt || candidate.createdAt).getTime();
+  if (candidateTime > currentTime || candidateTime === currentTime && activityStateRank(candidate.state) >= activityStateRank(current.state)) {
+    return candidate;
+  }
+  return current;
+}
+
+function mergeActivitySnapshot(current: ProjectActivitySnapshot | undefined, candidate: ProjectActivitySnapshot): ProjectActivitySnapshot {
+  if (!current) return candidate;
+  const messages = new Map<string, ProjectActivityMessage>();
+  for (const message of current.messages) messages.set(message.id, message);
+  for (const message of candidate.messages) messages.set(message.id, newerActivityMessage(messages.get(message.id), message));
+  return {
+    ...candidate,
+    messages: [...messages.values()].sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)),
+  };
+}
+
 export function ProjectWorkbench({ project, tasks, result, client, onBack, onReload, onNotice }: {
   project: Project;
   tasks: ModuleTask[];
@@ -176,11 +203,13 @@ export function ProjectWorkbench({ project, tasks, result, client, onBack, onRel
   const [selectedAgent, setSelectedAgent] = useState("");
   const [sending, setSending] = useState(false);
   const refreshTimer = useRef<number | undefined>(undefined);
+  const messagesRef = useRef<HTMLDivElement | null>(null);
+  const followLatest = useRef(true);
 
   const refreshActivity = useCallback(async () => {
     try {
       const next = await client.getProjectActivity(project.id);
-      setActivity(next);
+      setActivity((current) => mergeActivitySnapshot(current, next));
       setActivityAvailable(true);
       setError("");
     } catch (cause) {
@@ -204,12 +233,14 @@ export function ProjectWorkbench({ project, tasks, result, client, onBack, onRel
   }, [project.id, refreshActivity]);
 
   useEffect(() => {
-    if (activityAvailable === false) return;
-    const timer = window.setInterval(() => void refreshActivity(), 4_000);
+    if (streaming) return;
+    const interval = activityAvailable === false ? 15_000 : 4_000;
+    const timer = window.setInterval(() => void refreshActivity(), interval);
     return () => window.clearInterval(timer);
-  }, [activityAvailable, refreshActivity]);
+  }, [activityAvailable, refreshActivity, streaming]);
 
   useEffect(() => {
+    if (activityAvailable !== true) return;
     const stop = client.subscribeProjectEvents(project.id, {
       onOpen: () => setStreaming(true),
       onClose: () => setStreaming(false),
@@ -218,17 +249,20 @@ export function ProjectWorkbench({ project, tasks, result, client, onBack, onRel
           if (!current) return current;
           const existing = current.messages.findIndex((item) => item.id === event.id);
           const messages = [...current.messages];
-          if (existing >= 0) messages[existing] = event; else messages.push(event);
+          if (existing >= 0) messages[existing] = newerActivityMessage(messages[existing], event); else messages.push(event);
           return { ...current, messages, cursor: event.cursor };
         });
         if (refreshTimer.current !== undefined) return;
         refreshTimer.current = window.setTimeout(() => {
           refreshTimer.current = undefined;
-          if (activityAvailable !== false) void refreshActivity();
+          void refreshActivity();
           onReload();
         }, 250);
       },
-      onError: () => setStreaming(false),
+      onError: (cause) => {
+        setStreaming(false);
+        if (cause instanceof ApiError && (cause.status === 404 || cause.status === 405)) setActivityAvailable(false);
+      },
     });
     return () => {
       stop();
@@ -245,6 +279,13 @@ export function ProjectWorkbench({ project, tasks, result, client, onBack, onRel
   const visibleMessages = messages.filter((item) => item.flow === activeFlow);
   const completedTasks = tasks.filter((task) => task.state === "PASSED" || task.state === "INTEGRATED").length;
   const latestActivityAt = messages.at(-1)?.updatedAt || messages.at(-1)?.createdAt;
+  const visibleMessageVersion = visibleMessages.map((item) => `${item.id}:${item.updatedAt || item.createdAt}:${item.content.length}`).join("|");
+
+  useEffect(() => {
+    const container = messagesRef.current;
+    if (!container || !followLatest.current) return;
+    container.scrollTop = container.scrollHeight;
+  }, [activeFlow, visibleMessageVersion]);
 
   const sendMessage = async () => {
     const content = message.trim();
@@ -329,7 +370,15 @@ export function ProjectWorkbench({ project, tasks, result, client, onBack, onRel
 
         <section className="workbench-thread" aria-labelledby="workbench-chat-title">
           <header className="workbench-panel-heading"><ChatCircleText /><div><h2 id="workbench-chat-title">{flowLabels[activeFlow]}对话</h2><span>{visibleMessages.length} 条</span></div></header>
-          <div className="workbench-messages" aria-live="polite">
+          <div
+            className="workbench-messages"
+            aria-live="polite"
+            ref={messagesRef}
+            onScroll={(event) => {
+              const container = event.currentTarget;
+              followLatest.current = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
+            }}
+          >
             {visibleMessages.length ? visibleMessages.map((item) => (
               <article className={`workbench-message is-${item.sender.toLowerCase()}`} key={item.id}>
                 <div className="message-avatar">{messageAvatar(item.sender)}</div>

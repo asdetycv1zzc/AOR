@@ -268,10 +268,40 @@ export class AorClient {
     onError?: (error: unknown) => void;
   }, after = ""): () => void {
     const controller = new AbortController();
-    void this.consumeProjectEvents(projectId, callbacks, after, controller.signal)
-      .then(() => { if (!controller.signal.aborted) callbacks.onClose?.(); })
-      .catch((cause) => { if (!controller.signal.aborted) callbacks.onError?.(cause); });
+    void this.reconnectProjectEvents(projectId, callbacks, after, controller.signal);
     return () => controller.abort();
+  }
+
+  private async reconnectProjectEvents(projectId: string, callbacks: {
+    onOpen?: () => void;
+    onEvent: (event: ProjectActivityMessage) => void;
+    onClose?: () => void;
+    onError?: (error: unknown) => void;
+  }, after: string, signal: AbortSignal): Promise<void> {
+    let cursor = after;
+    let delay = 500;
+    while (!signal.aborted) {
+      try {
+        await this.consumeProjectEvents(projectId, {
+          onOpen: () => {
+            delay = 500;
+            callbacks.onOpen?.();
+          },
+          onEvent: (event) => {
+            cursor = event.cursor || cursor;
+            callbacks.onEvent(event);
+          },
+        }, cursor, signal);
+        if (signal.aborted) return;
+        callbacks.onClose?.();
+      } catch (cause) {
+        if (signal.aborted) return;
+        callbacks.onError?.(cause);
+        if (cause instanceof ApiError && cause.status >= 400 && cause.status < 500) return;
+      }
+      await reconnectDelay(delay, signal);
+      delay = Math.min(delay * 2, 5_000);
+    }
   }
 
   private async consumeProjectEvents(projectId: string, callbacks: {
@@ -304,4 +334,20 @@ export class AorClient {
       }
     }
   }
+}
+
+function reconnectDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    const timer = window.setTimeout(done, milliseconds);
+    function done() {
+      signal.removeEventListener("abort", done);
+      window.clearTimeout(timer);
+      resolve();
+    }
+    signal.addEventListener("abort", done, { once: true });
+  });
 }
