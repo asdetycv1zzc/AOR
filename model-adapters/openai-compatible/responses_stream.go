@@ -228,10 +228,11 @@ func (s *responsesResponseStream) observeResponsesEvent(eventName string, payloa
 		}{Delta: event.Delta})
 		return delta, false, nil
 	case "response.completed", "response.incomplete":
-		if len(event.Response) == 0 {
-			return nil, false, modelgateway.ErrOutputSchema
+		terminalResponse := event.Response
+		if len(terminalResponse) == 0 {
+			terminalResponse = payload
 		}
-		if err := s.completeResponsesResponse(event.Response); err != nil {
+		if err := s.completeResponsesResponse(terminalResponse); err != nil {
 			return nil, false, err
 		}
 		return nil, true, nil
