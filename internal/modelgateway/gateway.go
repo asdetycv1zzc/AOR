@@ -49,6 +49,8 @@ type Gateway struct {
 	samplingSettings       SamplingSettingsStore
 	dynamicProvider        func(string) (ModelAdapter, error)
 	dynamicProviderPricing Pricing
+	activityRecorder       ActivityRecorder
+	activityInterventions  ActivityInterventionSource
 	executions             map[string]*requestExecution
 }
 
@@ -74,6 +76,8 @@ type GatewayConfig struct {
 	SamplingSettings       SamplingSettingsStore
 	DynamicProvider        func(string) (ModelAdapter, error)
 	DynamicProviderPricing Pricing
+	ActivityRecorder       ActivityRecorder
+	ActivityInterventions  ActivityInterventionSource
 }
 
 type requestExecution struct {
@@ -130,7 +134,7 @@ func NewGatewayWithConfig(ledger BudgetLedgerBackend, clock func() time.Time, co
 	if config.ReplayStore == nil && replayStore != nil {
 		replayFinalizer, _ = ledger.(ModelCallReplayFinalizer)
 	}
-	return &Gateway{adapters: make(map[string]ModelAdapter), allowed: make(map[string]map[string]bool), pricing: make(map[string]Pricing), ledger: ledger, callFinalizer: finalizer, clock: clock, circuits: make(map[string]providerCircuit), initialProviderBackoff: config.InitialProviderBackoff, maximumProviderBackoff: config.MaximumProviderBackoff, backoffJitterRatio: config.BackoffJitterRatio, sleep: config.Sleep, policies: policies, eligibility: config.ProviderEligibility, replayStore: replayStore, replayFinalizer: replayFinalizer, callLookup: callLookup, samplingSettings: config.SamplingSettings, dynamicProvider: config.DynamicProvider, dynamicProviderPricing: config.DynamicProviderPricing, executions: make(map[string]*requestExecution)}
+	return &Gateway{adapters: make(map[string]ModelAdapter), allowed: make(map[string]map[string]bool), pricing: make(map[string]Pricing), ledger: ledger, callFinalizer: finalizer, clock: clock, circuits: make(map[string]providerCircuit), initialProviderBackoff: config.InitialProviderBackoff, maximumProviderBackoff: config.MaximumProviderBackoff, backoffJitterRatio: config.BackoffJitterRatio, sleep: config.Sleep, policies: policies, eligibility: config.ProviderEligibility, replayStore: replayStore, replayFinalizer: replayFinalizer, callLookup: callLookup, samplingSettings: config.SamplingSettings, dynamicProvider: config.DynamicProvider, dynamicProviderPricing: config.DynamicProviderPricing, activityRecorder: config.ActivityRecorder, activityInterventions: config.ActivityInterventions, executions: make(map[string]*requestExecution)}
 }
 
 func (g *Gateway) Register(provider, model string, adapter ModelAdapter, pricing Pricing) error {
@@ -402,6 +406,23 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 	if ctx == nil {
 		return NormalizedResponse{}, ErrInvalidRequest
 	}
+	activityStartedAt := g.clock().UTC()
+	var activityFinishOnce sync.Once
+	activityLeader := true
+	activityRecorded := false
+	finishActivity := func() {
+		if !activityRecorded {
+			return
+		}
+		activityFinishOnce.Do(func() {
+			g.recordActivityFinish(ctx, request, options, response, resultErr, activityStartedAt)
+		})
+	}
+	defer func() {
+		if activityLeader {
+			finishActivity()
+		}
+	}()
 	var err error
 	request, err = g.applySamplingSettings(ctx, request)
 	if err != nil {
@@ -416,6 +437,18 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 	}
 	if !state.ValidModelReasoningEffort(options.Provider, request.ReasoningEffort) {
 		return NormalizedResponse{}, ErrInvalidRequest
+	}
+	claimedInterventions, interventionErr := g.claimActivityInterventions(ctx, request)
+	if interventionErr != nil {
+		return NormalizedResponse{}, ErrProviderUnavailable
+	}
+	if len(claimedInterventions) != 0 {
+		request.Messages = append(append([]Message(nil), request.Messages...), claimedInterventionMessages(claimedInterventions)...)
+		claimedIDs := claimedInterventionIDs(claimedInterventions)
+		if err := validateRequest(request); err != nil {
+			g.completeActivityInterventions(ctx, request, claimedIDs, err)
+			return NormalizedResponse{}, err
+		}
 	}
 	ctx, traceSpan := observability.StartSpan(ctx, observability.SpanModelGenerate, modelTraceCorrelation(request), map[string]string{
 		"aor.agent.id":         request.AgentInstanceID,
@@ -442,9 +475,11 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 	}
 	execution, leader, err := g.beginExecution(request, digest)
 	if err != nil {
+		g.completeActivityInterventions(ctx, request, claimedInterventionIDs(claimedInterventions), err)
 		return NormalizedResponse{}, err
 	}
 	if !leader {
+		activityLeader = false
 		select {
 		case <-execution.done:
 			return cloneNormalizedResponse(execution.response), execution.err
@@ -452,7 +487,15 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 			return NormalizedResponse{}, ctx.Err()
 		}
 	}
+	g.recordActivityStart(ctx, request, options, activityStartedAt)
+	activityRecorded = true
+	if claimedIDs := claimedInterventionIDs(claimedInterventions); len(claimedIDs) != 0 {
+		defer func() {
+			g.completeActivityInterventions(ctx, request, claimedIDs, resultErr)
+		}()
+	}
 	if replay, found, loadErr := g.loadReplay(ctx, request, digest); loadErr != nil {
+		finishActivity()
 		g.finishExecution(request, digest, execution, NormalizedResponse{}, loadErr)
 		return NormalizedResponse{}, loadErr
 	} else if found {
@@ -460,20 +503,92 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 		// request's current output checks before returning a replay, including
 		// the process-local semantic validator.
 		if validationErr := validateGeneratedResponse(request, replay.Response); validationErr != nil {
+			finishActivity()
 			g.finishExecution(request, digest, execution, NormalizedResponse{}, validationErr)
 			return NormalizedResponse{}, validationErr
 		}
+		response = replay.Response
+		resultErr = nil
+		finishActivity()
 		g.finishExecution(request, digest, execution, replay.Response, nil)
 		return replay.Response, nil
 	}
-	response, runErr := g.generateOnce(ctx, request, options)
-	if runErr == nil {
+	if g.activityRecorder == nil {
+		response, resultErr = g.generateOnce(ctx, request, options)
+		if resultErr == nil && response.RequestID == "" {
+			response.RequestID = request.RequestID
+		}
+		finishActivity()
+		g.finishExecution(request, digest, execution, response, resultErr)
+		return response, resultErr
+	}
+	activityContext := ctx
+	var activityDeltaMu sync.Mutex
+	var activityDelta []byte
+	flushActivityDelta := func() {
+		activityDeltaMu.Lock()
+		if len(activityDelta) == 0 {
+			activityDeltaMu.Unlock()
+			return
+		}
+		pending := string(activityDelta)
+		activityDelta = nil
+		activityDeltaMu.Unlock()
+		g.recordActivityDelta(activityContext, request, pending)
+	}
+	activityDeltaWake := make(chan struct{}, 1)
+	activityDeltaStop := make(chan struct{})
+	var activityDeltaWorker sync.WaitGroup
+	activityDeltaWorker.Add(1)
+	go func() {
+		defer activityDeltaWorker.Done()
+		ticker := time.NewTicker(150 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				flushActivityDelta()
+			case <-activityDeltaWake:
+				flushActivityDelta()
+			case <-activityDeltaStop:
+				return
+			}
+		}
+	}()
+	ctx = withActivityDeltaRecorder(ctx, func(delta string) {
+		if delta == "" {
+			return
+		}
+		activityDeltaMu.Lock()
+		activityDelta = append(activityDelta, delta...)
+		shouldFlush := len(activityDelta) >= 1024
+		activityDeltaMu.Unlock()
+		if shouldFlush {
+			select {
+			case activityDeltaWake <- struct{}{}:
+			default:
+			}
+		}
+	})
+	var stopActivityDeltasOnce sync.Once
+	stopActivityDeltas := func() {
+		stopActivityDeltasOnce.Do(func() {
+			close(activityDeltaStop)
+			activityDeltaWorker.Wait()
+			flushActivityDelta()
+		})
+	}
+	defer stopActivityDeltas()
+	response, resultErr = g.generateOnce(ctx, request, options)
+	if resultErr == nil {
 		if response.RequestID == "" {
 			response.RequestID = request.RequestID
 		}
 	}
-	g.finishExecution(request, digest, execution, response, runErr)
-	return response, runErr
+	stopActivityDeltas()
+	finishActivity()
+	g.finishExecution(request, digest, execution, response, resultErr)
+	return response, resultErr
 }
 
 func modelTraceCorrelation(request NormalizedRequest) observability.Correlation {
@@ -633,9 +748,9 @@ func (g *Gateway) providerCandidates(request NormalizedRequest, options Generate
 	// fallback targets. Named policies retain their explicit fallback lists.
 	if request.ProviderPolicy == "default" {
 		return []ProviderCandidate{{
-			Provider: options.Provider,
-			Model: request.Model,
-			CapabilityRank: 100,
+			Provider:                   options.Provider,
+			Model:                      request.Model,
+			CapabilityRank:             100,
 			AllowedDataClassifications: []string{"PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"},
 		}}, nil
 	}
@@ -999,6 +1114,7 @@ func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequ
 				response.Usage.ModelVersion = response.ModelVersion
 			}
 			response.RequestID = request.RequestID
+			response.Provider = selection.candidate.Provider
 			call.Status = ModelCallSucceeded
 			call.LatencyMilliseconds = elapsedMilliseconds(startedAt, g.clock().UTC())
 			if finalizeErr := g.finalizeSuccessfulModelCall(ctx, ModelCallFinalization{ReservationID: options.ReservationID, Disposition: ReservationDispositionSettle, ActualMicros: incurred, Call: call}, response); finalizeErr != nil {
@@ -1239,6 +1355,7 @@ func (g *Gateway) generateSingle(ctx context.Context, request NormalizedRequest,
 			response.Usage.ModelVersion = response.ModelVersion
 		}
 		response.RequestID = request.RequestID
+		response.Provider = options.Provider
 		call.Status = ModelCallSucceeded
 		call.LatencyMilliseconds = elapsedMilliseconds(startedAt, g.clock().UTC())
 		if err := g.finalizeSuccessfulModelCall(ctx, ModelCallFinalization{ReservationID: options.ReservationID, Disposition: ReservationDispositionSettle, ActualMicros: incurred, Call: call}, response); err != nil {

@@ -14,21 +14,27 @@ import (
 )
 
 type responseStream struct {
-	adapter       *Adapter
-	body          io.ReadCloser
-	cancel        context.CancelFunc
-	maxEventBytes int64
-	events        chan json.RawMessage
-	failures      chan error
-	done          chan struct{}
-	closeOnce     sync.Once
-	providerID    string
-	stateMu       sync.RWMutex
-	content       []byte
-	usage         modelgateway.Usage
-	usageFound    bool
-	complete      bool
-	failed        bool
+	adapter         *Adapter
+	body            io.ReadCloser
+	cancel          context.CancelFunc
+	maxEventBytes   int64
+	events          chan json.RawMessage
+	failures        chan error
+	done            chan struct{}
+	closed          chan struct{}
+	closeOnce       sync.Once
+	providerID      string
+	modelVersion    string
+	stateMu         sync.RWMutex
+	content         []byte
+	usage           modelgateway.Usage
+	usageFound      bool
+	complete        bool
+	failed          bool
+	finishReason    string
+	activityContext context.Context
+	requestContext  context.Context
+	jsonMode        bool
 }
 
 type streamEvent struct {
@@ -41,6 +47,7 @@ type streamEvent struct {
 		Message struct {
 			Content *string `json:"content"`
 		} `json:"message"`
+		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *chatUsage `json:"usage"`
 }
@@ -88,6 +95,7 @@ func (s *responseStream) Recv(ctx context.Context) (json.RawMessage, error) {
 func (s *responseStream) Close() error {
 	var err error
 	s.closeOnce.Do(func() {
+		close(s.closed)
 		s.cancel()
 		err = s.body.Close()
 	})
@@ -98,17 +106,27 @@ func (s *responseStream) read() {
 	defer close(s.done)
 	defer func() { _ = s.Close() }()
 	defer s.unregister()
+	if s.jsonMode {
+		s.readJSON()
+		return
+	}
 
-	reader := bufio.NewReaderSize(s.body, int(s.maxEventBytes)+1)
+	reader := bufio.NewReaderSize(s.body, 4096)
 	data := make([]byte, 0)
 	for {
-		line, err := reader.ReadSlice('\n')
-		if errors.Is(err, bufio.ErrBufferFull) {
+		line, err := readStreamLine(reader, s.maxEventBytes)
+		if errors.Is(err, modelgateway.ErrOutputTooLarge) {
 			s.fail(modelgateway.ErrOutputTooLarge)
 			return
 		}
 		if err != nil && !errors.Is(err, io.EOF) {
-			s.fail(unknownFailure(errors.New("openai-compatible stream read failed")))
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				s.fail(err)
+			} else if contextErr := s.requestContext.Err(); contextErr != nil {
+				s.fail(contextErr)
+			} else {
+				s.fail(unknownFailure(errors.New("openai-compatible stream read failed")))
+			}
 			return
 		}
 		line = trimLine(line)
@@ -135,16 +153,23 @@ func (s *responseStream) read() {
 				s.registerProviderID(data)
 				select {
 				case s.events <- append(json.RawMessage(nil), data...):
-				case <-s.done:
+				case <-s.closed:
 					return
 				}
 				data = data[:0]
 			}
 		} else if bytes, found := strings.CutPrefix(string(line), "data:"); found {
 			fragment := strings.TrimSpace(bytes)
-			if int64(len(data)+len(fragment)) > s.maxEventBytes {
+			separatorLength := 0
+			if len(data) != 0 {
+				separatorLength = 1
+			}
+			if int64(len(data)+separatorLength+len(fragment)) > s.maxEventBytes {
 				s.fail(modelgateway.ErrOutputTooLarge)
 				return
+			}
+			if separatorLength != 0 {
+				data = append(data, '\n')
 			}
 			data = append(data, fragment...)
 		}
@@ -159,6 +184,45 @@ func (s *responseStream) read() {
 			return
 		}
 	}
+}
+
+func (s *responseStream) readJSON() {
+	data, err := io.ReadAll(io.LimitReader(s.body, s.maxEventBytes+1))
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			s.fail(err)
+		} else if contextErr := s.requestContext.Err(); contextErr != nil {
+			s.fail(contextErr)
+		} else {
+			s.fail(unknownFailure(errors.New("openai-compatible response read failed")))
+		}
+		return
+	}
+	if int64(len(data)) > s.maxEventBytes {
+		s.fail(modelgateway.ErrOutputTooLarge)
+		return
+	}
+	if !json.Valid(data) {
+		s.fail(modelgateway.ErrOutputSchema)
+		return
+	}
+	if s.adapter.containsCredential(string(data)) {
+		s.fail(modelgateway.ErrCredentialDetected)
+		return
+	}
+	if err := s.observe(data); err != nil {
+		s.fail(err)
+		return
+	}
+	s.registerProviderID(data)
+	select {
+	case s.events <- append(json.RawMessage(nil), data...):
+	case <-s.closed:
+		return
+	}
+	s.stateMu.Lock()
+	s.complete = true
+	s.stateMu.Unlock()
 }
 
 func (s *responseStream) fail(err error) {
@@ -188,16 +252,32 @@ func (s *responseStream) observe(data []byte) error {
 			content = choice.Message.Content
 		}
 		if content == nil {
+			if choice.FinishReason != nil {
+				s.stateMu.Lock()
+				s.finishReason = *choice.FinishReason
+				s.stateMu.Unlock()
+			}
 			continue
 		}
 		if !utf8.ValidString(*content) || s.adapter.containsCredential(*content) {
 			return modelgateway.ErrCredentialDetected
 		}
 		s.stateMu.Lock()
+		if int64(len(s.content)+len(*content)) > modelgateway.MaximumResponseBytes {
+			s.stateMu.Unlock()
+			return modelgateway.ErrOutputTooLarge
+		}
 		s.content = append(s.content, []byte(*content)...)
+		if choice.FinishReason != nil {
+			s.finishReason = *choice.FinishReason
+		}
 		s.stateMu.Unlock()
+		modelgateway.ReportActivityDelta(s.activityContext, *content)
 	}
 	if event.Usage != nil {
+		if !usageFieldsPresent(data, "prompt_tokens", "completion_tokens") {
+			return modelgateway.ErrOutputSchema
+		}
 		usage, err := s.adapter.NormalizeUsage(*event.Usage)
 		if err != nil {
 			return err
@@ -205,19 +285,25 @@ func (s *responseStream) observe(data []byte) error {
 		s.stateMu.Lock()
 		if event.ID != "" {
 			usage.ProviderRequestID = event.ID
-		} else if s.usage.ProviderRequestID != "" {
-			usage.ProviderRequestID = s.usage.ProviderRequestID
+		} else if s.providerID != "" {
+			usage.ProviderRequestID = s.providerID
 		}
 		if event.Model != "" {
 			usage.ModelVersion = event.Model
-		} else if s.usage.ModelVersion != "" {
-			usage.ModelVersion = s.usage.ModelVersion
+		} else if s.modelVersion != "" {
+			usage.ModelVersion = s.modelVersion
 		}
 		s.usage = usage
 		s.usageFound = true
 		s.stateMu.Unlock()
 	}
 	return nil
+}
+
+func (s *responseStream) FinalFinishReason() (string, bool) {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return s.finishReason, s.complete && !s.failed && s.finishReason != ""
 }
 
 func (s *responseStream) FinalUsage() (modelgateway.Usage, bool) {
@@ -240,7 +326,8 @@ func (s *responseStream) FinalContent() (json.RawMessage, bool) {
 
 func (s *responseStream) registerProviderID(data []byte) {
 	var event struct {
-		ID string `json:"id"`
+		ID    string `json:"id"`
+		Model string `json:"model"`
 	}
 	if json.Unmarshal(data, &event) != nil || event.ID == "" || s.adapter.containsCredential(event.ID) {
 		return
@@ -248,9 +335,51 @@ func (s *responseStream) registerProviderID(data []byte) {
 	s.adapter.mu.Lock()
 	s.stateMu.Lock()
 	s.providerID = event.ID
+	if event.Model != "" {
+		s.modelVersion = event.Model
+	}
 	s.stateMu.Unlock()
 	s.adapter.active[event.ID] = s
 	s.adapter.mu.Unlock()
+}
+
+func usageFieldsPresent(event []byte, fields ...string) bool {
+	var root map[string]json.RawMessage
+	if json.Unmarshal(event, &root) != nil {
+		return false
+	}
+	encoded, found := root["usage"]
+	if !found || string(encoded) == "null" {
+		return false
+	}
+	var usage map[string]json.RawMessage
+	if json.Unmarshal(encoded, &usage) != nil {
+		return false
+	}
+	for _, field := range fields {
+		value, found := usage[field]
+		if !found || string(value) == "null" {
+			return false
+		}
+	}
+	return true
+}
+
+func readStreamLine(reader *bufio.Reader, maximum int64) ([]byte, error) {
+	line := make([]byte, 0, 256)
+	for {
+		fragment, prefix, err := reader.ReadLine()
+		if int64(len(fragment)) > maximum-int64(len(line)) {
+			return nil, modelgateway.ErrOutputTooLarge
+		}
+		line = append(line, fragment...)
+		if err != nil {
+			return line, err
+		}
+		if !prefix {
+			return line, nil
+		}
+	}
 }
 
 func (s *responseStream) unregister() {

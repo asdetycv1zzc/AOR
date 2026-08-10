@@ -36,9 +36,6 @@ func newAdapter(factory AdapterFactory, provider string, protocol Protocol, base
 		} else if !validModelName(model) {
 			return nil, ErrInvalidSettings
 		}
-		if protocol == ProtocolAnthropic {
-			definition.Streaming = false
-		}
 		capabilities[model] = modelCapabilities(definition)
 	}
 	if factory.RequestTimeout == 0 {
@@ -46,11 +43,15 @@ func newAdapter(factory AdapterFactory, provider string, protocol Protocol, base
 	}
 	switch protocol {
 	case ProtocolAnthropic:
+		disablePublicStreaming(capabilities)
 		return newAnthropicAdapter(anthropicConfig{
 			BaseURL: baseURL, APIKey: apiKey, Models: capabilities,
 			HTTPClient: factory.HTTPClient, RequestTimeout: factory.RequestTimeout,
 		})
 	case ProtocolOpenAICompatible, ProtocolOpenAIResponses:
+		if protocol == ProtocolOpenAIResponses {
+			disablePublicStreaming(capabilities)
+		}
 		endpoint, err := openAIEndpoint(baseURL, protocol)
 		if err != nil {
 			return nil, err
@@ -71,6 +72,13 @@ func newAdapter(factory AdapterFactory, provider string, protocol Protocol, base
 		return adapter, nil
 	default:
 		return nil, ErrInvalidSettings
+	}
+}
+
+func disablePublicStreaming(capabilities map[string]modelgateway.ModelCapabilities) {
+	for model, value := range capabilities {
+		value.SupportsStreaming = false
+		capabilities[model] = value
 	}
 }
 

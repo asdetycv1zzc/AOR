@@ -87,7 +87,6 @@ func New(config Config) (*Adapter, error) {
 		capabilities.DataResidency = append([]string(nil), capabilities.DataResidency...)
 		capabilities.Modalities = append([]string(nil), capabilities.Modalities...)
 		if config.WireFormat == WireFormatResponses {
-			capabilities.SupportsStreaming = false
 			capabilities.SupportsSeed = false
 		}
 		models[model] = capabilities
@@ -171,6 +170,12 @@ func (a *Adapter) Generate(ctx context.Context, request modelgateway.NormalizedR
 	if err := a.requireInputLimit(ctx, request, capabilities); err != nil {
 		return modelgateway.NormalizedResponse{}, err
 	}
+	if a.wireFormat == WireFormatChatCompletions && capabilities.SupportsStreaming && !requestUsesNativeTools(request) {
+		return a.generateChatStream(ctx, request, capabilities)
+	}
+	if a.wireFormat == WireFormatResponses && !requestUsesNativeTools(request) {
+		return a.generateResponsesStream(ctx, request, capabilities)
+	}
 	body, err := a.encodeRequest(request, false)
 	if err != nil {
 		return modelgateway.NormalizedResponse{}, err
@@ -221,12 +226,68 @@ func (a *Adapter) Stream(ctx context.Context, request modelgateway.NormalizedReq
 		_ = response.Body.Close()
 		return nil, httpFailure(response.StatusCode)
 	}
+	jsonMode := !strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream")
+	maxEventBytes := a.maxStreamEventBytes
+	if jsonMode {
+		maxEventBytes = a.maxResponseBytes
+	}
+	requestContext := ctx
+	if response.Request != nil {
+		requestContext = response.Request.Context()
+	}
 	stream := &responseStream{
-		adapter: a, body: response.Body, cancel: cancel, maxEventBytes: a.maxStreamEventBytes,
-		events: make(chan json.RawMessage, 1), failures: make(chan error, 1), done: make(chan struct{}),
+		adapter: a, body: response.Body, cancel: cancel, maxEventBytes: maxEventBytes,
+		events: make(chan json.RawMessage, 1), failures: make(chan error, 1), done: make(chan struct{}), closed: make(chan struct{}), activityContext: ctx,
+		requestContext: requestContext, jsonMode: jsonMode,
 	}
 	go stream.read()
 	return stream, nil
+}
+
+func (a *Adapter) generateChatStream(ctx context.Context, request modelgateway.NormalizedRequest, capabilities modelgateway.ModelCapabilities) (modelgateway.NormalizedResponse, error) {
+	streamValue, err := a.Stream(ctx, request)
+	if err != nil {
+		return modelgateway.NormalizedResponse{}, err
+	}
+	stream, ok := streamValue.(*responseStream)
+	if !ok {
+		_ = streamValue.Close()
+		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
+	}
+	defer stream.Close()
+	for {
+		_, receiveErr := stream.Recv(ctx)
+		if errors.Is(receiveErr, io.EOF) {
+			break
+		}
+		if receiveErr != nil {
+			return modelgateway.NormalizedResponse{}, receiveErr
+		}
+	}
+	contentBytes, contentFound := stream.FinalContent()
+	usage, usageFound := stream.FinalUsage()
+	finishReason, finishFound := stream.FinalFinishReason()
+	if !contentFound || !usageFound || !finishFound || len(contentBytes) == 0 {
+		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
+	}
+	var content json.RawMessage
+	if json.Valid(contentBytes) {
+		content = append(json.RawMessage(nil), contentBytes...)
+	} else {
+		encoded, encodeErr := json.Marshal(string(contentBytes))
+		if encodeErr != nil || len(encoded) > modelgateway.MaximumResponseBytes {
+			return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputTooLarge)
+		}
+		content = encoded
+	}
+	modelVersion := usage.ModelVersion
+	if modelVersion == "" {
+		modelVersion = capabilities.ActualModelVersion
+	}
+	return modelgateway.NormalizedResponse{
+		RequestID: request.RequestID, ProviderRequestID: usage.ProviderRequestID,
+		ModelVersion: modelVersion, Content: content, FinishReason: finishReason, Usage: usage,
+	}, nil
 }
 
 // Cancel stops a locally active stream once its provider request ID has been
@@ -484,7 +545,7 @@ func (a *Adapter) decodeChatResponse(request modelgateway.NormalizedRequest, cap
 		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrCredentialDetected)
 	}
 	var response chatResponse
-	if json.Unmarshal(payload, &response) != nil || len(response.Choices) != 1 || response.Usage == nil {
+	if json.Unmarshal(payload, &response) != nil || len(response.Choices) != 1 || response.Usage == nil || !usageFieldsPresent(payload, "prompt_tokens", "completion_tokens") {
 		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
 	}
 	choice := response.Choices[0]

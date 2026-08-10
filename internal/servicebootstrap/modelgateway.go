@@ -20,6 +20,7 @@ import (
 	"github.com/akimisaka/aor/internal/modelgateway"
 	"github.com/akimisaka/aor/internal/modelproviders"
 	"github.com/akimisaka/aor/internal/policy"
+	"github.com/akimisaka/aor/internal/projectactivity"
 	"github.com/akimisaka/aor/internal/runtimeclient"
 	"github.com/akimisaka/aor/internal/runtimeconfig"
 	openaicompatible "github.com/akimisaka/aor/model-adapters/openai-compatible"
@@ -65,6 +66,16 @@ func ModelGateway(config runtimeconfig.Config, clients *runtimeclient.Clients) (
 		clearBytes(replayKey)
 		return nil, runtimeclient.ErrInvalidClientConfig
 	}
+	activityStore, err := projectactivity.NewStore(clients.Database())
+	if err != nil {
+		clearBytes(replayKey)
+		return nil, runtimeclient.ErrInvalidClientConfig
+	}
+	activityRecorder, err := modelgateway.NewPostgresActivityRecorder(activityStore)
+	if err != nil {
+		clearBytes(replayKey)
+		return nil, runtimeclient.ErrInvalidClientConfig
+	}
 	ledger, ledgerErr := modelgateway.NewPostgresBudgetLedgerWithReplay(clients.Database(), time.Now, modelGatewayReservationTTL, modelgateway.ReplayStoreConfig{
 		KeyID:         config.ModelGateway.ReplayKeyID,
 		EncryptionKey: replayKey,
@@ -78,7 +89,9 @@ func ModelGateway(config runtimeconfig.Config, clients *runtimeclient.Clients) (
 	var authorizer *modelGatewayAuthorizer
 	providerFactory := modelproviders.AdapterFactory{RequestTimeout: modelProviderRequestTimeout}
 	gateway := modelgateway.NewGatewayWithConfig(ledger, time.Now, modelgateway.GatewayConfig{
-		SamplingSettings: samplingSettings,
+		SamplingSettings:      samplingSettings,
+		ActivityRecorder:      activityRecorder,
+		ActivityInterventions: activityRecorder,
 		DynamicProvider: func(provider string) (modelgateway.ModelAdapter, error) {
 			return modelproviders.NewDynamicAdapter(provider, "*", providerSettings, providerFactory)
 		},

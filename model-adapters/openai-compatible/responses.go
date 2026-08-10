@@ -14,12 +14,12 @@ const (
 )
 
 func (a *Adapter) encodeResponsesRequest(request modelgateway.NormalizedRequest, stream bool) ([]byte, error) {
-	if stream || request.TopK != 0 {
+	if request.TopK != 0 {
 		return nil, modelgateway.ErrProviderNotAllowed
 	}
 	value := responsesRequest{
 		Model: request.Model, MaxOutputTokens: request.MaxOutputTokens,
-		Store: false,
+		Store: false, Stream: stream,
 	}
 	if request.ReasoningEffort == "" || request.ReasoningEffort == "none" || !a.supportsReasoningEffort {
 		temperature := request.Temperature
@@ -93,7 +93,7 @@ func (a *Adapter) decodeResponsesResponse(request modelgateway.NormalizedRequest
 		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrCredentialDetected)
 	}
 	var response responsesResponse
-	if json.Unmarshal(payload, &response) != nil || response.Usage == nil || len(response.Output) > modelgateway.MaximumMessages {
+	if json.Unmarshal(payload, &response) != nil || response.Usage == nil || !usageFieldsPresent(payload, "input_tokens", "output_tokens") || len(response.Output) > modelgateway.MaximumMessages {
 		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputSchema)
 	}
 	if !validResponsesIdentifier(response.ID) || !validResponsesField(response.Model, modelgateway.MaximumToolCallIDBytes, true) || response.Status != "completed" && response.Status != "incomplete" {
@@ -293,6 +293,7 @@ type responsesRequest struct {
 	Temperature     *float64             `json:"temperature,omitempty"`
 	TopP            *float64             `json:"top_p,omitempty"`
 	Store           bool                 `json:"store"`
+	Stream          bool                 `json:"stream,omitempty"`
 }
 
 type responsesInputItem struct {

@@ -159,6 +159,7 @@ type Usage struct {
 
 type NormalizedResponse struct {
 	RequestID         string          `json:"requestId"`
+	Provider          string          `json:"provider,omitempty"`
 	ProviderRequestID string          `json:"providerRequestId"`
 	ModelVersion      string          `json:"modelVersion"`
 	Content           json.RawMessage `json:"content,omitempty"`

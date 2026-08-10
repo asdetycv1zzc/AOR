@@ -1,6 +1,7 @@
 package modelproviders
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -44,6 +45,7 @@ type anthropicRequest struct {
 	Messages     []anthropicMessage     `json:"messages"`
 	Tools        []anthropicTool        `json:"tools,omitempty"`
 	ToolChoice   *anthropicToolChoice   `json:"tool_choice,omitempty"`
+	Stream       bool                   `json:"stream,omitempty"`
 }
 
 type anthropicOutputConfig struct {
@@ -164,6 +166,9 @@ func (adapter *anthropicAdapter) Generate(ctx context.Context, request modelgate
 	if err != nil || estimate.InputTokens > int64(capabilities.MaxInputTokens) {
 		return modelgateway.NormalizedResponse{}, modelgateway.ErrInvalidRequest
 	}
+	if len(request.Tools) == 0 {
+		return adapter.generateStream(ctx, request, capabilities)
+	}
 	payload, err := adapter.encodeRequest(request)
 	if err != nil {
 		return modelgateway.NormalizedResponse{}, err
@@ -198,6 +203,216 @@ func (adapter *anthropicAdapter) Generate(ctx context.Context, request modelgate
 
 func (adapter *anthropicAdapter) Stream(context.Context, modelgateway.NormalizedRequest) (modelgateway.ResponseStream, error) {
 	return nil, modelgateway.ErrProviderNotAllowed
+}
+
+func (adapter *anthropicAdapter) generateStream(ctx context.Context, request modelgateway.NormalizedRequest, capabilities modelgateway.ModelCapabilities) (modelgateway.NormalizedResponse, error) {
+	payload, err := adapter.encodeRequestWithStream(request)
+	if err != nil {
+		return modelgateway.NormalizedResponse{}, err
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, adapter.timeout)
+	defer cancel()
+	httpRequest, err := http.NewRequestWithContext(requestCtx, http.MethodPost, adapter.endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return modelgateway.NormalizedResponse{}, modelgateway.ErrInvalidRequest
+	}
+	httpRequest.Header.Set("x-api-key", adapter.apiKey)
+	httpRequest.Header.Set("anthropic-version", anthropicVersion)
+	httpRequest.Header.Set("Content-Type", "application/json")
+	httpRequest.Header.Set("Accept", "text/event-stream")
+	response, err := adapter.client.Do(httpRequest)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return modelgateway.NormalizedResponse{}, requestCtx.Err()
+		}
+		return modelgateway.NormalizedResponse{}, anthropicUnknownFailure(errors.New("anthropic network request failed"))
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return modelgateway.NormalizedResponse{}, anthropicHTTPFailure(response.StatusCode)
+	}
+	if !strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream") {
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, modelgateway.MaximumResponseBytes+1))
+		if readErr != nil {
+			if contextErr := requestCtx.Err(); contextErr != nil {
+				return modelgateway.NormalizedResponse{}, contextErr
+			}
+			return modelgateway.NormalizedResponse{}, anthropicUnknownFailure(errors.New("anthropic response read failed"))
+		}
+		if len(body) > modelgateway.MaximumResponseBytes {
+			return modelgateway.NormalizedResponse{}, anthropicUnknownFailure(modelgateway.ErrOutputTooLarge)
+		}
+		return adapter.decodeResponse(request, capabilities, body)
+	}
+	reader := bufio.NewReaderSize(response.Body, 4096)
+	var eventName string
+	var data strings.Builder
+	var text strings.Builder
+	var providerID, modelVersion, stopReason string
+	var inputTokens, outputTokens int64
+	var inputUsageFound, outputUsageFound bool
+	flush := func() error {
+		if data.Len() == 0 {
+			eventName = ""
+			return nil
+		}
+		payload := []byte(data.String())
+		if !json.Valid(payload) || adapter.containsKey(string(payload)) {
+			return anthropicUnknownFailure(modelgateway.ErrOutputSchema)
+		}
+		if eventName == "" {
+			var envelope struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(payload, &envelope) == nil {
+				eventName = envelope.Type
+			}
+		}
+		switch eventName {
+		case "message_start":
+			var value struct {
+				Message struct {
+					ID    string          `json:"id"`
+					Model string          `json:"model"`
+					Usage json.RawMessage `json:"usage"`
+				} `json:"message"`
+			}
+			if json.Unmarshal(payload, &value) != nil {
+				return modelgateway.ErrOutputSchema
+			}
+			providerID, modelVersion = value.Message.ID, value.Message.Model
+			if anthropicUsageFieldsPresent(value.Message.Usage, "input_tokens") {
+				var usage anthropicUsage
+				if json.Unmarshal(value.Message.Usage, &usage) != nil {
+					return modelgateway.ErrOutputSchema
+				}
+				inputTokens = usage.InputTokens
+				inputUsageFound = true
+			}
+		case "content_block_delta":
+			var value struct {
+				Delta struct {
+					Type        string `json:"type"`
+					Text        string `json:"text"`
+					PartialJSON string `json:"partial_json"`
+				} `json:"delta"`
+			}
+			if json.Unmarshal(payload, &value) != nil {
+				return modelgateway.ErrOutputSchema
+			}
+			fragment := value.Delta.Text
+			if value.Delta.Type == "input_json_delta" {
+				fragment = value.Delta.PartialJSON
+			}
+			if fragment != "" {
+				if text.Len()+len(fragment) > modelgateway.MaximumResponseBytes {
+					return modelgateway.ErrOutputTooLarge
+				}
+				text.WriteString(fragment)
+				modelgateway.ReportActivityDelta(ctx, fragment)
+			}
+		case "message_delta":
+			var value struct {
+				Delta struct {
+					StopReason string `json:"stop_reason"`
+				} `json:"delta"`
+				Usage json.RawMessage `json:"usage"`
+			}
+			if json.Unmarshal(payload, &value) != nil {
+				return modelgateway.ErrOutputSchema
+			}
+			stopReason = value.Delta.StopReason
+			if anthropicUsageFieldsPresent(value.Usage, "output_tokens") {
+				var usage anthropicUsage
+				if json.Unmarshal(value.Usage, &usage) != nil {
+					return modelgateway.ErrOutputSchema
+				}
+				outputTokens = usage.OutputTokens
+				outputUsageFound = true
+			}
+		case "error":
+			return anthropicUnknownFailure(errors.New("anthropic provider returned an error"))
+		}
+		data.Reset()
+		eventName = ""
+		return nil
+	}
+	for {
+		lineBytes, readErr := readAnthropicSSELine(reader, modelgateway.MaximumResponseBytes)
+		if errors.Is(readErr, modelgateway.ErrOutputTooLarge) {
+			return modelgateway.NormalizedResponse{}, anthropicUnknownFailure(modelgateway.ErrOutputTooLarge)
+		}
+		line := string(lineBytes)
+		if line == "" {
+			if flushErr := flush(); flushErr != nil {
+				return modelgateway.NormalizedResponse{}, flushErr
+			}
+		} else if strings.HasPrefix(line, "event:") {
+			eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		} else if strings.HasPrefix(line, "data:") {
+			fragment := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			separatorLength := 0
+			if data.Len() != 0 {
+				separatorLength = 1
+			}
+			if data.Len()+separatorLength+len(fragment) > modelgateway.MaximumResponseBytes {
+				return modelgateway.NormalizedResponse{}, anthropicUnknownFailure(modelgateway.ErrOutputTooLarge)
+			}
+			if separatorLength != 0 {
+				data.WriteByte('\n')
+			}
+			data.WriteString(fragment)
+		}
+		if errors.Is(readErr, io.EOF) {
+			if data.Len() != 0 {
+				if flushErr := flush(); flushErr != nil {
+					return modelgateway.NormalizedResponse{}, flushErr
+				}
+			}
+			break
+		}
+		if readErr != nil {
+			if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {
+				return modelgateway.NormalizedResponse{}, readErr
+			}
+			if contextErr := requestCtx.Err(); contextErr != nil {
+				return modelgateway.NormalizedResponse{}, contextErr
+			}
+			return modelgateway.NormalizedResponse{}, anthropicUnknownFailure(errors.New("anthropic stream read failed"))
+		}
+	}
+	if providerID == "" || text.Len() == 0 || stopReason == "" || !inputUsageFound || !outputUsageFound || inputTokens < 0 || outputTokens < 0 {
+		return modelgateway.NormalizedResponse{}, anthropicUnknownFailure(modelgateway.ErrOutputSchema)
+	}
+	content := json.RawMessage(text.String())
+	if !json.Valid(content) {
+		content, err = json.Marshal(text.String())
+		if err != nil {
+			return modelgateway.NormalizedResponse{}, anthropicUnknownFailure(modelgateway.ErrOutputSchema)
+		}
+	}
+	if modelVersion == "" {
+		modelVersion = capabilities.ActualModelVersion
+	}
+	usage := modelgateway.Usage{InputTokens: inputTokens, OutputTokens: outputTokens, ProviderRequestID: providerID, ModelVersion: modelVersion}
+	return modelgateway.NormalizedResponse{RequestID: request.RequestID, ProviderRequestID: providerID, ModelVersion: modelVersion, Content: content, FinishReason: stopReason, Usage: usage}, nil
+}
+
+func readAnthropicSSELine(reader *bufio.Reader, maximum int) ([]byte, error) {
+	line := make([]byte, 0, 256)
+	for {
+		fragment, prefix, err := reader.ReadLine()
+		if len(fragment) > maximum-len(line) {
+			return nil, modelgateway.ErrOutputTooLarge
+		}
+		line = append(line, fragment...)
+		if err != nil {
+			return line, err
+		}
+		if !prefix {
+			return line, nil
+		}
+	}
 }
 
 func (adapter *anthropicAdapter) Cancel(ctx context.Context, providerRequestID string) error {
@@ -322,6 +537,23 @@ func (adapter *anthropicAdapter) encodeRequest(request modelgateway.NormalizedRe
 	return encoded, nil
 }
 
+func (adapter *anthropicAdapter) encodeRequestWithStream(request modelgateway.NormalizedRequest) ([]byte, error) {
+	encoded, err := adapter.encodeRequest(request)
+	if err != nil {
+		return nil, err
+	}
+	var value anthropicRequest
+	if err := json.Unmarshal(encoded, &value); err != nil {
+		return nil, modelgateway.ErrInvalidRequest
+	}
+	value.Stream = true
+	encoded, err = json.Marshal(value)
+	if err != nil || len(encoded) > modelgateway.MaximumNormalizedRequestBytes {
+		return nil, modelgateway.ErrInvalidRequest
+	}
+	return encoded, nil
+}
+
 func validAnthropicEffort(value string) bool {
 	switch value {
 	case "", "none", "low", "medium", "high", "xhigh", "max":
@@ -353,7 +585,7 @@ func (adapter *anthropicAdapter) decodeResponse(request modelgateway.NormalizedR
 		return modelgateway.NormalizedResponse{}, anthropicUnknownFailure(modelgateway.ErrCredentialDetected)
 	}
 	var response anthropicResponse
-	if json.Unmarshal(body, &response) != nil || response.ID == "" || response.Role != "assistant" || response.StopReason == "" || len(response.Content) == 0 || response.Usage == nil || response.Usage.InputTokens < 0 || response.Usage.OutputTokens < 0 {
+	if json.Unmarshal(body, &response) != nil || response.ID == "" || response.Role != "assistant" || response.StopReason == "" || len(response.Content) == 0 || response.Usage == nil || !anthropicUsageFieldsPresentFromBody(body, "input_tokens", "output_tokens") || response.Usage.InputTokens < 0 || response.Usage.OutputTokens < 0 {
 		return modelgateway.NormalizedResponse{}, anthropicUnknownFailure(modelgateway.ErrOutputSchema)
 	}
 	if adapter.containsKey(response.ID) || adapter.containsKey(response.Model) || adapter.containsKey(response.StopReason) {
@@ -426,6 +658,31 @@ func (adapter *anthropicAdapter) decodeResponse(request modelgateway.NormalizedR
 
 func (adapter *anthropicAdapter) containsKey(value string) bool {
 	return adapter.apiKey != "" && strings.Contains(value, adapter.apiKey)
+}
+
+func anthropicUsageFieldsPresentFromBody(body []byte, fields ...string) bool {
+	var root map[string]json.RawMessage
+	if json.Unmarshal(body, &root) != nil {
+		return false
+	}
+	return anthropicUsageFieldsPresent(root["usage"], fields...)
+}
+
+func anthropicUsageFieldsPresent(encoded json.RawMessage, fields ...string) bool {
+	if len(encoded) == 0 || string(encoded) == "null" {
+		return false
+	}
+	var usage map[string]json.RawMessage
+	if json.Unmarshal(encoded, &usage) != nil {
+		return false
+	}
+	for _, field := range fields {
+		value, found := usage[field]
+		if !found || string(value) == "null" {
+			return false
+		}
+	}
+	return true
 }
 
 func anthropicHTTPFailure(status int) error {
