@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -172,11 +173,43 @@ func (handler *Handler) testModelProvider(response http.ResponseWriter, request 
 	testContext, cancel := context.WithTimeout(request.Context(), modelProviderTestTimeout)
 	defer cancel()
 	started := time.Now()
-	_, err = adapter.Generate(testContext, modelgateway.NormalizedRequest{
+	stream, err := adapter.Stream(testContext, modelgateway.NormalizedRequest{
 		RequestID: uuid.NewString(), TenantID: principal.TenantID, Role: "MODEL_PROVIDER_TEST", Model: body.Model,
-		Messages:        []modelgateway.Message{{Role: "user", Content: "Reply with OK."}},
+		Messages:        []modelgateway.Message{{Role: "user", Content: `Return exactly {"ok":true}.`}},
 		MaxOutputTokens: 256, Temperature: 0, ReasoningEffort: body.ReasoningEffort,
+		ResponseSchema: json.RawMessage(`{"type":"object","required":["ok"],"properties":{"ok":{"const":true}},"additionalProperties":false}`),
 	})
+	if err == nil && stream == nil {
+		err = modelgateway.ErrOutputSchema
+	}
+	if err == nil {
+		defer stream.Close()
+		deltaCount := 0
+		for {
+			_, receiveErr := stream.Recv(testContext)
+			if errors.Is(receiveErr, io.EOF) {
+				break
+			}
+			if receiveErr != nil {
+				err = receiveErr
+				break
+			}
+			deltaCount++
+		}
+		contentStream, contentOK := stream.(modelgateway.FinalContentAwareStream)
+		usageStream, usageOK := stream.(modelgateway.UsageAwareStream)
+		content, contentReady := json.RawMessage(nil), false
+		if contentOK {
+			content, contentReady = contentStream.FinalContent()
+		}
+		_, usageReady := modelgateway.Usage{}, false
+		if usageOK {
+			_, usageReady = usageStream.FinalUsage()
+		}
+		if err == nil && (deltaCount == 0 || !contentReady || !json.Valid(content) || !usageReady) {
+			err = modelgateway.ErrOutputSchema
+		}
+	}
 	latency := time.Since(started).Milliseconds()
 	if err != nil {
 		writeJSON(response, http.StatusOK, modelProviderTestResource{OK: false, Model: body.Model, LatencyMS: latency, Detail: "connection failed"})
