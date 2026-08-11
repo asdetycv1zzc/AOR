@@ -70,7 +70,6 @@ func Catalog() []ProviderCatalog {
 				{ID: "claude-sonnet-4-5", MaxInput: 200000, MaxOutput: 64000, ToolCalls: true, JSONSchema: true, Streaming: true},
 				{ID: "claude-sonnet-4-6", MaxInput: 200000, MaxOutput: 128000, ToolCalls: true, JSONSchema: true, Streaming: true},
 				{ID: "claude-sonnet-5", MaxInput: 200000, MaxOutput: 128000, ToolCalls: true, JSONSchema: true, Streaming: true},
-				{ID: "claude-opus-4-1", MaxInput: 200000, MaxOutput: 32000, ToolCalls: true, JSONSchema: true, Streaming: true},
 				{ID: "claude-opus-4-5", MaxInput: 200000, MaxOutput: 64000, ToolCalls: true, JSONSchema: true, Streaming: true},
 				{ID: "claude-opus-4-6", MaxInput: 200000, MaxOutput: 128000, ToolCalls: true, JSONSchema: true, Streaming: true},
 				{ID: "claude-opus-4-7", MaxInput: 200000, MaxOutput: 128000, ToolCalls: true, JSONSchema: true, Streaming: true},
