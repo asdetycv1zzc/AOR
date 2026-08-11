@@ -88,6 +88,10 @@ export class ApiError extends Error {
 
 export type TokenProvider = () => Promise<string | undefined>;
 
+const eventStreamInitialRetryDelay = 500;
+const eventStreamMaximumRetryDelay = 8_000;
+const eventStreamStableConnectionTime = 10_000;
+
 async function parseProblem(response: Response): Promise<ProblemResponse> {
   try {
     return (await response.json()) as ProblemResponse;
@@ -284,12 +288,13 @@ export class AorClient {
     onError?: (error: unknown) => void;
   }, after: string, signal: AbortSignal): Promise<void> {
     let cursor = after;
-    let delay = 500;
+    let delay = eventStreamInitialRetryDelay;
     while (!signal.aborted) {
+      let openedAt = 0;
       try {
         await this.consumeProjectEvents(projectId, {
           onOpen: () => {
-            delay = 500;
+            openedAt = Date.now();
             callbacks.onOpen?.();
           },
           onEvent: (event) => {
@@ -302,10 +307,11 @@ export class AorClient {
       } catch (cause) {
         if (signal.aborted) return;
         callbacks.onError?.(cause);
-        if (cause instanceof ApiError && cause.status >= 400 && cause.status < 500) return;
+        if (cause instanceof ApiError && cause.status >= 400 && cause.status < 500 && cause.status !== 408 && cause.status !== 429 && !cause.retryable) return;
       }
+      if (openedAt && Date.now() - openedAt >= eventStreamStableConnectionTime) delay = eventStreamInitialRetryDelay;
       await reconnectDelay(delay, signal);
-      delay = Math.min(delay * 2, 5_000);
+      delay = Math.min(delay * 2, eventStreamMaximumRetryDelay);
     }
   }
 
@@ -316,6 +322,7 @@ export class AorClient {
     const token = await this.token();
     const headers = new Headers({ Accept: "text/event-stream" });
     if (token) headers.set("Authorization", `Bearer ${token}`);
+    if (after) headers.set("Last-Event-ID", after);
     const query = new URLSearchParams({ follow: "true" });
     if (after) query.set("after", after);
     const response = await fetch(`/v1/projects/${encodeURIComponent(projectId)}/activity/events?${query}`, { headers, cache: "no-store", signal });
@@ -333,8 +340,16 @@ export class AorClient {
       while (boundary >= 0) {
         const frame = buffer.slice(0, boundary);
         buffer = buffer.slice(boundary + 2);
-        const data = frame.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
-        if (data) callbacks.onEvent(JSON.parse(data) as ProjectActivityMessage);
+        const lines = frame.split("\n");
+        const data = lines.filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
+        if (data) {
+          const event = JSON.parse(data) as ProjectActivityMessage;
+          if (!event.cursor) {
+            const id = lines.find((line) => line.startsWith("id:"))?.slice(3).trimStart();
+            if (id) event.cursor = id;
+          }
+          callbacks.onEvent(event);
+        }
         boundary = buffer.indexOf("\n\n");
       }
     }

@@ -190,7 +190,6 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
 }) {
   const [activity, setActivity] = useState<ProjectActivitySnapshot>();
   const [activityAvailable, setActivityAvailable] = useState<boolean>();
-  const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [activeFlow, setActiveFlow] = useState<ProjectActivityFlow>(() => defaultFlow(project));
@@ -229,17 +228,14 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
   }, [project.id, refreshActivity]);
 
   useEffect(() => {
-    if (streaming) return;
     const interval = activityAvailable === false ? 15_000 : 4_000;
     const timer = window.setInterval(() => void refreshActivity(), interval);
     return () => window.clearInterval(timer);
-  }, [activityAvailable, refreshActivity, streaming]);
+  }, [activityAvailable, refreshActivity]);
 
   useEffect(() => {
     if (activityAvailable !== true) return;
     const stop = client.subscribeProjectEvents(project.id, {
-      onOpen: () => setStreaming(true),
-      onClose: () => setStreaming(false),
       onEvent: (event) => {
         const isNewMessage = !knownMessageIDs.current.has(event.id);
         knownMessageIDs.current.add(event.id);
@@ -259,7 +255,6 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
         }, isNewMessage ? 50 : 250);
       },
       onError: (cause) => {
-        setStreaming(false);
         if (cause instanceof ApiError && (cause.status === 404 || cause.status === 405)) setActivityAvailable(false);
       },
     });
