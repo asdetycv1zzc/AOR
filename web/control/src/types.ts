@@ -57,6 +57,7 @@ export interface ModelProvider {
   supportsPromptCaching: boolean;
   maxInputTokens: number;
   maxOutputTokens: number;
+  modelMaxOutputTokens: Record<string, number>;
   allowedDataClassifications: string[];
   dataResidency: string[];
   retentionPolicy: string;

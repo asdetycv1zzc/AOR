@@ -211,6 +211,17 @@ function normalizedReasoningEffort(key: ModelProviderKey | undefined, effort?: R
   return options.some((option) => option.value === effort) ? effort! : key ? defaultReasoningEffort[key] : "";
 }
 
+function modelOutputLimit(provider: ModelProvider | undefined, model: string): number {
+  const modelLimit = provider?.modelMaxOutputTokens?.[model];
+  if (typeof modelLimit === "number" && Number.isInteger(modelLimit) && modelLimit > 0) {
+    return Math.min(1_000_000, modelLimit);
+  }
+  const providerLimit = provider?.maxOutputTokens;
+  return typeof providerLimit === "number" && Number.isInteger(providerLimit) && providerLimit > 0
+    ? Math.min(1_000_000, providerLimit)
+    : 1_000_000;
+}
+
 type ModelProviderDraft = ModelProviderSettings & {
   draftKey: string;
   apiKey: string;
@@ -312,7 +323,7 @@ function modelRoutesValid(routes: ModelRoutes | undefined, providers: ModelProvi
       (key ? reasoningEffortOptions[key] : customReasoningEffortOptions).some((option) => option.value === route.reasoningEffort) &&
       Number.isInteger(route.maxOutputTokens) &&
       route.maxOutputTokens >= 1 &&
-      route.maxOutputTokens <= Math.min(1_000_000, provider.maxOutputTokens) &&
+      route.maxOutputTokens <= modelOutputLimit(provider, route.model) &&
       Number.isInteger(route.thinkingBudget) &&
       route.thinkingBudget >= 0 &&
       route.thinkingBudget < route.maxOutputTokens,
@@ -1282,6 +1293,7 @@ function ModelSettingsDialog({ open, busy, providers, providerSettings, settings
         supportsPromptCaching: false,
         maxInputTokens: 1_000_000,
         maxOutputTokens: 1_000_000,
+        modelMaxOutputTokens: {},
         allowedDataClassifications: ["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"],
         dataResidency: ["provider-defined"],
         retentionPolicy: "provider-defined",
@@ -1509,13 +1521,14 @@ function ModelRouteEditor({ routes, providers, onChange }: {
     if (!provider) return;
     const current = routes[role];
     const key = modelProviderKey(provider);
-    const maxOutputTokens = Math.min(current.maxOutputTokens, provider.maxOutputTokens);
+    const model = provider.models.includes(current.model) ? current.model : provider.models[0] || "";
+    const maxOutputTokens = modelOutputLimit(provider, model);
     onChange({
       ...routes,
       [role]: {
         ...current,
         provider: provider.id,
-        model: provider.models.includes(current.model) ? current.model : provider.models[0] || "",
+        model,
         reasoningEffort: normalizedReasoningEffort(key),
         maxOutputTokens,
         thinkingBudget: current.thinkingBudget > 0 ? Math.min(current.thinkingBudget, Math.max(0, maxOutputTokens - 1)) : 0,
@@ -1524,7 +1537,18 @@ function ModelRouteEditor({ routes, providers, onChange }: {
     });
   };
   const updateModel = (role: ModelRole, model: string) => {
-    onChange({ ...routes, [role]: { ...routes[role], model } });
+    const current = routes[role];
+    const provider = providers.find((item) => item.id === current.provider);
+    const maxOutputTokens = modelOutputLimit(provider, model);
+    onChange({
+      ...routes,
+      [role]: {
+        ...current,
+        model,
+        maxOutputTokens,
+        thinkingBudget: current.thinkingBudget > 0 ? Math.min(current.thinkingBudget, Math.max(0, maxOutputTokens - 1)) : 0,
+      },
+    });
   };
   const updateReasoningEffort = (role: ModelRole, reasoningEffort: ReasoningEffort) => {
     onChange({ ...routes, [role]: { ...routes[role], reasoningEffort } });
@@ -1571,7 +1595,7 @@ function ModelRouteEditor({ routes, providers, onChange }: {
               </select>
             </div>
             <div className="model-route-control" data-label="输出 Token">
-              <Input aria-label={`${modelRoleLabels[role]}输出 Token`} type="number" min={1} max={Math.min(1_000_000, provider?.maxOutputTokens || 1_000_000)} step={1} value={route.maxOutputTokens} onChange={(_, data) => updateMaxOutputTokens(role, Number(data.value))} />
+              <Input aria-label={`${modelRoleLabels[role]}输出 Token`} type="number" min={1} max={modelOutputLimit(provider, route.model)} step={1} value={route.maxOutputTokens} onChange={(_, data) => updateMaxOutputTokens(role, Number(data.value))} />
             </div>
             <div className="model-route-control" data-label="思考预算">
               <Input aria-label={`${modelRoleLabels[role]}思考预算`} type="number" min={0} max={Math.max(0, route.maxOutputTokens - 1)} step={1} value={route.thinkingBudget} onChange={(_, data) => updateThinkingBudget(role, Number(data.value))} />
