@@ -671,7 +671,7 @@ func syncProjectRow(ctx context.Context, tx *sql.Tx, request TransactionRequest,
 		}
 		hardLimitMicros := projection.BudgetHardLimitMinor * projectBudgetMicrosPerMinor
 		softLimitMicros := projection.BudgetSoftLimitMinor * projectBudgetMicrosPerMinor
-		deploymentTargets, err := json.Marshal(projection.DeploymentTargets)
+		deploymentTargets, err := json.Marshal(append([]string{}, projection.DeploymentTargets...))
 		if err != nil {
 			return err
 		}
