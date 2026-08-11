@@ -1031,7 +1031,11 @@ func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequ
 				g.recordProviderFailure(selection.key, generateErr)
 				var providerFailure *ProviderFailure
 				knownProviderFailure := errors.As(generateErr, &providerFailure) && providerFailure.OutcomeKnown
-				retryCurrentProvider := knownProviderFailure && providerFailure.Retryable && attempt+1 < selectionAttempts
+				timedOut := knownProviderFailure && providerFailure.Retryable && errors.Is(generateErr, context.DeadlineExceeded)
+				if timedOut && selectionIndex+1 < len(selections) {
+					selectionAttempts = attempt + 1 + remainingAttempts
+				}
+				retryCurrentProvider := knownProviderFailure && providerFailure.Retryable && attempt+1 < selectionAttempts && (timedOut || selectionIndex+1 == len(selections))
 				retryFallbackProvider := knownProviderFailure && providerFailure.Retryable && selectionIndex+1 < len(selections) && remainingAttempts > 0
 				retryDelay := time.Duration(0)
 				if retryCurrentProvider {
@@ -1050,7 +1054,7 @@ func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequ
 				if !providerFailure.Retryable {
 					break
 				}
-				if attempt+1 < selectionAttempts {
+				if retryCurrentProvider {
 					retryAfter = g.retryDelay(selection.key)
 					if waitErr := g.waitForRetry(ctx, selection.key, providerFailure); waitErr != nil {
 						call.Status = ModelCallFailedProvider

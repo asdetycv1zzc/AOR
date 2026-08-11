@@ -19,7 +19,8 @@ import (
 
 const (
 	defaultHTTPClientTimeout       = 2 * time.Minute
-	maximumHTTPClientTimeout       = 10 * time.Minute
+	maximumHTTPClientTimeout       = 10*time.Minute + 30*time.Second
+	maximumHTTPClientRetryWait     = 5 * time.Minute
 	maximumHTTPBearerTokenBytes    = 64 << 10
 	minimumHTTPBearerTokenValidity = 5 * time.Second
 )
@@ -117,7 +118,6 @@ func NewHTTPClient(config HTTPClientConfig) (*HTTPClient, error) {
 		maxRequestBytes: config.MaxRequestBytes, maxResponseBytes: config.MaxResponseBytes,
 		client: &http.Client{
 			Transport: transport,
-			Timeout:   config.Timeout,
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
@@ -141,7 +141,7 @@ func (client *HTTPClient) Generate(ctx context.Context, request NormalizedReques
 		return NormalizedResponse{}, ErrInvalidRequest
 	}
 
-	requestContext, cancel := context.WithTimeout(ctx, client.timeout)
+	requestContext, cancel := context.WithTimeout(ctx, httpClientOperationTimeout(client.timeout, normalizedOptions.MaxAttempts))
 	defer cancel()
 	token, err := client.tokenSource.Token(requestContext)
 	if err != nil {
@@ -199,6 +199,12 @@ func (client *HTTPClient) Generate(ctx context.Context, request NormalizedReques
 		return NormalizedResponse{}, err
 	}
 	return output.Response, nil
+}
+
+func httpClientOperationTimeout(perAttempt time.Duration, maxAttempts int) time.Duration {
+	attempts := time.Duration(maxAttempts)
+	retries := time.Duration(maxAttempts - 1)
+	return perAttempt*attempts + maximumHTTPClientRetryWait*retries
 }
 
 type transportErrorResponse struct {

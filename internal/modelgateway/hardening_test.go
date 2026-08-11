@@ -187,6 +187,39 @@ func TestGatewayRetriesOnlyKnownRetryableProviderFailuresWithJitter(t *testing.T
 	}
 }
 
+func TestGatewayPolicyRetriesKnownTimeoutBeforeFallback(t *testing.T) {
+	ledger := NewBudgetLedger(time.Now)
+	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "account", TenantID: "tenant", LimitMicros: 100_000}); err != nil {
+		t.Fatal(err)
+	}
+	primary := &hardeningAdapter{failures: []error{
+		&ProviderFailure{Cause: context.DeadlineExceeded, Retryable: true, OutcomeKnown: true},
+		&ProviderFailure{Cause: context.DeadlineExceeded, Retryable: true, OutcomeKnown: true},
+	}, response: NormalizedResponse{Content: json.RawMessage(`{"ok":true}`)}}
+	fallback := &hardeningAdapter{response: NormalizedResponse{Content: json.RawMessage(`{"ok":true}`)}}
+	gateway := NewGatewayWithConfig(ledger, time.Now, GatewayConfig{
+		ProviderPolicies: map[string]ProviderPolicy{"resilient": {Candidates: []ProviderCandidate{
+			{Provider: "primary", Model: "model", CapabilityRank: 100},
+			{Provider: "fallback", Model: "model", CapabilityRank: 100},
+		}}},
+		Sleep: func(context.Context, time.Duration) error { return nil },
+	})
+	for provider, adapter := range map[string]*hardeningAdapter{"primary": primary, "fallback": fallback} {
+		if err := gateway.Register(provider, "model", adapter, Pricing{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := hardeningRequest("policy-timeout-retry")
+	request.ProviderPolicy = "resilient"
+	response, err := gateway.Generate(context.Background(), request, GenerateOptions{Provider: "primary", AccountID: "account", ReservationID: "policy-timeout-retry-reservation", MaxAttempts: 3})
+	if err != nil || string(response.Content) != `{"ok":true}` {
+		t.Fatalf("response=%#v error=%v", response, err)
+	}
+	if primary.Calls() != 3 || fallback.Calls() != 0 {
+		t.Fatalf("primary calls=%d fallback calls=%d", primary.Calls(), fallback.Calls())
+	}
+}
+
 func TestGatewayReleasesReservationWhenGenerateRetryWaitIsCanceled(t *testing.T) {
 	gateway, adapter, ledger := newHardeningGateway(t, GatewayConfig{
 		ProviderPolicies: map[string]ProviderPolicy{"retry": {Candidates: []ProviderCandidate{{Provider: "primary", Model: "model", CapabilityRank: 100}}}},
