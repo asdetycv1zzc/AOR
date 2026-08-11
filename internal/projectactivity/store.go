@@ -81,13 +81,13 @@ func (store *Store) Upsert(ctx context.Context, message Message) error {
 		_, err := tx.ExecContext(ctx, `
 INSERT INTO project_activity_messages (
   tenant_id, project_id, id, task_id, request_id, flow, agent_instance_id,
-  role, sender, state, content, error_code, provider, model, input_tokens,
+  role, sender, state, content, reasoning_summary, error_code, provider, model, input_tokens,
   output_tokens, latency_ms, output_sha256, principal_id, idempotency_key,
   request_sha256, created_at, updated_at
 ) VALUES (
   $1::uuid, $2::uuid, $3, NULLIF($4, '')::uuid, $5, $6, $7,
   $8, $9, $10, $11, $12, $13, $14, $15,
-  $16, $17, $18, $19, $20, $21, $22, $23
+  $16, $17, $18, $19, $20, $21, $22, $23, $24
 )
 ON CONFLICT (tenant_id, id) DO UPDATE SET
   task_id = EXCLUDED.task_id,
@@ -98,6 +98,10 @@ ON CONFLICT (tenant_id, id) DO UPDATE SET
   sender = EXCLUDED.sender,
   state = EXCLUDED.state,
   content = EXCLUDED.content,
+  reasoning_summary = CASE
+    WHEN EXCLUDED.reasoning_summary = '' THEN project_activity_messages.reasoning_summary
+    ELSE EXCLUDED.reasoning_summary
+  END,
   error_code = EXCLUDED.error_code,
   provider = EXCLUDED.provider,
   model = EXCLUDED.model,
@@ -127,7 +131,7 @@ WHERE EXCLUDED.updated_at >= project_activity_messages.updated_at
   )`,
 			message.TenantID, message.ProjectID, message.ID, message.TaskID, message.RequestID,
 			message.Flow, message.AgentInstanceID, message.Role, message.Sender, message.State,
-			message.Content, message.ErrorCode, message.Provider, message.Model, message.InputTokens,
+			message.Content, message.ReasoningSummary, message.ErrorCode, message.Provider, message.Model, message.InputTokens,
 			message.OutputTokens, message.LatencyMS, message.OutputSHA256, message.PrincipalID,
 			message.IdempotencyKey, message.RequestSHA256, message.CreatedAt.UTC(), message.UpdatedAt.UTC())
 		return err

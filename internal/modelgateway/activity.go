@@ -3,6 +3,7 @@ package modelgateway
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -93,14 +94,41 @@ func (recorder *PostgresActivityRecorder) AppendDelta(ctx context.Context, reque
 	if delta == "" {
 		return nil
 	}
-	return recorder.store.AppendDelta(ctx, request.TenantID, modelActivityID(request.RequestID), delta, updatedAt.UTC())
+	updatedAt = updatedAt.UTC()
+	err := recorder.store.AppendDelta(ctx, request.TenantID, modelActivityID(request.RequestID), delta, updatedAt)
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err := recorder.store.Upsert(ctx, streamingActivityMessage(request, updatedAt)); err != nil {
+		return err
+	}
+	return recorder.store.AppendDelta(ctx, request.TenantID, modelActivityID(request.RequestID), delta, updatedAt)
 }
 
 func (recorder *PostgresActivityRecorder) AppendReasoningSummary(ctx context.Context, request NormalizedRequest, delta string, updatedAt time.Time) error {
 	if delta == "" {
 		return nil
 	}
-	return recorder.store.AppendReasoningSummary(ctx, request.TenantID, modelActivityID(request.RequestID), delta, updatedAt.UTC())
+	updatedAt = updatedAt.UTC()
+	err := recorder.store.AppendReasoningSummary(ctx, request.TenantID, modelActivityID(request.RequestID), delta, updatedAt)
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err := recorder.store.Upsert(ctx, streamingActivityMessage(request, updatedAt)); err != nil {
+		return err
+	}
+	return recorder.store.AppendReasoningSummary(ctx, request.TenantID, modelActivityID(request.RequestID), delta, updatedAt)
+}
+
+func streamingActivityMessage(request NormalizedRequest, updatedAt time.Time) projectactivity.Message {
+	return projectactivity.Message{
+		TenantID: request.TenantID, ProjectID: request.ProjectID,
+		ID: modelActivityID(request.RequestID), RequestID: request.RequestID,
+		TaskID: request.TaskID, Flow: activityFlowForRole(request.Role),
+		AgentInstanceID: request.AgentInstanceID, Role: request.Role,
+		Sender: projectactivity.SenderAgent, State: projectactivity.StateStreaming,
+		Model: request.Model, CreatedAt: updatedAt, UpdatedAt: updatedAt,
+	}
 }
 
 func (recorder *PostgresActivityRecorder) Finish(ctx context.Context, request NormalizedRequest, options GenerateOptions, response NormalizedResponse, resultErr error, startedAt, completedAt time.Time) error {
