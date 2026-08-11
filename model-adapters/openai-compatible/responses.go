@@ -20,7 +20,6 @@ func (a *Adapter) encodeResponsesRequest(request modelgateway.NormalizedRequest,
 	value := responsesRequest{
 		Model: request.Model, MaxOutputTokens: request.MaxOutputTokens,
 		Store: false, Stream: stream, PromptCacheKey: a.promptCacheKey(request),
-		Reasoning: &responsesReasoning{Summary: "auto"},
 	}
 	cacheBreakpoint := value.PromptCacheKey != "" && supportsExplicitPromptCaching(request.Model)
 	if cacheBreakpoint {
@@ -35,7 +34,10 @@ func (a *Adapter) encodeResponsesRequest(request modelgateway.NormalizedRequest,
 		}
 	}
 	if a.supportsReasoningEffort && request.ReasoningEffort != "" {
-		value.Reasoning.Effort = request.ReasoningEffort
+		value.Reasoning = &responsesReasoning{Effort: request.ReasoningEffort}
+		if request.ReasoningEffort != "none" {
+			value.Reasoning.Summary = "auto"
+		}
 		if supportsExplicitPromptCaching(request.Model) {
 			value.Reasoning.Context = "current_turn"
 		}
@@ -357,7 +359,7 @@ type responsesTextFormat struct {
 type responsesReasoning struct {
 	Effort  string `json:"effort,omitempty"`
 	Context string `json:"context,omitempty"`
-	Summary string `json:"summary"`
+	Summary string `json:"summary,omitempty"`
 }
 
 type responsesContentBlock struct {
