@@ -193,6 +193,7 @@ export interface ProjectActivityMessage {
   sender: "USER" | "AGENT" | "SYSTEM" | string;
   state: ProjectActivityState;
   content: string;
+  reasoningSummary?: string;
   errorCode?: string;
   provider?: string;
   model?: string;

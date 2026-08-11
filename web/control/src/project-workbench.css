@@ -575,7 +575,7 @@
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 
-.message-bubble > p {
+.message-content > p {
   margin: 8px 0;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
@@ -583,6 +583,27 @@
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 11px;
   line-height: 1.55;
+}
+
+.message-reasoning {
+  margin-top: 8px;
+  padding: 8px 9px;
+  border-left: 2px solid var(--blue);
+  background: #f3f7f8;
+}
+
+.message-reasoning > strong {
+  color: var(--blue);
+  font-size: 9px;
+}
+
+.message-reasoning > p {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
 }
 
 .message-bubble > footer {

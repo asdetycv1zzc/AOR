@@ -138,10 +138,11 @@ function messageAvatar(sender: ProjectActivityMessage["sender"]) {
 }
 
 function messageContent(message: ProjectActivityMessage) {
-  if (message.state === "STREAMING" && !message.content) {
-    return <span className="typing-indicator" aria-label="Agent 正在响应"><i /><i /><i /></span>;
-  }
-  return <>{message.content || (message.state === "FAILED" ? "处理失败，详情见错误码。" : "")}{message.state === "STREAMING" && <span className="typing-indicator" aria-hidden="true"><i /><i /><i /></span>}</>;
+  const content = message.content || (message.state === "FAILED" ? "处理失败，详情见错误码。" : "");
+  return <>
+    {message.reasoningSummary && <div className="message-reasoning"><strong>思考摘要</strong><p>{message.reasoningSummary}</p></div>}
+    <p>{content}{message.state === "STREAMING" && <span className="typing-indicator" aria-label={content ? undefined : "Agent 正在响应"} aria-hidden={content ? "true" : undefined}><i /><i /><i /></span>}</p>
+  </>;
 }
 
 function flowState(flow: ProjectActivityFlow, agents: ProjectActivityAgent[], messages: ProjectActivityMessage[]): string {
@@ -271,7 +272,7 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
   const flows = activity?.flows?.length ? activity.flows : fallbackFlows;
   const visibleAgents = agents.filter((agent) => agent.flow === activeFlow);
   const visibleMessages = messages.filter((item) => item.flow === activeFlow);
-  const visibleMessageVersion = visibleMessages.map((item) => `${item.id}:${item.updatedAt || item.createdAt}:${item.content.length}`).join("|");
+  const visibleMessageVersion = visibleMessages.map((item) => `${item.id}:${item.updatedAt || item.createdAt}:${item.content.length}:${item.reasoningSummary?.length || 0}`).join("|");
 
   useEffect(() => {
     const container = messagesRef.current;
@@ -373,7 +374,7 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
               <article className={`workbench-message is-${item.sender.toLowerCase()} is-${item.state.toLowerCase()}${item.id.startsWith("model-attempt:") ? " is-model-attempt" : ""}`} key={item.id}>
                 <div className="message-avatar">{messageAvatar(item.sender)}</div>
                 <div className="message-bubble"><header><strong>{messageSender(item)}</strong><span>{flowLabels[item.flow]}</span><time>{formatActivityTime(item.createdAt)}</time></header>
-                <p>{messageContent(item)}</p>
+                <div className="message-content">{messageContent(item)}</div>
                 <footer><WorkbenchState state={item.state} />{item.latencyMs !== undefined && <small>{item.latencyMs} ms</small>}{item.errorCode && <small>{item.errorCode}</small>}</footer>
                 </div>
               </article>

@@ -1323,6 +1323,7 @@ components:
         sender: {enum: [USER, AGENT, SYSTEM]}
         state: {enum: [QUEUED, STREAMING, COMPLETED, FAILED]}
         content: {type: string, maxLength: 4194304}
+        reasoningSummary: {type: string, maxLength: 4194304}
         errorCode: {type: string, maxLength: 512}
         provider: {type: string, maxLength: 512}
         model: {type: string, maxLength: 512}
