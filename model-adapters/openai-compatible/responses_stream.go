@@ -22,6 +22,9 @@ type responsesResponseStream struct {
 	capabilities modelgateway.ModelCapabilities
 	deltaBytes   int
 	summaryBytes int
+	summaryItem  string
+	summaryIndex int
+	summarySet   bool
 }
 
 type responsesStreamError struct {
@@ -202,12 +205,14 @@ func (s *responsesResponseStream) observeResponsesEvent(eventName string, payloa
 		return nil, false, modelgateway.ErrCredentialDetected
 	}
 	var event struct {
-		Type     string                `json:"type"`
-		ID       string                `json:"id"`
-		Model    string                `json:"model"`
-		Delta    string                `json:"delta"`
-		Error    *responsesStreamError `json:"error"`
-		Response json.RawMessage       `json:"response"`
+		Type         string                `json:"type"`
+		ID           string                `json:"id"`
+		Model        string                `json:"model"`
+		Delta        string                `json:"delta"`
+		ItemID       string                `json:"item_id"`
+		SummaryIndex *int                  `json:"summary_index"`
+		Error        *responsesStreamError `json:"error"`
+		Response     json.RawMessage       `json:"response"`
 	}
 	if json.Unmarshal(payload, &event) != nil {
 		return nil, false, modelgateway.ErrOutputSchema
@@ -227,11 +232,20 @@ func (s *responsesResponseStream) observeResponsesEvent(eventName string, payloa
 		if event.Delta == "" {
 			return nil, false, nil
 		}
-		if !utf8.ValidString(event.Delta) || len(event.Delta) > modelgateway.MaximumResponseBytes-s.summaryBytes {
+		delta := event.Delta
+		if s.summarySet && event.ItemID != "" && event.SummaryIndex != nil && (event.ItemID != s.summaryItem || *event.SummaryIndex != s.summaryIndex) {
+			delta = "\n\n" + delta
+		}
+		if event.ItemID != "" && event.SummaryIndex != nil {
+			s.summaryItem = event.ItemID
+			s.summaryIndex = *event.SummaryIndex
+			s.summarySet = true
+		}
+		if !utf8.ValidString(delta) || len(delta) > modelgateway.MaximumResponseBytes-s.summaryBytes {
 			return nil, false, modelgateway.ErrOutputTooLarge
 		}
-		s.summaryBytes += len(event.Delta)
-		modelgateway.ReportActivityReasoningSummary(s.activityContext, event.Delta)
+		s.summaryBytes += len(delta)
+		modelgateway.ReportActivityReasoningSummary(s.activityContext, delta)
 		return nil, false, nil
 	case "response.output_text.delta":
 		if event.Delta == "" {

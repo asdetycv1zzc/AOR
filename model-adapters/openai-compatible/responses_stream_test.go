@@ -39,6 +39,10 @@ data: {"type":"response.output_text.delta","item_id":"msg-1","output_index":0,"c
 data: {"type":"response.reasoning_summary_text.delta","item_id":"rs-1","output_index":0,"summary_index":0,"delta":"Checking constraints"}
 
 `,
+			`event: response.reasoning_summary_text.delta
+data: {"type":"response.reasoning_summary_text.delta","item_id":"rs-1","output_index":0,"summary_index":1,"delta":"Selecting tools"}
+
+`,
 			`data: {"type":"response.output_text.delta","item_id":"msg-1","output_index":0,"content_index":0,"delta":":true}"}
 
 `,
@@ -54,8 +58,10 @@ data: {"type":"response.completed","response":{"id":"resp-stream","model":"gpt-t
 	}))
 	defer server.Close()
 
-	adapter := testAdapter(t, server.URL+"/v1/responses", Config{WireFormat: WireFormatResponses})
-	stream, err := adapter.Stream(context.Background(), streamingTestRequest())
+	adapter := testAdapter(t, server.URL+"/v1/responses", Config{WireFormat: WireFormatResponses, SupportsReasoningEffort: true})
+	request := streamingTestRequest()
+	request.ReasoningEffort = "medium"
+	stream, err := adapter.Stream(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +99,7 @@ data: {"type":"response.completed","response":{"id":"resp-stream","model":"gpt-t
 		t.Fatalf("final usage = %#v, ready = %v", usage, ready)
 	}
 	responsesStream := stream.(*responsesResponseStream)
-	if responsesStream.summaryBytes != len("Checking constraints") {
+	if responsesStream.summaryBytes != len("Checking constraints\n\nSelecting tools") || responsesStream.summaryIndex != 1 {
 		t.Fatalf("reasoning summary bytes = %d", responsesStream.summaryBytes)
 	}
 	finishReason, ready := responsesStream.FinalFinishReason()
