@@ -171,6 +171,9 @@ func (s *HTTPService) serveStream(writer http.ResponseWriter, request *http.Requ
 	writer.Header().Set("X-Content-Type-Options", "nosniff")
 	writer.Header().Set("X-Accel-Buffering", "no")
 	writer.WriteHeader(http.StatusOK)
+	if _, err := writer.Write([]byte(": connected\n\n")); err != nil {
+		return
+	}
 	flusher.Flush()
 
 	streamContext, cancel := context.WithCancel(request.Context())
@@ -200,16 +203,22 @@ func (s *HTTPService) serveStream(writer http.ResponseWriter, request *http.Requ
 		}
 		return writeErr
 	}
-	streamContext = withActivityDeltaRecorder(streamContext, func(delta string) {
+	writeDelta := func(event, delta string) {
 		if delta == "" {
 			return
 		}
 		payload, marshalErr := json.Marshal(struct {
 			Delta string `json:"delta"`
 		}{Delta: delta})
-		if marshalErr != nil || int64(len(payload)) > s.maxResponseBytes || writeEvent("", payload) != nil {
+		if marshalErr != nil || int64(len(payload)) > s.maxResponseBytes || writeEvent(event, payload) != nil {
 			cancel()
 		}
+	}
+	streamContext = withActivityDeltaRecorder(streamContext, func(delta string) {
+		writeDelta("", delta)
+	})
+	streamContext = withActivityReasoningSummaryRecorder(streamContext, func(delta string) {
+		writeDelta("reasoning_summary", delta)
 	})
 	response, err := s.gateway.Generate(streamContext, requestValue, options)
 	writeMu.Lock()

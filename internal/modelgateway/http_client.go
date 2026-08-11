@@ -200,6 +200,7 @@ func (client *HTTPClient) readGenerateStream(ctx context.Context, body io.Reader
 	eventName := ""
 	data := make([]byte, 0, 256)
 	deltaBytes := 0
+	reasoningSummaryBytes := 0
 	var response NormalizedResponse
 	responseReady := false
 	processEvent := func() (bool, error) {
@@ -225,6 +226,17 @@ func (client *HTTPClient) readGenerateStream(ctx context.Context, body io.Reader
 				return false, ErrProviderUnavailable
 			}
 			deltaBytes += len(delta.Delta)
+			ReportActivityDelta(ctx, delta.Delta)
+			return false, nil
+		case "reasoning_summary":
+			var delta struct {
+				Delta string `json:"delta"`
+			}
+			if decodeHTTPClientJSON(data, &delta) != nil || delta.Delta == "" || len(delta.Delta) > MaximumResponseBytes-reasoningSummaryBytes {
+				return false, ErrProviderUnavailable
+			}
+			reasoningSummaryBytes += len(delta.Delta)
+			ReportActivityReasoningSummary(ctx, delta.Delta)
 			return false, nil
 		case "response":
 			if responseReady {
