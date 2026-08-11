@@ -186,7 +186,7 @@ func TestAnthropicThinkingBudgetSerialization(t *testing.T) {
 		t.Fatal(err)
 	}
 	var payload anthropicRequest
-	if json.Unmarshal(encoded, &payload) != nil || payload.Thinking == nil || payload.Thinking.Type != "enabled" || payload.Thinking.BudgetTokens != 64 {
+	if json.Unmarshal(encoded, &payload) != nil || payload.Thinking == nil || payload.Thinking.Type != "enabled" || payload.Thinking.BudgetTokens != 64 || payload.OutputConfig != nil {
 		t.Fatalf("thinking payload = %s", encoded)
 	}
 

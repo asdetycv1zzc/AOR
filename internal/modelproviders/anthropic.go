@@ -1018,8 +1018,7 @@ func (adapter *anthropicAdapter) encodeRequest(request modelgateway.NormalizedRe
 	value := anthropicRequest{Model: request.Model, MaxTokens: request.MaxOutputTokens}
 	if request.ThinkingBudget > 0 {
 		value.Thinking = &anthropicThinking{Type: "enabled", BudgetTokens: request.ThinkingBudget}
-	}
-	if effort := anthropicEffort(request.ReasoningEffort); effort != "" {
+	} else if effort := anthropicEffort(request.ReasoningEffort); effort != "" {
 		value.OutputConfig = &anthropicOutputConfig{Effort: effort}
 	} else {
 		value.Temperature = &request.Temperature
