@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/akimisaka/aor/internal/observability"
@@ -160,12 +161,6 @@ func (s *HTTPService) serveStream(writer http.ResponseWriter, request *http.Requ
 		writeHTTPError(writer, traceParent, err)
 		return
 	}
-	stream, err := s.gateway.Stream(request.Context(), requestValue, options)
-	if err != nil {
-		writeHTTPError(writer, traceParent, err)
-		return
-	}
-	defer func() { _ = stream.Close() }()
 	flusher, supported := writer.(http.Flusher)
 	if !supported {
 		writeHTTPError(writer, traceParent, ErrInvalidRequest)
@@ -174,26 +169,70 @@ func (s *HTTPService) serveStream(writer http.ResponseWriter, request *http.Requ
 	writer.Header().Set("Content-Type", "text/event-stream")
 	writer.Header().Set("Cache-Control", "no-cache")
 	writer.Header().Set("X-Content-Type-Options", "nosniff")
+	writer.Header().Set("X-Accel-Buffering", "no")
 	writer.WriteHeader(http.StatusOK)
-	for {
-		recvContext, cancel := context.WithTimeout(request.Context(), s.streamIdleTimeout)
-		value, recvErr := stream.Recv(recvContext)
-		cancel()
-		if errors.Is(recvErr, io.EOF) {
-			_, _ = writer.Write([]byte("data: [DONE]\n\n"))
-			flusher.Flush()
-			return
+	flusher.Flush()
+
+	streamContext, cancel := context.WithCancel(request.Context())
+	defer cancel()
+	var writeMu sync.Mutex
+	var writeErr error
+	writeEvent := func(event string, payload []byte) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		if writeErr != nil {
+			return writeErr
 		}
-		if recvErr != nil || int64(len(value)) > s.maxResponseBytes || !json.Valid(value) {
-			writeSSEError(writer, stableError(recvErr))
-			flusher.Flush()
-			return
+		if event != "" {
+			_, writeErr = writer.Write([]byte("event: " + event + "\n"))
 		}
-		_, _ = writer.Write([]byte("data: "))
-		_, _ = writer.Write(value)
-		_, _ = writer.Write([]byte("\n\n"))
-		flusher.Flush()
+		if writeErr == nil {
+			_, writeErr = writer.Write([]byte("data: "))
+		}
+		if writeErr == nil {
+			_, writeErr = writer.Write(payload)
+		}
+		if writeErr == nil {
+			_, writeErr = writer.Write([]byte("\n\n"))
+		}
+		if writeErr == nil {
+			flusher.Flush()
+		}
+		return writeErr
 	}
+	streamContext = withActivityDeltaRecorder(streamContext, func(delta string) {
+		if delta == "" {
+			return
+		}
+		payload, marshalErr := json.Marshal(struct {
+			Delta string `json:"delta"`
+		}{Delta: delta})
+		if marshalErr != nil || int64(len(payload)) > s.maxResponseBytes || writeEvent("", payload) != nil {
+			cancel()
+		}
+	})
+	response, err := s.gateway.Generate(streamContext, requestValue, options)
+	writeMu.Lock()
+	streamWriteErr := writeErr
+	writeMu.Unlock()
+	if streamWriteErr != nil {
+		return
+	}
+	if err != nil {
+		writeSSEError(writer, stableError(err))
+		flusher.Flush()
+		return
+	}
+	payload, err := json.Marshal(transportGenerateResponse{Response: response})
+	if err != nil || int64(len(payload)) > s.maxResponseBytes {
+		writeSSEError(writer, stableError(ErrOutputTooLarge))
+		flusher.Flush()
+		return
+	}
+	if writeEvent("response", payload) != nil {
+		return
+	}
+	_ = writeEvent("", []byte("[DONE]"))
 }
 
 func (s *HTTPService) serveCancel(writer http.ResponseWriter, request *http.Request, traceParent string) {

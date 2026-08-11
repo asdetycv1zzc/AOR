@@ -39,11 +39,10 @@ func TestHTTPClientGenerateUsesPrivateEnvelopeTokenAndTrace(t *testing.T) {
 			Accept: request.Header.Get("Accept"), ContentType: request.Header.Get("Content-Type"),
 			Traceparent: request.Header.Get(observability.TraceParentHeader), Tracestate: request.Header.Get(observability.TraceStateHeader), Input: input,
 		}
-		writer.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(writer).Encode(transportGenerateResponse{Response: NormalizedResponse{
+		writeHTTPClientStream(writer, NormalizedResponse{
 			RequestID: input.Request.RequestID, ProviderRequestID: "provider-request", ModelVersion: "model-v1",
 			Content: json.RawMessage(`{"ok":true}`), FinishReason: "stop",
-		}})
+		}, "{\"ok\":", "true}")
 	}))
 	defer server.Close()
 
@@ -79,10 +78,10 @@ func TestHTTPClientGenerateUsesPrivateEnvelopeTokenAndTrace(t *testing.T) {
 		t.Fatalf("response=%#v semanticCalls=%d tokenCalls=%d", response, semanticCalls, tokens.Calls())
 	}
 	captured := <-observed
-	if captured.Method != http.MethodPost || captured.Path != "/v1/model/generate" || captured.Authorization != "Bearer "+httpClientTestToken() {
+	if captured.Method != http.MethodPost || captured.Path != "/v1/model/stream" || captured.Authorization != "Bearer "+httpClientTestToken() {
 		t.Fatalf("request method=%s path=%s authorization=%q", captured.Method, captured.Path, captured.Authorization)
 	}
-	if captured.Accept != "application/json" || captured.ContentType != "application/json" || captured.Traceparent != traceparent || captured.Tracestate != "vendor=value" {
+	if captured.Accept != "text/event-stream" || captured.ContentType != "application/json" || captured.Traceparent != traceparent || captured.Tracestate != "vendor=value" {
 		t.Fatalf("headers=%#v", captured)
 	}
 	if captured.Input.Request.RequestID != input.RequestID || captured.Input.Options.Provider != "provider" || captured.Input.Options.MaxAttempts != 5 {
@@ -96,11 +95,10 @@ func TestHTTPClientSkipsFinalValidationForToolCallResponse(t *testing.T) {
 		if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
 			t.Fatal(err)
 		}
-		writer.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(writer).Encode(transportGenerateResponse{Response: NormalizedResponse{
+		writeHTTPClientStream(writer, NormalizedResponse{
 			RequestID: input.Request.RequestID, ProviderRequestID: "provider-tool", ModelVersion: "model-v1",
 			ToolCalls: []ToolCall{{ID: "call-1", Name: "repo.read", Arguments: json.RawMessage(`{"path":"README.md"}`)}}, FinishReason: "tool_calls",
-		}})
+		})
 	}))
 	defer server.Close()
 
@@ -271,6 +269,22 @@ func validHTTPClientToken() BearerToken {
 }
 
 func httpClientTestToken() string { return "workload-" + "token" }
+
+func writeHTTPClientStream(writer http.ResponseWriter, response NormalizedResponse, deltas ...string) {
+	writer.Header().Set("Content-Type", "text/event-stream")
+	for _, delta := range deltas {
+		payload, _ := json.Marshal(struct {
+			Delta string `json:"delta"`
+		}{Delta: delta})
+		_, _ = writer.Write([]byte("data: "))
+		_, _ = writer.Write(payload)
+		_, _ = writer.Write([]byte("\n\n"))
+	}
+	payload, _ := json.Marshal(transportGenerateResponse{Response: response})
+	_, _ = writer.Write([]byte("event: response\ndata: "))
+	_, _ = writer.Write(payload)
+	_, _ = writer.Write([]byte("\n\ndata: [DONE]\n\n"))
+}
 
 func httpClientNormalizedRequest() NormalizedRequest {
 	return NormalizedRequest{

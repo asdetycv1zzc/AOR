@@ -1,6 +1,7 @@
 package modelgateway
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -91,7 +92,7 @@ func NewHTTPClient(config HTTPClientConfig) (*HTTPClient, error) {
 	if nilHTTPClientDependency(config.TokenSource) || nilHTTPClientTransport(config.Transport) {
 		return nil, ErrInvalidRequest
 	}
-	endpoint, err := modelGenerateEndpoint(config.Endpoint)
+	endpoint, err := modelStreamEndpoint(config.Endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +159,7 @@ func (client *HTTPClient) Generate(ctx context.Context, request NormalizedReques
 	if err != nil {
 		return NormalizedResponse{}, ErrInvalidRequest
 	}
-	httpRequest.Header.Set("Accept", "application/json")
+	httpRequest.Header.Set("Accept", "text/event-stream")
 	httpRequest.Header.Set("Content-Type", "application/json")
 	httpRequest.Header.Set("Authorization", "Bearer "+token.Value)
 	if traceContext, found := observability.TraceFromContext(requestContext); found {
@@ -175,30 +176,138 @@ func (client *HTTPClient) Generate(ctx context.Context, request NormalizedReques
 		return NormalizedResponse{}, ErrProviderUnavailable
 	}
 	defer httpResponse.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(httpResponse.Body, client.maxResponseBytes+1))
-	if err != nil {
-		if contextErr := httpClientContextError(requestContext, err); contextErr != nil {
-			return NormalizedResponse{}, contextErr
-		}
-		return NormalizedResponse{}, ErrProviderUnavailable
-	}
-	if int64(len(body)) > client.maxResponseBytes {
-		return NormalizedResponse{}, ErrProviderUnavailable
-	}
 	if httpResponse.StatusCode != http.StatusOK {
+		body, readErr := io.ReadAll(io.LimitReader(httpResponse.Body, client.maxResponseBytes+1))
+		if readErr != nil {
+			if contextErr := httpClientContextError(requestContext, readErr); contextErr != nil {
+				return NormalizedResponse{}, contextErr
+			}
+			return NormalizedResponse{}, ErrProviderUnavailable
+		}
+		if int64(len(body)) > client.maxResponseBytes {
+			return NormalizedResponse{}, ErrProviderUnavailable
+		}
 		return NormalizedResponse{}, decodeHTTPResponseError(httpResponse.StatusCode, body)
 	}
-	if !isJSONContentType(httpResponse.Header.Get("Content-Type")) {
+	if !isHTTPContentType(httpResponse.Header.Get("Content-Type"), "text/event-stream") {
 		return NormalizedResponse{}, ErrProviderUnavailable
 	}
-	var output transportGenerateResponse
-	if err := decodeHTTPClientJSON(body, &output); err != nil || output.Response.RequestID != request.RequestID {
-		return NormalizedResponse{}, ErrProviderUnavailable
+	return client.readGenerateStream(requestContext, httpResponse.Body, request)
+}
+
+func (client *HTTPClient) readGenerateStream(ctx context.Context, body io.Reader, request NormalizedRequest) (NormalizedResponse, error) {
+	reader := bufio.NewReaderSize(body, 4096)
+	eventName := ""
+	data := make([]byte, 0, 256)
+	deltaBytes := 0
+	var response NormalizedResponse
+	responseReady := false
+	processEvent := func() (bool, error) {
+		defer func() {
+			eventName = ""
+			data = data[:0]
+		}()
+		if len(data) == 0 {
+			return false, nil
+		}
+		if string(data) == "[DONE]" {
+			if !responseReady {
+				return false, ErrProviderUnavailable
+			}
+			return true, nil
+		}
+		switch eventName {
+		case "":
+			var delta struct {
+				Delta string `json:"delta"`
+			}
+			if decodeHTTPClientJSON(data, &delta) != nil || delta.Delta == "" || len(delta.Delta) > MaximumResponseBytes-deltaBytes {
+				return false, ErrProviderUnavailable
+			}
+			deltaBytes += len(delta.Delta)
+			return false, nil
+		case "response":
+			if responseReady {
+				return false, ErrProviderUnavailable
+			}
+			var output transportGenerateResponse
+			if decodeHTTPClientJSON(data, &output) != nil || output.Response.RequestID != request.RequestID {
+				return false, ErrProviderUnavailable
+			}
+			response = output.Response
+			responseReady = true
+			return false, nil
+		case "error":
+			return false, decodeHTTPResponseError(http.StatusBadGateway, data)
+		default:
+			return false, ErrProviderUnavailable
+		}
 	}
-	if err := validateGeneratedResponse(request, output.Response); err != nil {
-		return NormalizedResponse{}, err
+	for {
+		line, readErr := readHTTPStreamLine(reader, client.maxResponseBytes)
+		if len(line) == 0 {
+			done, eventErr := processEvent()
+			if eventErr != nil {
+				return NormalizedResponse{}, eventErr
+			}
+			if done {
+				if err := validateGeneratedResponse(request, response); err != nil {
+					return NormalizedResponse{}, err
+				}
+				return response, nil
+			}
+		} else if line[0] != ':' {
+			field, value, found := strings.Cut(string(line), ":")
+			if !found {
+				field = string(line)
+				value = ""
+			}
+			value = strings.TrimPrefix(value, " ")
+			switch field {
+			case "event":
+				eventName = value
+			case "data":
+				separator := 0
+				if len(data) != 0 {
+					separator = 1
+				}
+				if len(value) > int(client.maxResponseBytes)-len(data)-separator {
+					return NormalizedResponse{}, ErrProviderUnavailable
+				}
+				if separator != 0 {
+					data = append(data, '\n')
+				}
+				data = append(data, value...)
+			}
+		}
+		if readErr != nil {
+			if contextErr := httpClientContextError(ctx, readErr); contextErr != nil {
+				return NormalizedResponse{}, contextErr
+			}
+			return NormalizedResponse{}, ErrProviderUnavailable
+		}
 	}
-	return output.Response, nil
+}
+
+func readHTTPStreamLine(reader *bufio.Reader, maximum int64) ([]byte, error) {
+	line := make([]byte, 0, 256)
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if int64(len(fragment)) > maximum-int64(len(line)) {
+			return nil, ErrOutputTooLarge
+		}
+		line = append(line, fragment...)
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		if len(line) != 0 && line[len(line)-1] == '\n' {
+			line = line[:len(line)-1]
+		}
+		if len(line) != 0 && line[len(line)-1] == '\r' {
+			line = line[:len(line)-1]
+		}
+		return line, err
+	}
 }
 
 func httpClientOperationTimeout(perAttempt time.Duration, maxAttempts int) time.Duration {
@@ -276,7 +385,7 @@ func decodeHTTPClientJSON(payload []byte, target any) error {
 	return nil
 }
 
-func modelGenerateEndpoint(raw string) (string, error) {
+func modelStreamEndpoint(raw string) (string, error) {
 	if raw == "" || strings.ContainsAny(raw, "\r\n\x00") {
 		return "", ErrInvalidRequest
 	}
@@ -284,7 +393,7 @@ func modelGenerateEndpoint(raw string) (string, error) {
 	if err != nil || parsed.Host == "" || parsed.Opaque != "" || parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return "", ErrInvalidRequest
 	}
-	parsed.Path = "/v1/model/generate"
+	parsed.Path = "/v1/model/stream"
 	parsed.RawPath = ""
 	return parsed.String(), nil
 }
@@ -321,8 +430,12 @@ func httpClientContextError(ctx context.Context, err error) error {
 }
 
 func isJSONContentType(value string) bool {
+	return isHTTPContentType(value, "application/json")
+}
+
+func isHTTPContentType(value, expected string) bool {
 	mediaType, _, err := mime.ParseMediaType(value)
-	return err == nil && mediaType == "application/json"
+	return err == nil && mediaType == expected
 }
 
 func nilHTTPClientDependency(value any) bool {

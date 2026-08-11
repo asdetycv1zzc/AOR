@@ -133,8 +133,9 @@ func TestHTTPServiceCapabilitiesCancelAndStreaming(t *testing.T) {
 	body := streamWriter.Body.String()
 	firstDelta := strings.Index(body, "data: {\"delta\":\"o\"}")
 	secondDelta := strings.Index(body, "data: {\"delta\":\"k\"}")
+	response := strings.Index(body, "event: response")
 	done := strings.Index(body, "data: [DONE]")
-	if streamWriter.Code != http.StatusOK || streamWriter.Header().Get("Content-Type") != "text/event-stream" || firstDelta < 0 || secondDelta <= firstDelta || done <= secondDelta {
+	if streamWriter.Code != http.StatusOK || streamWriter.Header().Get("Content-Type") != "text/event-stream" || firstDelta < 0 || secondDelta <= firstDelta || response <= secondDelta || done <= response {
 		t.Fatalf("stream status=%d headers=%v body=%q", streamWriter.Code, streamWriter.Header(), streamWriter.Body.String())
 	}
 	reservation, found := ledger.Reservation("tenant", "stream-reservation")
@@ -145,7 +146,8 @@ func TestHTTPServiceCapabilitiesCancelAndStreaming(t *testing.T) {
 
 func TestHTTPServiceStreamsDeltaBeforeTerminalReconciliationError(t *testing.T) {
 	service, adapter, ledger := newHTTPService(t)
-	adapter.streamOverride = &rawOnlyStream{events: []json.RawMessage{json.RawMessage(`{"delta":"partial"}`)}}
+	adapter.generateDeltas = []string{"partial"}
+	adapter.generateErr = ErrReconciliationRequired
 	body := marshalTransport(t, transportGenerateRequest{Request: transportRequest("stream-terminal-error"), Options: GenerateOptions{Provider: "provider", AccountID: "account", ReservationID: "stream-terminal-error-reservation", MaxAttempts: 1}})
 	request := httptest.NewRequest(http.MethodPost, "/v1/model/stream", bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
@@ -316,6 +318,8 @@ type serviceAdapter struct {
 	mu             sync.Mutex
 	generateCalls  int
 	cancelCalls    int
+	generateDeltas []string
+	generateErr    error
 	streamOverride ResponseStream
 }
 
@@ -327,11 +331,22 @@ func (a *serviceAdapter) CountTokens(context.Context, NormalizedRequest) (TokenE
 	return TokenEstimate{InputTokens: 2}, nil
 }
 
-func (a *serviceAdapter) Generate(_ context.Context, request NormalizedRequest) (NormalizedResponse, error) {
+func (a *serviceAdapter) Generate(ctx context.Context, request NormalizedRequest) (NormalizedResponse, error) {
 	a.mu.Lock()
 	a.generateCalls++
+	deltas := append([]string(nil), a.generateDeltas...)
+	generateErr := a.generateErr
 	a.mu.Unlock()
-	return NormalizedResponse{RequestID: request.RequestID, ProviderRequestID: "provider-request-1", ModelVersion: "model-v1", Content: json.RawMessage(`{"ok":true}`), Usage: Usage{CostMicros: 1}}, nil
+	if len(deltas) == 0 {
+		deltas = []string{"o", "k"}
+	}
+	for _, delta := range deltas {
+		ReportActivityDelta(ctx, delta)
+	}
+	if generateErr != nil {
+		return NormalizedResponse{}, generateErr
+	}
+	return NormalizedResponse{RequestID: request.RequestID, ProviderRequestID: "provider-request-1", ModelVersion: "model-v1", Content: json.RawMessage(`{"ok":true}`), FinishReason: "stop", Usage: Usage{InputTokens: 2, OutputTokens: 1, CostMicros: 1}}, nil
 }
 
 func (a *serviceAdapter) Stream(context.Context, NormalizedRequest) (ResponseStream, error) {
