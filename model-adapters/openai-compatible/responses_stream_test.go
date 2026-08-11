@@ -39,7 +39,7 @@ data: {"type":"response.output_text.delta","item_id":"msg-1","output_index":0,"c
 
 `,
 			`event: response.completed
-data: {"type":"response.completed","response":{"id":"resp-stream","model":"gpt-test-v3","status":"completed","output":[{"type":"reasoning","id":"rs-1"},{"type":"message","id":"msg-1","role":"assistant","content":[{"type":"output_text","text":"{\"ok\":true}"}]}],"usage":{"input_tokens":9,"output_tokens":3,"total_tokens":12}}}
+data: {"type":"response.completed","response":{"id":"resp-stream","model":"gpt-test-v3","status":"completed","output":[{"type":"reasoning","id":"rs-1"},{"type":"message","id":"msg-1","role":"assistant","content":[{"type":"output_text","text":"{\"ok\":true}"}]}],"usage":{"input_tokens":9,"output_tokens":3,"total_tokens":12,"input_tokens_details":{"cached_tokens":6,"cache_write_tokens":1}}}}
 
 `,
 		}
@@ -85,7 +85,7 @@ data: {"type":"response.completed","response":{"id":"resp-stream","model":"gpt-t
 		t.Fatal("Responses stream does not expose final usage")
 	}
 	usage, ready := usageStream.FinalUsage()
-	if !ready || usage.InputTokens != 9 || usage.OutputTokens != 3 || usage.ProviderRequestID != "resp-stream" || usage.ModelVersion != "gpt-test-v3" {
+	if !ready || usage.InputTokens != 9 || usage.OutputTokens != 3 || usage.ProviderRequestID != "resp-stream" || usage.ModelVersion != "gpt-test-v3" || usage.CacheReadTokens == nil || *usage.CacheReadTokens != 6 || usage.CacheWriteTokens == nil || *usage.CacheWriteTokens != 1 {
 		t.Fatalf("final usage = %#v, ready = %v", usage, ready)
 	}
 	responsesStream := stream.(*responsesResponseStream)

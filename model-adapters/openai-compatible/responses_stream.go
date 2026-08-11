@@ -52,7 +52,7 @@ func (a *Adapter) newResponsesResponseStream(
 			adapter: a, body: response.Body, cancel: cancel, maxEventBytes: maxEventBytes,
 			events: make(chan json.RawMessage, 1), failures: make(chan error, 1),
 			done: make(chan struct{}), closed: make(chan struct{}), activityContext: ctx,
-			requestContext: requestContext, jsonMode: jsonMode,
+			callerContext: ctx, requestContext: requestContext, jsonMode: jsonMode,
 		},
 		request: request, capabilities: capabilities,
 	}
@@ -144,13 +144,15 @@ func (s *responsesResponseStream) readResponses() {
 					return
 				}
 			}
+			if contextErr := adapterRequestContextError(s.callerContext, s.requestContext); contextErr != nil {
+				s.fail(contextErr)
+				return
+			}
 			s.fail(unknownFailure(modelgateway.ErrOutputSchema))
 			return
 		}
 		if readErr != nil {
-			if errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {
-				s.fail(readErr)
-			} else if contextErr := s.requestContext.Err(); contextErr != nil {
+			if contextErr := adapterRequestContextError(s.callerContext, s.requestContext); contextErr != nil {
 				s.fail(contextErr)
 			} else {
 				s.fail(unknownFailure(errors.New("responses stream read failed")))
@@ -163,7 +165,7 @@ func (s *responsesResponseStream) readResponses() {
 func (s *responsesResponseStream) readResponsesJSON() {
 	payload, err := io.ReadAll(io.LimitReader(s.body, s.maxEventBytes+1))
 	if err != nil {
-		if contextErr := s.requestContext.Err(); contextErr != nil {
+		if contextErr := adapterRequestContextError(s.callerContext, s.requestContext); contextErr != nil {
 			s.fail(contextErr)
 		} else {
 			s.fail(unknownFailure(errors.New("responses body read failed")))

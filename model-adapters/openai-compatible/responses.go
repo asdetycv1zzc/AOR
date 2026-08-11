@@ -19,7 +19,7 @@ func (a *Adapter) encodeResponsesRequest(request modelgateway.NormalizedRequest,
 	}
 	value := responsesRequest{
 		Model: request.Model, MaxOutputTokens: request.MaxOutputTokens,
-		Store: false, Stream: stream,
+		Store: false, Stream: stream, PromptCacheKey: a.promptCacheKey(request),
 	}
 	if request.ReasoningEffort == "" || request.ReasoningEffort == "none" || !a.supportsReasoningEffort {
 		temperature := request.Temperature
@@ -292,6 +292,7 @@ type responsesRequest struct {
 	MaxOutputTokens int                  `json:"max_output_tokens"`
 	Temperature     *float64             `json:"temperature,omitempty"`
 	TopP            *float64             `json:"top_p,omitempty"`
+	PromptCacheKey  string               `json:"prompt_cache_key,omitempty"`
 	Store           bool                 `json:"store"`
 	Stream          bool                 `json:"stream,omitempty"`
 }
@@ -384,7 +385,8 @@ type responsesContinuation struct {
 }
 
 type responsesUsage struct {
-	InputTokens  int64 `json:"input_tokens"`
-	OutputTokens int64 `json:"output_tokens"`
-	TotalTokens  int64 `json:"total_tokens"`
+	InputTokens        int64              `json:"input_tokens"`
+	OutputTokens       int64              `json:"output_tokens"`
+	TotalTokens        int64              `json:"total_tokens"`
+	InputTokensDetails *cacheTokenDetails `json:"input_tokens_details,omitempty"`
 }

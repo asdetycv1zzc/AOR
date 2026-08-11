@@ -5,6 +5,8 @@ package openaicompatible
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,12 +24,14 @@ import (
 
 const (
 	DefaultRequestTimeout      = 60 * time.Second
-	MaximumRequestTimeout      = 10 * time.Minute
+	MaximumRequestTimeout      = 10*time.Minute + 30*time.Second
 	DefaultMaxRequestBytes     = 8 << 20
 	DefaultMaxResponseBytes    = 8 << 20
 	DefaultMaxStreamEventBytes = 4 << 20
 	maximumBodyBytes           = 16 << 20
 )
+
+var errAdapterRequestTimeout = errors.New("openai-compatible adapter request timed out")
 
 type WireFormat string
 
@@ -177,7 +181,7 @@ func (a *Adapter) Generate(ctx context.Context, request modelgateway.NormalizedR
 	if err != nil {
 		return modelgateway.NormalizedResponse{}, err
 	}
-	response, cancel, err := a.do(ctx, body)
+	response, cancel, err := a.do(ctx, request.RequestID, body)
 	if err != nil {
 		return modelgateway.NormalizedResponse{}, err
 	}
@@ -188,6 +192,9 @@ func (a *Adapter) Generate(ctx context.Context, request modelgateway.NormalizedR
 	}
 	payload, err := readBounded(response.Body, a.maxResponseBytes)
 	if err != nil {
+		if contextErr := adapterRequestContextError(ctx, responseRequestContext(ctx, response)); contextErr != nil {
+			return modelgateway.NormalizedResponse{}, contextErr
+		}
 		return modelgateway.NormalizedResponse{}, unknownFailure(modelgateway.ErrOutputTooLarge)
 	}
 	return a.decodeResponse(request, capabilities, payload)
@@ -211,7 +218,7 @@ func (a *Adapter) Stream(ctx context.Context, request modelgateway.NormalizedReq
 	if err != nil {
 		return nil, err
 	}
-	response, cancel, err := a.doWithAccept(ctx, body, "text/event-stream")
+	response, cancel, err := a.doWithAccept(ctx, request.RequestID, body, "text/event-stream")
 	if err != nil {
 		return nil, err
 	}
@@ -235,7 +242,7 @@ func (a *Adapter) Stream(ctx context.Context, request modelgateway.NormalizedReq
 	stream := &responseStream{
 		adapter: a, body: response.Body, cancel: cancel, maxEventBytes: maxEventBytes,
 		events: make(chan json.RawMessage, 1), failures: make(chan error, 1), done: make(chan struct{}), closed: make(chan struct{}), activityContext: ctx,
-		requestContext: requestContext, jsonMode: jsonMode,
+		callerContext: ctx, requestContext: requestContext, jsonMode: jsonMode,
 	}
 	go stream.read()
 	return stream, nil
@@ -312,9 +319,9 @@ func (a *Adapter) NormalizeUsage(raw any) (modelgateway.Usage, error) {
 	case modelgateway.Usage:
 		usage = value
 	case chatUsage:
-		usage = modelgateway.Usage{InputTokens: value.PromptTokens, OutputTokens: value.CompletionTokens}
+		usage = normalizedChatUsage(value)
 	case responsesUsage:
-		usage = modelgateway.Usage{InputTokens: value.InputTokens, OutputTokens: value.OutputTokens}
+		usage = normalizedResponsesUsage(value)
 	case []byte:
 		var err error
 		usage, err = normalizeUsageJSON(value)
@@ -337,7 +344,9 @@ func (a *Adapter) NormalizeUsage(raw any) (modelgateway.Usage, error) {
 			return modelgateway.Usage{}, err
 		}
 	}
-	if usage.InputTokens < 0 || usage.OutputTokens < 0 || usage.CostMicros < 0 || a.containsCredential(usage.ProviderRequestID) || a.containsCredential(usage.ModelVersion) {
+	if usage.InputTokens < 0 || usage.OutputTokens < 0 || usage.CostMicros < 0 ||
+		usage.CacheReadTokens != nil && *usage.CacheReadTokens < 0 || usage.CacheWriteTokens != nil && *usage.CacheWriteTokens < 0 ||
+		a.containsCredential(usage.ProviderRequestID) || a.containsCredential(usage.ModelVersion) {
 		return modelgateway.Usage{}, modelgateway.ErrInvalidRequest
 	}
 	return usage, nil
@@ -384,7 +393,7 @@ func (a *Adapter) validateRequest(request modelgateway.NormalizedRequest, requir
 	if a.containsCredential(string(request.ResponseSchema)) {
 		return modelgateway.ModelCapabilities{}, modelgateway.ErrInvalidRequest
 	}
-	if requireGeneration && request.RequestID == "" {
+	if requireGeneration && !validRequestHeaderValue(request.RequestID) {
 		return modelgateway.ModelCapabilities{}, modelgateway.ErrInvalidRequest
 	}
 	return capabilities, nil
@@ -420,6 +429,7 @@ func (a *Adapter) encodeChatRequest(request modelgateway.NormalizedRequest, stre
 		Model: request.Model, MaxTokens: request.MaxOutputTokens, Temperature: request.Temperature,
 		TopP: request.TopP, TopK: request.TopK, ReasoningEffort: reasoningEffort, Stream: stream,
 	}
+	value.PromptCacheKey = a.promptCacheKey(request)
 	if stream {
 		value.StreamOptions = &chatStreamOptions{IncludeUsage: true}
 	}
@@ -504,15 +514,15 @@ func unsupportedSchemaKeyword(key string) bool {
 	}
 }
 
-func (a *Adapter) do(ctx context.Context, payload []byte) (*http.Response, context.CancelFunc, error) {
-	return a.doWithAccept(ctx, payload, "application/json")
+func (a *Adapter) do(ctx context.Context, requestID string, payload []byte) (*http.Response, context.CancelFunc, error) {
+	return a.doWithAccept(ctx, requestID, payload, "application/json")
 }
 
-func (a *Adapter) doWithAccept(ctx context.Context, payload []byte, accept string) (*http.Response, context.CancelFunc, error) {
+func (a *Adapter) doWithAccept(ctx context.Context, requestID string, payload []byte, accept string) (*http.Response, context.CancelFunc, error) {
 	if err := contextError(ctx); err != nil {
 		return nil, nil, err
 	}
-	requestCtx, cancel := context.WithTimeout(ctx, a.timeout)
+	requestCtx, cancel := context.WithTimeoutCause(ctx, a.timeout, errAdapterRequestTimeout)
 	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, a.endpoint, bytes.NewReader(payload))
 	if err != nil {
 		cancel()
@@ -521,11 +531,14 @@ func (a *Adapter) doWithAccept(ctx context.Context, payload []byte, accept strin
 	request.Header.Set("Authorization", "Bearer "+a.credential)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", accept)
+	request.Header.Set("Idempotency-Key", requestID)
+	request.Header.Set("X-Request-ID", requestID)
 	response, err := a.client.Do(request)
 	if err != nil {
+		contextErr := adapterRequestContextError(ctx, requestCtx)
 		cancel()
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, nil, requestCtx.Err()
+		if contextErr != nil {
+			return nil, nil, contextErr
 		}
 		return nil, nil, unknownFailure(errors.New("openai-compatible network request failed"))
 	}
@@ -693,14 +706,14 @@ func normalizeUsageJSON(encoded []byte) (modelgateway.Usage, error) {
 		if json.Unmarshal(encoded, &value) != nil {
 			return modelgateway.Usage{}, modelgateway.ErrInvalidRequest
 		}
-		return modelgateway.Usage{InputTokens: value.PromptTokens, OutputTokens: value.CompletionTokens}, nil
+		return normalizedChatUsage(value), nil
 	}
 	if _, responses := fields["input_tokens"]; responses {
 		var value responsesUsage
 		if json.Unmarshal(encoded, &value) != nil {
 			return modelgateway.Usage{}, modelgateway.ErrInvalidRequest
 		}
-		return modelgateway.Usage{InputTokens: value.InputTokens, OutputTokens: value.OutputTokens}, nil
+		return normalizedResponsesUsage(value), nil
 	}
 	var usage modelgateway.Usage
 	if json.Unmarshal(encoded, &usage) != nil {
@@ -714,6 +727,90 @@ func contextError(ctx context.Context) error {
 		return modelgateway.ErrInvalidRequest
 	}
 	return ctx.Err()
+}
+
+func adapterRequestContextError(callerCtx, requestCtx context.Context) error {
+	if requestCtx != nil && errors.Is(context.Cause(requestCtx), errAdapterRequestTimeout) {
+		return &modelgateway.ProviderFailure{
+			Cause: context.DeadlineExceeded, Retryable: true, OutcomeKnown: true,
+		}
+	}
+	if callerCtx != nil {
+		if err := callerCtx.Err(); err != nil {
+			return err
+		}
+	}
+	if requestCtx == nil {
+		return nil
+	}
+	return requestCtx.Err()
+}
+
+func responseRequestContext(fallback context.Context, response *http.Response) context.Context {
+	if response != nil && response.Request != nil {
+		return response.Request.Context()
+	}
+	return fallback
+}
+
+func validRequestHeaderValue(value string) bool {
+	return strings.TrimSpace(value) != "" && len(value) <= modelgateway.MaximumToolCallIDBytes && utf8.ValidString(value) && !strings.ContainsAny(value, "\r\n\x00")
+}
+
+func (a *Adapter) promptCacheKey(request modelgateway.NormalizedRequest) string {
+	capabilities, found := a.models[request.Model]
+	if !found || !capabilities.SupportsPromptCaching {
+		return ""
+	}
+	actualModelVersion := capabilities.ActualModelVersion
+	if actualModelVersion == "" {
+		actualModelVersion = request.Model
+	}
+	canonical, _ := json.Marshal(struct {
+		TenantID            string `json:"tenantId"`
+		Model               string `json:"model"`
+		ActualModelVersion  string `json:"actualModelVersion"`
+		PromptBundleVersion string `json:"promptBundleVersion"`
+		PromptDigest        string `json:"promptDigest"`
+		ToolSchemaDigest    string `json:"toolSchemaDigest"`
+		PolicyDigest        string `json:"policyDigest"`
+		DataClassification  string `json:"dataClassification"`
+		CachePolicy         string `json:"cachePolicy"`
+	}{
+		TenantID: request.TenantID, Model: request.Model, ActualModelVersion: actualModelVersion,
+		PromptBundleVersion: request.PromptBundleVersion, PromptDigest: request.PromptDigest,
+		ToolSchemaDigest: request.ToolSchemaDigest, PolicyDigest: request.PolicyDigest,
+		DataClassification: request.DataClassification, CachePolicy: request.CachePolicy,
+	})
+	digest := sha256.Sum256(canonical)
+	return hex.EncodeToString(digest[:])
+}
+
+func normalizedChatUsage(value chatUsage) modelgateway.Usage {
+	usage := modelgateway.Usage{InputTokens: value.PromptTokens, OutputTokens: value.CompletionTokens}
+	usage.CacheReadTokens, usage.CacheWriteTokens = normalizedCacheTokens(value.PromptTokensDetails)
+	return usage
+}
+
+func normalizedResponsesUsage(value responsesUsage) modelgateway.Usage {
+	usage := modelgateway.Usage{InputTokens: value.InputTokens, OutputTokens: value.OutputTokens}
+	usage.CacheReadTokens, usage.CacheWriteTokens = normalizedCacheTokens(value.InputTokensDetails)
+	return usage
+}
+
+func normalizedCacheTokens(details *cacheTokenDetails) (*int64, *int64) {
+	if details == nil {
+		return nil, nil
+	}
+	return cloneOptionalInt64(details.CachedTokens), cloneOptionalInt64(details.CacheWriteTokens)
+}
+
+func cloneOptionalInt64(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 func readBounded(body io.Reader, maximum int64) ([]byte, error) {
@@ -746,6 +843,7 @@ type chatRequest struct {
 	TopP            float64             `json:"top_p"`
 	TopK            int                 `json:"top_k,omitempty"`
 	ReasoningEffort string              `json:"reasoning_effort,omitempty"`
+	PromptCacheKey  string              `json:"prompt_cache_key,omitempty"`
 	Seed            *int64              `json:"seed,omitempty"`
 	Stream          bool                `json:"stream,omitempty"`
 	StreamOptions   *chatStreamOptions  `json:"stream_options,omitempty"`
@@ -815,7 +913,13 @@ type chatResponse struct {
 }
 
 type chatUsage struct {
-	PromptTokens     int64 `json:"prompt_tokens"`
-	CompletionTokens int64 `json:"completion_tokens"`
-	TotalTokens      int64 `json:"total_tokens"`
+	PromptTokens        int64              `json:"prompt_tokens"`
+	CompletionTokens    int64              `json:"completion_tokens"`
+	TotalTokens         int64              `json:"total_tokens"`
+	PromptTokensDetails *cacheTokenDetails `json:"prompt_tokens_details,omitempty"`
+}
+
+type cacheTokenDetails struct {
+	CachedTokens     *int64 `json:"cached_tokens,omitempty"`
+	CacheWriteTokens *int64 `json:"cache_write_tokens,omitempty"`
 }

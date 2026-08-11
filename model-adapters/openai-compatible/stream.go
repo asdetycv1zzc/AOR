@@ -33,6 +33,7 @@ type responseStream struct {
 	failed          bool
 	finishReason    string
 	activityContext context.Context
+	callerContext   context.Context
 	requestContext  context.Context
 	jsonMode        bool
 }
@@ -120,9 +121,7 @@ func (s *responseStream) read() {
 			return
 		}
 		if err != nil && !errors.Is(err, io.EOF) {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				s.fail(err)
-			} else if contextErr := s.requestContext.Err(); contextErr != nil {
+			if contextErr := adapterRequestContextError(s.callerContext, s.requestContext); contextErr != nil {
 				s.fail(contextErr)
 			} else {
 				s.fail(unknownFailure(errors.New("openai-compatible stream read failed")))
@@ -177,6 +176,10 @@ func (s *responseStream) read() {
 			data = append(data, fragment...)
 		}
 		if errors.Is(err, io.EOF) {
+			if contextErr := adapterRequestContextError(s.callerContext, s.requestContext); contextErr != nil {
+				s.fail(contextErr)
+				return
+			}
 			if len(data) == 0 {
 				s.stateMu.Lock()
 				s.complete = true
@@ -192,9 +195,7 @@ func (s *responseStream) read() {
 func (s *responseStream) readJSON() {
 	data, err := io.ReadAll(io.LimitReader(s.body, s.maxEventBytes+1))
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			s.fail(err)
-		} else if contextErr := s.requestContext.Err(); contextErr != nil {
+		if contextErr := adapterRequestContextError(s.callerContext, s.requestContext); contextErr != nil {
 			s.fail(contextErr)
 		} else {
 			s.fail(unknownFailure(errors.New("openai-compatible response read failed")))

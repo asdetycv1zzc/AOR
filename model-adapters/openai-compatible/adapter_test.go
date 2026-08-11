@@ -45,7 +45,7 @@ func TestGenerateUsesChatCompletionsWithoutCredentialLeakage(t *testing.T) {
 		if payload.Model != "gpt-test" || payload.MaxTokens != 16 || payload.ReasoningEffort != "low" || len(payload.Tools) != 1 || payload.Tools[0].Type != "function" || payload.ResponseFormat.Type != "json_schema" {
 			t.Fatalf("payload = %#v", payload)
 		}
-		_, _ = writer.Write([]byte(`{"id":"chatcmpl-1","model":"gpt-test-2026-08","choices":[{"message":{"content":"{\"ok\":true}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":3,"total_tokens":14}}`))
+		_, _ = writer.Write([]byte(`{"id":"chatcmpl-1","model":"gpt-test-2026-08","choices":[{"message":{"content":"{\"ok\":true}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":3,"total_tokens":14,"prompt_tokens_details":{"cached_tokens":7,"cache_write_tokens":1}}}`))
 	}))
 	defer server.Close()
 
@@ -59,7 +59,7 @@ func TestGenerateUsesChatCompletionsWithoutCredentialLeakage(t *testing.T) {
 	if response.RequestID != "request-1" || response.ProviderRequestID != "chatcmpl-1" || response.ModelVersion != "gpt-test-2026-08" || string(response.Content) != `{"ok":true}` {
 		t.Fatalf("response = %#v", response)
 	}
-	if response.Usage.InputTokens != 11 || response.Usage.OutputTokens != 3 || response.Usage.CostMicros != 0 {
+	if response.Usage.InputTokens != 11 || response.Usage.OutputTokens != 3 || response.Usage.CostMicros != 0 || response.Usage.CacheReadTokens == nil || *response.Usage.CacheReadTokens != 7 || response.Usage.CacheWriteTokens == nil || *response.Usage.CacheWriteTokens != 1 {
 		t.Fatalf("usage = %#v", response.Usage)
 	}
 	if strings.Contains(response.ProviderRequestID+response.ModelVersion+string(response.Content), testCredential) {
@@ -103,11 +103,18 @@ func TestGenerateUsesResponsesAndPreservesToolHistory(t *testing.T) {
 		if request.Method != http.MethodPost || request.URL.Path != "/v1/responses" {
 			t.Fatalf("request = %s %s", request.Method, request.URL.Path)
 		}
+		expectedRequestID := "request-1"
+		if providerCalls == 2 {
+			expectedRequestID = "request-2"
+		}
+		if request.Header.Get("Idempotency-Key") != expectedRequestID || request.Header.Get("X-Request-ID") != expectedRequestID {
+			t.Fatalf("request headers = %#v", request.Header)
+		}
 		var payload responsesRequest
 		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
 		}
-		if payload.Model != "gpt-test" || payload.MaxOutputTokens != 16 || payload.Reasoning == nil || payload.Reasoning.Effort != "high" || payload.Temperature != nil || payload.TopP != nil || len(payload.Tools) != 1 || payload.Text == nil || payload.Text.Format.Type != "json_schema" {
+		if payload.Model != "gpt-test" || payload.MaxOutputTokens != 16 || payload.Reasoning == nil || payload.Reasoning.Effort != "high" || payload.Temperature != nil || payload.TopP != nil || len(payload.Tools) != 1 || payload.Text == nil || payload.Text.Format.Type != "json_schema" || payload.PromptCacheKey == "" {
 			t.Fatalf("payload = %#v", payload)
 		}
 		switch providerCalls {
@@ -115,7 +122,7 @@ func TestGenerateUsesResponsesAndPreservesToolHistory(t *testing.T) {
 			if len(payload.Input) != 2 || payload.Input[0].Role != "system" || payload.Input[1].Role != "user" {
 				t.Fatalf("first input = %#v", payload.Input)
 			}
-			_, _ = writer.Write([]byte(`{"id":"resp-1","model":"gpt-test-2026-08","status":"completed","output":[{"type":"reasoning","id":"rs-1","encrypted_content":"opaque-reasoning"},{"type":"function_call","id":"fc-1","call_id":"call-1","name":"repo.read","arguments":"{\"path\":\"README.md\"}"}],"usage":{"input_tokens":12,"output_tokens":5,"total_tokens":17}}`))
+			_, _ = writer.Write([]byte(`{"id":"resp-1","model":"gpt-test-2026-08","status":"completed","output":[{"type":"reasoning","id":"rs-1","encrypted_content":"opaque-reasoning"},{"type":"function_call","id":"fc-1","call_id":"call-1","name":"repo.read","arguments":"{\"path\":\"README.md\"}"}],"usage":{"input_tokens":12,"output_tokens":5,"total_tokens":17,"input_tokens_details":{"cached_tokens":9,"cache_write_tokens":2}}}`))
 		case 2:
 			if len(payload.Input) != 5 || payload.Input[2].Type != "reasoning" || payload.Input[2].EncryptedContent != "opaque-reasoning" {
 				t.Fatalf("continued input = %#v", payload.Input)
@@ -134,15 +141,24 @@ func TestGenerateUsesResponsesAndPreservesToolHistory(t *testing.T) {
 	}))
 	defer server.Close()
 
-	adapter := testAdapter(t, server.URL+"/v1/responses", Config{WireFormat: WireFormatResponses, SupportsReasoningEffort: true})
+	capabilities := testCapabilities()
+	capabilities.SupportsPromptCaching = true
+	adapter := testAdapter(t, server.URL+"/v1/responses", Config{
+		WireFormat: WireFormatResponses, SupportsReasoningEffort: true,
+		Models: map[string]modelgateway.ModelCapabilities{"gpt-test": capabilities},
+	})
 	request := testRequest()
 	request.ReasoningEffort = "high"
 	request.TopP = 0.8
+	request.PromptDigest = "sha256:prompt"
+	request.ToolSchemaDigest = "sha256:tools"
+	request.PolicyDigest = "sha256:policy"
+	request.CachePolicy = "REMOTE"
 	response, err := adapter.Generate(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(response.Content) != 0 || len(response.ToolCalls) != 1 || response.ToolCalls[0].ID != "call-1" || response.ToolCalls[0].Name != "repo.read" || response.Usage.InputTokens != 12 || response.Usage.OutputTokens != 5 {
+	if len(response.Content) != 0 || len(response.ToolCalls) != 1 || response.ToolCalls[0].ID != "call-1" || response.ToolCalls[0].Name != "repo.read" || response.Usage.InputTokens != 12 || response.Usage.OutputTokens != 5 || response.Usage.CacheReadTokens == nil || *response.Usage.CacheReadTokens != 9 || response.Usage.CacheWriteTokens == nil || *response.Usage.CacheWriteTokens != 2 {
 		t.Fatalf("tool response = %#v", response)
 	}
 	request.RequestID = "request-2"
@@ -184,6 +200,95 @@ func TestGenerateClassifiesHTTPAndNetworkFailuresWithoutProviderBody(t *testing.
 	_, err = adapter.Generate(context.Background(), testRequest())
 	if !errors.As(err, &failure) || failure.OutcomeKnown || !failure.Retryable || strings.Contains(err.Error(), testCredential) {
 		t.Fatalf("network failure = %#v", err)
+	}
+}
+
+func TestGenerateClassifiesOnlyAdapterTimeoutAsKnownProviderFailure(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		close(started)
+		select {
+		case <-request.Context().Done():
+		case <-release:
+		}
+	}))
+	defer server.Close()
+	defer close(release)
+
+	adapter := testAdapter(t, server.URL, Config{RequestTimeout: 20 * time.Millisecond})
+	_, err := adapter.Generate(context.Background(), testRequest())
+	var failure *modelgateway.ProviderFailure
+	if !errors.As(err, &failure) || !errors.Is(failure, context.DeadlineExceeded) || !failure.Retryable || !failure.OutcomeKnown {
+		t.Fatalf("adapter timeout = %#v", err)
+	}
+	<-started
+
+	started = make(chan struct{})
+	adapter = testAdapter(t, server.URL, Config{RequestTimeout: time.Second})
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, generateErr := adapter.Generate(ctx, testRequest())
+		result <- generateErr
+	}()
+	<-started
+	cancel()
+	err = <-result
+	if !errors.Is(err, context.Canceled) || errors.As(err, &failure) {
+		t.Fatalf("caller cancellation = %#v", err)
+	}
+}
+
+func TestGenerateSendsStablePromptCacheKeyAndRequestHeaders(t *testing.T) {
+	type observedRequest struct {
+		idempotencyKey string
+		requestID      string
+		promptCacheKey string
+	}
+	observed := make(chan observedRequest, 3)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var payload struct {
+			PromptCacheKey string `json:"prompt_cache_key"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		observed <- observedRequest{
+			idempotencyKey: request.Header.Get("Idempotency-Key"),
+			requestID:      request.Header.Get("X-Request-ID"),
+			promptCacheKey: payload.PromptCacheKey,
+		}
+		_, _ = writer.Write([]byte(`{"id":"chatcmpl-cache","model":"gpt-test-v1","choices":[{"message":{"content":"{\"ok\":true}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":2,"total_tokens":10}}`))
+	}))
+	defer server.Close()
+
+	capabilities := testCapabilities()
+	capabilities.SupportsPromptCaching = true
+	adapter := testAdapter(t, server.URL, Config{Models: map[string]modelgateway.ModelCapabilities{"gpt-test": capabilities}})
+	request := testRequest()
+	request.PromptDigest = "sha256:prompt"
+	request.ToolSchemaDigest = "sha256:tools"
+	request.PolicyDigest = "sha256:policy"
+	request.CachePolicy = "REMOTE"
+	for _, requestID := range []string{"request-cache-1", "request-cache-2"} {
+		request.RequestID = requestID
+		if _, err := adapter.Generate(context.Background(), request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request.RequestID = "request-cache-3"
+	request.PolicyDigest = "sha256:other-policy"
+	if _, err := adapter.Generate(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+
+	first, second, third := <-observed, <-observed, <-observed
+	if first.idempotencyKey != "request-cache-1" || first.requestID != "request-cache-1" || second.idempotencyKey != "request-cache-2" || second.requestID != "request-cache-2" || third.idempotencyKey != "request-cache-3" || third.requestID != "request-cache-3" {
+		t.Fatalf("request headers = %#v, %#v, %#v", first, second, third)
+	}
+	if first.promptCacheKey == "" || first.promptCacheKey != second.promptCacheKey || first.promptCacheKey == third.promptCacheKey {
+		t.Fatalf("prompt cache keys = %q, %q, %q", first.promptCacheKey, second.promptCacheKey, third.promptCacheKey)
 	}
 }
 
@@ -253,7 +358,7 @@ func TestStreamAggregatesDeltasAndRequestsAuthoritativeUsage(t *testing.T) {
 		writer.Header().Set("Content-Type", "text/event-stream")
 		_, _ = writer.Write([]byte("data: {\"id\":\"chatcmpl-aggregate\",\"model\":\"gpt-test-v2\",\"choices\":[{\"delta\":{\"content\":\"{\\\"ok\\\"\"}}]}\n\n"))
 		_, _ = writer.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\":true}\"}}]}\n\n"))
-		_, _ = writer.Write([]byte("data: {\"id\":\"chatcmpl-aggregate\",\"model\":\"gpt-test-v2\",\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":2,\"total_tokens\":9}}\n\n"))
+		_, _ = writer.Write([]byte("data: {\"id\":\"chatcmpl-aggregate\",\"model\":\"gpt-test-v2\",\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":2,\"total_tokens\":9,\"prompt_tokens_details\":{\"cached_tokens\":5,\"cache_write_tokens\":1}}}\n\n"))
 		_, _ = writer.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer server.Close()
@@ -282,7 +387,7 @@ func TestStreamAggregatesDeltasAndRequestsAuthoritativeUsage(t *testing.T) {
 		t.Fatal("stream does not expose final usage")
 	}
 	usage, ready := usageStream.FinalUsage()
-	if !ready || usage.InputTokens != 7 || usage.OutputTokens != 2 || usage.ProviderRequestID != "chatcmpl-aggregate" || usage.ModelVersion != "gpt-test-v2" {
+	if !ready || usage.InputTokens != 7 || usage.OutputTokens != 2 || usage.ProviderRequestID != "chatcmpl-aggregate" || usage.ModelVersion != "gpt-test-v2" || usage.CacheReadTokens == nil || *usage.CacheReadTokens != 5 || usage.CacheWriteTokens == nil || *usage.CacheWriteTokens != 1 {
 		t.Fatalf("final usage=%#v ready=%v", usage, ready)
 	}
 }
@@ -327,13 +432,22 @@ func TestGenerateBoundsResponseAndHonorsCancellation(t *testing.T) {
 
 func TestNormalizeUsageRejectsCredentialValues(t *testing.T) {
 	adapter := testAdapter(t, "http://127.0.0.1", Config{})
-	usage, err := adapter.NormalizeUsage(chatUsage{PromptTokens: 7, CompletionTokens: 2})
-	if err != nil || usage.InputTokens != 7 || usage.OutputTokens != 2 {
+	usage, err := adapter.NormalizeUsage(chatUsage{
+		PromptTokens: 7, CompletionTokens: 2,
+		PromptTokensDetails: &cacheTokenDetails{CachedTokens: int64Pointer(5), CacheWriteTokens: int64Pointer(1)},
+	})
+	if err != nil || usage.InputTokens != 7 || usage.OutputTokens != 2 || usage.CacheReadTokens == nil || *usage.CacheReadTokens != 5 || usage.CacheWriteTokens == nil || *usage.CacheWriteTokens != 1 {
 		t.Fatalf("usage = %#v, %v", usage, err)
 	}
-	usage, err = adapter.NormalizeUsage(map[string]any{"prompt_tokens": float64(5), "completion_tokens": float64(4)})
-	if err != nil || usage.InputTokens != 5 || usage.OutputTokens != 4 {
+	usage, err = adapter.NormalizeUsage(map[string]any{
+		"input_tokens": float64(5), "output_tokens": float64(4),
+		"input_tokens_details": map[string]any{"cached_tokens": float64(3), "cache_write_tokens": float64(0)},
+	})
+	if err != nil || usage.InputTokens != 5 || usage.OutputTokens != 4 || usage.CacheReadTokens == nil || *usage.CacheReadTokens != 3 || usage.CacheWriteTokens == nil || *usage.CacheWriteTokens != 0 {
 		t.Fatalf("map usage = %#v, %v", usage, err)
+	}
+	if _, err := adapter.NormalizeUsage(chatUsage{PromptTokens: 1, CompletionTokens: 1, PromptTokensDetails: &cacheTokenDetails{CachedTokens: int64Pointer(-1)}}); !errors.Is(err, modelgateway.ErrInvalidRequest) {
+		t.Fatalf("negative cache usage error = %v", err)
 	}
 	if _, err := adapter.NormalizeUsage(modelgateway.Usage{ProviderRequestID: testCredential}); !errors.Is(err, modelgateway.ErrInvalidRequest) {
 		t.Fatalf("credential usage error = %v", err)
@@ -433,14 +547,59 @@ func TestStreamRejectsNativeTools(t *testing.T) {
 	}
 }
 
+func TestStreamClassifiesAdapterDeadlineAsKnownProviderFailure(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		writer.WriteHeader(http.StatusOK)
+		writer.(http.Flusher).Flush()
+		close(started)
+		select {
+		case <-request.Context().Done():
+		case <-release:
+		}
+	}))
+	defer server.Close()
+	defer close(release)
+
+	adapter := testAdapter(t, server.URL, Config{RequestTimeout: 20 * time.Millisecond})
+	stream, err := adapter.Stream(context.Background(), streamingTestRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	<-started
+	_, err = stream.Recv(context.Background())
+	var failure *modelgateway.ProviderFailure
+	if !errors.As(err, &failure) || !errors.Is(failure, context.DeadlineExceeded) || !failure.Retryable || !failure.OutcomeKnown {
+		t.Fatalf("stream timeout = %#v", err)
+	}
+}
+
+func TestNewAcceptsPerAttemptTimeoutCeiling(t *testing.T) {
+	config := Config{
+		Endpoint: "http://127.0.0.1", Credential: testCredential,
+		Models:         map[string]modelgateway.ModelCapabilities{"gpt-test": testCapabilities()},
+		RequestTimeout: 10*time.Minute + 30*time.Second,
+	}
+	if _, err := New(config); err != nil {
+		t.Fatalf("10m30s timeout = %v", err)
+	}
+	config.RequestTimeout++
+	if _, err := New(config); !errors.Is(err, modelgateway.ErrInvalidRequest) {
+		t.Fatalf("timeout above ceiling = %v", err)
+	}
+}
+
 func testAdapter(t *testing.T, endpoint string, overrides Config) *Adapter {
 	t.Helper()
 	config := Config{
 		Endpoint: endpoint, Credential: testCredential, RequestTimeout: time.Second,
-		Models: map[string]modelgateway.ModelCapabilities{"gpt-test": {
-			SupportsStreaming: true, SupportsToolCalls: true, SupportsJSONSchema: true, SupportsSeed: true,
-			MaxInputTokens: 4096, MaxOutputTokens: 128, ActualModelVersion: "gpt-test-configured",
-		}},
+		Models: map[string]modelgateway.ModelCapabilities{"gpt-test": testCapabilities()},
+	}
+	if overrides.Models != nil {
+		config.Models = overrides.Models
 	}
 	if overrides.RequestTimeout != 0 {
 		config.RequestTimeout = overrides.RequestTimeout
@@ -455,6 +614,17 @@ func testAdapter(t *testing.T, endpoint string, overrides Config) *Adapter {
 		t.Fatal(err)
 	}
 	return adapter
+}
+
+func testCapabilities() modelgateway.ModelCapabilities {
+	return modelgateway.ModelCapabilities{
+		SupportsStreaming: true, SupportsToolCalls: true, SupportsJSONSchema: true, SupportsSeed: true,
+		MaxInputTokens: 4096, MaxOutputTokens: 128, ActualModelVersion: "gpt-test-configured",
+	}
+}
+
+func int64Pointer(value int64) *int64 {
+	return &value
 }
 
 func testRequest() modelgateway.NormalizedRequest {
