@@ -176,6 +176,34 @@ func TestAnthropicStreamPreservesReceiveCancellation(t *testing.T) {
 	}
 }
 
+func TestAnthropicThinkingBudgetSerialization(t *testing.T) {
+	adapter := newAnthropicStreamTestAdapter(t, "https://provider.test")
+	request := anthropicStreamTestRequest()
+	request.ThinkingBudget = 64
+
+	encoded, err := adapter.encodeRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload anthropicRequest
+	if json.Unmarshal(encoded, &payload) != nil || payload.Thinking == nil || payload.Thinking.Type != "enabled" || payload.Thinking.BudgetTokens != 64 {
+		t.Fatalf("thinking payload = %s", encoded)
+	}
+
+	request.ThinkingBudget = 0
+	encoded, err = adapter.encodeRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload = anthropicRequest{}
+	if json.Unmarshal(encoded, &payload) != nil {
+		t.Fatal("invalid Anthropic payload")
+	}
+	if payload.Thinking != nil {
+		t.Fatalf("zero thinking budget was serialized: %s", encoded)
+	}
+}
+
 func newAnthropicStreamTestAdapter(t *testing.T, baseURL string) *anthropicAdapter {
 	t.Helper()
 	adapter, err := newAnthropicAdapter(anthropicConfig{

@@ -613,6 +613,48 @@ func TestNewAcceptsPerAttemptTimeoutCeiling(t *testing.T) {
 	}
 }
 
+func TestThinkingBudgetSerializationMatchesWireFormat(t *testing.T) {
+	request := testRequest()
+	request.ThinkingBudget = 8
+
+	chat := testAdapter(t, "https://provider.test/v1/chat/completions", Config{})
+	encoded, err := chat.encodeRequest(request, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var chatPayload map[string]json.RawMessage
+	if json.Unmarshal(encoded, &chatPayload) != nil || string(chatPayload["thinking_budget"]) != "8" {
+		t.Fatalf("chat payload = %s", encoded)
+	}
+
+	request.ThinkingBudget = 0
+	encoded, err = chat.encodeRequest(request, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chatPayload = nil
+	if json.Unmarshal(encoded, &chatPayload) != nil {
+		t.Fatal("invalid chat payload")
+	}
+	if _, found := chatPayload["thinking_budget"]; found {
+		t.Fatalf("zero thinking budget was serialized: %s", encoded)
+	}
+
+	request.ThinkingBudget = 8
+	responses := testAdapter(t, "https://provider.test/v1/responses", Config{WireFormat: WireFormatResponses})
+	encoded, err = responses.encodeRequest(request, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var responsesPayload map[string]json.RawMessage
+	if json.Unmarshal(encoded, &responsesPayload) != nil {
+		t.Fatal("invalid Responses payload")
+	}
+	if _, found := responsesPayload["thinking_budget"]; found {
+		t.Fatalf("Responses payload contains unsupported thinking_budget: %s", encoded)
+	}
+}
+
 func testAdapter(t *testing.T, endpoint string, overrides Config) *Adapter {
 	t.Helper()
 	config := Config{

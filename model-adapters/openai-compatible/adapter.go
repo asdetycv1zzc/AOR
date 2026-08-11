@@ -357,7 +357,7 @@ func (a *Adapter) validateRequest(request modelgateway.NormalizedRequest, requir
 	if err != nil {
 		return modelgateway.ModelCapabilities{}, err
 	}
-	if request.Model == "" || len(request.Messages) == 0 || len(request.Messages) > modelgateway.MaximumMessages || len(request.Tools) > modelgateway.MaximumTools || request.MaxOutputTokens <= 0 || request.MaxOutputTokens > capabilities.MaxOutputTokens ||
+	if request.Model == "" || len(request.Messages) == 0 || len(request.Messages) > modelgateway.MaximumMessages || len(request.Tools) > modelgateway.MaximumTools || request.MaxOutputTokens <= 0 || request.MaxOutputTokens > capabilities.MaxOutputTokens || request.ThinkingBudget < 0 || request.ThinkingBudget >= request.MaxOutputTokens ||
 		request.Temperature < 0 || request.Temperature > 2 || request.TopP < 0 || request.TopP > 1 || request.TopK < 0 || request.TopK > modelgateway.MaximumTopK || !validReasoningEffort(request.ReasoningEffort) || !utf8.ValidString(request.Model) {
 		return modelgateway.ModelCapabilities{}, modelgateway.ErrInvalidRequest
 	}
@@ -427,7 +427,7 @@ func (a *Adapter) encodeChatRequest(request modelgateway.NormalizedRequest, stre
 	}
 	value := chatRequest{
 		Model: request.Model, MaxTokens: request.MaxOutputTokens, Temperature: request.Temperature,
-		TopP: request.TopP, TopK: request.TopK, ReasoningEffort: reasoningEffort, Stream: stream,
+		TopP: request.TopP, TopK: request.TopK, ReasoningEffort: reasoningEffort, ThinkingBudget: request.ThinkingBudget, Stream: stream,
 	}
 	value.PromptCacheKey = a.promptCacheKey(request)
 	cacheBreakpoint := value.PromptCacheKey != "" && supportsExplicitPromptCaching(request.Model)
@@ -887,6 +887,7 @@ type chatRequest struct {
 	TopP               float64              `json:"top_p"`
 	TopK               int                  `json:"top_k,omitempty"`
 	ReasoningEffort    string               `json:"reasoning_effort,omitempty"`
+	ThinkingBudget     int                  `json:"thinking_budget,omitempty"`
 	PromptCacheKey     string               `json:"prompt_cache_key,omitempty"`
 	PromptCacheOptions *promptCacheOptions  `json:"prompt_cache_options,omitempty"`
 	Seed               *int64               `json:"seed,omitempty"`

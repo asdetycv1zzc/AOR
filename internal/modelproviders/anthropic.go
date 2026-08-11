@@ -44,6 +44,7 @@ type anthropicRequest struct {
 	Temperature  *float64               `json:"temperature,omitempty"`
 	TopP         *float64               `json:"top_p,omitempty"`
 	TopK         *int                   `json:"top_k,omitempty"`
+	Thinking     *anthropicThinking     `json:"thinking,omitempty"`
 	OutputConfig *anthropicOutputConfig `json:"output_config,omitempty"`
 	System       string                 `json:"system,omitempty"`
 	Messages     []anthropicMessage     `json:"messages"`
@@ -54,6 +55,11 @@ type anthropicRequest struct {
 
 type anthropicOutputConfig struct {
 	Effort string `json:"effort"`
+}
+
+type anthropicThinking struct {
+	Type         string `json:"type"`
+	BudgetTokens int    `json:"budget_tokens"`
 }
 
 type anthropicMessage struct {
@@ -981,7 +987,7 @@ func (adapter *anthropicAdapter) validateRequest(ctx context.Context, request mo
 	if err != nil {
 		return modelgateway.ModelCapabilities{}, err
 	}
-	if requireID && request.RequestID == "" || len(request.Messages) == 0 || len(request.Messages) > modelgateway.MaximumMessages || len(request.Tools) > modelgateway.MaximumTools || request.MaxOutputTokens <= 0 || request.MaxOutputTokens > capabilities.MaxOutputTokens || request.Temperature < 0 || request.Temperature > 1 || request.TopP < 0 || request.TopP > 1 || request.TopK < 0 || request.TopK > modelgateway.MaximumTopK || !validAnthropicEffort(request.ReasoningEffort) || request.Seed != nil {
+	if requireID && request.RequestID == "" || len(request.Messages) == 0 || len(request.Messages) > modelgateway.MaximumMessages || len(request.Tools) > modelgateway.MaximumTools || request.MaxOutputTokens <= 0 || request.MaxOutputTokens > capabilities.MaxOutputTokens || request.ThinkingBudget < 0 || request.ThinkingBudget >= request.MaxOutputTokens || request.Temperature < 0 || request.Temperature > 1 || request.TopP < 0 || request.TopP > 1 || request.TopK < 0 || request.TopK > modelgateway.MaximumTopK || !validAnthropicEffort(request.ReasoningEffort) || request.Seed != nil {
 		return modelgateway.ModelCapabilities{}, modelgateway.ErrInvalidRequest
 	}
 	if len(request.Tools) != 0 && !capabilities.SupportsToolCalls || len(request.ResponseSchema) != 0 && (!capabilities.SupportsJSONSchema || !json.Valid(request.ResponseSchema)) {
@@ -1010,6 +1016,9 @@ func (adapter *anthropicAdapter) validateRequest(ctx context.Context, request mo
 
 func (adapter *anthropicAdapter) encodeRequest(request modelgateway.NormalizedRequest) ([]byte, error) {
 	value := anthropicRequest{Model: request.Model, MaxTokens: request.MaxOutputTokens}
+	if request.ThinkingBudget > 0 {
+		value.Thinking = &anthropicThinking{Type: "enabled", BudgetTokens: request.ThinkingBudget}
+	}
 	if effort := anthropicEffort(request.ReasoningEffort); effort != "" {
 		value.OutputConfig = &anthropicOutputConfig{Effort: effort}
 	} else {
