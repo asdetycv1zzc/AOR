@@ -19,6 +19,13 @@ type ActivityRecorder interface {
 	Finish(context.Context, NormalizedRequest, GenerateOptions, NormalizedResponse, error, time.Time, time.Time) error
 }
 
+// ActivityReasoningSummaryRecorder is optional because reasoning summaries
+// are only available from providers that expose a safe, model-generated
+// summary separately from the final response.
+type ActivityReasoningSummaryRecorder interface {
+	AppendReasoningSummary(context.Context, NormalizedRequest, string, time.Time) error
+}
+
 // ActivityAttemptRecorder is an optional extension for recorders that expose
 // provider attempts separately from the final model request summary. Keeping
 // it separate from ActivityRecorder preserves compatibility with existing
@@ -87,6 +94,13 @@ func (recorder *PostgresActivityRecorder) AppendDelta(ctx context.Context, reque
 		return nil
 	}
 	return recorder.store.AppendDelta(ctx, request.TenantID, modelActivityID(request.RequestID), delta, updatedAt.UTC())
+}
+
+func (recorder *PostgresActivityRecorder) AppendReasoningSummary(ctx context.Context, request NormalizedRequest, delta string, updatedAt time.Time) error {
+	if delta == "" {
+		return nil
+	}
+	return recorder.store.AppendReasoningSummary(ctx, request.TenantID, modelActivityID(request.RequestID), delta, updatedAt.UTC())
 }
 
 func (recorder *PostgresActivityRecorder) Finish(ctx context.Context, request NormalizedRequest, options GenerateOptions, response NormalizedResponse, resultErr error, startedAt, completedAt time.Time) error {
@@ -184,6 +198,7 @@ func (recorder *PostgresActivityRecorder) Pending(ctx context.Context, request N
 }
 
 type activityDeltaContextKey struct{}
+type activityReasoningSummaryContextKey struct{}
 
 func withActivityDeltaRecorder(ctx context.Context, callback func(string)) context.Context {
 	if callback == nil {
@@ -197,6 +212,25 @@ func ReportActivityDelta(ctx context.Context, delta string) {
 		return
 	}
 	callback, _ := ctx.Value(activityDeltaContextKey{}).(func(string))
+	if callback != nil {
+		callback(delta)
+	}
+}
+
+func withActivityReasoningSummaryRecorder(ctx context.Context, callback func(string)) context.Context {
+	if callback == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, activityReasoningSummaryContextKey{}, callback)
+}
+
+// ReportActivityReasoningSummary records only provider-generated summaries.
+// Adapters must not pass raw reasoning or hidden chain-of-thought events here.
+func ReportActivityReasoningSummary(ctx context.Context, delta string) {
+	if ctx == nil || delta == "" {
+		return
+	}
+	callback, _ := ctx.Value(activityReasoningSummaryContextKey{}).(func(string))
 	if callback != nil {
 		callback(delta)
 	}
@@ -218,6 +252,19 @@ func (g *Gateway) recordActivityDelta(ctx context.Context, request NormalizedReq
 	recordContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer cancel()
 	_ = g.activityRecorder.AppendDelta(recordContext, request, delta, g.clock().UTC())
+}
+
+func (g *Gateway) recordActivityReasoningSummary(ctx context.Context, request NormalizedRequest, delta string) {
+	if g.activityRecorder == nil || delta == "" {
+		return
+	}
+	recorder, ok := g.activityRecorder.(ActivityReasoningSummaryRecorder)
+	if !ok {
+		return
+	}
+	recordContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	_ = recorder.AppendReasoningSummary(recordContext, request, delta, g.clock().UTC())
 }
 
 func (g *Gateway) recordActivityFinish(ctx context.Context, request NormalizedRequest, options GenerateOptions, response NormalizedResponse, resultErr error, startedAt time.Time) {

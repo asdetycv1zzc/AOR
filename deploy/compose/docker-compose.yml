@@ -252,6 +252,10 @@ services:
         if [ "$$project_activity_installed" != "t" ]; then
           psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000054_project_activity_messages.up.sql
         fi
+        reasoning_summary_installed="$$(psql --host postgres --username aor --dbname aor --tuples-only --no-align --command "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'project_activity_messages' AND column_name = 'reasoning_summary')")"
+        if [ "$$reasoning_summary_installed" != "t" ]; then
+          psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000055_project_activity_reasoning_summary.up.sql
+        fi
         unset AOR_APP_PASSWORD
     secrets: [postgres_password, postgres_app_password]
     volumes:
@@ -309,6 +313,7 @@ services:
       - ../../migrations/postgres/000052_provider_protocol_selection.up.sql:/migrations/000052_provider_protocol_selection.up.sql:ro
       - ../../migrations/postgres/000053_custom_model_providers.up.sql:/migrations/000053_custom_model_providers.up.sql:ro
       - ../../migrations/postgres/000054_project_activity_messages.up.sql:/migrations/000054_project_activity_messages.up.sql:ro
+      - ../../migrations/postgres/000055_project_activity_reasoning_summary.up.sql:/migrations/000055_project_activity_reasoning_summary.up.sql:ro
       - ./postgres-app-password.sql:/migrations/postgres-app-password.sql:ro
     read_only: true
     tmpfs: [/tmp]

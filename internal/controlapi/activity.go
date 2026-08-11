@@ -51,29 +51,30 @@ const (
 )
 
 type projectActivityMessage struct {
-	ID              string          `json:"id"`
-	Cursor          string          `json:"cursor"`
-	ProjectID       string          `json:"projectId"`
-	TaskID          string          `json:"taskId,omitempty"`
-	Flow            activityFlow    `json:"flow"`
-	AgentID         string          `json:"agentId,omitempty"`
-	Role            string          `json:"role,omitempty"`
-	Sender          activitySender  `json:"sender"`
-	State           activityState   `json:"state"`
-	Content         string          `json:"content"`
-	ErrorCode       string          `json:"errorCode,omitempty"`
-	Provider        string          `json:"provider,omitempty"`
-	Model           string          `json:"model,omitempty"`
-	InputTokens     int64           `json:"inputTokens,omitempty"`
-	OutputTokens    int64           `json:"outputTokens,omitempty"`
-	LatencyMS       int64           `json:"latencyMs,omitempty"`
-	OutputSHA256    string          `json:"outputSha256,omitempty"`
-	CreatedAt       time.Time       `json:"createdAt"`
-	UpdatedAt       time.Time       `json:"updatedAt"`
-	PrincipalID     string          `json:"-"`
-	IdempotencyKey  string          `json:"-"`
-	RequestSHA256   string          `json:"-"`
-	QueuedPrincipal authn.Principal `json:"-"`
+	ID               string          `json:"id"`
+	Cursor           string          `json:"cursor"`
+	ProjectID        string          `json:"projectId"`
+	TaskID           string          `json:"taskId,omitempty"`
+	Flow             activityFlow    `json:"flow"`
+	AgentID          string          `json:"agentId,omitempty"`
+	Role             string          `json:"role,omitempty"`
+	Sender           activitySender  `json:"sender"`
+	State            activityState   `json:"state"`
+	Content          string          `json:"content"`
+	ReasoningSummary string          `json:"reasoningSummary,omitempty"`
+	ErrorCode        string          `json:"errorCode,omitempty"`
+	Provider         string          `json:"provider,omitempty"`
+	Model            string          `json:"model,omitempty"`
+	InputTokens      int64           `json:"inputTokens,omitempty"`
+	OutputTokens     int64           `json:"outputTokens,omitempty"`
+	LatencyMS        int64           `json:"latencyMs,omitempty"`
+	OutputSHA256     string          `json:"outputSha256,omitempty"`
+	CreatedAt        time.Time       `json:"createdAt"`
+	UpdatedAt        time.Time       `json:"updatedAt"`
+	PrincipalID      string          `json:"-"`
+	IdempotencyKey   string          `json:"-"`
+	RequestSHA256    string          `json:"-"`
+	QueuedPrincipal  authn.Principal `json:"-"`
 }
 
 type projectActivityAgent struct {
@@ -284,7 +285,11 @@ func activityProjectKey(tenantID, projectID string) string {
 }
 
 func activityCursor(message projectActivityMessage) string {
-	digest := sha256.Sum256([]byte(message.ID + "\x00" + string(message.State) + "\x00" + message.UpdatedAt.UTC().Format(time.RFC3339Nano) + "\x00" + message.Content + "\x00" + message.ErrorCode))
+	value := message.ID + "\x00" + string(message.State) + "\x00" + message.UpdatedAt.UTC().Format(time.RFC3339Nano) + "\x00" + message.Content + "\x00" + message.ErrorCode
+	if message.ReasoningSummary != "" {
+		value += "\x00" + message.ReasoningSummary
+	}
+	digest := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(digest[:])
 }
 
@@ -373,7 +378,8 @@ func activityFromStored(message projectactivity.Message) projectActivityMessage 
 		ID: message.ID, ProjectID: message.ProjectID, TaskID: message.TaskID,
 		Flow: activityFlow(message.Flow), AgentID: message.AgentInstanceID, Role: message.Role,
 		Sender: activitySender(message.Sender), State: activityState(message.State), Content: message.Content,
-		ErrorCode: message.ErrorCode, Provider: message.Provider, Model: message.Model,
+		ReasoningSummary: message.ReasoningSummary,
+		ErrorCode:        message.ErrorCode, Provider: message.Provider, Model: message.Model,
 		InputTokens: message.InputTokens, OutputTokens: message.OutputTokens,
 		LatencyMS: message.LatencyMS, OutputSHA256: message.OutputSHA256,
 		CreatedAt: message.CreatedAt.UTC(), UpdatedAt: message.UpdatedAt.UTC(), PrincipalID: message.PrincipalID,
@@ -388,7 +394,8 @@ func activityToStored(tenantID string, message projectActivityMessage) projectac
 		TenantID: tenantID, ProjectID: message.ProjectID, ID: message.ID, TaskID: message.TaskID,
 		Flow: projectactivity.Flow(message.Flow), AgentInstanceID: message.AgentID, Role: message.Role,
 		Sender: projectactivity.Sender(message.Sender), State: projectactivity.State(message.State),
-		Content: message.Content, ErrorCode: message.ErrorCode, Provider: message.Provider, Model: message.Model,
+		Content: message.Content, ReasoningSummary: message.ReasoningSummary,
+		ErrorCode: message.ErrorCode, Provider: message.Provider, Model: message.Model,
 		InputTokens: message.InputTokens, OutputTokens: message.OutputTokens, LatencyMS: message.LatencyMS,
 		OutputSHA256: message.OutputSHA256, PrincipalID: message.PrincipalID,
 		IdempotencyKey: message.IdempotencyKey, RequestSHA256: message.RequestSHA256,

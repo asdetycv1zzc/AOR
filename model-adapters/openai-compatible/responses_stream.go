@@ -21,6 +21,7 @@ type responsesResponseStream struct {
 	request      modelgateway.NormalizedRequest
 	capabilities modelgateway.ModelCapabilities
 	deltaBytes   int
+	summaryBytes int
 }
 
 type responsesStreamError struct {
@@ -222,6 +223,16 @@ func (s *responsesResponseStream) observeResponsesEvent(eventName string, payloa
 	}
 
 	switch eventName {
+	case "response.reasoning_summary_text.delta":
+		if event.Delta == "" {
+			return nil, false, nil
+		}
+		if !utf8.ValidString(event.Delta) || len(event.Delta) > modelgateway.MaximumResponseBytes-s.summaryBytes {
+			return nil, false, modelgateway.ErrOutputTooLarge
+		}
+		s.summaryBytes += len(event.Delta)
+		modelgateway.ReportActivityReasoningSummary(s.activityContext, event.Delta)
+		return nil, false, nil
 	case "response.output_text.delta":
 		if event.Delta == "" {
 			return nil, false, nil

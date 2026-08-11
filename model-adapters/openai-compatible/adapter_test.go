@@ -114,7 +114,7 @@ func TestGenerateUsesResponsesAndPreservesToolHistory(t *testing.T) {
 		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
 		}
-		if payload.Model != "gpt-5.6-sol" || payload.MaxOutputTokens != 16 || payload.Reasoning == nil || payload.Reasoning.Effort != "high" || payload.Reasoning.Context != "current_turn" || payload.Temperature != nil || payload.TopP != nil || len(payload.Tools) != 1 || payload.Text == nil || payload.Text.Format.Type != "json_schema" || payload.PromptCacheKey == "" || payload.PromptCacheOptions == nil || payload.PromptCacheOptions.Mode != "explicit" {
+		if payload.Model != "gpt-5.6-sol" || payload.MaxOutputTokens != 16 || payload.Reasoning == nil || payload.Reasoning.Effort != "high" || payload.Reasoning.Context != "current_turn" || payload.Reasoning.Summary != "auto" || payload.Temperature != nil || payload.TopP != nil || len(payload.Tools) != 1 || payload.Text == nil || payload.Text.Format.Type != "json_schema" || payload.PromptCacheKey == "" || payload.PromptCacheOptions == nil || payload.PromptCacheOptions.Mode != "explicit" {
 			t.Fatalf("payload = %#v", payload)
 		}
 		switch providerCalls {

@@ -528,16 +528,20 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 	activityContext := ctx
 	var activityDeltaMu sync.Mutex
 	var activityDelta []byte
+	var activityReasoningSummary []byte
 	flushActivityDelta := func() {
 		activityDeltaMu.Lock()
-		if len(activityDelta) == 0 {
+		if len(activityDelta) == 0 && len(activityReasoningSummary) == 0 {
 			activityDeltaMu.Unlock()
 			return
 		}
 		pending := string(activityDelta)
+		pendingReasoningSummary := string(activityReasoningSummary)
 		activityDelta = nil
+		activityReasoningSummary = nil
 		activityDeltaMu.Unlock()
 		g.recordActivityDelta(activityContext, request, pending)
+		g.recordActivityReasoningSummary(activityContext, request, pendingReasoningSummary)
 	}
 	activityDeltaWake := make(chan struct{}, 1)
 	activityDeltaStop := make(chan struct{})
@@ -558,13 +562,36 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 			}
 		}
 	}()
+	parentActivityDelta, _ := ctx.Value(activityDeltaContextKey{}).(func(string))
 	ctx = withActivityDeltaRecorder(ctx, func(delta string) {
 		if delta == "" {
 			return
 		}
+		if parentActivityDelta != nil {
+			parentActivityDelta(delta)
+		}
 		activityDeltaMu.Lock()
 		activityDelta = append(activityDelta, delta...)
 		shouldFlush := len(activityDelta) >= 1024
+		activityDeltaMu.Unlock()
+		if shouldFlush {
+			select {
+			case activityDeltaWake <- struct{}{}:
+			default:
+			}
+		}
+	})
+	parentReasoningSummary, _ := ctx.Value(activityReasoningSummaryContextKey{}).(func(string))
+	ctx = withActivityReasoningSummaryRecorder(ctx, func(delta string) {
+		if delta == "" {
+			return
+		}
+		if parentReasoningSummary != nil {
+			parentReasoningSummary(delta)
+		}
+		activityDeltaMu.Lock()
+		activityReasoningSummary = append(activityReasoningSummary, delta...)
+		shouldFlush := len(activityReasoningSummary) >= 1024
 		activityDeltaMu.Unlock()
 		if shouldFlush {
 			select {

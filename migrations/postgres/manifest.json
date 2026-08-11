@@ -379,6 +379,13 @@
       "file": "000054_project_activity_messages.up.sql",
       "sha256": "sha256:752d1ddcf9079f61cc69cc7707d826c157f2784732d594b071ed0ad409e94bc2",
       "destructive": false
+    },
+    {
+      "version": 55,
+      "mode": "EXPAND",
+      "file": "000055_project_activity_reasoning_summary.up.sql",
+      "sha256": "sha256:6f8c47457c6b9aec90317e80283b012b39269ffe73c84dd7910bad68d32bd91b",
+      "destructive": false
     }
   ]
 }

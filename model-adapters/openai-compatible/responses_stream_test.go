@@ -22,7 +22,7 @@ func TestResponsesStreamPreservesTerminalResponse(t *testing.T) {
 		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
 		}
-		if !payload.Stream || payload.Text != nil {
+		if !payload.Stream || payload.Text != nil || payload.Reasoning == nil || payload.Reasoning.Summary != "auto" {
 			t.Fatal("Responses stream request did not enable streaming")
 		}
 		writer.Header().Set("Content-Type", "text/event-stream")
@@ -33,6 +33,10 @@ data: {"type":"response.created","response":{"id":"resp-stream","model":"gpt-tes
 `,
 			`event: response.output_text.delta
 data: {"type":"response.output_text.delta","item_id":"msg-1","output_index":0,"content_index":0,"delta":"{\"ok\""}
+
+`,
+			`event: response.reasoning_summary_text.delta
+data: {"type":"response.reasoning_summary_text.delta","item_id":"rs-1","output_index":0,"summary_index":0,"delta":"Checking constraints"}
 
 `,
 			`data: {"type":"response.output_text.delta","item_id":"msg-1","output_index":0,"content_index":0,"delta":":true}"}
@@ -89,6 +93,9 @@ data: {"type":"response.completed","response":{"id":"resp-stream","model":"gpt-t
 		t.Fatalf("final usage = %#v, ready = %v", usage, ready)
 	}
 	responsesStream := stream.(*responsesResponseStream)
+	if responsesStream.summaryBytes != len("Checking constraints") {
+		t.Fatalf("reasoning summary bytes = %d", responsesStream.summaryBytes)
+	}
 	finishReason, ready := responsesStream.FinalFinishReason()
 	if !ready || finishReason != "stop" {
 		t.Fatalf("finish reason = %q, ready = %v", finishReason, ready)

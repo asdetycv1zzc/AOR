@@ -36,29 +36,30 @@ const (
 )
 
 type Message struct {
-	TenantID        string
-	ProjectID       string
-	ID              string
-	TaskID          string
-	RequestID       string
-	Flow            Flow
-	AgentInstanceID string
-	Role            string
-	Sender          Sender
-	State           State
-	Content         string
-	ErrorCode       string
-	Provider        string
-	Model           string
-	InputTokens     int64
-	OutputTokens    int64
-	LatencyMS       int64
-	OutputSHA256    string
-	PrincipalID     string
-	IdempotencyKey  string
-	RequestSHA256   string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	TenantID         string
+	ProjectID        string
+	ID               string
+	TaskID           string
+	RequestID        string
+	Flow             Flow
+	AgentInstanceID  string
+	Role             string
+	Sender           Sender
+	State            State
+	Content          string
+	ReasoningSummary string
+	ErrorCode        string
+	Provider         string
+	Model            string
+	InputTokens      int64
+	OutputTokens     int64
+	LatencyMS        int64
+	OutputSHA256     string
+	PrincipalID      string
+	IdempotencyKey   string
+	RequestSHA256    string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 type Store struct {
@@ -158,6 +159,31 @@ WHERE tenant_id = $1::uuid AND id = $2
 	})
 }
 
+func (store *Store) AppendReasoningSummary(ctx context.Context, tenantID, id, delta string, updatedAt time.Time) error {
+	if tenantID == "" || id == "" || delta == "" || updatedAt.IsZero() {
+		return errors.New("invalid project activity reasoning summary")
+	}
+	return store.withTenantTx(ctx, tenantID, false, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, `
+UPDATE project_activity_messages
+SET reasoning_summary = left(reasoning_summary || $3, 4194304), state = 'STREAMING', updated_at = GREATEST(updated_at, $4)
+WHERE tenant_id = $1::uuid AND id = $2
+  AND state NOT IN ('COMPLETED', 'FAILED')
+  AND updated_at <= $4`, tenantID, id, delta, updatedAt.UTC())
+		if err != nil {
+			return err
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if rows != 1 {
+			return sql.ErrNoRows
+		}
+		return nil
+	})
+}
+
 func (store *Store) List(ctx context.Context, tenantID, projectID string) ([]Message, error) {
 	if tenantID == "" || projectID == "" {
 		return nil, errors.New("invalid project activity scope")
@@ -166,7 +192,7 @@ func (store *Store) List(ctx context.Context, tenantID, projectID string) ([]Mes
 	err := store.withTenantTx(ctx, tenantID, true, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `
 	SELECT tenant_id::text, project_id::text, id, COALESCE(task_id::text, ''), COALESCE(request_id, ''),
-       flow, agent_instance_id, role, sender, state, content, error_code, provider,
+	       flow, agent_instance_id, role, sender, state, content, reasoning_summary, error_code, provider,
        model, input_tokens, output_tokens, latency_ms, output_sha256, principal_id,
        idempotency_key, request_sha256, created_at, updated_at
 FROM project_activity_messages
@@ -181,7 +207,7 @@ ORDER BY created_at, id`, tenantID, projectID)
 			if err := rows.Scan(
 				&message.TenantID, &message.ProjectID, &message.ID, &message.TaskID,
 				&message.RequestID, &message.Flow, &message.AgentInstanceID, &message.Role,
-				&message.Sender, &message.State, &message.Content, &message.ErrorCode,
+				&message.Sender, &message.State, &message.Content, &message.ReasoningSummary, &message.ErrorCode,
 				&message.Provider, &message.Model, &message.InputTokens, &message.OutputTokens,
 				&message.LatencyMS, &message.OutputSHA256, &message.PrincipalID,
 				&message.IdempotencyKey, &message.RequestSHA256, &message.CreatedAt,
@@ -204,7 +230,7 @@ func (store *Store) FindByIdempotency(ctx context.Context, tenantID, principalID
 	err := store.withTenantTx(ctx, tenantID, true, func(tx *sql.Tx) error {
 		row := tx.QueryRowContext(ctx, `
 SELECT tenant_id::text, project_id::text, id, COALESCE(task_id::text, ''), COALESCE(request_id, ''),
-       flow, agent_instance_id, role, sender, state, content, error_code, provider,
+	       flow, agent_instance_id, role, sender, state, content, reasoning_summary, error_code, provider,
        model, input_tokens, output_tokens, latency_ms, output_sha256, principal_id,
        idempotency_key, request_sha256, created_at, updated_at
 FROM project_activity_messages
@@ -213,7 +239,7 @@ LIMIT 1`, tenantID, principalID, idempotencyKey)
 		return row.Scan(
 			&message.TenantID, &message.ProjectID, &message.ID, &message.TaskID,
 			&message.RequestID, &message.Flow, &message.AgentInstanceID, &message.Role,
-			&message.Sender, &message.State, &message.Content, &message.ErrorCode,
+			&message.Sender, &message.State, &message.Content, &message.ReasoningSummary, &message.ErrorCode,
 			&message.Provider, &message.Model, &message.InputTokens, &message.OutputTokens,
 			&message.LatencyMS, &message.OutputSHA256, &message.PrincipalID,
 			&message.IdempotencyKey, &message.RequestSHA256, &message.CreatedAt,
@@ -237,7 +263,7 @@ func (store *Store) ClaimQueued(ctx context.Context, tenantID, projectID string,
 	err := store.withTenantTx(ctx, tenantID, false, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `
 SELECT tenant_id::text, project_id::text, id, COALESCE(task_id::text, ''), COALESCE(request_id, ''),
-       flow, agent_instance_id, role, sender, state, content, error_code, provider,
+	       flow, agent_instance_id, role, sender, state, content, reasoning_summary, error_code, provider,
        model, input_tokens, output_tokens, latency_ms, output_sha256, principal_id,
        idempotency_key, request_sha256, created_at, updated_at
 FROM project_activity_messages
@@ -285,7 +311,7 @@ WHERE activity.tenant_id = claimed.tenant_id AND activity.id = claimed.id
 RETURNING activity.tenant_id::text, activity.project_id::text, activity.id,
        COALESCE(activity.task_id::text, ''), COALESCE(activity.request_id, ''),
        activity.flow, activity.agent_instance_id, activity.role, activity.sender,
-       activity.state, activity.content, activity.error_code, activity.provider,
+	       activity.state, activity.content, activity.reasoning_summary, activity.error_code, activity.provider,
        activity.model, activity.input_tokens, activity.output_tokens, activity.latency_ms,
        activity.output_sha256, activity.principal_id, activity.idempotency_key,
        activity.request_sha256, activity.created_at, activity.updated_at`, tenantID, projectID, flow, agentID, requestID, now.UTC())
@@ -316,7 +342,7 @@ RETURNING activity.tenant_id::text, activity.project_id::text, activity.id,
 		// prompt, otherwise concurrent retries could produce different digests.
 		rows, err = tx.QueryContext(ctx, `
 SELECT tenant_id::text, project_id::text, id, COALESCE(task_id::text, ''), COALESCE(request_id, ''),
-       flow, agent_instance_id, role, sender, state, content, error_code, provider,
+	       flow, agent_instance_id, role, sender, state, content, reasoning_summary, error_code, provider,
        model, input_tokens, output_tokens, latency_ms, output_sha256, principal_id,
        idempotency_key, request_sha256, created_at, updated_at
 FROM project_activity_messages
@@ -402,7 +428,7 @@ func scanMessage(row scanner, message *Message) error {
 	return row.Scan(
 		&message.TenantID, &message.ProjectID, &message.ID, &message.TaskID,
 		&message.RequestID, &message.Flow, &message.AgentInstanceID, &message.Role,
-		&message.Sender, &message.State, &message.Content, &message.ErrorCode,
+		&message.Sender, &message.State, &message.Content, &message.ReasoningSummary, &message.ErrorCode,
 		&message.Provider, &message.Model, &message.InputTokens, &message.OutputTokens,
 		&message.LatencyMS, &message.OutputSHA256, &message.PrincipalID,
 		&message.IdempotencyKey, &message.RequestSHA256, &message.CreatedAt,
@@ -429,7 +455,7 @@ func (store *Store) withTenantTx(ctx context.Context, tenantID string, readOnly 
 }
 
 func validateMessage(message Message) error {
-	if message.TenantID == "" || message.ProjectID == "" || message.ID == "" || len(message.ID) > 512 || !validFlow(message.Flow) || !validSender(message.Sender) || !validState(message.State) || message.CreatedAt.IsZero() || message.UpdatedAt.Before(message.CreatedAt) || message.InputTokens < 0 || message.OutputTokens < 0 || message.LatencyMS < 0 || len(message.Content) > 4<<20 {
+	if message.TenantID == "" || message.ProjectID == "" || message.ID == "" || len(message.ID) > 512 || !validFlow(message.Flow) || !validSender(message.Sender) || !validState(message.State) || message.CreatedAt.IsZero() || message.UpdatedAt.Before(message.CreatedAt) || message.InputTokens < 0 || message.OutputTokens < 0 || message.LatencyMS < 0 || len(message.Content) > 4<<20 || len(message.ReasoningSummary) > 4<<20 {
 		return errors.New("invalid project activity message")
 	}
 	for _, value := range []string{message.ID, message.TaskID, message.RequestID, message.AgentInstanceID, message.Role, message.ErrorCode, message.Provider, message.Model, message.PrincipalID, message.IdempotencyKey, message.RequestSHA256} {
