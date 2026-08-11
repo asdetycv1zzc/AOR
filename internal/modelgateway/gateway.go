@@ -1918,7 +1918,7 @@ func requestUsesNativeTools(request NormalizedRequest) bool {
 }
 
 func validateRequest(request NormalizedRequest) error {
-	if request.RequestID == "" || request.TenantID == "" || request.ProjectID == "" || request.AgentInstanceID == "" || request.Role == "" || request.Model == "" || request.PromptBundleVersion == "" || len(request.Messages) == 0 || len(request.Messages) > MaximumMessages || len(request.Tools) > MaximumTools || request.MaxOutputTokens <= 0 || request.DataClassification == "" {
+	if request.RequestID == "" || request.TenantID == "" || request.ProjectID == "" || request.AgentInstanceID == "" || request.Role == "" || request.Model == "" || request.PromptBundleVersion == "" || len(request.Messages) == 0 || len(request.Messages) > MaximumMessages || len(request.Tools) > MaximumTools || request.MaxOutputTokens <= 0 || request.MaxOutputTokens > 1_000_000 || request.ThinkingBudget < 0 || request.ThinkingBudget >= request.MaxOutputTokens || request.DataClassification == "" {
 		return ErrInvalidRequest
 	}
 	if ValidateSamplingSettings(SamplingSettings{Temperature: request.Temperature, TopP: request.TopP, TopK: request.TopK}) != nil {

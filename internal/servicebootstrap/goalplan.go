@@ -124,7 +124,7 @@ func configuredGoalPlanRoutes(config runtimeconfig.GoalPlanConfig) (map[agentrun
 		}
 		routes[role] = goalplan.ModelRoute{
 			Provider: configured.Provider, Model: configured.Model, ReasoningEffort: configured.ReasoningEffort,
-			MaxOutputTokens: configured.MaxOutputTokens, Temperature: configured.Temperature, Seed: seed,
+			MaxOutputTokens: configured.MaxOutputTokens, ThinkingBudget: configured.ThinkingBudget, Temperature: configured.Temperature, Seed: seed,
 			ProviderPolicy: configured.ProviderPolicy, CachePolicy: configured.CachePolicy,
 			WorstCaseCostMicros: configured.WorstCaseCostMicros, MaxAttempts: configured.MaxAttempts,
 		}

@@ -135,6 +135,7 @@ type NormalizedRequest struct {
 	// from request digests. It runs only after the complete stream is assembled.
 	ResponseSemanticValidator func(json.RawMessage) error `json:"-"`
 	MaxOutputTokens           int                         `json:"maxOutputTokens"`
+	ThinkingBudget            int                         `json:"thinkingBudget,omitempty"`
 	Temperature               float64                     `json:"temperature"`
 	TopP                      float64                     `json:"topP,omitempty"`
 	TopK                      int                         `json:"topK,omitempty"`

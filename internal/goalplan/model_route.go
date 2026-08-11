@@ -29,6 +29,7 @@ func ResolveProjectModelRoute(project state.Project, role agentruntime.Role, fal
 		Model:               configured.Model,
 		ReasoningEffort:     configured.ReasoningEffort,
 		MaxOutputTokens:     configured.MaxOutputTokens,
+		ThinkingBudget:      configured.ThinkingBudget,
 		Temperature:         configured.Temperature,
 		Seed:                configured.Seed,
 		ProviderPolicy:      configured.ProviderPolicy,

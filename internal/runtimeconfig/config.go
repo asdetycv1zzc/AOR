@@ -151,6 +151,7 @@ type GoalPlanRouteConfig struct {
 	Model               string  `json:"model"`
 	ReasoningEffort     string  `json:"reasoningEffort"`
 	MaxOutputTokens     int     `json:"maxOutputTokens"`
+	ThinkingBudget      int     `json:"thinkingBudget"`
 	Temperature         float64 `json:"temperature"`
 	Seed                *int64  `json:"seed,omitempty"`
 	ProviderPolicy      string  `json:"providerPolicy"`
@@ -517,7 +518,7 @@ func (config Config) Validate() error {
 }
 
 func globalAuditRouteConfigured(route GoalPlanRouteConfig) bool {
-	return route.Provider != "" || route.Model != "" || route.ReasoningEffort != "" || route.MaxOutputTokens != 0 || route.Temperature != 0 || route.Seed != nil || route.ProviderPolicy != "" || route.CachePolicy != "" || route.WorstCaseCostMicros != 0 || route.MaxAttempts != 0
+	return route.Provider != "" || route.Model != "" || route.ReasoningEffort != "" || route.MaxOutputTokens != 0 || route.ThinkingBudget != 0 || route.Temperature != 0 || route.Seed != nil || route.ProviderPolicy != "" || route.CachePolicy != "" || route.WorstCaseCostMicros != 0 || route.MaxAttempts != 0
 }
 
 func validateProviders(providers []ProviderConfig) error {
@@ -591,6 +592,7 @@ func validGoalPlanRoute(route GoalPlanRouteConfig) bool {
 	return validIdentityPart(route.Provider, 128) && validIdentityPart(route.Model, 256) && route.Model != "*" &&
 		state.ValidModelReasoningEffort(route.Provider, route.ReasoningEffort) &&
 		route.MaxOutputTokens >= 1 && route.MaxOutputTokens <= 1_000_000 && route.Temperature >= 0 && route.Temperature <= 2 &&
+		route.ThinkingBudget >= 0 && route.ThinkingBudget < route.MaxOutputTokens &&
 		validIdentityPart(route.ProviderPolicy, 256) && validIdentityPart(route.CachePolicy, 128) &&
 		route.WorstCaseCostMicros >= 0 && route.MaxAttempts >= 1 && route.MaxAttempts <= 5
 }

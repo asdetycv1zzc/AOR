@@ -29,6 +29,7 @@ type ModelRoute struct {
 	Model               string
 	ReasoningEffort     string
 	MaxOutputTokens     int
+	ThinkingBudget      int `json:"thinkingBudget,omitempty"`
 	Temperature         float64
 	Seed                *int64
 	ProviderPolicy      string
@@ -238,7 +239,7 @@ func (preparer *AuthoritativeRuntimePreparer) Prepare(ctx context.Context, reque
 		Declaration: declaration, Lease: runtimeAgentLease(lease), Intent: expectedRuntimeIntent(request),
 		ModelCall: agentruntime.ModelCall{
 			RequestID: requestID, Provider: route.Provider, Model: route.Model, ReservationID: reservationID,
-			ReasoningEffort: route.ReasoningEffort, MaxOutputTokens: route.MaxOutputTokens, Temperature: route.Temperature, Seed: cloneSeed(route.Seed),
+			ReasoningEffort: route.ReasoningEffort, MaxOutputTokens: route.MaxOutputTokens, ThinkingBudget: route.ThinkingBudget, Temperature: route.Temperature, Seed: cloneSeed(route.Seed),
 			ProviderPolicy: route.ProviderPolicy, CachePolicy: route.CachePolicy,
 			WorstCaseCostMicros: route.WorstCaseCostMicros, MaxAttempts: route.MaxAttempts,
 		},
@@ -556,7 +557,8 @@ func findRuntimeModule(modules []contracts.PlanModule, moduleID string) (contrac
 func validModelRoute(route ModelRoute) bool {
 	return route.Provider != "" && len(route.Provider) <= 128 && route.Model != "" && route.Model != "*" && len(route.Model) <= 256 &&
 		state.ValidModelReasoningEffort(route.Provider, route.ReasoningEffort) &&
-		route.MaxOutputTokens > 0 && !math.IsNaN(route.Temperature) && !math.IsInf(route.Temperature, 0) &&
+		route.MaxOutputTokens > 0 && route.MaxOutputTokens <= 1_000_000 && route.ThinkingBudget >= 0 && route.ThinkingBudget < route.MaxOutputTokens &&
+		!math.IsNaN(route.Temperature) && !math.IsInf(route.Temperature, 0) &&
 		route.Temperature >= 0 && route.Temperature <= 2 && route.ProviderPolicy != "" && len(route.ProviderPolicy) <= 256 &&
 		route.CachePolicy != "" && len(route.CachePolicy) <= 128 && route.WorstCaseCostMicros >= 0 &&
 		route.MaxAttempts >= 1 && route.MaxAttempts <= 5

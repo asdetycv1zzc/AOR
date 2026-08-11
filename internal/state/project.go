@@ -41,6 +41,7 @@ type ProjectModelRoute struct {
 	Model               string  `json:"model"`
 	ReasoningEffort     string  `json:"reasoningEffort"`
 	MaxOutputTokens     int     `json:"maxOutputTokens"`
+	ThinkingBudget      int     `json:"thinkingBudget"`
 	Temperature         float64 `json:"temperature"`
 	Seed                *int64  `json:"seed,omitempty"`
 	ProviderPolicy      string  `json:"providerPolicy"`
@@ -77,6 +78,7 @@ func validProjectModelRoute(route ProjectModelRoute) bool {
 	return validProjectModelIdentity(route.Provider, 128) && validProjectModelIdentity(route.Model, 256) && route.Model != "*" &&
 		ValidModelReasoningEffort(route.Provider, route.ReasoningEffort) &&
 		route.MaxOutputTokens >= 1 && route.MaxOutputTokens <= 1_000_000 &&
+		route.ThinkingBudget >= 0 && route.ThinkingBudget < route.MaxOutputTokens &&
 		!math.IsNaN(route.Temperature) && !math.IsInf(route.Temperature, 0) && route.Temperature >= 0 && route.Temperature <= 2 &&
 		validProjectModelIdentity(route.ProviderPolicy, 256) && validProjectModelIdentity(route.CachePolicy, 128) &&
 		route.WorstCaseCostMicros >= 0 && route.MaxAttempts >= 1 && route.MaxAttempts <= 5

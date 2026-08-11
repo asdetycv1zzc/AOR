@@ -224,6 +224,7 @@ type ModelCall struct {
 	ReasoningEffort     string
 	ReservationID       string
 	MaxOutputTokens     int
+	ThinkingBudget      int `json:"thinkingBudget,omitempty"`
 	Temperature         float64
 	Seed                *int64
 	ProviderPolicy      string

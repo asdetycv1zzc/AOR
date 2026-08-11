@@ -345,8 +345,8 @@ func (r *Runtime) generate(ctx context.Context, runID string, call ModelCall, me
 		Model: call.Model, PromptBundleVersion: declaration.PromptBundle.Version, Messages: cloneMessages(messages),
 		Tools: tools, ResponseSchemaRef: declaration.ResponseSchemaRef,
 		ResponseSchema: append(json.RawMessage(nil), declaration.ResponseSchema...), ResponseSemanticValidator: declaration.ResponseSemanticValidator,
-		MaxOutputTokens: call.MaxOutputTokens,
-		Temperature:     call.Temperature, ReasoningEffort: call.ReasoningEffort, ProviderPolicy: call.ProviderPolicy,
+		MaxOutputTokens: call.MaxOutputTokens, ThinkingBudget: call.ThinkingBudget,
+		Temperature: call.Temperature, ReasoningEffort: call.ReasoningEffort, ProviderPolicy: call.ProviderPolicy,
 		DataClassification: declaration.DataClassification, CachePolicy: call.CachePolicy, PromptDigest: prompt.SHA256,
 		ToolSchemaDigest: DigestToolDefinitions(tools), PolicyDigest: declaration.PolicyDigest, WorstCaseCostMicros: call.WorstCaseCostMicros,
 	}
@@ -378,7 +378,8 @@ func (r *Runtime) generate(ctx context.Context, runID string, call ModelCall, me
 func validateModelCall(call ModelCall) error {
 	if !safeProtocolString(call.RequestID, 256) || !safeProtocolString(call.Provider, 128) || !safeProtocolString(call.Model, 256) ||
 		!safeProtocolString(call.ReservationID, 256) || !safeProtocolString(call.ProviderPolicy, 256) || !safeProtocolString(call.CachePolicy, 128) ||
-		call.MaxOutputTokens <= 0 || call.WorstCaseCostMicros < 0 || call.MaxAttempts < 0 || call.MaxAttempts > 5 ||
+		call.MaxOutputTokens <= 0 || call.MaxOutputTokens > 1_000_000 || call.ThinkingBudget < 0 || call.ThinkingBudget >= call.MaxOutputTokens ||
+		call.WorstCaseCostMicros < 0 || call.MaxAttempts < 0 || call.MaxAttempts > 5 ||
 		math.IsNaN(call.Temperature) || math.IsInf(call.Temperature, 0) || call.Temperature < 0 || call.Temperature > 2 {
 		return modelgateway.ErrInvalidRequest
 	}

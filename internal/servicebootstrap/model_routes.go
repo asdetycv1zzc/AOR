@@ -85,7 +85,7 @@ func defaultRoleRoute(role agentruntime.Role) runtimeconfig.GoalPlanRouteConfig 
 		provider, model, reasoningEffort = modelproviders.ProviderDeepSeek, "deepseek-v4-flash", "high"
 	}
 	return runtimeconfig.GoalPlanRouteConfig{
-		Provider: provider, Model: model, ReasoningEffort: reasoningEffort, MaxOutputTokens: 4096, Temperature: 0,
+		Provider: provider, Model: model, ReasoningEffort: reasoningEffort, MaxOutputTokens: 4096, ThinkingBudget: 0, Temperature: 0,
 		ProviderPolicy: "default", CachePolicy: "NO_STORE", MaxAttempts: 5,
 	}
 }
@@ -98,7 +98,8 @@ func projectModelRoute(route runtimeconfig.GoalPlanRouteConfig) state.ProjectMod
 	}
 	return state.ProjectModelRoute{
 		Provider: route.Provider, Model: route.Model, ReasoningEffort: route.ReasoningEffort, MaxOutputTokens: route.MaxOutputTokens,
-		Temperature: route.Temperature, Seed: seed, ProviderPolicy: route.ProviderPolicy,
+		ThinkingBudget: route.ThinkingBudget,
+		Temperature:    route.Temperature, Seed: seed, ProviderPolicy: route.ProviderPolicy,
 		CachePolicy: route.CachePolicy, WorstCaseCostMicros: route.WorstCaseCostMicros,
 		MaxAttempts: route.MaxAttempts,
 	}
