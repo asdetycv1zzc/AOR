@@ -1,5 +1,6 @@
 .git
 .cache
+.gocache
 bin
 coverage
 deploy/compose/secrets
