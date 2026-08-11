@@ -17,7 +17,10 @@ import (
 	"github.com/akimisaka/aor/internal/modelgateway"
 )
 
-const anthropicVersion = "2023-06-01"
+const (
+	anthropicVersion               = "2023-06-01"
+	maximumAnthropicRequestTimeout = 10*time.Minute + 30*time.Second
+)
 
 type anthropicConfig struct {
 	BaseURL        string
@@ -89,12 +92,14 @@ type anthropicResponse struct {
 }
 
 type anthropicUsage struct {
-	InputTokens  int64 `json:"input_tokens"`
-	OutputTokens int64 `json:"output_tokens"`
+	InputTokens              int64  `json:"input_tokens"`
+	OutputTokens             int64  `json:"output_tokens"`
+	CacheCreationInputTokens *int64 `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     *int64 `json:"cache_read_input_tokens,omitempty"`
 }
 
 func newAnthropicAdapter(config anthropicConfig) (*anthropicAdapter, error) {
-	if !validAPIKey(config.APIKey) || len(config.Models) == 0 || config.RequestTimeout <= 0 || config.RequestTimeout > 10*time.Minute {
+	if !validAPIKey(config.APIKey) || len(config.Models) == 0 || config.RequestTimeout <= 0 || config.RequestTimeout > maximumAnthropicRequestTimeout {
 		return nil, ErrInvalidSettings
 	}
 	parsed, err := parseProviderURL(config.BaseURL)
@@ -184,10 +189,12 @@ func (adapter *anthropicAdapter) Generate(ctx context.Context, request modelgate
 	httpRequest.Header.Set("anthropic-version", anthropicVersion)
 	httpRequest.Header.Set("Content-Type", "application/json")
 	httpRequest.Header.Set("Accept", "application/json")
+	httpRequest.Header.Set("Idempotency-Key", request.RequestID)
+	httpRequest.Header.Set("X-Request-ID", request.RequestID)
 	response, err := adapter.client.Do(httpRequest)
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return modelgateway.NormalizedResponse{}, requestCtx.Err()
+		if requestCtx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return modelgateway.NormalizedResponse{}, anthropicContextFailure(ctx, requestCtx, err)
 		}
 		return modelgateway.NormalizedResponse{}, anthropicUnknownFailure(errors.New("anthropic network request failed"))
 	}
@@ -196,7 +203,13 @@ func (adapter *anthropicAdapter) Generate(ctx context.Context, request modelgate
 		return modelgateway.NormalizedResponse{}, anthropicHTTPFailure(response.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, modelgateway.MaximumResponseBytes+1))
-	if err != nil || len(body) > modelgateway.MaximumResponseBytes {
+	if err != nil {
+		if requestCtx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return modelgateway.NormalizedResponse{}, anthropicContextFailure(ctx, requestCtx, err)
+		}
+		return modelgateway.NormalizedResponse{}, anthropicUnknownFailure(errors.New("anthropic response read failed"))
+	}
+	if len(body) > modelgateway.MaximumResponseBytes {
 		return modelgateway.NormalizedResponse{}, anthropicUnknownFailure(modelgateway.ErrOutputTooLarge)
 	}
 	return adapter.decodeResponse(request, capabilities, body)
@@ -231,17 +244,18 @@ func (adapter *anthropicAdapter) Stream(ctx context.Context, request modelgatewa
 	httpRequest.Header.Set("anthropic-version", anthropicVersion)
 	httpRequest.Header.Set("Content-Type", "application/json")
 	httpRequest.Header.Set("Accept", "text/event-stream")
+	httpRequest.Header.Set("Idempotency-Key", request.RequestID)
+	httpRequest.Header.Set("X-Request-ID", request.RequestID)
 	response, err := adapter.client.Do(httpRequest)
 	if err != nil {
-		contextErr := requestCtx.Err()
+		var failure error
+		if requestCtx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			failure = anthropicContextFailure(ctx, requestCtx, err)
+		} else {
+			failure = anthropicUnknownFailure(errors.New("anthropic network request failed"))
+		}
 		cancel()
-		if contextErr != nil {
-			return nil, contextErr
-		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, err
-		}
-		return nil, anthropicUnknownFailure(errors.New("anthropic network request failed"))
+		return nil, failure
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		cancel()
@@ -303,6 +317,8 @@ type anthropicResponseStream struct {
 	usage            modelgateway.Usage
 	inputTokens      int64
 	outputTokens     int64
+	cacheReadTokens  *int64
+	cacheWriteTokens *int64
 	inputUsageFound  bool
 	outputUsageFound bool
 	messageStarted   bool
@@ -603,7 +619,7 @@ func (stream *anthropicResponseStream) observeMessageStart(payload []byte) (bool
 		return false, nil, modelgateway.ErrOutputSchema
 	}
 	var usage anthropicUsage
-	if json.Unmarshal(value.Message.Usage, &usage) != nil || usage.InputTokens < 0 {
+	if json.Unmarshal(value.Message.Usage, &usage) != nil || !validAnthropicUsage(usage) {
 		return false, nil, modelgateway.ErrOutputSchema
 	}
 	stream.stateMu.Lock()
@@ -615,6 +631,8 @@ func (stream *anthropicResponseStream) observeMessageStart(payload []byte) (bool
 	stream.providerID = value.Message.ID
 	stream.modelVersion = value.Message.Model
 	stream.inputTokens = usage.InputTokens
+	stream.cacheReadTokens = cloneAnthropicTokenCount(usage.CacheReadInputTokens)
+	stream.cacheWriteTokens = cloneAnthropicTokenCount(usage.CacheCreationInputTokens)
 	stream.inputUsageFound = true
 	return false, nil, nil
 }
@@ -743,7 +761,7 @@ func (stream *anthropicResponseStream) observeMessageDelta(payload []byte) (bool
 		return false, nil, modelgateway.ErrOutputSchema
 	}
 	var usage anthropicUsage
-	if json.Unmarshal(value.Usage, &usage) != nil || usage.OutputTokens < 0 {
+	if json.Unmarshal(value.Usage, &usage) != nil || !validAnthropicUsage(usage) {
 		return false, nil, modelgateway.ErrOutputSchema
 	}
 	stream.stateMu.Lock()
@@ -753,6 +771,12 @@ func (stream *anthropicResponseStream) observeMessageDelta(payload []byte) (bool
 	}
 	stream.stopReason = value.Delta.StopReason
 	stream.outputTokens = usage.OutputTokens
+	if usage.CacheReadInputTokens != nil {
+		stream.cacheReadTokens = cloneAnthropicTokenCount(usage.CacheReadInputTokens)
+	}
+	if usage.CacheCreationInputTokens != nil {
+		stream.cacheWriteTokens = cloneAnthropicTokenCount(usage.CacheCreationInputTokens)
+	}
 	stream.outputUsageFound = true
 	return false, nil, nil
 }
@@ -806,6 +830,7 @@ func (stream *anthropicResponseStream) completeMessage() error {
 	stream.finalContent = content
 	stream.usage = modelgateway.Usage{
 		InputTokens: stream.inputTokens, OutputTokens: stream.outputTokens,
+		CacheReadTokens: cloneAnthropicTokenCount(stream.cacheReadTokens), CacheWriteTokens: cloneAnthropicTokenCount(stream.cacheWriteTokens),
 		ProviderRequestID: stream.providerID, ModelVersion: modelVersion,
 	}
 	stream.complete = true
@@ -838,11 +863,11 @@ func (stream *anthropicResponseStream) fail(err error) {
 }
 
 func (stream *anthropicResponseStream) readFailure(err error, message string) error {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return err
-	}
 	if contextErr := stream.requestContext.Err(); contextErr != nil {
-		return contextErr
+		return anthropicContextFailure(stream.activityContext, stream.requestContext, contextErr)
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return anthropicContextFailure(stream.activityContext, stream.requestContext, err)
 	}
 	var providerFailure *modelgateway.ProviderFailure
 	if errors.As(err, &providerFailure) {
@@ -903,7 +928,7 @@ func (adapter *anthropicAdapter) NormalizeUsage(raw any) (modelgateway.Usage, er
 			return modelgateway.Usage{}, modelgateway.ErrInvalidRequest
 		}
 	case modelgateway.Usage:
-		if value.InputTokens < 0 || value.OutputTokens < 0 || value.CostMicros < 0 {
+		if value.InputTokens < 0 || value.OutputTokens < 0 || value.CostMicros < 0 || negativeAnthropicTokenCount(value.CacheReadTokens) || negativeAnthropicTokenCount(value.CacheWriteTokens) {
 			return modelgateway.Usage{}, modelgateway.ErrInvalidRequest
 		}
 		return value, nil
@@ -913,10 +938,42 @@ func (adapter *anthropicAdapter) NormalizeUsage(raw any) (modelgateway.Usage, er
 			return modelgateway.Usage{}, modelgateway.ErrInvalidRequest
 		}
 	}
-	if usage.InputTokens < 0 || usage.OutputTokens < 0 {
+	if !validAnthropicUsage(usage) {
 		return modelgateway.Usage{}, modelgateway.ErrInvalidRequest
 	}
-	return modelgateway.Usage{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens}, nil
+	return modelgateway.Usage{
+		InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
+		CacheReadTokens: cloneAnthropicTokenCount(usage.CacheReadInputTokens), CacheWriteTokens: cloneAnthropicTokenCount(usage.CacheCreationInputTokens),
+	}, nil
+}
+
+func validAnthropicUsage(usage anthropicUsage) bool {
+	return usage.InputTokens >= 0 && usage.OutputTokens >= 0 && !negativeAnthropicTokenCount(usage.CacheCreationInputTokens) && !negativeAnthropicTokenCount(usage.CacheReadInputTokens)
+}
+
+func negativeAnthropicTokenCount(value *int64) bool {
+	return value != nil && *value < 0
+}
+
+func cloneAnthropicTokenCount(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func anthropicContextFailure(parentCtx, requestCtx context.Context, fallback error) error {
+	if parentErr := parentCtx.Err(); parentErr != nil {
+		return parentErr
+	}
+	if requestErr := requestCtx.Err(); requestErr != nil {
+		if errors.Is(requestErr, context.DeadlineExceeded) {
+			return &modelgateway.ProviderFailure{Cause: context.DeadlineExceeded, Retryable: true, OutcomeKnown: true}
+		}
+		return requestErr
+	}
+	return fallback
 }
 
 func (adapter *anthropicAdapter) validateRequest(ctx context.Context, request modelgateway.NormalizedRequest, requireID bool) (modelgateway.ModelCapabilities, error) {
