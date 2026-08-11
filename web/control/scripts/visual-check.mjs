@@ -65,7 +65,6 @@ try {
     await page.getByRole("button", { name: "新建项目" }).first().click();
     projectName = `webui-smoke-${Date.now()}`;
     await page.getByLabel("项目名称").fill(projectName);
-    await page.getByLabel("部署目标").fill("test");
     await page.getByRole("button", { name: "创建项目" }).click();
     await page.getByRole("heading", { name: projectName }).waitFor({ timeout: 20_000 });
   }

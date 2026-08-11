@@ -1068,7 +1068,7 @@ func validateProjectCreate(body projectCreate) error {
 	if body.Name == "" || len(body.Name) > 256 || strings.TrimSpace(body.Name) != body.Name || strings.ContainsAny(body.Name, "\r\n\x00") || body.GoalAgentCount < 1 || body.GoalAgentCount > 2 || !oneOf(body.DataClassification, "PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED") {
 		return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "project create"})
 	}
-	if len(body.DeploymentTargets) == 0 || len(body.DeploymentTargets) > 16 || body.Budget.HardLimitMinor <= 0 || body.Budget.HardLimitMinor > maximumBudgetMinor || body.Budget.SoftLimitMinor < 0 || body.Budget.SoftLimitMinor > body.Budget.HardLimitMinor || !validCurrency(body.Budget.Currency) {
+	if len(body.DeploymentTargets) > 16 || body.Budget.HardLimitMinor <= 0 || body.Budget.HardLimitMinor > maximumBudgetMinor || body.Budget.SoftLimitMinor < 0 || body.Budget.SoftLimitMinor > body.Budget.HardLimitMinor || !validCurrency(body.Budget.Currency) {
 		return aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "project initialization selection"})
 	}
 	seen := make(map[string]struct{}, len(body.DeploymentTargets))

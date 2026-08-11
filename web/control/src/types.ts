@@ -399,7 +399,6 @@ export interface ProjectCreateInput {
   name: string;
   goalAgentCount: 1 | 2;
   dataClassification: Project["dataClassification"];
-  deploymentTargets: string[];
   budget: {
     hardLimitDollars: number;
     softLimitDollars: number;

@@ -203,7 +203,7 @@ func (authorizer *recordingAuthorizer) Evaluate(_ context.Context, input authz.P
 
 func TestCreateProjectIsAuthenticatedAuthorizedAndIdempotent(t *testing.T) {
 	handler, store, authorizer := newTestHandler(t)
-	body := []byte(`{"name":"AOR integration","goalAgentCount":2,"dataClassification":"INTERNAL","deploymentTargets":["test"],"budget":{"hardLimitMinor":100000,"softLimitMinor":80000,"currency":"USD"}}`)
+	body := []byte(`{"name":"AOR integration","goalAgentCount":2,"dataClassification":"INTERNAL","budget":{"hardLimitMinor":100000,"softLimitMinor":80000,"currency":"USD"}}`)
 
 	first := performRequest(handler, http.MethodPost, "/v1/projects", body, map[string]string{
 		"Authorization":   "Bearer " + testBearer,
@@ -217,7 +217,7 @@ func TestCreateProjectIsAuthenticatedAuthorizedAndIdempotent(t *testing.T) {
 	if err := json.Unmarshal(first.Body.Bytes(), &project); err != nil {
 		t.Fatal(err)
 	}
-	if !validProjectID(project.ID) || project.Version != 1 || first.Header().Get("ETag") != `"v1"` {
+	if !validProjectID(project.ID) || project.Version != 1 || len(project.DeploymentTargets) != 0 || first.Header().Get("ETag") != `"v1"` {
 		t.Fatalf("unexpected project response: %#v etag=%q", project, first.Header().Get("ETag"))
 	}
 	accounts, err := handler.budgets.ListAccounts(context.Background(), testTenantID, project.ID)

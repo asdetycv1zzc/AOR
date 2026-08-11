@@ -1179,7 +1179,6 @@ function NewProjectDialog({ open, busy, providers, defaults, onClose, onSubmit }
   const [name, setName] = useState("");
   const [agents, setAgents] = useState<1 | 2>(1);
   const [classification, setClassification] = useState<ProjectCreateInput["dataClassification"]>("INTERNAL");
-  const [target, setTarget] = useState("test");
   const [hard, setHard] = useState("1000.00");
   const [soft, setSoft] = useState("800.00");
   const [routes, setRoutes] = useState<ModelRoutes>();
@@ -1193,7 +1192,6 @@ function NewProjectDialog({ open, busy, providers, defaults, onClose, onSubmit }
       name: name.trim(),
       goalAgentCount: agents,
       dataClassification: classification,
-      deploymentTargets: target.split(",").map((item) => item.trim()).filter(Boolean),
       budget: { hardLimitDollars: Number(hard), softLimitDollars: Number(soft), currency: "USD" },
       modelRoutes: cloneModelRoutes(routes, providers),
     });
@@ -1217,14 +1215,13 @@ function NewProjectDialog({ open, busy, providers, defaults, onClose, onSubmit }
                   <option value="PUBLIC">公开</option><option value="INTERNAL">内部</option><option value="CONFIDENTIAL">机密</option><option value="RESTRICTED">受限</option>
                 </select>
               </Field>
-              <Field label="部署目标"><Input value={target} onChange={(_, data) => setTarget(data.value)} /></Field>
               <div className="field-pair">
                 <Field label="预算上限（美元）"><div className="money-input"><Input type="number" min={0.01} step={0.01} value={hard} onChange={(_, data) => setHard(data.value)} /><span aria-hidden="true">$</span></div></Field>
                 <Field label="软预警（美元）"><div className="money-input"><Input type="number" min={0} step={0.01} value={soft} onChange={(_, data) => setSoft(data.value)} /><span aria-hidden="true">$</span></div></Field>
               </div>
               {routes && providers.length > 0 && <ModelRouteEditor routes={routes} providers={providers} onChange={setRoutes} />}
             </DialogContent>
-            <DialogActions><Button appearance="secondary" onClick={onClose}>取消</Button><Button appearance="primary" type="submit" disabled={busy || !name.trim() || !target.trim() || Number(hard) <= 0 || Number(soft) > Number(hard) || Boolean(routes && !modelRoutesValid(routes, providers))}>{busy ? "创建中" : "创建项目"}</Button></DialogActions>
+            <DialogActions><Button appearance="secondary" onClick={onClose}>取消</Button><Button appearance="primary" type="submit" disabled={busy || !name.trim() || Number(hard) <= 0 || Number(soft) > Number(hard) || Boolean(routes && !modelRoutesValid(routes, providers))}>{busy ? "创建中" : "创建项目"}</Button></DialogActions>
           </DialogBody>
         </form>
       </DialogSurface>
