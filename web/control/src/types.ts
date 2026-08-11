@@ -33,6 +33,7 @@ export interface ProjectModelRoute {
   model: string;
   reasoningEffort: ReasoningEffort;
   maxOutputTokens: number;
+  thinkingBudget: number;
   temperature: number;
   seed?: number;
   providerPolicy: string;

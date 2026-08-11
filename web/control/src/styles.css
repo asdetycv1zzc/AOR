@@ -1718,6 +1718,13 @@ button {
   font-weight: 680;
 }
 
+.model-route-note {
+  margin: 8px 0 12px;
+  color: var(--quiet);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .model-sampling-editor {
   min-width: 0;
   margin: 0;
@@ -1902,7 +1909,7 @@ button {
 .model-route-head,
 .model-route-row {
   display: grid;
-  grid-template-columns: minmax(110px, 0.7fr) minmax(125px, 0.8fr) minmax(240px, 1.5fr) minmax(120px, 0.8fr);
+  grid-template-columns: minmax(100px, 0.7fr) minmax(115px, 0.8fr) minmax(220px, 1.4fr) minmax(100px, 0.75fr) minmax(105px, 0.7fr) minmax(105px, 0.7fr);
   gap: 10px;
   align-items: center;
 }
@@ -1926,6 +1933,18 @@ button {
   color: #39443d;
   font-size: 12px;
   font-weight: 630;
+}
+
+.model-route-control {
+  min-width: 0;
+}
+
+.model-route-control .model-choice-select {
+  min-width: 0;
+}
+
+.model-route-control::before {
+  display: none;
 }
 
 .drawer-backdrop {
@@ -2175,6 +2194,29 @@ button {
   .provider-test-line {
     grid-column: auto;
     flex-wrap: wrap;
+  }
+
+  .model-route-head {
+    display: none;
+  }
+
+  .model-route-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 12px;
+    padding: 12px 0;
+  }
+
+  .model-route-row > label {
+    grid-column: 1 / -1;
+  }
+
+  .model-route-control::before {
+    display: block;
+    margin-bottom: 4px;
+    color: var(--quiet);
+    content: attr(data-label);
+    font-size: 10px;
+    font-weight: 670;
   }
 }
 

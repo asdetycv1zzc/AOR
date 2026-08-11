@@ -290,7 +290,11 @@ function cloneModelRoutes(routes?: ModelRoutes, providers: ModelProvider[] = [])
     const route = routes[role];
     const provider = providers.find((item) => item.id === route.provider);
     const key = modelProviderKey(provider || route.provider);
-    return [role, { ...route, reasoningEffort: normalizedReasoningEffort(key, route.reasoningEffort) }];
+    return [role, {
+      ...route,
+      reasoningEffort: normalizedReasoningEffort(key, route.reasoningEffort),
+      thinkingBudget: Number.isInteger(route.thinkingBudget) && route.thinkingBudget >= 0 ? route.thinkingBudget : 0,
+    }];
   })) as ModelRoutes;
 }
 
@@ -301,10 +305,17 @@ function modelRoutesValid(routes: ModelRoutes | undefined, providers: ModelProvi
     const provider = providers.find((item) => item.id === route.provider);
     const key = modelProviderKey(provider || route.provider);
     return Boolean(
+      provider &&
       route.model &&
       route.model.length <= 256 &&
       route.model.trim() === route.model &&
-      (key ? reasoningEffortOptions[key] : customReasoningEffortOptions).some((option) => option.value === route.reasoningEffort),
+      (key ? reasoningEffortOptions[key] : customReasoningEffortOptions).some((option) => option.value === route.reasoningEffort) &&
+      Number.isInteger(route.maxOutputTokens) &&
+      route.maxOutputTokens >= 1 &&
+      route.maxOutputTokens <= Math.min(1_000_000, provider.maxOutputTokens) &&
+      Number.isInteger(route.thinkingBudget) &&
+      route.thinkingBudget >= 0 &&
+      route.thinkingBudget < route.maxOutputTokens,
     );
   });
 }
@@ -1498,6 +1509,7 @@ function ModelRouteEditor({ routes, providers, onChange }: {
     if (!provider) return;
     const current = routes[role];
     const key = modelProviderKey(provider);
+    const maxOutputTokens = Math.min(current.maxOutputTokens, provider.maxOutputTokens);
     onChange({
       ...routes,
       [role]: {
@@ -1505,7 +1517,8 @@ function ModelRouteEditor({ routes, providers, onChange }: {
         provider: provider.id,
         model: provider.models.includes(current.model) ? current.model : provider.models[0] || "",
         reasoningEffort: normalizedReasoningEffort(key),
-        maxOutputTokens: Math.min(current.maxOutputTokens, provider.maxOutputTokens),
+        maxOutputTokens,
+        thinkingBudget: current.thinkingBudget > 0 ? Math.min(current.thinkingBudget, Math.max(0, maxOutputTokens - 1)) : 0,
         seed: provider.supportsSeed ? current.seed : undefined,
       },
     });
@@ -1516,10 +1529,25 @@ function ModelRouteEditor({ routes, providers, onChange }: {
   const updateReasoningEffort = (role: ModelRole, reasoningEffort: ReasoningEffort) => {
     onChange({ ...routes, [role]: { ...routes[role], reasoningEffort } });
   };
+  const updateMaxOutputTokens = (role: ModelRole, maxOutputTokens: number) => {
+    const current = routes[role];
+    onChange({
+      ...routes,
+      [role]: {
+        ...current,
+        maxOutputTokens,
+        thinkingBudget: current.thinkingBudget > 0 ? Math.min(current.thinkingBudget, Math.max(0, maxOutputTokens - 1)) : 0,
+      },
+    });
+  };
+  const updateThinkingBudget = (role: ModelRole, thinkingBudget: number) => {
+    onChange({ ...routes, [role]: { ...routes[role], thinkingBudget } });
+  };
   return (
     <fieldset className="model-route-editor">
       <legend>模型组合</legend>
-      <div className="model-route-head"><span>角色</span><span>供应商</span><span>模型</span><span>思考深度</span></div>
+      <p className="model-route-note">思考预算设为 0 时使用供应商默认值。OpenAI Responses 没有独立的数值思考预算，将使用思考深度和输出 Token 总上限；兼容协议或原生协议仅在供应商支持时应用该值。</p>
+      <div className="model-route-head"><span>角色</span><span>供应商</span><span>模型</span><span>思考深度</span><span>输出 Token</span><span>思考预算</span></div>
       {modelRoles.map((role) => {
         const route = routes[role];
         const eligibleProviders = providersForRole(role);
@@ -1529,13 +1557,25 @@ function ModelRouteEditor({ routes, providers, onChange }: {
         return (
           <div className="model-route-row" key={role}>
             <label htmlFor={`provider-${role}`}>{modelRoleLabels[role]}</label>
-            <select id={`provider-${role}`} className="native-select" value={route.provider} onChange={(event) => updateProvider(role, event.target.value)}>
-              {eligibleProviders.map((item) => <option value={item.id} key={item.id}>{item.id}</option>)}
-            </select>
-            <ModelChoice models={provider?.models || []} value={route.model} label={`${modelRoleLabels[role]}模型`} onChange={(model) => updateModel(role, model)} />
-            <select aria-label={`${modelRoleLabels[role]}思考深度`} className="native-select" value={route.reasoningEffort} onChange={(event) => updateReasoningEffort(role, event.target.value as ReasoningEffort)}>
-              {effortOptions.map((option) => <option value={option.value} key={option.value || "empty"}>{option.label}</option>)}
-            </select>
+            <div className="model-route-control" data-label="供应商">
+              <select id={`provider-${role}`} className="native-select" value={route.provider} onChange={(event) => updateProvider(role, event.target.value)}>
+                {eligibleProviders.map((item) => <option value={item.id} key={item.id}>{item.id}</option>)}
+              </select>
+            </div>
+            <div className="model-route-control" data-label="模型">
+              <ModelChoice models={provider?.models || []} value={route.model} label={`${modelRoleLabels[role]}模型`} onChange={(model) => updateModel(role, model)} />
+            </div>
+            <div className="model-route-control" data-label="思考深度">
+              <select aria-label={`${modelRoleLabels[role]}思考深度`} className="native-select" value={route.reasoningEffort} onChange={(event) => updateReasoningEffort(role, event.target.value as ReasoningEffort)}>
+                {effortOptions.map((option) => <option value={option.value} key={option.value || "empty"}>{option.label}</option>)}
+              </select>
+            </div>
+            <div className="model-route-control" data-label="输出 Token">
+              <Input aria-label={`${modelRoleLabels[role]}输出 Token`} type="number" min={1} max={Math.min(1_000_000, provider?.maxOutputTokens || 1_000_000)} step={1} value={route.maxOutputTokens} onChange={(_, data) => updateMaxOutputTokens(role, Number(data.value))} />
+            </div>
+            <div className="model-route-control" data-label="思考预算">
+              <Input aria-label={`${modelRoleLabels[role]}思考预算`} type="number" min={0} max={Math.max(0, route.maxOutputTokens - 1)} step={1} value={route.thinkingBudget} onChange={(_, data) => updateThinkingBudget(role, Number(data.value))} />
+            </div>
           </div>
         );
       })}
