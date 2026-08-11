@@ -172,12 +172,12 @@ function newerActivityMessage(current: ProjectActivityMessage | undefined, candi
 
 function mergeActivitySnapshot(current: ProjectActivitySnapshot | undefined, candidate: ProjectActivitySnapshot): ProjectActivitySnapshot {
   if (!current) return candidate;
-  const messages = new Map<string, ProjectActivityMessage>();
-  for (const message of current.messages) messages.set(message.id, message);
-  for (const message of candidate.messages) messages.set(message.id, newerActivityMessage(messages.get(message.id), message));
+  const currentMessages = new Map(current.messages.map((message) => [message.id, message]));
   return {
     ...candidate,
-    messages: [...messages.values()].sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)),
+    messages: candidate.messages
+      .map((message) => newerActivityMessage(currentMessages.get(message.id), message))
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)),
   };
 }
 
@@ -197,12 +197,14 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
   const [selectedAgent, setSelectedAgent] = useState("");
   const [sending, setSending] = useState(false);
   const refreshTimer = useRef<number | undefined>(undefined);
+  const knownMessageIDs = useRef(new Set<string>());
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const followLatest = useRef(true);
 
   const refreshActivity = useCallback(async () => {
     try {
       const next = await client.getProjectActivity(project.id);
+      knownMessageIDs.current = new Set(next.messages.map((message) => message.id));
       setActivity((current) => mergeActivitySnapshot(current, next));
       setActivityAvailable(true);
       setError("");
@@ -222,6 +224,7 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
     setMessage("");
     setActiveFlow(defaultFlow(project));
     setSelectedAgent("");
+    knownMessageIDs.current.clear();
     void refreshActivity();
   }, [project.id, refreshActivity]);
 
@@ -238,6 +241,8 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
       onOpen: () => setStreaming(true),
       onClose: () => setStreaming(false),
       onEvent: (event) => {
+        const isNewMessage = !knownMessageIDs.current.has(event.id);
+        knownMessageIDs.current.add(event.id);
         setActivity((current) => {
           if (!current) return current;
           const existing = current.messages.findIndex((item) => item.id === event.id);
@@ -245,12 +250,13 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
           if (existing >= 0) messages[existing] = newerActivityMessage(messages[existing], event); else messages.push(event);
           return { ...current, messages, cursor: event.cursor };
         });
-        if (event.state !== "COMPLETED" && event.state !== "FAILED" || refreshTimer.current !== undefined) return;
+        const shouldRefresh = (isNewMessage && event.id.startsWith("model:")) || event.state === "COMPLETED" || event.state === "FAILED";
+        if (!shouldRefresh || refreshTimer.current !== undefined) return;
         refreshTimer.current = window.setTimeout(() => {
           refreshTimer.current = undefined;
           void refreshActivity();
           onReload();
-        }, 250);
+        }, isNewMessage ? 50 : 250);
       },
       onError: (cause) => {
         setStreaming(false);
