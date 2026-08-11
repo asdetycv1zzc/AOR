@@ -18,22 +18,23 @@ import (
 )
 
 type ModelProvider struct {
-	ID                         string   `json:"id"`
-	Provider                   string   `json:"provider"`
-	Models                     []string `json:"models"`
-	InputMicrosPerToken        int64    `json:"inputMicrosPerToken"`
-	OutputMicrosPerToken       int64    `json:"outputMicrosPerToken"`
-	SupportsStreaming          bool     `json:"supportsStreaming"`
-	SupportsToolCalls          bool     `json:"supportsToolCalls"`
-	SupportsJSONSchema         bool     `json:"supportsJsonSchema"`
-	SupportsSeed               bool     `json:"supportsSeed"`
-	SupportsPromptCaching      bool     `json:"supportsPromptCaching"`
-	MaxInputTokens             int      `json:"maxInputTokens"`
-	MaxOutputTokens            int      `json:"maxOutputTokens"`
-	AllowedDataClassifications []string `json:"allowedDataClassifications"`
-	DataResidency              []string `json:"dataResidency"`
-	RetentionPolicy            string   `json:"retentionPolicy"`
-	Modalities                 []string `json:"modalities"`
+	ID                         string         `json:"id"`
+	Provider                   string         `json:"provider"`
+	Models                     []string       `json:"models"`
+	ModelMaxOutputTokens       map[string]int `json:"modelMaxOutputTokens,omitempty"`
+	InputMicrosPerToken        int64          `json:"inputMicrosPerToken"`
+	OutputMicrosPerToken       int64          `json:"outputMicrosPerToken"`
+	SupportsStreaming          bool           `json:"supportsStreaming"`
+	SupportsToolCalls          bool           `json:"supportsToolCalls"`
+	SupportsJSONSchema         bool           `json:"supportsJsonSchema"`
+	SupportsSeed               bool           `json:"supportsSeed"`
+	SupportsPromptCaching      bool           `json:"supportsPromptCaching"`
+	MaxInputTokens             int            `json:"maxInputTokens"`
+	MaxOutputTokens            int            `json:"maxOutputTokens"`
+	AllowedDataClassifications []string       `json:"allowedDataClassifications"`
+	DataResidency              []string       `json:"dataResidency"`
+	RetentionPolicy            string         `json:"retentionPolicy"`
+	Modalities                 []string       `json:"modalities"`
 }
 
 type modelProviderPage struct {
@@ -85,6 +86,11 @@ func validateModelProviders(providers []ModelProvider) error {
 			!uniqueModelValues(provider.DataResidency, 128) || !uniqueModelValues(provider.Modalities, 128) {
 			return errors.New("invalid model provider metadata")
 		}
+		for model, maximum := range provider.ModelMaxOutputTokens {
+			if !safeModelValue(model, 256) || maximum < 1 || maximum > provider.MaxOutputTokens {
+				return errors.New("invalid model output limit")
+			}
+		}
 	}
 	return nil
 }
@@ -99,7 +105,11 @@ func validateRoutesAgainstProviders(routes map[string]state.ProjectModelRoute, p
 	}
 	for role, route := range routes {
 		provider, found := byID[route.Provider]
-		if !found || !safeModelValue(route.Model, 256) || route.Model == "*" || route.MaxOutputTokens > provider.MaxOutputTokens ||
+		maximum := provider.MaxOutputTokens
+		if modelMaximum, known := provider.ModelMaxOutputTokens[route.Model]; known {
+			maximum = modelMaximum
+		}
+		if !found || !safeModelValue(route.Model, 256) || route.Model == "*" || route.MaxOutputTokens > maximum ||
 			route.Seed != nil && !provider.SupportsSeed || !provider.SupportsJSONSchema || routeUsesTools(role) && !provider.SupportsToolCalls {
 			return errors.New("model route is not supported by provider")
 		}
@@ -133,9 +143,21 @@ func cloneModelProviders(providers []ModelProvider) []ModelProvider {
 	cloned := append([]ModelProvider(nil), providers...)
 	for index := range cloned {
 		cloned[index].Models = append([]string(nil), providers[index].Models...)
+		cloned[index].ModelMaxOutputTokens = cloneModelOutputLimits(providers[index].ModelMaxOutputTokens)
 		cloned[index].AllowedDataClassifications = append([]string(nil), providers[index].AllowedDataClassifications...)
 		cloned[index].DataResidency = append([]string(nil), providers[index].DataResidency...)
 		cloned[index].Modalities = append([]string(nil), providers[index].Modalities...)
+	}
+	return cloned
+}
+
+func cloneModelOutputLimits(limits map[string]int) map[string]int {
+	if limits == nil {
+		return nil
+	}
+	cloned := make(map[string]int, len(limits))
+	for model, maximum := range limits {
+		cloned[model] = maximum
 	}
 	return cloned
 }
@@ -302,7 +324,8 @@ func (handler *Handler) tenantModelProviders(ctx context.Context, tenantID strin
 		known[setting.ID] = struct{}{}
 		providers = append(providers, ModelProvider{
 			ID: setting.ID, Provider: setting.Provider, Models: append([]string(nil), setting.Models...),
-			InputMicrosPerToken: setting.InputMicrosPerToken, OutputMicrosPerToken: setting.OutputMicrosPerToken,
+			ModelMaxOutputTokens: modelOutputLimits(setting.Models, setting.MaxOutputTokens),
+			InputMicrosPerToken:  setting.InputMicrosPerToken, OutputMicrosPerToken: setting.OutputMicrosPerToken,
 			SupportsStreaming: setting.SupportsStreaming, SupportsToolCalls: setting.SupportsToolCalls,
 			SupportsJSONSchema: setting.SupportsJSONSchema, SupportsSeed: setting.SupportsSeed,
 			SupportsPromptCaching: setting.SupportsPromptCaching, MaxInputTokens: setting.MaxInputTokens,
@@ -313,6 +336,14 @@ func (handler *Handler) tenantModelProviders(ctx context.Context, tenantID strin
 		})
 	}
 	return providers, nil
+}
+
+func modelOutputLimits(models []string, maximum int) map[string]int {
+	limits := make(map[string]int, len(models))
+	for _, model := range models {
+		limits[model] = maximum
+	}
+	return limits
 }
 
 func normalizeModelProviderAliases(routes map[string]state.ProjectModelRoute) map[string]state.ProjectModelRoute {

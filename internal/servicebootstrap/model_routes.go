@@ -29,10 +29,12 @@ func configuredControlModelConfiguration(config runtimeconfig.Config) ([]control
 	providers := make([]controlapi.ModelProvider, 0, len(modelproviders.Catalog()))
 	for _, provider := range modelproviders.Catalog() {
 		models := make([]string, 0, len(provider.Models))
+		modelMaxOutputTokens := make(map[string]int, len(provider.Models))
 		maxInputTokens, maxOutputTokens := 0, 0
 		supportsStreaming, supportsToolCalls, supportsJSONSchema, supportsPromptCaching := true, true, true, true
 		for _, model := range provider.Models {
 			models = append(models, model.ID)
+			modelMaxOutputTokens[model.ID] = model.MaxOutput
 			if model.MaxInput > maxInputTokens {
 				maxInputTokens = model.MaxInput
 			}
@@ -46,7 +48,8 @@ func configuredControlModelConfiguration(config runtimeconfig.Config) ([]control
 		}
 		providers = append(providers, controlapi.ModelProvider{
 			ID: provider.ID, Provider: provider.ID, Models: models,
-			InputMicrosPerToken: 1, OutputMicrosPerToken: 4,
+			ModelMaxOutputTokens: modelMaxOutputTokens,
+			InputMicrosPerToken:  1, OutputMicrosPerToken: 4,
 			SupportsStreaming: supportsStreaming, SupportsToolCalls: supportsToolCalls,
 			SupportsJSONSchema: supportsJSONSchema, SupportsPromptCaching: supportsPromptCaching,
 			MaxInputTokens: maxInputTokens, MaxOutputTokens: maxOutputTokens,
@@ -85,9 +88,23 @@ func defaultRoleRoute(role agentruntime.Role) runtimeconfig.GoalPlanRouteConfig 
 		provider, model, reasoningEffort = modelproviders.ProviderDeepSeek, "deepseek-v4-flash", "high"
 	}
 	return runtimeconfig.GoalPlanRouteConfig{
-		Provider: provider, Model: model, ReasoningEffort: reasoningEffort, MaxOutputTokens: 4096, ThinkingBudget: 0, Temperature: 0,
+		Provider: provider, Model: model, ReasoningEffort: reasoningEffort, MaxOutputTokens: catalogModelMaxOutputTokens(provider, model), ThinkingBudget: 0, Temperature: 0,
 		ProviderPolicy: "default", CachePolicy: "NO_STORE", MaxAttempts: 5,
 	}
+}
+
+func catalogModelMaxOutputTokens(providerID, modelID string) int {
+	for _, provider := range modelproviders.Catalog() {
+		if provider.ID != providerID {
+			continue
+		}
+		for _, model := range provider.Models {
+			if model.ID == modelID {
+				return model.MaxOutput
+			}
+		}
+	}
+	return 0
 }
 
 func projectModelRoute(route runtimeconfig.GoalPlanRouteConfig) state.ProjectModelRoute {
