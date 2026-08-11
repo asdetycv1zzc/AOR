@@ -75,11 +75,13 @@ SET actual_micros = $3, state = 'SETTLED', updated_at = $4
 	result, err = tx.ExecContext(ctx, `
 UPDATE model_calls
 SET actual_model_version = $4, input_tokens = $5, output_tokens = $6,
-    cost_micros = $7, status = 'RECONCILED', provider_request_id = $8,
-    reconciliation_receipt_sha256 = $9, reconciled_at = $10
+    cache_read_tokens = $7, cache_write_tokens = $8, cost_micros = $9,
+    status = 'RECONCILED', provider_request_id = $10,
+    reconciliation_receipt_sha256 = $11, reconciled_at = $12
 WHERE tenant_id = $1::uuid AND request_id = $2 AND provider = $3 AND status = 'RECONCILE'`,
 		reconciliation.TenantID, reconciliation.RequestID, reconciliation.Provider, reconciliation.Usage.ModelVersion,
-		reconciliation.Usage.InputTokens, reconciliation.Usage.OutputTokens, reconciliation.ActualMicros,
+		reconciliation.Usage.InputTokens, reconciliation.Usage.OutputTokens, reconciliation.Usage.CacheReadTokens,
+		reconciliation.Usage.CacheWriteTokens, reconciliation.ActualMicros,
 		reconciliation.Usage.ProviderRequestID, reconciliation.ReceiptSHA256, reconciliation.ReconciledAt.UTC())
 	if err != nil {
 		return Reservation{}, err

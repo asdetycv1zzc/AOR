@@ -992,6 +992,8 @@ func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequ
 	}
 	var incurred int64
 	var lastErr error
+	cacheReadKnown := true
+	cacheWriteKnown := true
 	remainingAttempts := options.MaxAttempts
 	attemptNumber := 0
 	retryPending := false
@@ -1090,6 +1092,12 @@ func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequ
 			}
 			if err == nil {
 				call.OutputTokens, err = addCost(call.OutputTokens, response.Usage.OutputTokens)
+			}
+			if err == nil {
+				err = accumulateCacheTokens(&call.CacheReadTokens, &cacheReadKnown, response.Usage.CacheReadTokens)
+			}
+			if err == nil {
+				err = accumulateCacheTokens(&call.CacheWriteTokens, &cacheWriteKnown, response.Usage.CacheWriteTokens)
 			}
 			if err != nil {
 				call.Status = ModelCallReconcile
@@ -1291,6 +1299,8 @@ func (g *Gateway) generateSingle(ctx context.Context, request NormalizedRequest,
 	}
 	var lastErr error
 	var incurred int64
+	cacheReadKnown := true
+	cacheWriteKnown := true
 	attemptNumber := 0
 	retryPending := false
 	retryAfter := time.Duration(0)
@@ -1366,6 +1376,12 @@ func (g *Gateway) generateSingle(ctx context.Context, request NormalizedRequest,
 		}
 		if err == nil {
 			call.OutputTokens, err = addCost(call.OutputTokens, response.Usage.OutputTokens)
+		}
+		if err == nil {
+			err = accumulateCacheTokens(&call.CacheReadTokens, &cacheReadKnown, response.Usage.CacheReadTokens)
+		}
+		if err == nil {
+			err = accumulateCacheTokens(&call.CacheWriteTokens, &cacheWriteKnown, response.Usage.CacheWriteTokens)
 		}
 		if err != nil {
 			call.Status = ModelCallReconcile
@@ -1750,6 +1766,8 @@ func (s *budgetedStream) finalizeTerminal() error {
 		call := s.call
 		call.InputTokens = usage.InputTokens
 		call.OutputTokens = usage.OutputTokens
+		call.CacheReadTokens = cloneOptionalInt64(usage.CacheReadTokens)
+		call.CacheWriteTokens = cloneOptionalInt64(usage.CacheWriteTokens)
 		call.CostMicros = cost
 		call.ProviderRequestID = usage.ProviderRequestID
 		if usage.ModelVersion != "" {
@@ -1780,6 +1798,8 @@ func (s *budgetedStream) finishRejected(rejection error, usage Usage, content []
 	call := s.call
 	call.InputTokens = usage.InputTokens
 	call.OutputTokens = usage.OutputTokens
+	call.CacheReadTokens = cloneOptionalInt64(usage.CacheReadTokens)
+	call.CacheWriteTokens = cloneOptionalInt64(usage.CacheWriteTokens)
 	call.CostMicros, _ = usageCost(usage, s.pricing)
 	call.Status = ModelCallFailedOutputSchema
 	if errors.Is(rejection, ErrCredentialDetected) {
@@ -2037,8 +2057,42 @@ func addCost(current, additional int64) (int64, error) {
 	return current + additional, nil
 }
 
+func accumulateCacheTokens(total **int64, known *bool, value *int64) error {
+	if total == nil || known == nil {
+		return ErrInvalidRequest
+	}
+	if !*known {
+		return nil
+	}
+	if value == nil {
+		*known = false
+		*total = nil
+		return nil
+	}
+	current := int64(0)
+	if *total != nil {
+		current = **total
+	}
+	next, err := addCost(current, *value)
+	if err != nil {
+		return err
+	}
+	*total = &next
+	return nil
+}
+
+func cloneOptionalInt64(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
 func usageCost(usage Usage, pricing Pricing) (int64, error) {
-	if usage.InputTokens < 0 || usage.OutputTokens < 0 || usage.CostMicros < 0 {
+	if usage.InputTokens < 0 || usage.OutputTokens < 0 || usage.CostMicros < 0 ||
+		usage.CacheReadTokens != nil && *usage.CacheReadTokens < 0 ||
+		usage.CacheWriteTokens != nil && *usage.CacheWriteTokens < 0 {
 		return 0, ErrInvalidRequest
 	}
 	if usage.InputTokens != 0 || usage.OutputTokens != 0 {

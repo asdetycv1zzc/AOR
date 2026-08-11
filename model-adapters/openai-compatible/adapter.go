@@ -430,14 +430,22 @@ func (a *Adapter) encodeChatRequest(request modelgateway.NormalizedRequest, stre
 		TopP: request.TopP, TopK: request.TopK, ReasoningEffort: reasoningEffort, Stream: stream,
 	}
 	value.PromptCacheKey = a.promptCacheKey(request)
+	cacheBreakpoint := value.PromptCacheKey != "" && supportsExplicitPromptCaching(request.Model)
+	if cacheBreakpoint {
+		value.PromptCacheOptions = &promptCacheOptions{Mode: "explicit"}
+	}
 	if stream {
 		value.StreamOptions = &chatStreamOptions{IncludeUsage: true}
 	}
-	for _, message := range request.Messages {
-		wireMessage := chatMessage{Role: message.Role, ToolCallID: message.ToolCallID}
+	breakpointIndex := promptCacheBreakpointIndex(request.Messages)
+	for index, message := range request.Messages {
+		wireMessage := chatRequestMessage{Role: message.Role, ToolCallID: message.ToolCallID}
 		if message.Content != "" {
-			content := message.Content
-			wireMessage.Content = &content
+			content, err := encodeChatContent(message.Content, cacheBreakpoint && index == breakpointIndex)
+			if err != nil {
+				return nil, modelgateway.ErrInvalidRequest
+			}
+			wireMessage.Content = content
 		}
 		for _, call := range message.ToolCalls {
 			wireMessage.ToolCalls = append(wireMessage.ToolCalls, chatToolCall{ID: call.ID, Type: "function", Function: chatToolCallFunction{Name: call.Name, Arguments: string(call.Arguments)}})
@@ -762,28 +770,64 @@ func (a *Adapter) promptCacheKey(request modelgateway.NormalizedRequest) string 
 	if !found || !capabilities.SupportsPromptCaching {
 		return ""
 	}
+	breakpointIndex := promptCacheBreakpointIndex(request.Messages)
+	if breakpointIndex < 0 {
+		return ""
+	}
 	actualModelVersion := capabilities.ActualModelVersion
 	if actualModelVersion == "" {
 		actualModelVersion = request.Model
 	}
+	prefix, _ := json.Marshal(request.Messages[:breakpointIndex+1])
+	prefixDigest := sha256.Sum256(prefix)
+	tools, _ := json.Marshal(request.Tools)
+	toolsDigest := sha256.Sum256(tools)
+	responseSchemaDigest := sha256.Sum256(request.ResponseSchema)
 	canonical, _ := json.Marshal(struct {
-		TenantID            string `json:"tenantId"`
-		Model               string `json:"model"`
-		ActualModelVersion  string `json:"actualModelVersion"`
-		PromptBundleVersion string `json:"promptBundleVersion"`
-		PromptDigest        string `json:"promptDigest"`
-		ToolSchemaDigest    string `json:"toolSchemaDigest"`
-		PolicyDigest        string `json:"policyDigest"`
-		DataClassification  string `json:"dataClassification"`
-		CachePolicy         string `json:"cachePolicy"`
+		TenantID             string `json:"tenantId"`
+		WireFormat           string `json:"wireFormat"`
+		Role                 string `json:"role"`
+		Model                string `json:"model"`
+		ActualModelVersion   string `json:"actualModelVersion"`
+		PromptBundleVersion  string `json:"promptBundleVersion"`
+		PrefixDigest         string `json:"prefixDigest"`
+		ToolsDigest          string `json:"toolsDigest"`
+		ResponseSchemaDigest string `json:"responseSchemaDigest"`
 	}{
-		TenantID: request.TenantID, Model: request.Model, ActualModelVersion: actualModelVersion,
-		PromptBundleVersion: request.PromptBundleVersion, PromptDigest: request.PromptDigest,
-		ToolSchemaDigest: request.ToolSchemaDigest, PolicyDigest: request.PolicyDigest,
-		DataClassification: request.DataClassification, CachePolicy: request.CachePolicy,
+		TenantID: request.TenantID, WireFormat: string(a.wireFormat), Role: request.Role,
+		Model: request.Model, ActualModelVersion: actualModelVersion,
+		PromptBundleVersion: request.PromptBundleVersion,
+		PrefixDigest:        hex.EncodeToString(prefixDigest[:]), ToolsDigest: hex.EncodeToString(toolsDigest[:]),
+		ResponseSchemaDigest: hex.EncodeToString(responseSchemaDigest[:]),
 	})
 	digest := sha256.Sum256(canonical)
 	return hex.EncodeToString(digest[:])
+}
+
+func promptCacheBreakpointIndex(messages []modelgateway.Message) int {
+	index := -1
+	for current, message := range messages {
+		if message.Role != "system" {
+			break
+		}
+		if message.Content != "" && len(message.ToolCalls) == 0 && message.ToolCallID == "" {
+			index = current
+		}
+	}
+	return index
+}
+
+func supportsExplicitPromptCaching(model string) bool {
+	return strings.HasPrefix(model, "gpt-5.6")
+}
+
+func encodeChatContent(content string, breakpoint bool) (json.RawMessage, error) {
+	if !breakpoint {
+		return json.Marshal(content)
+	}
+	return json.Marshal([]chatContentBlock{{
+		Type: "text", Text: content, PromptCacheBreakpoint: &promptCacheBreakpoint{Mode: "explicit"},
+	}})
 }
 
 func normalizedChatUsage(value chatUsage) modelgateway.Usage {
@@ -834,19 +878,20 @@ func unknownFailure(cause error) error {
 }
 
 type chatRequest struct {
-	Model           string              `json:"model"`
-	Messages        []chatMessage       `json:"messages"`
-	Tools           []chatTool          `json:"tools,omitempty"`
-	ResponseFormat  *chatResponseFormat `json:"response_format,omitempty"`
-	MaxTokens       int                 `json:"max_tokens"`
-	Temperature     float64             `json:"temperature"`
-	TopP            float64             `json:"top_p"`
-	TopK            int                 `json:"top_k,omitempty"`
-	ReasoningEffort string              `json:"reasoning_effort,omitempty"`
-	PromptCacheKey  string              `json:"prompt_cache_key,omitempty"`
-	Seed            *int64              `json:"seed,omitempty"`
-	Stream          bool                `json:"stream,omitempty"`
-	StreamOptions   *chatStreamOptions  `json:"stream_options,omitempty"`
+	Model              string               `json:"model"`
+	Messages           []chatRequestMessage `json:"messages"`
+	Tools              []chatTool           `json:"tools,omitempty"`
+	ResponseFormat     *chatResponseFormat  `json:"response_format,omitempty"`
+	MaxTokens          int                  `json:"max_tokens"`
+	Temperature        float64              `json:"temperature"`
+	TopP               float64              `json:"top_p"`
+	TopK               int                  `json:"top_k,omitempty"`
+	ReasoningEffort    string               `json:"reasoning_effort,omitempty"`
+	PromptCacheKey     string               `json:"prompt_cache_key,omitempty"`
+	PromptCacheOptions *promptCacheOptions  `json:"prompt_cache_options,omitempty"`
+	Seed               *int64               `json:"seed,omitempty"`
+	Stream             bool                 `json:"stream,omitempty"`
+	StreamOptions      *chatStreamOptions   `json:"stream_options,omitempty"`
 }
 
 func validReasoningEffort(value string) bool {
@@ -860,6 +905,27 @@ func validReasoningEffort(value string) bool {
 
 type chatStreamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
+}
+
+type promptCacheOptions struct {
+	Mode string `json:"mode"`
+}
+
+type promptCacheBreakpoint struct {
+	Mode string `json:"mode"`
+}
+
+type chatRequestMessage struct {
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content"`
+	ToolCalls  []chatToolCall  `json:"tool_calls,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+}
+
+type chatContentBlock struct {
+	Type                  string                 `json:"type"`
+	Text                  string                 `json:"text"`
+	PromptCacheBreakpoint *promptCacheBreakpoint `json:"prompt_cache_breakpoint,omitempty"`
 }
 
 type chatMessage struct {

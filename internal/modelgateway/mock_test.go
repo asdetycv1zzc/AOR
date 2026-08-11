@@ -106,13 +106,14 @@ func TestGatewayRetriesInvalidStructuredOutputAtMostTwice(t *testing.T) {
 
 func TestGatewayPersistsModelCallUsageWithBudgetSettlement(t *testing.T) {
 	now := time.Date(2030, 2, 3, 4, 5, 6, 0, time.UTC)
+	cacheReadTokens, cacheWriteTokens := int64(8), int64(2)
 	ledger := NewBudgetLedger(func() time.Time { return now })
 	if err := ledger.CreateAccount(context.Background(), BudgetAccount{ID: "acct", TenantID: "ten", ScopeType: "PROJECT", ScopeID: "prj", LimitMicros: 1_000}); err != nil {
 		t.Fatal(err)
 	}
 	adapter := &mockAdapter{responses: []NormalizedResponse{{
 		RequestID: "recorded", ProviderRequestID: "provider-request", ModelVersion: "model-2026-08-04",
-		Content: json.RawMessage(`{"ok":true}`), Usage: Usage{InputTokens: 12, OutputTokens: 7, CostMicros: 19},
+		Content: json.RawMessage(`{"ok":true}`), Usage: Usage{InputTokens: 12, OutputTokens: 7, CacheReadTokens: &cacheReadTokens, CacheWriteTokens: &cacheWriteTokens, CostMicros: 19},
 	}}}
 	gateway := NewGateway(ledger, func() time.Time { return now })
 	if err := gateway.Register("mock", "model", adapter, Pricing{InputMicrosPerToken: 1, OutputMicrosPerToken: 1}); err != nil {
@@ -123,7 +124,7 @@ func TestGatewayPersistsModelCallUsageWithBudgetSettlement(t *testing.T) {
 		t.Fatal(err)
 	}
 	call, found := ledger.ModelCall("ten", "recorded")
-	if !found || call.Status != ModelCallSucceeded || call.InputTokens != 12 || call.OutputTokens != 7 || call.CostMicros != 19 || call.ActualModelVersion != "model-2026-08-04" || call.ProviderRequestID != "provider-request" || !validModelDigest(call.InputSHA256) || !validModelDigest(call.OutputSHA256) {
+	if !found || call.Status != ModelCallSucceeded || call.InputTokens != 12 || call.OutputTokens != 7 || call.CacheReadTokens == nil || *call.CacheReadTokens != 8 || call.CacheWriteTokens == nil || *call.CacheWriteTokens != 2 || call.CostMicros != 19 || call.ActualModelVersion != "model-2026-08-04" || call.ProviderRequestID != "provider-request" || !validModelDigest(call.InputSHA256) || !validModelDigest(call.OutputSHA256) {
 		t.Fatalf("model call = %#v, found=%t", call, found)
 	}
 	usage, err := ledger.Usage(context.Background(), "ten", "prj")

@@ -112,7 +112,7 @@ func openAIModels() []CatalogModel {
 	}
 	result := make([]CatalogModel, 0, len(models))
 	for _, id := range models {
-		result = append(result, CatalogModel{ID: id, MaxInput: 128000, MaxOutput: 8192, ToolCalls: true, JSONSchema: true, Streaming: true})
+		result = append(result, CatalogModel{ID: id, MaxInput: 128000, MaxOutput: 8192, ToolCalls: true, JSONSchema: true, Streaming: true, PromptCache: true})
 	}
 	return result
 }

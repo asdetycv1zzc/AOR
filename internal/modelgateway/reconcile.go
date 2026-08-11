@@ -59,7 +59,10 @@ func (g *Gateway) ReconcileUsage(ctx context.Context, request UsageReconciliatio
 		return Reservation{}, ErrProviderNotAllowed
 	}
 	usage, err := adapter.NormalizeUsage(append(json.RawMessage(nil), request.RawUsage...))
-	if err != nil || usage.InputTokens < 0 || usage.OutputTokens < 0 || usage.CostMicros < 0 || usage.ProviderRequestID == "" || usage.ModelVersion == "" || strings.ContainsAny(usage.ProviderRequestID+usage.ModelVersion, "\r\n\x00") {
+	if err != nil || usage.InputTokens < 0 || usage.OutputTokens < 0 || usage.CostMicros < 0 ||
+		usage.CacheReadTokens != nil && *usage.CacheReadTokens < 0 ||
+		usage.CacheWriteTokens != nil && *usage.CacheWriteTokens < 0 ||
+		usage.ProviderRequestID == "" || usage.ModelVersion == "" || strings.ContainsAny(usage.ProviderRequestID+usage.ModelVersion, "\r\n\x00") {
 		return Reservation{}, ErrInvalidRequest
 	}
 	if call.Status == ModelCallReconciled && call.ProviderRequestID != usage.ProviderRequestID || call.ActualModelVersion != "" && call.ActualModelVersion != "NON_REPRODUCIBLE_PROVIDER" && call.ActualModelVersion != usage.ModelVersion {
@@ -81,6 +84,8 @@ func (g *Gateway) ReconcileUsage(ctx context.Context, request UsageReconciliatio
 	if call.Status == ModelCallReconciled {
 		usage.InputTokens = call.InputTokens
 		usage.OutputTokens = call.OutputTokens
+		usage.CacheReadTokens = cloneOptionalInt64(call.CacheReadTokens)
+		usage.CacheWriteTokens = cloneOptionalInt64(call.CacheWriteTokens)
 	} else {
 		actualMicros, err = addCost(actualMicros, receiptMicros)
 		if err != nil {
@@ -91,6 +96,15 @@ func (g *Gateway) ReconcileUsage(ctx context.Context, request UsageReconciliatio
 			return Reservation{}, err
 		}
 		usage.OutputTokens, err = addCost(call.OutputTokens, usage.OutputTokens)
+		if err != nil {
+			return Reservation{}, err
+		}
+		knownPriorUsage := call.InputTokens != 0 || call.OutputTokens != 0 || call.CostMicros != 0 || call.CacheReadTokens != nil || call.CacheWriteTokens != nil
+		usage.CacheReadTokens, err = reconcileCacheTokens(call.CacheReadTokens, usage.CacheReadTokens, knownPriorUsage)
+		if err != nil {
+			return Reservation{}, err
+		}
+		usage.CacheWriteTokens, err = reconcileCacheTokens(call.CacheWriteTokens, usage.CacheWriteTokens, knownPriorUsage)
 		if err != nil {
 			return Reservation{}, err
 		}
@@ -105,7 +119,7 @@ func (g *Gateway) ReconcileUsage(ctx context.Context, request UsageReconciliatio
 }
 
 func (reconciliation ModelCallReconciliation) validate() error {
-	if reconciliation.TenantID == "" || reconciliation.RequestID == "" || reconciliation.ReservationID == "" || reconciliation.Provider == "" || reconciliation.Model == "" || reconciliation.Usage.ProviderRequestID == "" || reconciliation.Usage.ModelVersion == "" || reconciliation.Usage.InputTokens < 0 || reconciliation.Usage.OutputTokens < 0 || reconciliation.Usage.CostMicros < 0 || reconciliation.ActualMicros < 0 || !validModelDigest(reconciliation.ReceiptSHA256) || reconciliation.ReconciledAt.IsZero() {
+	if reconciliation.TenantID == "" || reconciliation.RequestID == "" || reconciliation.ReservationID == "" || reconciliation.Provider == "" || reconciliation.Model == "" || reconciliation.Usage.ProviderRequestID == "" || reconciliation.Usage.ModelVersion == "" || reconciliation.Usage.InputTokens < 0 || reconciliation.Usage.OutputTokens < 0 || reconciliation.Usage.CostMicros < 0 || reconciliation.Usage.CacheReadTokens != nil && *reconciliation.Usage.CacheReadTokens < 0 || reconciliation.Usage.CacheWriteTokens != nil && *reconciliation.Usage.CacheWriteTokens < 0 || reconciliation.ActualMicros < 0 || !validModelDigest(reconciliation.ReceiptSHA256) || reconciliation.ReconciledAt.IsZero() {
 		return ErrInvalidRequest
 	}
 	for _, value := range []string{reconciliation.TenantID, reconciliation.RequestID, reconciliation.ReservationID, reconciliation.Provider, reconciliation.Model, reconciliation.Usage.ProviderRequestID, reconciliation.Usage.ModelVersion} {
@@ -164,12 +178,14 @@ func (ledger *BudgetLedger) ReconcileModelCall(ctx context.Context, reconciliati
 }
 
 func sameReconciliation(call ModelCall, reconciliation ModelCallReconciliation) bool {
-	return call.Status == ModelCallReconciled && call.InputTokens == reconciliation.Usage.InputTokens && call.OutputTokens == reconciliation.Usage.OutputTokens && call.CostMicros == reconciliation.ActualMicros && call.ProviderRequestID == reconciliation.Usage.ProviderRequestID && call.ActualModelVersion == reconciliation.Usage.ModelVersion && call.ReconciliationReceiptSHA256 == reconciliation.ReceiptSHA256
+	return call.Status == ModelCallReconciled && call.InputTokens == reconciliation.Usage.InputTokens && call.OutputTokens == reconciliation.Usage.OutputTokens && equalOptionalInt64(call.CacheReadTokens, reconciliation.Usage.CacheReadTokens) && equalOptionalInt64(call.CacheWriteTokens, reconciliation.Usage.CacheWriteTokens) && call.CostMicros == reconciliation.ActualMicros && call.ProviderRequestID == reconciliation.Usage.ProviderRequestID && call.ActualModelVersion == reconciliation.Usage.ModelVersion && call.ReconciliationReceiptSHA256 == reconciliation.ReceiptSHA256
 }
 
 func applyReconciliation(call *ModelCall, reconciliation ModelCallReconciliation) {
 	call.InputTokens = reconciliation.Usage.InputTokens
 	call.OutputTokens = reconciliation.Usage.OutputTokens
+	call.CacheReadTokens = cloneOptionalInt64(reconciliation.Usage.CacheReadTokens)
+	call.CacheWriteTokens = cloneOptionalInt64(reconciliation.Usage.CacheWriteTokens)
 	call.CostMicros = reconciliation.ActualMicros
 	call.ProviderRequestID = reconciliation.Usage.ProviderRequestID
 	call.ActualModelVersion = reconciliation.Usage.ModelVersion
@@ -177,6 +193,20 @@ func applyReconciliation(call *ModelCall, reconciliation ModelCallReconciliation
 	call.ReconciliationReceiptSHA256 = reconciliation.ReceiptSHA256
 	reconciledAt := reconciliation.ReconciledAt.UTC()
 	call.ReconciledAt = &reconciledAt
+}
+
+func reconcileCacheTokens(existing, receipt *int64, knownPriorUsage bool) (*int64, error) {
+	if !knownPriorUsage {
+		return cloneOptionalInt64(receipt), nil
+	}
+	if existing == nil || receipt == nil {
+		return nil, nil
+	}
+	total, err := addCost(*existing, *receipt)
+	if err != nil {
+		return nil, err
+	}
+	return &total, nil
 }
 
 var _ ModelCallReconciler = (*BudgetLedger)(nil)

@@ -152,6 +152,8 @@ type NormalizedRequest struct {
 type Usage struct {
 	InputTokens       int64  `json:"inputTokens"`
 	OutputTokens      int64  `json:"outputTokens"`
+	CacheReadTokens   *int64 `json:"cacheReadTokens,omitempty"`
+	CacheWriteTokens  *int64 `json:"cacheWriteTokens,omitempty"`
 	CostMicros        int64  `json:"costMicros"`
 	ProviderRequestID string `json:"providerRequestId"`
 	ModelVersion      string `json:"modelVersion"`
