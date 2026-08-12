@@ -400,6 +400,13 @@
       "file": "000057_toolchain_installation_hardening.up.sql",
       "sha256": "sha256:361166d051ad0acca808469419ab223081ca2f9c0d493f5ddf97153bd6963d78",
       "destructive": false
+    },
+    {
+      "version": 58,
+      "mode": "EXPAND",
+      "file": "000058_toolchain_schedule_reconciliation.up.sql",
+      "sha256": "sha256:3676a691b21edd5801d3061e137f3f9c77daef807ca6e527173a1a58673b909b",
+      "destructive": false
     }
   ]
 }

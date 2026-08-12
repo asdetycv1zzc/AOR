@@ -79,6 +79,9 @@ func (scheduler *ToolchainRecoveryScheduler) DispatchOnce(ctx context.Context) e
 	if scheduler == nil || ctx == nil {
 		return ErrToolchainRecoveryUnavailable
 	}
+	if err := scheduler.reconcileMissingBatch(ctx); err != nil {
+		return err
+	}
 	leaseID, err := uuid.NewV7()
 	if err != nil {
 		return err
@@ -108,6 +111,89 @@ func (scheduler *ToolchainRecoveryScheduler) DispatchOnce(ctx context.Context) e
 	}
 	finishErr := scheduler.store.FailBatch(ctx, batch.ID, leaseID.String(), batch.RecoveryAttempt, retry, code, message)
 	return errors.Join(recoveryErr, finishErr)
+}
+
+func (scheduler *ToolchainRecoveryScheduler) reconcileMissingBatch(ctx context.Context) error {
+	tenantIDs, err := scheduler.store.ReconciliationTenants(ctx, 100)
+	if err != nil {
+		return err
+	}
+	for _, tenantID := range tenantIDs {
+		projects, err := scheduler.handler.orchestrator.Projects(ctx, tenantID)
+		if err != nil {
+			return err
+		}
+		for _, project := range projects {
+			if project.Goal == nil || project.Goal.ApprovedBy != "" ||
+				project.State != contracts.ProjectGoalNegotiating && project.State != contracts.ProjectGoalSuspended {
+				continue
+			}
+			projection, found, loadErr := scheduler.handler.orchestrator.GoalSpec(ctx, project.TenantID, project.ID, project.Goal.Version)
+			if loadErr != nil {
+				return loadErr
+			}
+			if !found || projection.GoalSpecID != project.Goal.ID || projection.Spec.ContentSHA256 != project.Goal.SHA256 ||
+				projection.Spec.Status != contracts.GoalDraft || projection.Spec.Content.Toolchain == nil || !hasProvisionableTool(projection.Spec.Content.Toolchain.Tools) {
+				continue
+			}
+			batches, listErr := scheduler.store.ListProjectBatches(ctx, project.TenantID, project.ID)
+			if listErr != nil {
+				return listErr
+			}
+			matched := false
+			for _, batch := range batches {
+				matched = matched || batch.GoalSpecID == project.Goal.ID && batch.GoalVersion == project.Goal.Version
+			}
+			if matched {
+				continue
+			}
+			messages, messagesErr := scheduler.handler.orchestrator.GoalMessages(ctx, project.TenantID, project.ID)
+			if messagesErr != nil {
+				return messagesErr
+			}
+			message, principal, messageFound := recoveryGoalMessage(project, projection.Spec, messages)
+			if !messageFound {
+				return aorerrors.New(aorerrors.CodeArtifactNotAvailable, "", map[string]any{"scope": "toolchain installation authorization"})
+			}
+			if _, scheduleErr := scheduler.store.Schedule(ctx, project.TenantID, project.ID, project.Goal.ID, project.Goal.Version, message.ID, principal, projection.Spec.Content.Toolchain.Tools, scheduler.handler.clock().UTC()); scheduleErr != nil {
+				return scheduleErr
+			}
+			return nil
+		}
+	}
+	return nil
+}
+
+func hasProvisionableTool(tools []contracts.VersionedTool) bool {
+	for _, tool := range tools {
+		if tool.ReadyToProvision() {
+			return true
+		}
+	}
+	return false
+}
+
+func recoveryGoalMessage(project state.Project, spec contracts.GoalSpec, messages []state.GoalMessage) (state.GoalMessage, authn.Principal, bool) {
+	evidence := make(map[string]struct{})
+	for _, tool := range spec.Content.Toolchain.Tools {
+		if tool.ReadyToProvision() && tool.Install != nil {
+			evidence[tool.Install.EvidenceRef] = struct{}{}
+		}
+	}
+	for index := len(messages) - 1; index >= 0; index-- {
+		message := messages[index]
+		if message.Kind != state.GoalMessageUser || message.CreatedBy == "" {
+			continue
+		}
+		if _, found := evidence[message.ArtifactURI]; !found {
+			continue
+		}
+		principal := authn.Principal{ID: message.CreatedBy, Type: authn.PrincipalUser, Role: authn.RoleUser, TenantID: project.TenantID, ProjectID: project.ID}
+		if principal.Validate() == nil {
+			return message, principal, true
+		}
+	}
+	return state.GoalMessage{}, authn.Principal{}, false
 }
 
 func (handler *Handler) recoverToolchainGoal(ctx context.Context, batch toolchain.InstallationBatch) error {

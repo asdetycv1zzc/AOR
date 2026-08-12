@@ -389,6 +389,28 @@ ORDER BY created_at, id`, tenantID, projectID)
 	return batches, err
 }
 
+func (store *InstallStore) ReconciliationTenants(ctx context.Context, limit int) ([]string, error) {
+	if store == nil || ctx == nil || limit < 1 || limit > 1000 {
+		return nil, errors.New("invalid toolchain reconciliation tenant query")
+	}
+	rows, err := store.db.QueryContext(ctx, `
+SELECT tenant_id::text
+FROM aor_toolchain_schedule_reconciliation_tenants($1)`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	tenantIDs := make([]string, 0, limit)
+	for rows.Next() {
+		var tenantID string
+		if err := rows.Scan(&tenantID); err != nil {
+			return nil, err
+		}
+		tenantIDs = append(tenantIDs, tenantID)
+	}
+	return tenantIDs, rows.Err()
+}
+
 type scheduledTool struct {
 	encoded []byte
 	key     string
