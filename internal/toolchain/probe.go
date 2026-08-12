@@ -176,7 +176,7 @@ func (server *ProbeServer) Run(ctx context.Context) error {
 			}
 			return acceptErr
 		}
-		server.handle(connection)
+		go server.handle(ctx, connection)
 	}
 }
 
@@ -193,7 +193,7 @@ func (server *ProbeServer) Close() error {
 	return listener.Close()
 }
 
-func (server *ProbeServer) handle(connection *net.UnixConn) {
+func (server *ProbeServer) handle(ctx context.Context, connection *net.UnixConn) {
 	defer connection.Close()
 	_ = connection.SetDeadline(time.Now().Add(10 * time.Minute))
 	decoder := json.NewDecoder(io.LimitReader(connection, maximumProbeRequestBytes+1))
@@ -204,7 +204,7 @@ func (server *ProbeServer) handle(connection *net.UnixConn) {
 		result.Code = "INVALID_REQUEST"
 		result.Message = "invalid toolchain probe request"
 	} else {
-		probeContext, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		probeContext, cancel := context.WithTimeout(ctx, 10*time.Minute)
 		err := runProbe(probeContext, request)
 		cancel()
 		if err == nil {
