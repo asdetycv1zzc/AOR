@@ -272,7 +272,7 @@ func tarStream(ctx context.Context, path, kind string) (io.Reader, func(), error
 		}
 		return reader, func() { _ = reader.Close(); closeFile() }, nil
 	case "tar.zst":
-		reader, err := zstd.NewReader(file)
+		reader, err := zstd.NewReader(file, zstd.WithDecoderMaxMemory(uint64(defaultExtractLimit)))
 		if err != nil {
 			closeFile()
 			return nil, nil, err
