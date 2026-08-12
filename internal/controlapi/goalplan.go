@@ -95,7 +95,11 @@ func acceptedGoalMessage(messages []state.GoalMessage, principalID, content stri
 }
 
 func goalNegotiationRequest(project state.Project, message state.GoalMessage) (*goalplan.NegotiationRequest, error) {
-	if !project.GoalProcessing || project.State != contracts.ProjectGoalNegotiating || message.TenantID != project.TenantID || message.ProjectID != project.ID || message.CreatedBy == "" || message.Message == "" {
+	return goalNegotiationRequestWithKey(project, message, goalPlanKey("negotiate", project.TenantID, project.ID, message.CreatedBy, message.ID))
+}
+
+func goalNegotiationRequestWithKey(project state.Project, message state.GoalMessage, idempotencyKey string) (*goalplan.NegotiationRequest, error) {
+	if !project.GoalProcessing || project.State != contracts.ProjectGoalNegotiating || message.TenantID != project.TenantID || message.ProjectID != project.ID || message.CreatedBy == "" || message.Message == "" || idempotencyKey == "" {
 		return nil, goalplan.ErrInvalidRequest
 	}
 	goalSpecID := ""
@@ -117,7 +121,7 @@ func goalNegotiationRequest(project state.Project, message state.GoalMessage) (*
 		TenantID: project.TenantID, ProjectID: project.ID, GoalSpecID: goalSpecID, MessageID: message.ID,
 		UserPrincipalID: message.CreatedBy, UserInput: []byte(message.Message), GoalAgentCount: project.GoalAgentCount,
 		PreviousRef: previousRef, SupersedeApprovedGoal: supersede, ExpectedProjectVersion: project.Version,
-		IdempotencyKey:  goalPlanKey("negotiate", project.TenantID, project.ID, message.CreatedBy, message.ID),
+		IdempotencyKey:  idempotencyKey,
 		MessageAccepted: true,
 	}, nil
 }
@@ -154,6 +158,10 @@ func (handler *Handler) startGoalNegotiation(ctx context.Context, principal auth
 }
 
 func (handler *Handler) runGoalNegotiation(ctx context.Context, principal authn.Principal, request goalplan.NegotiationRequest) {
+	_, _ = handler.executeGoalNegotiation(ctx, principal, request)
+}
+
+func (handler *Handler) executeGoalNegotiation(ctx context.Context, principal authn.Principal, request goalplan.NegotiationRequest) (goalplan.NegotiationResult, error) {
 	goalContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Minute)
 	defer cancel()
 	activityID := handler.beginGoalActivity(goalContext, request)
@@ -164,11 +172,37 @@ func (handler *Handler) runGoalNegotiation(ctx context.Context, principal authn.
 			err = goalplan.ErrAgentOutput
 		}
 	}
+	if err == nil {
+		err = handler.scheduleToolchainInstallations(goalContext, principal, request, result)
+	}
 	if err != nil {
 		handler.suspendFailedGoalNegotiation(goalContext, principal, request)
 	}
 	handler.completeGoalActivity(goalContext, request, activityID, result, err)
 	handler.startNextGoalIntervention(goalContext, request.TenantID, request.ProjectID)
+	return result, err
+}
+
+func (handler *Handler) scheduleToolchainInstallations(ctx context.Context, principal authn.Principal, request goalplan.NegotiationRequest, result goalplan.NegotiationResult) error {
+	selection := result.Goal.Content.Toolchain
+	if selection == nil {
+		return nil
+	}
+	ready := false
+	for _, tool := range selection.Tools {
+		ready = ready || tool.ReadyToProvision()
+	}
+	if !ready {
+		return nil
+	}
+	if handler.toolchainInstalls == nil {
+		return aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "toolchain installation queue"})
+	}
+	_, err := handler.toolchainInstalls.Schedule(ctx, request.TenantID, request.ProjectID, request.GoalSpecID, result.Goal.Content.Version, request.MessageID, principal, selection.Tools, handler.clock().UTC())
+	if err != nil {
+		return aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", err, map[string]any{"scope": "toolchain installation queue"})
+	}
+	return nil
 }
 
 func (handler *Handler) suspendFailedGoalNegotiation(ctx context.Context, principal authn.Principal, request goalplan.NegotiationRequest) {

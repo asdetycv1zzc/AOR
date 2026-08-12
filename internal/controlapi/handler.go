@@ -70,6 +70,7 @@ type Config struct {
 	ProviderAdapter      modelproviders.AdapterFactory
 	SamplingSettings     modelgateway.SamplingSettingsStore
 	Toolchains           toolchain.Source
+	ToolchainInstalls    *toolchain.InstallStore
 	Clock                func() time.Time
 }
 
@@ -128,6 +129,7 @@ type Handler struct {
 	providerAdapter      modelproviders.AdapterFactory
 	modelRouteSettings   modelRouteSettingsStore
 	toolchains           toolchain.Source
+	toolchainInstalls    *toolchain.InstallStore
 	autoBudget           bool
 	clock                func() time.Time
 
@@ -364,6 +366,7 @@ func New(config Config) (*Handler, error) {
 		providerAdapter:      config.ProviderAdapter,
 		modelRouteSettings:   newModelRouteSettingsStore(config.Database),
 		toolchains:           config.Toolchains,
+		toolchainInstalls:    config.ToolchainInstalls,
 		autoBudget:           autoBudget,
 		clock:                config.Clock,
 
@@ -553,6 +556,18 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 		}
 		if request.Method == http.MethodGet {
 			handler.projectActivity(response, request, principal, projectID)
+			return
+		}
+		writeMethodNotAllowedWith(response, request, "GET")
+		return
+	}
+	if len(parts) == 2 && parts[1] == "toolchain-installations" {
+		if !validProjectID(projectID) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		if request.Method == http.MethodGet {
+			handler.listToolchainInstallations(response, request, principal, projectID)
 			return
 		}
 		writeMethodNotAllowedWith(response, request, "GET")
