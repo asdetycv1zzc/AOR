@@ -100,8 +100,9 @@ const (
 type ToolchainInstallMethod string
 
 const (
-	ToolchainInstallManual      ToolchainInstallMethod = "MANUAL"
-	ToolchainInstallUserArchive ToolchainInstallMethod = "USER_ARCHIVE"
+	ToolchainInstallManual             ToolchainInstallMethod = "MANUAL"
+	ToolchainInstallUserArchive        ToolchainInstallMethod = "USER_ARCHIVE"
+	ToolchainInstallCrosstoolNGArchive ToolchainInstallMethod = "CROSSTOOL_NG_ARCHIVE"
 )
 
 type ToolchainKind string
@@ -213,6 +214,8 @@ type ToolchainInstall struct {
 	Method       ToolchainInstallMethod `json:"method"`
 	Authorized   bool                   `json:"authorized"`
 	EvidenceRef  string                 `json:"evidenceRef,omitempty"`
+	ArtifactID   string                 `json:"artifactId,omitempty"`
+	ArtifactRef  string                 `json:"artifactRef,omitempty"`
 	DownloadURL  string                 `json:"downloadUrl,omitempty"`
 	SourceSHA256 string                 `json:"sourceSha256,omitempty"`
 }
@@ -662,7 +665,7 @@ func validateToolchainInstall(tool VersionedTool) error {
 		return fmt.Errorf("toolchain installation descriptor is required")
 	}
 	if install.Method == ToolchainInstallManual {
-		if install.DownloadURL != "" || install.SourceSHA256 != "" || !IsGCCTool(tool) || install.Authorized || install.EvidenceRef != "" {
+		if install.DownloadURL != "" || install.SourceSHA256 != "" || install.ArtifactID != "" || install.ArtifactRef != "" || !IsGCCTool(tool) || install.Authorized || install.EvidenceRef != "" {
 			return fmt.Errorf("manual installation is restricted to GCC without runtime authorization")
 		}
 		return nil
@@ -676,6 +679,9 @@ func validateToolchainInstall(tool VersionedTool) error {
 	}
 	switch install.Method {
 	case ToolchainInstallUserArchive:
+		if IsGCCTool(tool) || install.ArtifactID != "" || install.ArtifactRef != "" {
+			return fmt.Errorf("user archive installation is restricted to non-GCC HTTPS releases")
+		}
 		if install.DownloadURL == "" {
 			if install.Authorized {
 				return fmt.Errorf("authorized user archive installation requires an HTTPS download URL and SHA-256 digest")
@@ -692,6 +698,20 @@ func validateToolchainInstall(tool VersionedTool) error {
 		if validateDigest(install.SourceSHA256) != nil {
 			return fmt.Errorf("authorized user archive installation requires a lowercase SHA-256 digest")
 		}
+	case ToolchainInstallCrosstoolNGArchive:
+		if !IsGCCTool(tool) || install.DownloadURL != "" {
+			return fmt.Errorf("crosstool-ng archive installation is restricted to uploaded GCC toolchains")
+		}
+		if !install.Authorized {
+			if install.ArtifactID != "" || install.ArtifactRef != "" || install.SourceSHA256 != "" {
+				return fmt.Errorf("unauthorized crosstool-ng archive installation cannot claim an uploaded artifact")
+			}
+			return nil
+		}
+		if !validToolchainArtifactID(install.ArtifactID) || !validToolchainEvidenceRef(install.ArtifactRef) || validateDigest(install.SourceSHA256) != nil ||
+			install.ArtifactRef != "artifact://sha256/"+strings.TrimPrefix(install.SourceSHA256, "sha256:") {
+			return fmt.Errorf("authorized crosstool-ng archive installation requires a matching uploaded artifact and SHA-256 digest")
+		}
 	default:
 		return fmt.Errorf("toolchain installation method is invalid")
 	}
@@ -703,6 +723,20 @@ func validToolchainEvidenceRef(value string) bool {
 	return strings.HasPrefix(value, prefix) && len(value) == len(prefix)+64 && validateDigest("sha256:"+value[len(prefix):]) == nil
 }
 
+func validToolchainArtifactID(value string) bool {
+	if len(value) < 1 || len(value) > 128 {
+		return false
+	}
+	for index, character := range value {
+		alphanumeric := character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9'
+		if alphanumeric || index > 0 && (character == '.' || character == '_' || character == ':' || character == '-') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func IsGCCTool(tool VersionedTool) bool {
 	if tool.Kind != ToolchainCompiler {
 		return false
@@ -712,9 +746,19 @@ func IsGCCTool(tool VersionedTool) bool {
 }
 
 func (tool VersionedTool) ReadyToProvision() bool {
-	return tool.Source == ToolchainInstallRequired && tool.Install != nil && tool.Install.Authorized &&
-		tool.Install.Method == ToolchainInstallUserArchive && tool.Install.DownloadURL != "" &&
-		validateDigest(tool.Install.SourceSHA256) == nil && !IsGCCTool(tool)
+	if tool.Source != ToolchainInstallRequired || tool.Install == nil || !tool.Install.Authorized || validateDigest(tool.Install.SourceSHA256) != nil {
+		return false
+	}
+	switch tool.Install.Method {
+	case ToolchainInstallUserArchive:
+		return tool.Install.DownloadURL != "" && !IsGCCTool(tool)
+	case ToolchainInstallCrosstoolNGArchive:
+		return IsGCCTool(tool) && validToolchainArtifactID(tool.Install.ArtifactID) &&
+			validToolchainEvidenceRef(tool.Install.ArtifactRef) &&
+			tool.Install.ArtifactRef == "artifact://sha256/"+strings.TrimPrefix(tool.Install.SourceSHA256, "sha256:")
+	default:
+		return false
+	}
 }
 
 func (tool VersionedTool) NeedsInstallationInput() bool {

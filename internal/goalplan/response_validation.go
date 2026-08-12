@@ -63,7 +63,17 @@ func goalDraftSemanticValidator(request AgentInvocation, inventory *toolchain.In
 			if install.Method == contracts.ToolchainInstallUserArchive && install.SourceSHA256 != "" && !strings.Contains(string(message.Content), install.SourceSHA256) {
 				return ErrAgentOutput
 			}
-			if install.Method == contracts.ToolchainInstallUserArchive && install.Authorized && !toolchain.SupportsPortableArchive(selected) {
+			if install.Method == contracts.ToolchainInstallCrosstoolNGArchive {
+				if !contracts.IsGCCTool(selected) || install.DownloadURL != "" || install.Authorized && install.EvidenceRef != message.URI {
+					return ErrAgentOutput
+				}
+				if install.Authorized && (!strings.Contains(string(message.Content), install.ArtifactID) ||
+					!strings.Contains(string(message.Content), install.ArtifactRef) ||
+					!strings.Contains(string(message.Content), install.SourceSHA256)) {
+					return ErrAgentOutput
+				}
+			}
+			if install.Method == contracts.ToolchainInstallUserArchive && install.Authorized && (contracts.IsGCCTool(selected) || !toolchain.SupportsPortableArchive(selected)) {
 				return ErrAgentOutput
 			}
 		}

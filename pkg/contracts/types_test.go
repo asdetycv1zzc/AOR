@@ -143,3 +143,35 @@ func TestEvidenceAuditGateUsesBlockingFindingsAndCriteria(t *testing.T) {
 		t.Fatal("a required NOT_TESTED criterion did not block the audit")
 	}
 }
+
+func TestCrosstoolNGArchiveRequiresMatchingUploadedArtifact(t *testing.T) {
+	digest := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	tool := VersionedTool{
+		Kind: ToolchainCompiler, Name: "GNU g++", Version: "15.2.0", Platform: PlatformLinux, Architecture: "amd64", Source: ToolchainInstallRequired,
+		Install: &ToolchainInstall{
+			Method: ToolchainInstallCrosstoolNGArchive, Authorized: true,
+			EvidenceRef: "artifact://sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			ArtifactID:  "019feeec-e315-7763-818e-8c31192809c0", ArtifactRef: "artifact://sha256/" + digest,
+			SourceSHA256: "sha256:" + digest,
+		},
+	}
+	selection := GoalToolchain{Languages: []LanguageRequirement{{Name: "C++", Version: "C++23"}}, Tools: []VersionedTool{tool}}
+	if err := selection.Validate(); err != nil || !tool.ReadyToProvision() {
+		t.Fatalf("authorized crosstool-ng archive rejected: %v", err)
+	}
+	tool.Install.ArtifactRef = "artifact://sha256/ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	if (GoalToolchain{Languages: selection.Languages, Tools: []VersionedTool{tool}}).Validate() == nil || tool.ReadyToProvision() {
+		t.Fatal("mismatched crosstool-ng artifact digest accepted")
+	}
+}
+
+func TestCrosstoolNGArchiveCanAwaitUpload(t *testing.T) {
+	tool := VersionedTool{
+		Kind: ToolchainCompiler, Name: "GCC", Version: "15.2.0", Platform: PlatformLinux, Architecture: "amd64", Source: ToolchainInstallRequired,
+		Install: &ToolchainInstall{Method: ToolchainInstallCrosstoolNGArchive, Authorized: false},
+	}
+	selection := GoalToolchain{Languages: []LanguageRequirement{{Name: "C", Version: "C23"}}, Tools: []VersionedTool{tool}}
+	if err := selection.Validate(); err != nil || tool.ReadyToProvision() || !tool.NeedsInstallationInput() {
+		t.Fatalf("pending crosstool-ng upload state invalid: %v", err)
+	}
+}

@@ -139,16 +139,19 @@ const goalDraftSchema = `{
       "type": "object", "additionalProperties": false,
       "required": ["method", "authorized"],
       "properties": {
-        "method": {"enum": ["MANUAL", "USER_ARCHIVE"]},
+        "method": {"enum": ["USER_ARCHIVE", "CROSSTOOL_NG_ARCHIVE"]},
         "authorized": {"type": "boolean"},
         "evidenceRef": {"type": "string", "pattern": "^artifact://sha256/[0-9a-f]{64}$"},
+		"artifactId": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+        "artifactRef": {"type": "string", "pattern": "^artifact://sha256/[0-9a-f]{64}$"},
         "downloadUrl": {"type": "string", "format": "uri", "pattern": "^https://[^#]+$"},
         "sourceSha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
       },
       "allOf": [
         {"if": {"properties": {"authorized": {"const": true}}, "required": ["authorized"]}, "then": {"required": ["evidenceRef"]}, "else": {"not": {"required": ["evidenceRef"]}}},
-        {"if": {"properties": {"method": {"const": "USER_ARCHIVE"}, "authorized": {"const": true}}, "required": ["method", "authorized"]}, "then": {"required": ["downloadUrl", "sourceSha256"]}},
-        {"if": {"properties": {"method": {"const": "MANUAL"}}, "required": ["method"]}, "then": {"properties": {"authorized": {"const": false}}, "not": {"anyOf": [{"required": ["downloadUrl"]}, {"required": ["sourceSha256"]}]}}}
+        {"if": {"properties": {"method": {"const": "USER_ARCHIVE"}, "authorized": {"const": true}}, "required": ["method", "authorized"]}, "then": {"required": ["downloadUrl", "sourceSha256"], "not": {"anyOf": [{"required": ["artifactId"]}, {"required": ["artifactRef"]}]}}},
+        {"if": {"properties": {"method": {"const": "CROSSTOOL_NG_ARCHIVE"}, "authorized": {"const": true}}, "required": ["method", "authorized"]}, "then": {"required": ["artifactId", "artifactRef", "sourceSha256"], "not": {"required": ["downloadUrl"]}}},
+        {"if": {"properties": {"method": {"const": "CROSSTOOL_NG_ARCHIVE"}, "authorized": {"const": false}}, "required": ["method", "authorized"]}, "then": {"not": {"anyOf": [{"required": ["artifactId"]}, {"required": ["artifactRef"]}, {"required": ["downloadUrl"]}, {"required": ["sourceSha256"]}]}}}
       ]
     }
   }

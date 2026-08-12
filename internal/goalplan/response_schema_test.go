@@ -74,3 +74,62 @@ func TestAgentResponseSchemaRejectsSystemOwnedFields(t *testing.T) {
 		t.Fatal("schema accepted model-owned spoofing of control-plane fields")
 	}
 }
+
+func TestGoalDraftSchemaUsesUploadedCrosstoolNGArchive(t *testing.T) {
+	response, err := responseSchemaFor("GOAL_DRAFT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document any
+	if err := json.Unmarshal(response.Document, &document); err != nil {
+		t.Fatal(err)
+	}
+	compiler := jsonschema.NewCompiler()
+	compiler.DefaultDraft(jsonschema.Draft2020)
+	if err := compiler.AddResource(response.Reference, document); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := compiler.Compile(response.Reference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	install := map[string]any{
+		"method": "CROSSTOOL_NG_ARCHIVE", "authorized": true,
+		"evidenceRef": "artifact://sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"artifactId":  "019feeec-e315-7763-818e-8c31192809c0", "artifactRef": "artifact://sha256/" + digest,
+		"sourceSha256": "sha256:" + digest,
+	}
+	instance := goalDraftSchemaTestInstance(map[string]any{"kind": "COMPILER", "name": "GNU g++", "version": "15.2.0", "platform": "LINUX", "architecture": "amd64", "source": "INSTALL_REQUIRED", "install": install})
+	if err := schema.Validate(instance); err != nil {
+		t.Fatalf("authorized crosstool-ng archive rejected: %v", err)
+	}
+	install["downloadUrl"] = "https://example.invalid/gcc.tar.gz"
+	if err := schema.Validate(instance); err == nil {
+		t.Fatal("crosstool-ng archive schema accepted a download URL")
+	}
+	delete(install, "downloadUrl")
+	install["method"] = "MANUAL"
+	install["authorized"] = false
+	delete(install, "evidenceRef")
+	delete(install, "artifactId")
+	delete(install, "artifactRef")
+	delete(install, "sourceSha256")
+	if err := schema.Validate(instance); err == nil {
+		t.Fatal("model response schema still accepted MANUAL")
+	}
+}
+
+func goalDraftSchemaTestInstance(tool map[string]any) map[string]any {
+	return map[string]any{
+		"title": "Goal", "summary": "Summary", "problemStatement": "Problem",
+		"businessOutcomes": []any{map[string]any{"id": "outcome_1", "statement": "Outcome"}},
+		"scope":            map[string]any{"included": []any{"Included"}, "excluded": []any{}},
+		"userPersonas":     []any{}, "functionalRequirements": []any{"Requirement"},
+		"nonFunctionalRequirements": map[string]any{"security": []any{}, "privacy": []any{}, "performance": []any{}, "reliability": []any{}, "operability": []any{}},
+		"constraints":               []any{}, "assumptions": []any{}, "decisions": []any{}, "unresolvedItems": []any{},
+		"acceptanceCriteria": []any{map[string]any{"id": "criterion_1", "statement": "Criterion", "evidenceType": "AUTOMATED"}},
+		"riskTolerance":      "LOW", "humanApprovalPoints": []any{}, "dataClassification": "INTERNAL", "deploymentTargets": []any{"LINUX"}, "sourceReferences": []any{},
+		"toolchain": map[string]any{"languages": []any{map[string]any{"name": "C++", "version": "C++23"}}, "tools": []any{tool}},
+	}
+}
