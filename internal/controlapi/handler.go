@@ -54,6 +54,7 @@ type Config struct {
 	Database             *sql.DB
 	Budgets              modelgateway.BudgetAdministration
 	Artifacts            artifact.Catalog
+	UserUploads          artifact.UserUploadPublisher
 	Knowledge            KnowledgeReader
 	KnowledgeCurator     KnowledgeCuratorService
 	KnowledgeCuratorURL  string
@@ -110,6 +111,7 @@ type Handler struct {
 	budgets              modelgateway.BudgetAdministration
 	artifacts            artifact.Catalog
 	publisher            artifact.Publisher
+	userUploads          artifact.UserUploadPublisher
 	knowledge            KnowledgeReader
 	knowledgeCurator     KnowledgeCuratorService
 	knowledgeCuratorURL  string
@@ -348,6 +350,7 @@ func New(config Config) (*Handler, error) {
 		database:             config.Database,
 		budgets:              config.Budgets,
 		artifacts:            config.Artifacts,
+		userUploads:          config.UserUploads,
 		knowledge:            config.Knowledge,
 		knowledgeCurator:     config.KnowledgeCurator,
 		knowledgeCuratorURL:  strings.TrimRight(config.KnowledgeCuratorURL, "/"),
@@ -571,6 +574,18 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 			return
 		}
 		writeMethodNotAllowedWith(response, request, "GET")
+		return
+	}
+	if len(parts) == 2 && parts[1] == "toolchain-archives" {
+		if !validProjectID(projectID) {
+			writeError(response, request, aorerrors.New(aorerrors.CodeNotFound, "", nil))
+			return
+		}
+		if request.Method == http.MethodPost {
+			handler.uploadToolchainArchive(response, request, principal, projectID)
+			return
+		}
+		writeMethodNotAllowedWith(response, request, "POST")
 		return
 	}
 	if len(parts) == 3 && parts[1] == "activity" && parts[2] == "events" {

@@ -614,6 +614,51 @@ paths:
             '*/*':
               schema: {type: string, format: binary}
         default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}/toolchain-archives:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    post:
+      tags: [Artifacts]
+      operationId: uploadToolchainArchive
+      summary: Upload a prebuilt crosstool-ng GCC or G++ tar.gz artifact
+      description: The immutable upload is not scheduled until a subsequent Goal message authorizes and references it.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            x-aor-part-order: [toolName, toolVersion, architecture, file]
+            schema:
+              type: object
+              additionalProperties: false
+              required: [file, toolName, toolVersion, architecture]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Prebuilt crosstool-ng tar.gz archive, at most 4 GiB.
+                toolName:
+                  type: string
+                  enum: [GCC, G++, GNU GCC, GNU G++, GNU C++]
+                toolVersion:
+                  type: string
+                  minLength: 1
+                  maxLength: 256
+                architecture:
+                  type: string
+                  minLength: 1
+                  maxLength: 128
+            encoding:
+              file:
+                contentType: application/gzip, application/x-gzip
+      responses:
+        '201':
+          description: Project-scoped immutable archive; linked remains false until Goal negotiation references it.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ToolchainArchiveUpload'}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/projects/{projectId}/knowledge:search:
     parameters:
       - $ref: '#/components/parameters/ProjectId'
@@ -1649,6 +1694,19 @@ components:
           type: array
           items: {$ref: '#/components/schemas/Artifact'}
         nextCursor: {type: string, maxLength: 512}
+    ToolchainArchiveUpload:
+      type: object
+      additionalProperties: false
+      required: [id, artifactRef, sourceSha256, sizeBytes, toolName, toolVersion, architecture, linked]
+      properties:
+        id: {type: string, format: uuid}
+        artifactRef: {type: string, pattern: '^artifact://sha256/[0-9a-f]{64}$'}
+        sourceSha256: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+        sizeBytes: {type: integer, format: int64, minimum: 1, maximum: 4294967296}
+        toolName: {type: string, enum: [GCC, G++, GNU GCC, GNU G++, GNU C++]}
+        toolVersion: {type: string, minLength: 1, maxLength: 256}
+        architecture: {type: string, minLength: 1, maxLength: 128}
+        linked: {type: boolean, const: false}
     KnowledgeSourceReference:
       type: object
       additionalProperties: false

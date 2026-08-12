@@ -262,7 +262,7 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	}
 	domain, err := controlapi.New(controlapi.Config{
 		Store: lifecycleStore, Authenticator: authenticator, AnonymousPrincipal: anonymousPrincipal, Authorizer: authorizer,
-		Database: clients.Database(), Artifacts: artifactPublisher, Knowledge: knowledgeService,
+		Database: clients.Database(), Artifacts: artifactPublisher, UserUploads: artifactCatalog, Knowledge: knowledgeService,
 		KnowledgeCurator: knowledgeCurator, KnowledgeCuratorURL: config.KnowledgeCuratorURL,
 		DecisionReportSigner: decisionReportSigner,
 		Eraser:               artifactProjectEraser{catalog: artifactCatalog}, Leases: leaseService,
