@@ -669,8 +669,8 @@ func validateToolchainInstall(tool VersionedTool) error {
 	}
 	switch install.Method {
 	case ToolchainInstallCrosstoolNG:
-		if install.DownloadURL != "" || tool.Version != "15.2.0" || !IsGCCTool(tool) {
-			return fmt.Errorf("crosstool-ng installation is restricted to GCC 15.2.0")
+		if install.DownloadURL != "" || !IsGCCTool(tool) {
+			return fmt.Errorf("crosstool-ng installation is restricted to GCC")
 		}
 	case ToolchainInstallUserArchive:
 		if install.DownloadURL == "" {
