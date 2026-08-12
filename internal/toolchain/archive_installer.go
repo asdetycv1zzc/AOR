@@ -122,6 +122,9 @@ func (installer *ArchiveInstaller) Install(ctx context.Context, tool contracts.V
 		contracts.IsGCCTool(tool) || tool.Platform != contracts.PlatformLinux || !architectureMatches(tool.Architecture) {
 		return InstalledTool{}, ErrUnsupportedTool
 	}
+	if err := validateVersionedToolContract(tool); err != nil {
+		return InstalledTool{}, ErrUnsupportedTool
+	}
 	profile, found := profileFor(tool.Name)
 	if !found {
 		return InstalledTool{}, ErrUnsupportedTool
@@ -172,6 +175,14 @@ func (installer *ArchiveInstaller) Install(ctx context.Context, tool contracts.V
 			SourceSHA256: "sha256:" + digest, EvidenceRef: tool.Install.EvidenceRef, InstalledAt: installer.clock().UTC().Format(time.RFC3339Nano)},
 	}
 	return installer.publish(ctx, payloadRoot, manifest, profile)
+}
+
+func validateVersionedToolContract(tool contracts.VersionedTool) error {
+	selection := contracts.GoalToolchain{
+		Languages: []contracts.LanguageRequirement{{Name: tool.Name, Version: tool.Version}},
+		Tools:     []contracts.VersionedTool{tool},
+	}
+	return selection.Validate()
 }
 
 func validInstallerRoot(root string) bool {
