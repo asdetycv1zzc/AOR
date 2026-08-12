@@ -779,6 +779,8 @@ services:
         condition: service_healthy
       postgres-migrate:
         condition: service_completed_successfully
+      aor-toolchain-prober:
+        condition: service_healthy
       otel-collector:
         condition: service_healthy
     environment:
@@ -793,10 +795,35 @@ services:
       AOR_DATABASE_PASSWORD_REF: secret://postgres_app_password
       AOR_TOOLCHAIN_ROOT: /opt/aor/toolchains
       AOR_TOOLCHAIN_WORK_ROOT: /var/lib/aor/toolchain-work
+      AOR_TOOLCHAIN_PROBE_SOCKET: /var/run/aor-toolchain-probe/probe.sock
     secrets: [postgres_app_password]
     volumes:
       - "${AOR_TOOLCHAINS_HOST_PATH:-aor-toolchains-data}:/opt/aor/toolchains:rw"
       - aor-toolchain-work-data:/var/lib/aor/toolchain-work
+      - aor-toolchain-probe-data:/var/run/aor-toolchain-probe
+    cap_drop: [ALL]
+
+  aor-toolchain-prober:
+    <<: *aor-common
+    image: aor/aor-toolchain-prober:0.1.0-test
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+      target: toolchain-prober-runtime
+      network: host
+      args:
+        AOR_COMPONENT: aor-toolchain-prober
+    environment:
+      AOR_ENVIRONMENT: test
+      AOR_LISTEN_ADDR: 127.0.0.1:8096
+      AOR_HEALTHCHECK_URL: http://127.0.0.1:8096/health/ready
+      AOR_TOOLCHAIN_WORK_ROOT: /var/lib/aor/toolchain-work
+      AOR_TOOLCHAIN_PROBE_SOCKET: /var/run/aor-toolchain-probe/probe.sock
+    volumes:
+      - aor-toolchain-work-data:/var/lib/aor/toolchain-work:ro
+      - aor-toolchain-probe-data:/var/run/aor-toolchain-probe
+    tmpfs: [/tmp]
+    network_mode: none
     cap_drop: [ALL]
 
 volumes:
@@ -806,6 +833,7 @@ volumes:
   aor-knowledge-data:
   aor-toolchains-data:
   aor-toolchain-work-data:
+  aor-toolchain-probe-data:
 
 secrets:
   postgres_password:

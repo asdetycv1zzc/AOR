@@ -37,6 +37,7 @@ type Config struct {
 	RepositoryRoot           string
 	ToolchainRoot            string
 	ToolchainWorkRoot        string
+	ToolchainProbeSocket     string
 	Database                 DatabaseConfig
 	Temporal                 TemporalConfig
 	NATS                     NATSConfig
@@ -209,16 +210,17 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 		return Config{}, ErrInvalidConfiguration
 	}
 	config := Config{
-		Component:           component,
-		Environment:         value(lookup, "AOR_ENVIRONMENT", EnvironmentDevelopment),
-		DeploymentProfile:   value(lookup, "AOR_DEPLOYMENT_PROFILE", ""),
-		LeaseSigningKeyRef:  value(lookup, "AOR_LEASE_SIGNING_KEY_REF", ""),
-		ListenAddress:       value(lookup, "AOR_LISTEN_ADDR", ":8080"),
-		KnowledgeRoot:       strictValue(lookup, "AOR_KNOWLEDGE_ROOT", "/var/lib/aor/knowledge"),
-		KnowledgeCuratorURL: value(lookup, "AOR_KNOWLEDGE_CURATOR_URL", ""),
-		RepositoryRoot:      strictValue(lookup, "AOR_REPOSITORY_ROOT", "/var/lib/aor/repositories"),
-		ToolchainRoot:       strictValue(lookup, "AOR_TOOLCHAIN_ROOT", "/opt/aor/toolchains"),
-		ToolchainWorkRoot:   strictValue(lookup, "AOR_TOOLCHAIN_WORK_ROOT", "/var/lib/aor/toolchain-work"),
+		Component:            component,
+		Environment:          value(lookup, "AOR_ENVIRONMENT", EnvironmentDevelopment),
+		DeploymentProfile:    value(lookup, "AOR_DEPLOYMENT_PROFILE", ""),
+		LeaseSigningKeyRef:   value(lookup, "AOR_LEASE_SIGNING_KEY_REF", ""),
+		ListenAddress:        value(lookup, "AOR_LISTEN_ADDR", ":8080"),
+		KnowledgeRoot:        strictValue(lookup, "AOR_KNOWLEDGE_ROOT", "/var/lib/aor/knowledge"),
+		KnowledgeCuratorURL:  value(lookup, "AOR_KNOWLEDGE_CURATOR_URL", ""),
+		RepositoryRoot:       strictValue(lookup, "AOR_REPOSITORY_ROOT", "/var/lib/aor/repositories"),
+		ToolchainRoot:        strictValue(lookup, "AOR_TOOLCHAIN_ROOT", "/opt/aor/toolchains"),
+		ToolchainWorkRoot:    strictValue(lookup, "AOR_TOOLCHAIN_WORK_ROOT", "/var/lib/aor/toolchain-work"),
+		ToolchainProbeSocket: strictValue(lookup, "AOR_TOOLCHAIN_PROBE_SOCKET", "/var/run/aor-toolchain-probe/probe.sock"),
 		Integration: IntegrationConfig{
 			WorkRoot:        strictValue(lookup, "AOR_INTEGRATION_WORK_ROOT", ""),
 			DependencyCache: strictValue(lookup, "AOR_INTEGRATION_DEPENDENCY_CACHE", ""),
@@ -429,7 +431,8 @@ func (config Config) Validate() error {
 	if config.Component == "aor-server" && (!validKnowledgeRoot(config.KnowledgeRoot) || !validKnowledgeRoot(config.ToolchainRoot) || !validKnowledgeCuratorURL(config.KnowledgeCuratorURL, config.Environment) || !validSecretReference(config.LeaseSigningKeyRef) || !validDeploymentProfile(config.DeploymentProfile)) {
 		return ErrInvalidConfiguration
 	}
-	if config.Component == "aor-toolchain-provisioner" && (!validKnowledgeRoot(config.ToolchainRoot) || !validKnowledgeRoot(config.ToolchainWorkRoot) || config.ToolchainRoot == config.ToolchainWorkRoot) {
+	if oneOf(config.Component, "aor-toolchain-provisioner", "aor-toolchain-prober") && (!validKnowledgeRoot(config.ToolchainWorkRoot) || !validProbeSocketPath(config.ToolchainProbeSocket)) ||
+		config.Component == "aor-toolchain-provisioner" && (!validKnowledgeRoot(config.ToolchainRoot) || config.ToolchainRoot == config.ToolchainWorkRoot) {
 		return ErrInvalidConfiguration
 	}
 	if config.AllowAnonymousControlAPI && (config.Component != "aor-server" || !oneOf(config.Environment, EnvironmentDevelopment, EnvironmentTest) || config.Identity.DefaultTenantID == "" || config.Identity.DefaultRole != "USER") {
@@ -841,7 +844,7 @@ func oneOf(value string, options ...string) bool {
 }
 
 func knownComponent(component string) bool {
-	return oneOf(component, "aor-server", "aor-model-gateway", "aor-tool-broker", "aor-worker", "aor-toolchain-provisioner")
+	return oneOf(component, "aor-server", "aor-model-gateway", "aor-tool-broker", "aor-worker", "aor-toolchain-provisioner", "aor-toolchain-prober")
 }
 
 func validDeploymentProfile(value string) bool {
@@ -1018,6 +1021,10 @@ func validSandboxHoldCommand(command []string) bool {
 
 func needsDatabase(component string) bool {
 	return oneOf(component, "aor-server", "aor-model-gateway", "aor-tool-broker", "aor-worker", "aor-toolchain-provisioner")
+}
+
+func validProbeSocketPath(value string) bool {
+	return value != "" && len(value) <= 100 && filepath.IsAbs(value) && filepath.Clean(value) == value && value != string(filepath.Separator) && !strings.ContainsAny(value, "\r\n\x00")
 }
 
 func needsTemporal(component string) bool {

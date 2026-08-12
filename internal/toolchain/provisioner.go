@@ -132,7 +132,7 @@ func (provisioner *Provisioner) renewInstallationLease(ctx context.Context, canc
 }
 
 func validProvisioningRequest(tool contracts.VersionedTool) bool {
-	return tool.ReadyToProvision() && tool.Install != nil && tool.Install.Method == contracts.ToolchainInstallUserArchive && !contracts.IsGCCTool(tool)
+	return tool.ReadyToProvision() && tool.Install != nil && tool.Install.Method == contracts.ToolchainInstallUserArchive && SupportsPortableArchive(tool)
 }
 
 func provisioningErrorRetryable(err error) bool {

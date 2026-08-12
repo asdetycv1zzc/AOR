@@ -27,9 +27,14 @@ func ToolchainProvisioner(config runtimeconfig.Config, clients *runtimeclient.Cl
 	if err != nil {
 		return nil, err
 	}
+	prober, err := toolchain.NewUnixProbeClient(config.ToolchainProbeSocket)
+	if err != nil {
+		return nil, err
+	}
 	installer, err := toolchain.NewArchiveInstaller(toolchain.ArchiveInstallerConfig{
 		ToolchainRoot: config.ToolchainRoot,
 		WorkRoot:      config.ToolchainWorkRoot,
+		Prober:        prober,
 	})
 	if err != nil {
 		return nil, err

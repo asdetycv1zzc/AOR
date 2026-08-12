@@ -51,6 +51,7 @@ type ArchiveInstallerConfig struct {
 	MaxExtractBytes  int64
 	MaxFiles         int
 	Clock            func() time.Time
+	Prober           ExecutableProber
 }
 
 type ArchiveInstaller struct {
@@ -61,6 +62,7 @@ type ArchiveInstaller struct {
 	maxExtractBytes  int64
 	maxFiles         int
 	clock            func() time.Time
+	prober           ExecutableProber
 }
 
 type toolProfile struct {
@@ -112,9 +114,13 @@ func NewArchiveInstaller(config ArchiveInstallerConfig) (*ArchiveInstaller, erro
 	if clock == nil {
 		clock = time.Now
 	}
+	prober := config.Prober
+	if prober == nil {
+		prober = LocalExecutableProber{}
+	}
 	return &ArchiveInstaller{
 		toolchainRoot: filepath.Clean(config.ToolchainRoot), workRoot: filepath.Clean(config.WorkRoot), httpClient: client,
-		maxDownloadBytes: downloadLimit, maxExtractBytes: extractLimit, maxFiles: fileLimit, clock: clock,
+		maxDownloadBytes: downloadLimit, maxExtractBytes: extractLimit, maxFiles: fileLimit, clock: clock, prober: prober,
 	}, nil
 }
 
@@ -168,7 +174,7 @@ func (installer *ArchiveInstaller) Install(ctx context.Context, tool contracts.V
 	if err != nil {
 		return InstalledTool{}, err
 	}
-	if err := probeExecutables(ctx, payloadRoot, executables, profile, tool.Version); err != nil {
+	if err := installer.prober.Probe(ctx, probeRequest(payloadRoot, executables, profile, tool.Version)); err != nil {
 		return InstalledTool{}, err
 	}
 	id := inventoryID(tool, digest)
@@ -757,7 +763,7 @@ func (installer *ArchiveInstaller) publish(ctx context.Context, payloadRoot stri
 	if err != nil || len(snapshot.Tools) != 1 {
 		return InstalledTool{}, ErrInvalidInventory
 	}
-	if err := probeExecutables(ctx, stagingPath, manifest.Executables, profile, manifest.Version); err != nil {
+	if err := installer.prober.Probe(ctx, probeRequest(stagingPath, manifest.Executables, profile, manifest.Version)); err != nil {
 		return InstalledTool{}, err
 	}
 	if err := os.Rename(stagingPath, finalPath); err != nil {

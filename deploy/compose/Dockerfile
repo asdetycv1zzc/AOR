@@ -85,6 +85,14 @@ USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/aor"]
 CMD ["serve"]
 
+FROM ${WORKER_IMAGE} AS toolchain-prober-runtime
+COPY --from=build /out/aor /usr/local/bin/aor
+RUN install -d -m 0770 -o 65532 -g 65532 /var/run/aor-toolchain-probe
+ENV HOME=/tmp
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/aor"]
+CMD ["serve"]
+
 FROM ${ALPINE_IMAGE} AS tool-broker-runtime
 COPY --from=build /out/aor /usr/local/bin/aor
 RUN apk add --no-cache git=2.52.0-r0 && \
