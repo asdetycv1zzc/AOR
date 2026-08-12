@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/akimisaka/aor/pkg/contracts"
 )
@@ -35,6 +36,15 @@ type InstalledTool struct {
 	Languages     []string                    `json:"languages"`
 	BinDirs       []string                    `json:"binDirs"`
 	Executables   []Executable                `json:"executables"`
+	Provenance    *InstallationProvenance     `json:"provenance,omitempty"`
+}
+
+type InstallationProvenance struct {
+	Method       contracts.ToolchainInstallMethod `json:"method"`
+	SourceURL    string                           `json:"sourceUrl"`
+	SourceSHA256 string                           `json:"sourceSha256"`
+	EvidenceRef  string                           `json:"evidenceRef"`
+	InstalledAt  string                           `json:"installedAt"`
 }
 
 type Inventory struct {
@@ -215,6 +225,9 @@ func validateInstalledTool(root string, tool InstalledTool) error {
 	if tool.Platform != contracts.PlatformLinux && tool.Platform != contracts.PlatformWindows {
 		return ErrInvalidInventory
 	}
+	if tool.Provenance != nil && !validInstallationProvenance(*tool.Provenance) {
+		return ErrInvalidInventory
+	}
 	seenLanguages := make(map[string]struct{}, len(tool.Languages))
 	for _, language := range tool.Languages {
 		if !safeText(language, 128) {
@@ -260,6 +273,23 @@ func validateInstalledTool(root string, tool InstalledTool) error {
 		seenExecutables[executable.Name] = struct{}{}
 	}
 	return nil
+}
+
+func validInstallationProvenance(provenance InstallationProvenance) bool {
+	if provenance.Method != contracts.ToolchainInstallUserArchive || !strings.HasPrefix(provenance.SourceURL, "https://") ||
+		!strings.HasPrefix(provenance.SourceSHA256, "sha256:") || len(provenance.SourceSHA256) != len("sha256:")+64 ||
+		!strings.HasPrefix(provenance.EvidenceRef, "artifact://sha256/") || len(provenance.EvidenceRef) != len("artifact://sha256/")+64 {
+		return false
+	}
+	for _, digest := range []string{strings.TrimPrefix(provenance.SourceSHA256, "sha256:"), strings.TrimPrefix(provenance.EvidenceRef, "artifact://sha256/")} {
+		for _, character := range digest {
+			if character < '0' || character > '9' && character < 'a' || character > 'f' {
+				return false
+			}
+		}
+	}
+	installedAt, err := time.Parse(time.RFC3339Nano, provenance.InstalledAt)
+	return err == nil && provenance.InstalledAt == installedAt.UTC().Format(time.RFC3339Nano)
 }
 
 func containedPath(root, relative string) (string, error) {
@@ -321,5 +351,9 @@ func cloneInstalledTool(tool InstalledTool) InstalledTool {
 	tool.Languages = append([]string(nil), tool.Languages...)
 	tool.BinDirs = append([]string(nil), tool.BinDirs...)
 	tool.Executables = append([]Executable(nil), tool.Executables...)
+	if tool.Provenance != nil {
+		provenance := *tool.Provenance
+		tool.Provenance = &provenance
+	}
 	return tool
 }
