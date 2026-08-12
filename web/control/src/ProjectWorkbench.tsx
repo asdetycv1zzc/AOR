@@ -1,12 +1,15 @@
 import {
   ArrowLeft,
   ChatCircleText,
+  CheckCircle,
   Clock,
+  FileArchive,
   GearSix,
   PaperPlaneTilt,
   Pulse,
   Robot,
   Tray,
+  UploadSimple,
   UserCircle,
   WarningCircle,
 } from "@phosphor-icons/react";
@@ -14,11 +17,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AorClient, ApiError } from "./api";
 import type {
   ModelRole,
+  GoalSpec,
+  GoalToolchainTool,
   Project,
   ProjectActivityAgent,
   ProjectActivityFlow,
   ProjectActivityMessage,
   ProjectActivitySnapshot,
+  ToolchainArchiveUpload,
 } from "./types";
 import { Button, Spinner, Textarea } from "./ui";
 import "./project-workbench.css";
@@ -54,6 +60,49 @@ const flowLabels: Record<ProjectActivityFlow, string> = {
   AUDIT: "审计层",
   KNOWLEDGE: "智库层",
 };
+
+const crosstoolToolNames = new Set(["GCC", "G++", "GNU GCC", "GNU G++", "GNU C++"]);
+const maximumToolchainArchiveSize = 4 * 1024 * 1024 * 1024;
+
+function latestGoalSpec(items: GoalSpec[]): GoalSpec | undefined {
+  return items.reduce<GoalSpec | undefined>((latest, item) => (
+    !latest || item.content.version > latest.content.version ? item : latest
+  ), undefined);
+}
+
+function pendingCrosstoolTool(goal: GoalSpec | undefined): GoalToolchainTool | undefined {
+  return goal?.content.toolchain?.tools.find((tool) => (
+    tool.source === "INSTALL_REQUIRED"
+    && tool.install?.method === "CROSSTOOL_NG_ARCHIVE"
+    && !tool.install.authorized
+    && crosstoolToolNames.has(tool.name)
+  ));
+}
+
+function toolIdentity(tool: Pick<GoalToolchainTool, "name" | "version" | "architecture">): string {
+  return `${tool.name}\u0000${tool.version}\u0000${tool.architecture}`;
+}
+
+function archiveAuthorizationMessage(upload: ToolchainArchiveUpload): string {
+  return [
+    "我明确授权安装以下由我上传的预构建、路径无关的 crosstool-ng C/C++ 工具链 tar.gz 归档。",
+    "请在下一版 GoalSpec 中保持工具名称、版本和架构完全一致，将该工具设置为 source=INSTALL_REQUIRED、install.method=CROSSTOOL_NG_ARCHIVE、install.authorized=true，并原样绑定以下不可变产物；install.evidenceRef 必须引用本条用户消息。",
+    JSON.stringify({
+      toolName: upload.toolName,
+      toolVersion: upload.toolVersion,
+      architecture: upload.architecture,
+      artifactId: upload.id,
+      artifactRef: upload.artifactRef,
+      sourceSha256: upload.sourceSha256,
+    }, null, 2),
+  ].join("\n\n");
+}
+
+function formatArchiveSize(bytes: number): string {
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GiB`;
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+  return `${Math.max(1, Math.ceil(bytes / 1024))} KiB`;
+}
 
 function defaultFlow(project: Project): ProjectActivityFlow {
   if (["CREATED", "GOAL_NEGOTIATING", "GOAL_SUSPENDED"].includes(project.state)) return "GOAL";
@@ -196,6 +245,14 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
   const [activeFlow, setActiveFlow] = useState<ProjectActivityFlow>(() => defaultFlow(project));
   const [selectedAgent, setSelectedAgent] = useState("");
   const [sending, setSending] = useState(false);
+  const [goalSpec, setGoalSpec] = useState<GoalSpec>();
+  const [goalSpecLoaded, setGoalSpecLoaded] = useState(false);
+  const [archiveFile, setArchiveFile] = useState<File>();
+  const [archiveUpload, setArchiveUpload] = useState<ToolchainArchiveUpload>();
+  const [archiveBusy, setArchiveBusy] = useState<"" | "upload" | "authorize">("");
+  const [archiveError, setArchiveError] = useState("");
+  const [authorizationSent, setAuthorizationSent] = useState(false);
+  const archiveSubmitting = useRef(false);
   const refreshTimer = useRef<number | undefined>(undefined);
   const knownMessageIDs = useRef(new Set<string>());
   const messagesRef = useRef<HTMLDivElement | null>(null);
@@ -217,6 +274,17 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
     }
   }, [client, project.id]);
 
+  const refreshGoalSpec = useCallback(async () => {
+    try {
+      const specs = await client.getGoalSpecs(project.id);
+      setGoalSpec(latestGoalSpec(specs.items));
+      setGoalSpecLoaded(true);
+    } catch (cause) {
+      setGoalSpecLoaded(true);
+      if (!(cause instanceof ApiError && cause.status === 404)) setError(activityError(cause));
+    }
+  }, [client, project.id]);
+
   useEffect(() => {
     setActivity(undefined);
     setActivityAvailable(undefined);
@@ -224,15 +292,23 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
     setMessage("");
     setActiveFlow(defaultFlow(project));
     setSelectedAgent("");
+    setGoalSpec(undefined);
+    setGoalSpecLoaded(false);
+    setArchiveFile(undefined);
+    setArchiveUpload(undefined);
+    setArchiveBusy("");
+    setArchiveError("");
+    setAuthorizationSent(false);
+    archiveSubmitting.current = false;
     knownMessageIDs.current.clear();
-    void refreshActivity();
-  }, [project.id, refreshActivity]);
+    void Promise.allSettled([refreshActivity(), refreshGoalSpec()]);
+  }, [project.id, refreshActivity, refreshGoalSpec]);
 
   useEffect(() => {
     const interval = activityAvailable === false ? 15_000 : 4_000;
-    const timer = window.setInterval(() => void refreshActivity(), interval);
+    const timer = window.setInterval(() => void Promise.allSettled([refreshActivity(), refreshGoalSpec()]), interval);
     return () => window.clearInterval(timer);
-  }, [activityAvailable, refreshActivity]);
+  }, [activityAvailable, refreshActivity, refreshGoalSpec]);
 
   useEffect(() => {
     if (activityAvailable !== true) return;
@@ -251,7 +327,7 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
         if (!shouldRefresh || refreshTimer.current !== undefined) return;
         refreshTimer.current = window.setTimeout(() => {
           refreshTimer.current = undefined;
-          void refreshActivity();
+          void Promise.allSettled([refreshActivity(), refreshGoalSpec()]);
           onReload();
         }, isNewMessage ? 50 : 250);
       },
@@ -264,7 +340,7 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
       if (refreshTimer.current !== undefined) window.clearTimeout(refreshTimer.current);
       refreshTimer.current = undefined;
     };
-  }, [activityAvailable, client, onReload, project.id, refreshActivity]);
+  }, [activityAvailable, client, onReload, project.id, refreshActivity, refreshGoalSpec]);
 
   const agents = activity?.agents?.length ? activity.agents : fallbackAgents(project);
   const messages = activity?.messages || [];
@@ -273,6 +349,25 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
   const visibleAgents = agents.filter((agent) => agent.flow === activeFlow);
   const visibleMessages = messages.filter((item) => item.flow === activeFlow);
   const visibleMessageVersion = visibleMessages.map((item) => `${item.id}:${item.updatedAt || item.createdAt}:${item.content.length}:${item.reasoningSummary?.length || 0}`).join("|");
+  const crosstoolTool = pendingCrosstoolTool(goalSpec);
+  const goalProcessing = activity?.goalProcessing ?? project.goalProcessing;
+  const showArchiveUpload = activeFlow === "GOAL"
+    && (project.state === "GOAL_NEGOTIATING" || project.state === "GOAL_SUSPENDED")
+    && Boolean(crosstoolTool);
+
+  useEffect(() => {
+    if (!goalSpecLoaded || !archiveUpload) return;
+    if (!crosstoolTool || toolIdentity(crosstoolTool) !== toolIdentity({
+      name: archiveUpload.toolName,
+      version: archiveUpload.toolVersion,
+      architecture: archiveUpload.architecture,
+    })) {
+      setArchiveFile(undefined);
+      setArchiveUpload(undefined);
+      setArchiveError("");
+      setAuthorizationSent(false);
+    }
+  }, [archiveUpload, crosstoolTool, goalSpecLoaded]);
 
   useEffect(() => {
     const container = messagesRef.current;
@@ -282,7 +377,7 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
 
   const sendMessage = async () => {
     const content = message.trim();
-    if (!content || sending) return;
+    if (!content || sending || archiveSubmitting.current) return;
     setSending(true);
     setError("");
     try {
@@ -298,6 +393,60 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
       setError(activityError(cause));
     } finally {
       setSending(false);
+    }
+  };
+
+  const authorizeArchive = async (upload: ToolchainArchiveUpload) => {
+    if (archiveSubmitting.current || authorizationSent) return;
+    archiveSubmitting.current = true;
+    setArchiveBusy("authorize");
+    setArchiveError("");
+    try {
+      await client.sendProjectActivityMessage(
+        { id: project.id, version: activity?.projectVersion || project.version },
+        "GOAL",
+        archiveAuthorizationMessage(upload),
+      );
+      setAuthorizationSent(true);
+      onNotice("工具链归档已上传，安装授权正在处理中");
+      await Promise.allSettled([refreshActivity(), refreshGoalSpec()]);
+      onReload();
+    } catch (cause) {
+      setArchiveError(`归档已保存，但授权消息发送失败：${activityError(cause)}`);
+    } finally {
+      archiveSubmitting.current = false;
+      setArchiveBusy("");
+    }
+  };
+
+  const uploadArchive = async () => {
+    if (!crosstoolTool || !archiveFile || archiveSubmitting.current || sending || goalProcessing) return;
+    if (!archiveFile.name.toLowerCase().endsWith(".tar.gz")) {
+      setArchiveError("请选择 .tar.gz 格式的 crosstool-ng 产物");
+      return;
+    }
+    if (archiveFile.size < 1 || archiveFile.size > maximumToolchainArchiveSize) {
+      setArchiveError("归档必须非空且不超过 4 GiB");
+      return;
+    }
+    archiveSubmitting.current = true;
+    setArchiveBusy("upload");
+    setArchiveError("");
+    try {
+      const upload = await client.uploadToolchainArchive(project.id, {
+        file: archiveFile,
+        toolName: crosstoolTool.name,
+        toolVersion: crosstoolTool.version,
+        architecture: crosstoolTool.architecture,
+      });
+      setArchiveUpload(upload);
+      archiveSubmitting.current = false;
+      setArchiveBusy("");
+      await authorizeArchive(upload);
+    } catch (cause) {
+      setArchiveError(activityError(cause));
+      archiveSubmitting.current = false;
+      setArchiveBusy("");
     }
   };
 
@@ -380,9 +529,46 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
               </article>
             )) : <div className="workbench-empty"><ChatCircleText /><span>暂无对话记录</span></div>}
           </div>
+          {showArchiveUpload && crosstoolTool && (
+            <section className="workbench-toolchain-upload" aria-labelledby="toolchain-upload-title">
+              <header>
+                <FileArchive weight="duotone" />
+                <div><strong id="toolchain-upload-title">上传 C/C++ 工具链</strong><span>crosstool-ng 预构建 tar.gz，最大 4 GiB</span></div>
+              </header>
+              <dl>
+                <div><dt>工具</dt><dd>{crosstoolTool.name} {crosstoolTool.version}</dd></div>
+                <div><dt>架构</dt><dd>{crosstoolTool.architecture}</dd></div>
+              </dl>
+              {archiveUpload ? (
+                <div className="toolchain-upload-result">
+                  <CheckCircle weight="fill" />
+                  <span><strong>{authorizationSent ? "授权已提交" : "归档已保存"}</strong><small>{formatArchiveSize(archiveUpload.sizeBytes)} · {archiveUpload.sourceSha256}</small></span>
+                  {!authorizationSent && <Button appearance="primary" size="small" icon={archiveBusy === "authorize" ? <Spinner size="tiny" /> : <PaperPlaneTilt />} disabled={Boolean(archiveBusy) || sending} onClick={() => void authorizeArchive(archiveUpload)}>{archiveBusy === "authorize" ? "发送中" : "重试授权"}</Button>}
+                </div>
+              ) : (
+                <div className="toolchain-upload-actions">
+                  <label className={`toolchain-file-picker${archiveFile ? " has-file" : ""}`}>
+                    <input
+                      type="file"
+                      accept=".tar.gz,application/gzip,application/x-gzip"
+                      disabled={Boolean(archiveBusy) || sending || goalProcessing}
+                      onChange={(event) => {
+                        setArchiveFile(event.currentTarget.files?.[0]);
+                        setArchiveError("");
+                      }}
+                    />
+                    <UploadSimple />
+                    <span>{archiveFile ? archiveFile.name : "选择 tar.gz 归档"}</span>
+                  </label>
+                  <Button appearance="primary" size="small" icon={archiveBusy === "upload" ? <Spinner size="tiny" /> : <UploadSimple />} disabled={!archiveFile || Boolean(archiveBusy) || sending || goalProcessing} onClick={() => void uploadArchive()}>{archiveBusy === "upload" ? "上传中" : goalProcessing ? "Goal 处理中" : "上传并授权"}</Button>
+                </div>
+              )}
+              {archiveError && <p className="toolchain-upload-error" role="alert"><WarningCircle weight="fill" />{archiveError}</p>}
+            </section>
+          )}
           <div className="workbench-composer">
-            <Textarea value={message} resize="vertical" placeholder={`向${selectedAgent ? "当前 Agent" : flowLabels[activeFlow]}发送消息`} onChange={(_, data) => setMessage(data.value)} disabled={sending} />
-            <Button appearance="primary" icon={sending ? <Spinner size="tiny" /> : <PaperPlaneTilt />} disabled={!message.trim() || sending} onClick={() => void sendMessage()}>{sending ? "发送中" : "发送"}</Button>
+            <Textarea value={message} resize="vertical" placeholder={`向${selectedAgent ? "当前 Agent" : flowLabels[activeFlow]}发送消息`} onChange={(_, data) => setMessage(data.value)} disabled={sending || Boolean(archiveBusy)} />
+            <Button appearance="primary" icon={sending ? <Spinner size="tiny" /> : <PaperPlaneTilt />} disabled={!message.trim() || sending || Boolean(archiveBusy)} onClick={() => void sendMessage()}>{sending ? "发送中" : "发送"}</Button>
           </div>
         </section>
       </div>

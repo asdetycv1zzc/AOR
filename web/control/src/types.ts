@@ -286,12 +286,25 @@ export interface GoalToolchainTool {
   architecture: string;
   source: "INSTALLED" | "INSTALL_REQUIRED";
   install?: {
-    method: "MANUAL" | "USER_ARCHIVE";
+    method: "MANUAL" | "USER_ARCHIVE" | "CROSSTOOL_NG_ARCHIVE";
     authorized: boolean;
     evidenceRef?: string;
     downloadUrl?: string;
+    artifactId?: string;
+    artifactRef?: string;
     sourceSha256?: string;
   };
+}
+
+export interface ToolchainArchiveUpload {
+  id: string;
+  artifactRef: string;
+  sourceSha256: string;
+  sizeBytes: number;
+  toolName: string;
+  toolVersion: string;
+  architecture: string;
+  linked: false;
 }
 
 export interface GoalToolchain {

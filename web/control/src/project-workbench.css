@@ -642,6 +642,181 @@
   30% { opacity: 1; transform: translateY(-2px); }
 }
 
+.workbench-toolchain-upload {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(190px, 0.65fr) minmax(280px, 1.3fr);
+  align-items: center;
+  gap: 12px 18px;
+  margin-top: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line-strong);
+  border-bottom: 1px solid var(--line);
+}
+
+.workbench-toolchain-upload > header {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+}
+
+.workbench-toolchain-upload > header > svg {
+  width: 24px;
+  height: 24px;
+  color: var(--green);
+}
+
+.workbench-toolchain-upload > header > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.workbench-toolchain-upload > header strong {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.workbench-toolchain-upload > header span {
+  overflow: hidden;
+  color: var(--quiet);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workbench-toolchain-upload dl {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  margin: 0;
+}
+
+.workbench-toolchain-upload dl > div {
+  min-width: 0;
+}
+
+.workbench-toolchain-upload dt {
+  color: var(--quiet);
+  font-size: 9px;
+}
+
+.workbench-toolchain-upload dd {
+  margin: 2px 0 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toolchain-upload-actions,
+.toolchain-upload-result {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.toolchain-file-picker {
+  display: grid;
+  min-width: 0;
+  min-height: 32px;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  padding: 5px 9px;
+  border: 1px dashed #929b94;
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.toolchain-file-picker:hover,
+.toolchain-file-picker:focus-within,
+.toolchain-file-picker.has-file {
+  border-color: var(--green);
+  color: var(--green-dark);
+}
+
+.toolchain-file-picker:focus-within {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+
+.toolchain-file-picker input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.toolchain-file-picker svg {
+  width: 16px;
+  height: 16px;
+}
+
+.toolchain-file-picker span {
+  overflow: hidden;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toolchain-upload-result {
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  color: var(--green);
+}
+
+.toolchain-upload-result > svg {
+  width: 17px;
+  height: 17px;
+}
+
+.toolchain-upload-result > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.toolchain-upload-result strong {
+  color: var(--green-dark);
+  font-size: 10px;
+}
+
+.toolchain-upload-result small {
+  overflow: hidden;
+  color: var(--quiet);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toolchain-upload-error {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -4px 0 0;
+  color: var(--red);
+  font-size: 10px;
+}
+
+.toolchain-upload-error svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+
 .workbench-composer {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -745,6 +920,14 @@
   .workbench-thread {
     padding-left: 18px;
   }
+
+  .workbench-toolchain-upload {
+    grid-template-columns: minmax(190px, 0.85fr) minmax(260px, 1.15fr);
+  }
+
+  .workbench-toolchain-upload dl {
+    display: none;
+  }
 }
 
 @media (max-width: 900px) {
@@ -783,6 +966,10 @@
 
   .workbench-thread {
     padding: 24px 0 0;
+  }
+
+  .workbench-toolchain-upload {
+    grid-template-columns: minmax(190px, 0.75fr) minmax(300px, 1.25fr);
   }
 }
 
@@ -839,6 +1026,14 @@
   .workbench-composer {
     grid-template-columns: 1fr;
     gap: 10px;
+  }
+
+  .workbench-toolchain-upload {
+    grid-template-columns: 1fr;
+  }
+
+  .toolchain-upload-actions {
+    grid-template-columns: minmax(0, 1fr) auto;
   }
 
   .workbench-composer .ui-textarea {

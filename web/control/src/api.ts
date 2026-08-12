@@ -20,6 +20,7 @@ import type {
   ProjectActivitySnapshot,
   ProjectCreateInput,
   ProjectResult,
+  ToolchainArchiveUpload,
   ToolchainInstallationBatch,
   ToolchainInventory,
 } from "./types";
@@ -109,7 +110,7 @@ export class AorClient {
     const token = await this.token();
     if (token) headers.set("Authorization", `Bearer ${token}`);
     headers.set("Accept", "application/json");
-    if (init.body && !headers.has("Content-Type")) {
+    if (init.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json");
     }
     const response = await fetch(path, { ...init, headers, cache: "no-store" });
@@ -162,6 +163,24 @@ export class AorClient {
 
   getToolchainInstallations(projectId: string): Promise<Page<ToolchainInstallationBatch>> {
     return this.request(`/v1/projects/${encodeURIComponent(projectId)}/toolchain-installations`);
+  }
+
+  uploadToolchainArchive(projectId: string, input: {
+    file: File;
+    toolName: string;
+    toolVersion: string;
+    architecture: string;
+  }): Promise<ToolchainArchiveUpload> {
+    const body = new FormData();
+    body.append("toolName", input.toolName);
+    body.append("toolVersion", input.toolVersion);
+    body.append("architecture", input.architecture);
+    body.append("file", input.file, input.file.name);
+    return this.request(`/v1/projects/${encodeURIComponent(projectId)}/toolchain-archives`, {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey() },
+      body,
+    });
   }
 
   getModelProviderSettings(): Promise<ModelProviderSettingsPage> {
