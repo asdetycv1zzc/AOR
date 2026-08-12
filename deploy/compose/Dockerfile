@@ -76,7 +76,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && \
     apt-get install --yes --no-install-recommends \
       ca-certificates=20250419 \
-      xz-utils=5.8.1-1 && \
+      xz-utils=5.8.1-1+deb13u1 && \
     install -d -m 0755 -o 65532 -g 65532 \
       /opt/aor/toolchains \
       /var/lib/aor/toolchain-work
