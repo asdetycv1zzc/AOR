@@ -166,7 +166,7 @@ func (scheduler *ToolchainRecoveryScheduler) reconcileMissingBatch(ctx context.C
 
 func hasProvisionableTool(tools []contracts.VersionedTool) bool {
 	for _, tool := range tools {
-		if tool.ReadyToProvision() {
+		if tool.ReadyToProvision() && toolchain.SupportsPortableArchive(tool) {
 			return true
 		}
 	}
