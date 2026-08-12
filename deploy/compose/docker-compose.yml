@@ -583,7 +583,7 @@ services:
     secrets: [postgres_app_password, model_replay_key, lease_signing_key, minio_root_user, minio_root_password, aor_server_oauth_client_secret]
     volumes:
       - "${AOR_KNOWLEDGE_HOST_PATH:-aor-knowledge-data}:/var/lib/aor/knowledge:ro"
-      - "${AOR_TOOLCHAINS_HOST_PATH:-/opt/aor/toolchains}:/opt/aor/toolchains:ro"
+      - "${AOR_TOOLCHAINS_HOST_PATH:-aor-toolchains-data}:/opt/aor/toolchains:ro"
 
   aor-curator:
     extends:
@@ -597,7 +597,7 @@ services:
       AOR_TOOLCHAIN_ROOT: /opt/aor/toolchains
     volumes: !override
       - "${AOR_KNOWLEDGE_HOST_PATH:-aor-knowledge-data}:/var/lib/aor/knowledge:rw"
-      - "${AOR_TOOLCHAINS_HOST_PATH:-/opt/aor/toolchains}:/opt/aor/toolchains:ro"
+      - "${AOR_TOOLCHAINS_HOST_PATH:-aor-toolchains-data}:/opt/aor/toolchains:ro"
 
   aor-model-gateway:
     <<: *aor-common
@@ -756,8 +756,45 @@ services:
     secrets: [postgres_app_password, lease_signing_key, minio_root_user, minio_root_password, aor_server_oauth_client_secret]
     volumes:
       - "${AOR_KNOWLEDGE_HOST_PATH:-aor-knowledge-data}:/var/lib/aor/knowledge:ro"
-      - "${AOR_TOOLCHAINS_HOST_PATH:-/opt/aor/toolchains}:/opt/aor/toolchains:ro"
+      - "${AOR_TOOLCHAINS_HOST_PATH:-aor-toolchains-data}:/opt/aor/toolchains:ro"
       - "${AOR_PROJECTS_HOST_PATH:-../../projects}:/var/lib/aor/repositories"
+    cap_drop: [ALL]
+
+  aor-toolchain-provisioner:
+    <<: *aor-common
+    read_only: false
+    tmpfs: []
+    image: aor/aor-toolchain-provisioner:0.1.0-test
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+      target: toolchain-provisioner-runtime
+      network: host
+      args:
+        AOR_COMPONENT: aor-toolchain-provisioner
+    depends_on:
+      postgres:
+        condition: service_healthy
+      postgres-migrate:
+        condition: service_completed_successfully
+      otel-collector:
+        condition: service_healthy
+    environment:
+      AOR_ENVIRONMENT: test
+      AOR_OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4318
+      AOR_LISTEN_ADDR: 127.0.0.1:8095
+      AOR_HEALTHCHECK_URL: http://127.0.0.1:8095/health/ready
+      AOR_DATABASE_HOST: 127.0.0.1
+      AOR_DATABASE_PORT: "5432"
+      AOR_DATABASE_NAME: aor
+      AOR_DATABASE_USER: aor_app
+      AOR_DATABASE_PASSWORD_REF: secret://postgres_app_password
+      AOR_TOOLCHAIN_ROOT: /opt/aor/toolchains
+      AOR_TOOLCHAIN_WORK_ROOT: /var/lib/aor/toolchain-work
+    secrets: [postgres_app_password]
+    volumes:
+      - "${AOR_TOOLCHAINS_HOST_PATH:-aor-toolchains-data}:/opt/aor/toolchains:rw"
+      - aor-toolchain-work-data:/var/lib/aor/toolchain-work
     cap_drop: [ALL]
 
 volumes:
@@ -765,6 +802,8 @@ volumes:
   nats-data:
   minio-data:
   aor-knowledge-data:
+  aor-toolchains-data:
+  aor-toolchain-work-data:
 
 secrets:
   postgres_password:

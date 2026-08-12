@@ -69,6 +69,22 @@ USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/aor"]
 CMD ["serve"]
 
+FROM ${WORKER_IMAGE} AS toolchain-provisioner-runtime
+COPY --from=build /out/aor /usr/local/bin/aor
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && \
+    apt-get install --yes --no-install-recommends \
+      ca-certificates=20250419 \
+      xz-utils=5.8.1-1 && \
+    install -d -m 0755 -o 65532 -g 65532 \
+      /opt/aor/toolchains \
+      /var/lib/aor/toolchain-work
+ENV HOME=/var/lib/aor/toolchain-work
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/aor"]
+CMD ["serve"]
+
 FROM ${ALPINE_IMAGE} AS tool-broker-runtime
 COPY --from=build /out/aor /usr/local/bin/aor
 RUN apk add --no-cache git=2.52.0-r0 && \

@@ -36,6 +36,7 @@ type Config struct {
 	KnowledgeCuratorURL      string
 	RepositoryRoot           string
 	ToolchainRoot            string
+	ToolchainWorkRoot        string
 	Database                 DatabaseConfig
 	Temporal                 TemporalConfig
 	NATS                     NATSConfig
@@ -217,6 +218,7 @@ func Load(component string, lookup LookupEnv) (Config, error) {
 		KnowledgeCuratorURL: value(lookup, "AOR_KNOWLEDGE_CURATOR_URL", ""),
 		RepositoryRoot:      strictValue(lookup, "AOR_REPOSITORY_ROOT", "/var/lib/aor/repositories"),
 		ToolchainRoot:       strictValue(lookup, "AOR_TOOLCHAIN_ROOT", "/opt/aor/toolchains"),
+		ToolchainWorkRoot:   strictValue(lookup, "AOR_TOOLCHAIN_WORK_ROOT", "/var/lib/aor/toolchain-work"),
 		Integration: IntegrationConfig{
 			WorkRoot:        strictValue(lookup, "AOR_INTEGRATION_WORK_ROOT", ""),
 			DependencyCache: strictValue(lookup, "AOR_INTEGRATION_DEPENDENCY_CACHE", ""),
@@ -425,6 +427,9 @@ func (config Config) Validate() error {
 		return ErrInvalidConfiguration
 	}
 	if config.Component == "aor-server" && (!validKnowledgeRoot(config.KnowledgeRoot) || !validKnowledgeRoot(config.ToolchainRoot) || !validKnowledgeCuratorURL(config.KnowledgeCuratorURL, config.Environment) || !validSecretReference(config.LeaseSigningKeyRef) || !validDeploymentProfile(config.DeploymentProfile)) {
+		return ErrInvalidConfiguration
+	}
+	if config.Component == "aor-toolchain-provisioner" && (!validKnowledgeRoot(config.ToolchainRoot) || !validKnowledgeRoot(config.ToolchainWorkRoot) || config.ToolchainRoot == config.ToolchainWorkRoot) {
 		return ErrInvalidConfiguration
 	}
 	if config.AllowAnonymousControlAPI && (config.Component != "aor-server" || !oneOf(config.Environment, EnvironmentDevelopment, EnvironmentTest) || config.Identity.DefaultTenantID == "" || config.Identity.DefaultRole != "USER") {
@@ -836,7 +841,7 @@ func oneOf(value string, options ...string) bool {
 }
 
 func knownComponent(component string) bool {
-	return oneOf(component, "aor-server", "aor-model-gateway", "aor-tool-broker", "aor-worker")
+	return oneOf(component, "aor-server", "aor-model-gateway", "aor-tool-broker", "aor-worker", "aor-toolchain-provisioner")
 }
 
 func validDeploymentProfile(value string) bool {
@@ -1012,7 +1017,7 @@ func validSandboxHoldCommand(command []string) bool {
 }
 
 func needsDatabase(component string) bool {
-	return oneOf(component, "aor-server", "aor-model-gateway", "aor-tool-broker", "aor-worker")
+	return oneOf(component, "aor-server", "aor-model-gateway", "aor-tool-broker", "aor-worker", "aor-toolchain-provisioner")
 }
 
 func needsTemporal(component string) bool {
@@ -1020,7 +1025,7 @@ func needsTemporal(component string) bool {
 }
 
 func needsNATS(component string) bool {
-	return knownComponent(component)
+	return oneOf(component, "aor-server", "aor-model-gateway", "aor-tool-broker", "aor-worker")
 }
 
 func needsS3(component string) bool {
