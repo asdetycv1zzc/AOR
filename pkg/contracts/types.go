@@ -100,7 +100,7 @@ const (
 type ToolchainInstallMethod string
 
 const (
-	ToolchainInstallCrosstoolNG ToolchainInstallMethod = "CROSSTOOL_NG"
+	ToolchainInstallManual      ToolchainInstallMethod = "MANUAL"
 	ToolchainInstallUserArchive ToolchainInstallMethod = "USER_ARCHIVE"
 )
 
@@ -660,6 +660,12 @@ func validateToolchainInstall(tool VersionedTool) error {
 	if install == nil {
 		return fmt.Errorf("toolchain installation descriptor is required")
 	}
+	if install.Method == ToolchainInstallManual {
+		if install.DownloadURL != "" || !IsGCCTool(tool) || install.Authorized || install.EvidenceRef != "" {
+			return fmt.Errorf("manual installation is restricted to GCC without runtime authorization")
+		}
+		return nil
+	}
 	if install.Authorized {
 		if !validToolchainEvidenceRef(install.EvidenceRef) {
 			return fmt.Errorf("authorized toolchain installation requires immutable user evidence")
@@ -668,10 +674,6 @@ func validateToolchainInstall(tool VersionedTool) error {
 		return fmt.Errorf("unauthorized toolchain installation cannot claim evidence")
 	}
 	switch install.Method {
-	case ToolchainInstallCrosstoolNG:
-		if install.DownloadURL != "" || !IsGCCTool(tool) {
-			return fmt.Errorf("crosstool-ng installation is restricted to GCC")
-		}
 	case ToolchainInstallUserArchive:
 		if install.DownloadURL == "" {
 			if install.Authorized {
@@ -704,7 +706,7 @@ func IsGCCTool(tool VersionedTool) bool {
 
 func (tool VersionedTool) ReadyToProvision() bool {
 	return tool.Source == ToolchainInstallRequired && tool.Install != nil && tool.Install.Authorized &&
-		(tool.Install.Method == ToolchainInstallCrosstoolNG || tool.Install.Method == ToolchainInstallUserArchive && tool.Install.DownloadURL != "")
+		tool.Install.Method == ToolchainInstallUserArchive && tool.Install.DownloadURL != ""
 }
 
 func (tool VersionedTool) NeedsInstallationInput() bool {

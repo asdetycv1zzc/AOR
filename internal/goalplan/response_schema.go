@@ -139,7 +139,7 @@ const goalDraftSchema = `{
       "type": "object", "additionalProperties": false,
       "required": ["method", "authorized"],
       "properties": {
-        "method": {"enum": ["CROSSTOOL_NG", "USER_ARCHIVE"]},
+        "method": {"enum": ["MANUAL", "USER_ARCHIVE"]},
         "authorized": {"type": "boolean"},
         "evidenceRef": {"type": "string", "pattern": "^artifact://sha256/[0-9a-f]{64}$"},
         "downloadUrl": {"type": "string", "format": "uri", "pattern": "^https://[^#]+$"}
@@ -147,7 +147,7 @@ const goalDraftSchema = `{
       "allOf": [
         {"if": {"properties": {"authorized": {"const": true}}, "required": ["authorized"]}, "then": {"required": ["evidenceRef"]}, "else": {"not": {"required": ["evidenceRef"]}}},
         {"if": {"properties": {"method": {"const": "USER_ARCHIVE"}, "authorized": {"const": true}}, "required": ["method", "authorized"]}, "then": {"required": ["downloadUrl"]}},
-        {"if": {"properties": {"method": {"const": "CROSSTOOL_NG"}}, "required": ["method"]}, "then": {"not": {"required": ["downloadUrl"]}}}
+        {"if": {"properties": {"method": {"const": "MANUAL"}}, "required": ["method"]}, "then": {"properties": {"authorized": {"const": false}}, "not": {"required": ["downloadUrl"]}}}
       ]
     }
   }
