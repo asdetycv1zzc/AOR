@@ -386,6 +386,13 @@
       "file": "000055_project_activity_reasoning_summary.up.sql",
       "sha256": "sha256:6f8c47457c6b9aec90317e80283b012b39269ffe73c84dd7910bad68d32bd91b",
       "destructive": false
+    },
+    {
+      "version": 56,
+      "mode": "EXPAND",
+      "file": "000056_toolchain_installations.up.sql",
+      "sha256": "sha256:f135c565436bd1f1554998740507f7198c367cb06efdf71847ace9c2ab454749",
+      "destructive": false
     }
   ]
 }
