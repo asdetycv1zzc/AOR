@@ -42,10 +42,7 @@ func (catalog *PostgresS3Catalog) PublishUserUpload(ctx context.Context, upload 
 		!trustedTenant(ctx, upload.TenantID) || !validUserUpload(upload) {
 		return Record{}, ErrInvalidRequest
 	}
-	if existing, err := catalog.GetByIdempotencyKey(ctx, upload.TenantID, upload.ProjectID, upload.IdempotencyKey); err == nil {
-		if userUploadMatches(existing, upload) {
-			return existing, nil
-		}
+	if _, err := catalog.GetByIdempotencyKey(ctx, upload.TenantID, upload.ProjectID, upload.IdempotencyKey); err == nil {
 		return Record{}, ErrConflict
 	} else if !errors.Is(err, ErrNotFound) {
 		return Record{}, err
