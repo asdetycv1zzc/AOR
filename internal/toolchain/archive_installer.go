@@ -27,13 +27,14 @@ import (
 )
 
 var (
-	ErrUnsupportedArchive   = errors.New("unsupported toolchain archive")
-	ErrUnsupportedTool      = errors.New("unsupported portable toolchain")
-	ErrArchiveLimit         = errors.New("toolchain archive limit exceeded")
-	ErrToolchainConflict    = errors.New("toolchain inventory ID conflict")
-	ErrToolchainDigest      = errors.New("toolchain archive SHA-256 mismatch")
-	ErrToolchainVersion     = errors.New("toolchain version probe mismatch")
-	ErrToolchainNotPortable = errors.New("toolchain archive is not a self-contained portable distribution")
+	ErrUnsupportedArchive      = errors.New("unsupported toolchain archive")
+	ErrUnsupportedTool         = errors.New("unsupported portable toolchain")
+	ErrArchiveLimit            = errors.New("toolchain archive limit exceeded")
+	ErrToolchainConflict       = errors.New("toolchain inventory ID conflict")
+	ErrToolchainDigest         = errors.New("toolchain archive SHA-256 mismatch")
+	ErrToolchainVersion        = errors.New("toolchain version probe mismatch")
+	ErrToolchainNotPortable    = errors.New("toolchain archive is not a self-contained portable distribution")
+	ErrUploadedArchiveMetadata = errors.New("uploaded toolchain archive metadata does not match the GoalSpec")
 )
 
 const (
@@ -74,6 +75,14 @@ type profileExecutable struct {
 	name        string
 	paths       []string
 	versionArgs []string
+}
+
+var crosstoolNGProfile = toolProfile{
+	names: []string{"gcc", "g++", "gnu gcc", "gnu g++", "gnu c++"},
+	executables: []profileExecutable{
+		{name: "gcc", paths: []string{"bin/gcc"}, versionArgs: []string{"--version"}},
+		{name: "g++", paths: []string{"bin/g++"}, versionArgs: []string{"--version"}},
+	},
 }
 
 var portableToolProfiles = []toolProfile{
@@ -129,12 +138,34 @@ func (installer *ArchiveInstaller) Install(ctx context.Context, tool contracts.V
 		!SupportsPortableArchive(tool) {
 		return InstalledTool{}, ErrUnsupportedTool
 	}
+	return installer.installArchive(ctx, tool, languages, tool.Install.DownloadURL, func(destination string) (string, error) {
+		return installer.download(ctx, tool.Install.DownloadURL, destination)
+	})
+}
+
+func (installer *ArchiveInstaller) InstallUploaded(ctx context.Context, tool contracts.VersionedTool, languages []string, source io.Reader) (InstalledTool, error) {
+	if installer == nil || ctx == nil || source == nil || !tool.ReadyToProvision() || tool.Install == nil ||
+		tool.Install.Method != contracts.ToolchainInstallCrosstoolNGArchive || !SupportsCrosstoolNGArchive(tool) {
+		return InstalledTool{}, ErrUnsupportedTool
+	}
+	return installer.installArchive(ctx, tool, languages, "toolchain.tar.gz", func(destination string) (string, error) {
+		return installer.copyArchive(source, destination)
+	})
+}
+
+func (installer *ArchiveInstaller) installArchive(ctx context.Context, tool contracts.VersionedTool, languages []string, archiveName string, materialize func(string) (string, error)) (InstalledTool, error) {
 	if err := validateVersionedToolContract(tool); err != nil {
 		return InstalledTool{}, ErrUnsupportedTool
 	}
-	profile, found := profileFor(tool.Name)
-	if !found {
-		return InstalledTool{}, ErrUnsupportedTool
+	profile := crosstoolNGProfile
+	if tool.Install.Method == contracts.ToolchainInstallUserArchive {
+		var found bool
+		profile, found = profileFor(tool.Name)
+		if !found {
+			return InstalledTool{}, ErrUnsupportedTool
+		}
+	} else if len(languages) == 0 {
+		languages = []string{"C", "C++"}
 	}
 	languages, err := normalizeLanguages(languages, tool.Name)
 	if err != nil {
@@ -152,7 +183,7 @@ func (installer *ArchiveInstaller) Install(ctx context.Context, tool contracts.V
 	}
 	defer os.RemoveAll(jobRoot)
 	archivePath := filepath.Join(jobRoot, "source.archive")
-	digest, err := installer.download(ctx, tool.Install.DownloadURL, archivePath)
+	digest, err := materialize(archivePath)
 	if err != nil {
 		return InstalledTool{}, err
 	}
@@ -163,7 +194,7 @@ func (installer *ArchiveInstaller) Install(ctx context.Context, tool contracts.V
 	if err := os.Mkdir(extractRoot, 0o700); err != nil {
 		return InstalledTool{}, err
 	}
-	if err := installer.extract(ctx, archivePath, tool.Install.DownloadURL, extractRoot); err != nil {
+	if err := installer.extract(ctx, archivePath, archiveName, extractRoot); err != nil {
 		return InstalledTool{}, err
 	}
 	payloadRoot, err := normalizedPayloadRoot(extractRoot)
@@ -180,20 +211,58 @@ func (installer *ArchiveInstaller) Install(ctx context.Context, tool contracts.V
 		return InstalledTool{}, err
 	}
 	payloadRoot = relocatedRoot
+	if tool.Install.Method == contracts.ToolchainInstallCrosstoolNGArchive {
+		if err := normalizeCrosstoolNGEntrypoints(payloadRoot); err != nil {
+			return InstalledTool{}, err
+		}
+	}
 	executables, binDirs, err := locateExecutables(payloadRoot, profile)
 	if err != nil {
 		return InstalledTool{}, err
 	}
-	if err := installer.prober.Probe(ctx, probeRequest(payloadRoot, executables, profile, tool.Version)); err != nil {
+	request := probeRequest(payloadRoot, executables, profile, tool.Version)
+	if tool.Install.Method == contracts.ToolchainInstallCrosstoolNGArchive {
+		request.Commands = append(request.Commands,
+			ProbeCommand{Name: "c-compile", Path: executables[0].Path, Args: []string{"-x", "c", "-c", "{source}", "-o", "{output}"}, Source: "int main(void) { return 0; }\n"},
+			ProbeCommand{Name: "cpp-compile", Path: executables[1].Path, Args: []string{"-x", "c++", "-c", "{source}", "-o", "{output}"}, Source: "int main() { return 0; }\n"},
+		)
+	}
+	if err := installer.prober.Probe(ctx, request); err != nil {
 		return InstalledTool{}, err
+	}
+	provenance := &InstallationProvenance{Method: tool.Install.Method, SourceSHA256: "sha256:" + digest,
+		EvidenceRef: tool.Install.EvidenceRef, InstalledAt: installer.clock().UTC().Format(time.RFC3339Nano)}
+	if tool.Install.Method == contracts.ToolchainInstallUserArchive {
+		provenance.SourceURL = tool.Install.DownloadURL
+	} else {
+		provenance.SourceArtifactRef = tool.Install.ArtifactRef
 	}
 	manifest := InstalledTool{
 		SchemaVersion: 1, ID: id, Kind: tool.Kind, Name: tool.Name, Version: tool.Version, Platform: tool.Platform,
 		Architecture: canonicalArchitecture(tool.Architecture), Languages: languages, BinDirs: binDirs, Executables: executables,
-		Provenance: &InstallationProvenance{Method: contracts.ToolchainInstallUserArchive, SourceURL: tool.Install.DownloadURL,
-			SourceSHA256: "sha256:" + digest, EvidenceRef: tool.Install.EvidenceRef, InstalledAt: installer.clock().UTC().Format(time.RFC3339Nano)},
+		Provenance: provenance,
 	}
 	return installer.publish(ctx, payloadRoot, manifest)
+}
+
+func (installer *ArchiveInstaller) copyArchive(source io.Reader, destination string) (string, error) {
+	file, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.New()
+	written, copyErr := io.Copy(io.MultiWriter(file, hash), io.LimitReader(source, installer.maxDownloadBytes+1))
+	closeErr := file.Close()
+	if copyErr != nil {
+		return "", copyErr
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	if written > installer.maxDownloadBytes {
+		return "", ErrArchiveLimit
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func validateVersionedToolContract(tool contracts.VersionedTool) error {
@@ -575,6 +644,82 @@ func SupportsPortableArchive(tool contracts.VersionedTool) bool {
 	}
 	_, found := profileFor(tool.Name)
 	return found
+}
+
+func SupportsCrosstoolNGArchive(tool contracts.VersionedTool) bool {
+	return tool.Platform == contracts.PlatformLinux && contracts.IsGCCTool(tool) && architectureMatches(tool.Architecture)
+}
+
+func SupportsProvisionableArchive(tool contracts.VersionedTool) bool {
+	if tool.Install == nil {
+		return false
+	}
+	switch tool.Install.Method {
+	case contracts.ToolchainInstallUserArchive:
+		return SupportsPortableArchive(tool)
+	case contracts.ToolchainInstallCrosstoolNGArchive:
+		return SupportsCrosstoolNGArchive(tool)
+	default:
+		return false
+	}
+}
+
+func normalizeCrosstoolNGEntrypoints(root string) error {
+	binRoot := filepath.Join(root, "bin")
+	entries, err := os.ReadDir(binRoot)
+	if err != nil {
+		return ErrToolchainNotPortable
+	}
+	var gccTarget, gxxTarget string
+	gccTargets := make(map[string]string)
+	gxxTargets := make(map[string]string)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if name == "gcc" {
+			gccTarget = name
+		} else if name == "g++" {
+			gxxTarget = name
+		} else if strings.HasSuffix(name, "-gcc") {
+			gccTargets[strings.TrimSuffix(name, "gcc")] = name
+		} else if strings.HasSuffix(name, "-g++") {
+			gxxTargets[strings.TrimSuffix(name, "g++")] = name
+		}
+	}
+	if (gccTarget == "") != (gxxTarget == "") {
+		return ErrToolchainNotPortable
+	}
+	if gccTarget == "" {
+		var pairedGCC, pairedGXX string
+		for prefix, candidateGCC := range gccTargets {
+			candidateGXX, found := gxxTargets[prefix]
+			if !found {
+				continue
+			}
+			if pairedGCC != "" {
+				return ErrToolchainNotPortable
+			}
+			pairedGCC, pairedGXX = candidateGCC, candidateGXX
+		}
+		if pairedGCC == "" {
+			return ErrToolchainNotPortable
+		}
+		gccTarget, gxxTarget = pairedGCC, pairedGXX
+	}
+	if gccTarget == "" || gxxTarget == "" {
+		return ErrToolchainNotPortable
+	}
+	for alias, target := range map[string]string{"gcc": gccTarget, "g++": gxxTarget} {
+		if alias == target {
+			continue
+		}
+		if err := os.Symlink(target, filepath.Join(binRoot, alias)); err != nil && !errors.Is(err, os.ErrExist) {
+			return err
+		}
+	}
+	return nil
 }
 
 func locateExecutables(root string, profile toolProfile) ([]Executable, []string, error) {

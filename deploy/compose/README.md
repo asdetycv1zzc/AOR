@@ -36,7 +36,7 @@ Each immediate child directory is one inventory ID and must contain `toolchain.j
     bin/gofmt
 ```
 
-For GCC and G++, installation remains manual: install the requested exact version and its manifest in the inventory, then continue Goal negotiation. AOR does not run crosstool-ng or install GCC from an archive.
+For GCC and G++, upload a relocatable crosstool-ng `tar.gz` from the Goal workspace. AOR verifies the authorized SHA-256, installs the archive into the shared toolchain inventory, and probes both `gcc` and `g++`; it does not build crosstool-ng toolchains itself.
 
 For other supported toolchains, Goal negotiation asks the user for the official HTTPS release archive URL and explicit authorization. The provisioner accepts only self-contained Linux archives for the current architecture, downloads and hashes the archive, extracts it without running installer scripts, checks its requested version, and atomically publishes the tool plus provenance manifest. Supported portable profiles are Go, Node.js, .NET SDK, JDK, Python, Rust, Perl, GHC, Free Pascal, NASM, and YASM. Source distributions and archives that depend on host installation scripts are rejected and must be installed manually. A durable queue retries transient download failures up to five attempts; after installation, the control process rescans the immutable inventory and automatically asks the Goal agent to replace `INSTALL_REQUIRED` with the new `INSTALLED` entry.
 

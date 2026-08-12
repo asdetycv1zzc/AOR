@@ -3,6 +3,7 @@ package toolchain
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -12,6 +13,10 @@ import (
 )
 
 var ErrProvisionerUnavailable = errors.New("toolchain provisioner unavailable")
+
+type UploadedArchiveSource interface {
+	Open(context.Context, string, string, string, contracts.VersionedTool) (io.ReadCloser, error)
+}
 
 const (
 	installationLeaseDuration  = time.Hour
@@ -23,18 +28,26 @@ type Provisioner struct {
 	installer    *ArchiveInstaller
 	pollInterval time.Duration
 	clock        func() time.Time
+	uploads      UploadedArchiveSource
 	running      atomic.Bool
 	failingSince atomic.Int64
 }
 
-func NewProvisioner(store *InstallStore, installer *ArchiveInstaller, pollInterval time.Duration, clock func() time.Time) (*Provisioner, error) {
+func NewProvisioner(store *InstallStore, installer *ArchiveInstaller, pollInterval time.Duration, clock func() time.Time, uploads ...UploadedArchiveSource) (*Provisioner, error) {
 	if store == nil || installer == nil || pollInterval < 100*time.Millisecond || pollInterval > time.Minute {
 		return nil, ErrProvisionerUnavailable
 	}
 	if clock == nil {
 		clock = time.Now
 	}
-	return &Provisioner{store: store, installer: installer, pollInterval: pollInterval, clock: clock}, nil
+	var uploadSource UploadedArchiveSource
+	if len(uploads) > 1 {
+		return nil, ErrProvisionerUnavailable
+	}
+	if len(uploads) == 1 {
+		uploadSource = uploads[0]
+	}
+	return &Provisioner{store: store, installer: installer, pollInterval: pollInterval, clock: clock, uploads: uploadSource}, nil
 }
 
 func (provisioner *Provisioner) Run(ctx context.Context) {
@@ -90,12 +103,27 @@ func (provisioner *Provisioner) DispatchOnce(ctx context.Context) error {
 	installation := installations[0]
 	if !validProvisioningRequest(installation.Tool) {
 		return provisioner.store.Fail(ctx, installation.ID, installation.LeaseToken, installation.Attempt, false,
-			"AOR_TOOLCHAIN_INSTALL_UNSUPPORTED", "only authorized non-GCC USER_ARCHIVE installations can be provisioned", provisioner.clock().UTC())
+			"AOR_TOOLCHAIN_INSTALL_UNSUPPORTED", "toolchain archive is not supported by the provisioner", provisioner.clock().UTC())
 	}
 	installContext, cancelInstall := context.WithCancel(ctx)
 	heartbeatDone := make(chan error, 1)
 	go provisioner.renewInstallationLease(installContext, cancelInstall, installation, heartbeatDone)
-	installed, installErr := provisioner.installer.Install(installContext, installation.Tool, nil)
+	var installed InstalledTool
+	var installErr error
+	if installation.Tool.Install.Method == contracts.ToolchainInstallCrosstoolNGArchive {
+		if provisioner.uploads == nil || installation.Tool.Install.ArtifactID == "" {
+			installErr = ErrUnsupportedTool
+		} else {
+			var source io.ReadCloser
+			source, installErr = provisioner.uploads.Open(installContext, installation.TenantID, installation.ProjectID, installation.Tool.Install.ArtifactID, installation.Tool)
+			if installErr == nil {
+				installed, installErr = provisioner.installer.InstallUploaded(installContext, installation.Tool, nil, source)
+				_ = source.Close()
+			}
+		}
+	} else {
+		installed, installErr = provisioner.installer.Install(installContext, installation.Tool, nil)
+	}
 	cancelInstall()
 	heartbeatErr := <-heartbeatDone
 	if heartbeatErr != nil {
@@ -132,7 +160,7 @@ func (provisioner *Provisioner) renewInstallationLease(ctx context.Context, canc
 }
 
 func validProvisioningRequest(tool contracts.VersionedTool) bool {
-	return tool.ReadyToProvision() && tool.Install != nil && tool.Install.Method == contracts.ToolchainInstallUserArchive && SupportsPortableArchive(tool)
+	return tool.ReadyToProvision() && tool.Install != nil && SupportsProvisionableArchive(tool)
 }
 
 func provisioningErrorRetryable(err error) bool {
@@ -144,6 +172,7 @@ func provisioningErrorRetryable(err error) bool {
 		ErrToolchainDigest,
 		ErrToolchainVersion,
 		ErrToolchainNotPortable,
+		ErrUploadedArchiveMetadata,
 		ErrInvalidInventory,
 	} {
 		if errors.Is(err, permanent) {
@@ -165,6 +194,8 @@ func provisioningErrorCode(err error) string {
 		return "AOR_TOOLCHAIN_ARCHIVE_DIGEST_MISMATCH"
 	case errors.Is(err, ErrToolchainNotPortable):
 		return "AOR_TOOLCHAIN_ARCHIVE_NOT_PORTABLE"
+	case errors.Is(err, ErrUploadedArchiveMetadata):
+		return "AOR_TOOLCHAIN_ARCHIVE_METADATA_MISMATCH"
 	case errors.Is(err, ErrUnsupportedArchive), errors.Is(err, ErrUnsupportedTool), errors.Is(err, ErrInvalidInventory):
 		return "AOR_TOOLCHAIN_INSTALL_UNSUPPORTED"
 	default:

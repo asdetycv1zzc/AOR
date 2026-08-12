@@ -23,9 +23,10 @@ const (
 )
 
 type ProbeCommand struct {
-	Name string   `json:"name"`
-	Path string   `json:"path"`
-	Args []string `json:"args"`
+	Name   string   `json:"name"`
+	Path   string   `json:"path"`
+	Args   []string `json:"args"`
+	Source string   `json:"source,omitempty"`
 }
 
 type ProbeRequest struct {
@@ -250,6 +251,9 @@ func validateProbeRequest(request ProbeRequest, workRoot string) error {
 		if !safeToken(command.Name, 128) || len(command.Args) > 16 {
 			return ErrInvalidInventory
 		}
+		if len(command.Source) > 4096 || strings.ContainsRune(command.Source, '\x00') {
+			return ErrInvalidInventory
+		}
 		path, err := containedPath(request.Root, command.Path)
 		if err != nil {
 			return ErrInvalidInventory
@@ -260,6 +264,12 @@ func validateProbeRequest(request ProbeRequest, workRoot string) error {
 		}
 		for _, argument := range command.Args {
 			if argument == "" || len(argument) > 128 || strings.ContainsAny(argument, "\r\n\x00") {
+				return ErrInvalidInventory
+			}
+		}
+		if command.Source != "" {
+			arguments := strings.Join(command.Args, "\x00")
+			if !strings.Contains(arguments, "{source}") || !strings.Contains(arguments, "{output}") {
 				return ErrInvalidInventory
 			}
 		}
@@ -276,14 +286,32 @@ func runProbe(ctx context.Context, request ProbeRequest) error {
 		return fmt.Errorf("create probe temporary directory: %w", err)
 	}
 	defer os.RemoveAll(temporaryRoot)
-	for _, probe := range request.Commands {
+	for index, probe := range request.Commands {
 		commandContext, cancel := context.WithTimeout(ctx, defaultProbeTimeout)
 		path, err := containedPath(request.Root, probe.Path)
 		if err != nil {
 			cancel()
 			return ErrToolchainNotPortable
 		}
-		command := exec.CommandContext(commandContext, path, probe.Args...)
+		arguments := append([]string(nil), probe.Args...)
+		var outputPath string
+		if probe.Source != "" {
+			probeRoot := filepath.Join(temporaryRoot, fmt.Sprintf("probe-%d", index))
+			if err := os.Mkdir(probeRoot, 0o700); err != nil {
+				cancel()
+				return fmt.Errorf("create probe input directory: %w", err)
+			}
+			sourcePath := filepath.Join(probeRoot, "source")
+			outputPath = filepath.Join(probeRoot, "output.o")
+			if err := os.WriteFile(sourcePath, []byte(probe.Source), 0o600); err != nil {
+				cancel()
+				return fmt.Errorf("write probe input: %w", err)
+			}
+			for argumentIndex, argument := range arguments {
+				arguments[argumentIndex] = strings.ReplaceAll(strings.ReplaceAll(argument, "{source}", sourcePath), "{output}", outputPath)
+			}
+		}
+		command := exec.CommandContext(commandContext, path, arguments...)
 		command.Dir = request.Root
 		command.Env = probeEnvironment(request.Root, temporaryRoot)
 		output, runErr := limitedCombinedOutput(command, defaultProbeLimit)
@@ -291,8 +319,14 @@ func runProbe(ctx context.Context, request ProbeRequest) error {
 		if runErr != nil {
 			return fmt.Errorf("%w: %s: %v", ErrToolchainNotPortable, probe.Name, runErr)
 		}
-		if !exactVersionInOutput(string(output), request.ExpectedVersion) {
+		if probe.Source == "" && !exactVersionInOutput(string(output), request.ExpectedVersion) {
 			return fmt.Errorf("%w: %s", ErrToolchainVersion, probe.Name)
+		}
+		if probe.Source != "" {
+			info, statErr := os.Stat(outputPath)
+			if statErr != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+				return fmt.Errorf("%w: %s did not produce an object", ErrToolchainNotPortable, probe.Name)
+			}
 		}
 	}
 	return nil

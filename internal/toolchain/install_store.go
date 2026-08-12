@@ -82,7 +82,7 @@ func (store *InstallStore) Schedule(ctx context.Context, tenantID, projectID, go
 		if !tool.ReadyToProvision() {
 			continue
 		}
-		if tool.Install == nil || tool.Install.Method != contracts.ToolchainInstallUserArchive || !SupportsPortableArchive(tool) {
+		if tool.Install == nil || !SupportsProvisionableArchive(tool) {
 			return nil, ErrUnsupportedTool
 		}
 		raw, err := json.Marshal(tool)

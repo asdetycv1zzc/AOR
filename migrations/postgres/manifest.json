@@ -407,6 +407,13 @@
       "file": "000058_toolchain_schedule_reconciliation.up.sql",
       "sha256": "sha256:3676a691b21edd5801d3061e137f3f9c77daef807ca6e527173a1a58673b909b",
       "destructive": false
+    },
+    {
+      "version": 59,
+      "mode": "EXPAND",
+      "file": "000059_toolchain_crosstool_archives.up.sql",
+      "sha256": "sha256:db154fa6745d9cf1bf3c58ee88738b681b586f068bf452bc5ae2b6429c50b972",
+      "destructive": false
     }
   ]
 }

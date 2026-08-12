@@ -1036,7 +1036,7 @@ func needsNATS(component string) bool {
 }
 
 func needsS3(component string) bool {
-	return component == "aor-server" || component == "aor-tool-broker" || component == "aor-worker"
+	return component == "aor-server" || component == "aor-tool-broker" || component == "aor-worker" || component == "aor-toolchain-provisioner"
 }
 
 func needsOPA(component string) bool {

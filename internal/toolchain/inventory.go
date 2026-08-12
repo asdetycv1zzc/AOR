@@ -40,11 +40,12 @@ type InstalledTool struct {
 }
 
 type InstallationProvenance struct {
-	Method       contracts.ToolchainInstallMethod `json:"method"`
-	SourceURL    string                           `json:"sourceUrl"`
-	SourceSHA256 string                           `json:"sourceSha256"`
-	EvidenceRef  string                           `json:"evidenceRef"`
-	InstalledAt  string                           `json:"installedAt"`
+	Method            contracts.ToolchainInstallMethod `json:"method"`
+	SourceURL         string                           `json:"sourceUrl,omitempty"`
+	SourceArtifactRef string                           `json:"sourceArtifactRef,omitempty"`
+	SourceSHA256      string                           `json:"sourceSha256"`
+	EvidenceRef       string                           `json:"evidenceRef"`
+	InstalledAt       string                           `json:"installedAt"`
 }
 
 type Inventory struct {
@@ -276,12 +277,26 @@ func validateInstalledTool(root string, tool InstalledTool) error {
 }
 
 func validInstallationProvenance(provenance InstallationProvenance) bool {
-	if provenance.Method != contracts.ToolchainInstallUserArchive || !strings.HasPrefix(provenance.SourceURL, "https://") ||
-		!strings.HasPrefix(provenance.SourceSHA256, "sha256:") || len(provenance.SourceSHA256) != len("sha256:")+64 ||
+	if !strings.HasPrefix(provenance.SourceSHA256, "sha256:") || len(provenance.SourceSHA256) != len("sha256:")+64 ||
 		!strings.HasPrefix(provenance.EvidenceRef, "artifact://sha256/") || len(provenance.EvidenceRef) != len("artifact://sha256/")+64 {
 		return false
 	}
-	for _, digest := range []string{strings.TrimPrefix(provenance.SourceSHA256, "sha256:"), strings.TrimPrefix(provenance.EvidenceRef, "artifact://sha256/")} {
+	switch provenance.Method {
+	case contracts.ToolchainInstallUserArchive:
+		if !strings.HasPrefix(provenance.SourceURL, "https://") || provenance.SourceArtifactRef != "" {
+			return false
+		}
+	case contracts.ToolchainInstallCrosstoolNGArchive:
+		if provenance.SourceURL != "" || provenance.SourceArtifactRef != "artifact://sha256/"+strings.TrimPrefix(provenance.SourceSHA256, "sha256:") {
+			return false
+		}
+	default:
+		return false
+	}
+	for _, digest := range []string{strings.TrimPrefix(provenance.SourceSHA256, "sha256:"), strings.TrimPrefix(provenance.EvidenceRef, "artifact://sha256/"), strings.TrimPrefix(provenance.SourceArtifactRef, "artifact://sha256/")} {
+		if digest == "" {
+			continue
+		}
 		for _, character := range digest {
 			if character < '0' || character > '9' && character < 'a' || character > 'f' {
 				return false

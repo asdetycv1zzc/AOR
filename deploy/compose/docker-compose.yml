@@ -262,6 +262,7 @@ services:
         fi
         psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000057_toolchain_installation_hardening.up.sql
         psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000058_toolchain_schedule_reconciliation.up.sql
+        psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000059_toolchain_crosstool_archives.up.sql
         unset AOR_APP_PASSWORD
     secrets: [postgres_password, postgres_app_password]
     volumes:
@@ -323,6 +324,7 @@ services:
       - ../../migrations/postgres/000056_toolchain_installations.up.sql:/migrations/000056_toolchain_installations.up.sql:ro
       - ../../migrations/postgres/000057_toolchain_installation_hardening.up.sql:/migrations/000057_toolchain_installation_hardening.up.sql:ro
       - ../../migrations/postgres/000058_toolchain_schedule_reconciliation.up.sql:/migrations/000058_toolchain_schedule_reconciliation.up.sql:ro
+      - ../../migrations/postgres/000059_toolchain_crosstool_archives.up.sql:/migrations/000059_toolchain_crosstool_archives.up.sql:ro
       - ./postgres-app-password.sql:/migrations/postgres-app-password.sql:ro
     read_only: true
     tmpfs: [/tmp]
@@ -781,6 +783,10 @@ services:
         condition: service_healthy
       postgres-migrate:
         condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
       aor-toolchain-prober:
         condition: service_healthy
       otel-collector:
@@ -795,10 +801,15 @@ services:
       AOR_DATABASE_NAME: aor
       AOR_DATABASE_USER: aor_app
       AOR_DATABASE_PASSWORD_REF: secret://postgres_app_password
+      AOR_S3_ENDPOINT: http://127.0.0.1:9000
+      AOR_S3_BUCKET: aor-artifacts
+      AOR_S3_REGION: us-east-1
+      AOR_S3_ACCESS_KEY_REF: secret://minio_root_user
+      AOR_S3_SECRET_KEY_REF: secret://minio_root_password
       AOR_TOOLCHAIN_ROOT: /opt/aor/toolchains
       AOR_TOOLCHAIN_WORK_ROOT: /var/lib/aor/toolchain-work
       AOR_TOOLCHAIN_PROBE_SOCKET: /var/run/aor-toolchain-probe/probe.sock
-    secrets: [postgres_app_password]
+    secrets: [postgres_app_password, minio_root_user, minio_root_password]
     volumes:
       - "${AOR_TOOLCHAINS_HOST_PATH:-aor-toolchains-data}:/opt/aor/toolchains:rw"
       - aor-toolchain-work-data:/var/lib/aor/toolchain-work

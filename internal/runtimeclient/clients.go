@@ -364,7 +364,7 @@ func requiresTemporal(component string) bool {
 }
 
 func requiresS3(component string) bool {
-	return component == "aor-server" || component == "aor-tool-broker" || component == "aor-worker"
+	return component == "aor-server" || component == "aor-tool-broker" || component == "aor-worker" || component == "aor-toolchain-provisioner"
 }
 
 func requiresOPA(component string) bool {
