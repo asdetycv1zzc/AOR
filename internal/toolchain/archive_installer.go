@@ -241,7 +241,7 @@ func (installer *ArchiveInstaller) extract(ctx context.Context, archivePath, raw
 	case "zip":
 		return installer.extractZip(ctx, archivePath, destination)
 	case "tar", "tar.gz", "tar.xz", "tar.zst":
-		reader, closeReader, err := tarStream(ctx, archivePath, kind)
+		reader, closeReader, err := tarStream(ctx, archivePath, kind, installer.maxExtractBytes)
 		if err != nil {
 			return err
 		}
@@ -266,7 +266,7 @@ func archiveKind(rawURL string) string {
 	return ""
 }
 
-func tarStream(ctx context.Context, path, kind string) (io.Reader, func(), error) {
+func tarStream(ctx context.Context, path, kind string, maximumDecodedBytes int64) (io.Reader, func(), error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, nil, err
@@ -283,7 +283,7 @@ func tarStream(ctx context.Context, path, kind string) (io.Reader, func(), error
 		}
 		return reader, func() { _ = reader.Close(); closeFile() }, nil
 	case "tar.zst":
-		reader, err := zstd.NewReader(file, zstd.WithDecoderMaxMemory(uint64(defaultExtractLimit)))
+		reader, err := zstd.NewReader(file, zstd.WithDecoderMaxMemory(uint64(maximumDecodedBytes)))
 		if err != nil {
 			closeFile()
 			return nil, nil, err
