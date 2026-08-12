@@ -24,7 +24,7 @@ The TEST profile runs the core Goal -> Plan -> Execution -> Audit path inside th
 
 ## Toolchains
 
-The Worker image contains Git but no language compiler, SDK, runtime, or build system. Put the AOR-wide host toolchain inventory below `${AOR_TOOLCHAINS_HOST_PATH:-/opt/aor/toolchains}` on the host. Compose mounts that directory read-only at `/opt/aor/toolchains` in the API, curator, and Worker so GoalSpec creation can list the available exact versions and execution can reuse the selected tools. AOR deliberately scans this managed global inventory rather than executing arbitrary binaries found elsewhere on the host `PATH`.
+The Worker image contains Git but no language compiler, SDK, runtime, or build system. The AOR-wide inventory is stored below `${AOR_TOOLCHAINS_HOST_PATH:-aor-toolchains-data}` and mounted read-only at `/opt/aor/toolchains` in the API, curator, and Worker. A separate provisioner is the only AOR process with write access. GoalSpec creation lists the exact installed versions and execution reuses only the selected inventory entries; AOR never executes arbitrary binaries found elsewhere on the host `PATH`.
 
 Each immediate child directory is one inventory ID and must contain `toolchain.json`; the directory name and manifest `id` must match. All `binDirs` and executable paths are relative to that directory, remain inside it after symlink resolution, and must exist. Directories must be readable and traversable by UID 65532, and Linux executables must retain their executable bits. See [`toolchain.example.json`](./toolchain.example.json) for the manifest shape. For example:
 
@@ -36,7 +36,9 @@ Each immediate child directory is one inventory ID and must contain `toolchain.j
     bin/gofmt
 ```
 
-The mount is read-only. A missing requested toolchain remains an unresolved `INSTALL_REQUIRED` item. Install it on the host, add its manifest, then continue Goal negotiation so AOR rescans the inventory; AOR never mutates the host toolchain directory from a container.
+For GCC and G++, installation remains manual: install the requested exact version and its manifest in the inventory, then continue Goal negotiation. AOR does not run crosstool-ng or install GCC from an archive.
+
+For other supported toolchains, Goal negotiation asks the user for the official HTTPS release archive URL and explicit authorization. The provisioner accepts only self-contained Linux archives for the current architecture, downloads and hashes the archive, extracts it without running installer scripts, checks its requested version, and atomically publishes the tool plus provenance manifest. Supported portable profiles are Go, Node.js, .NET SDK, JDK, Python, Rust, Perl, GHC, Free Pascal, NASM, and YASM. Source distributions and archives that depend on host installation scripts are rejected and must be installed manually. A durable queue retries transient download failures up to five attempts; after installation, the control process rescans the immutable inventory and automatically asks the Goal agent to replace `INSTALL_REQUIRED` with the new `INSTALLED` entry.
 
 ## Secrets
 

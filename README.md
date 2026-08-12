@@ -32,6 +32,7 @@ The TEST worker runs each module's plan-owned `verificationEntrypoint` against a
 - `aor-cli`: complete administrative CLI
 - `aor-model-gateway`: provider isolation and budget enforcement
 - `aor-tool-broker`: authorized MCP and tool execution
+- `aor-toolchain-provisioner`: authorized non-GCC portable toolchain installation and inventory publication
 - `aor-conformance`: contract, state, security, and release evidence runner
 
 Architecture decisions are recorded in `adr/`; requirement coverage is recorded in `conformance/requirements.yaml`.
