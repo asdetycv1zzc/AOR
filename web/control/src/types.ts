@@ -258,6 +258,12 @@ export interface GoalToolchainTool {
   platform: string;
   architecture: string;
   source: "INSTALLED" | "INSTALL_REQUIRED";
+  install?: {
+    method: "CROSSTOOL_NG" | "USER_ARCHIVE";
+    authorized: boolean;
+    evidenceRef?: string;
+    downloadUrl?: string;
+  };
 }
 
 export interface GoalToolchain {
