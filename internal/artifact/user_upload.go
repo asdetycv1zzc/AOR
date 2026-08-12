@@ -42,12 +42,6 @@ func (catalog *PostgresS3Catalog) PublishUserUpload(ctx context.Context, upload 
 		!trustedTenant(ctx, upload.TenantID) || !validUserUpload(upload) {
 		return Record{}, ErrInvalidRequest
 	}
-	if _, err := catalog.GetByIdempotencyKey(ctx, upload.TenantID, upload.ProjectID, upload.IdempotencyKey); err == nil {
-		return Record{}, ErrConflict
-	} else if !errors.Is(err, ErrNotFound) {
-		return Record{}, err
-	}
-
 	stageName := "staging/" + upload.TenantID + "/" + upload.ProjectID + "/" + uuid.NewString()
 	hasher := sha256.New()
 	reader := io.TeeReader(io.LimitReader(upload.Body, MaxUserUploadBytes+1), hasher)
@@ -198,7 +192,7 @@ SELECT a.id::text, a.tenant_id::text, a.project_id::text, a.uri, a.sha256, a.siz
 FROM artifact_publication_keys k
 JOIN artifacts a ON a.tenant_id = k.tenant_id AND a.project_id = k.project_id AND a.id = k.artifact_id
 WHERE k.tenant_id = $1::uuid AND k.project_id = $2::uuid AND k.idempotency_key = $3`, upload.TenantID, upload.ProjectID, upload.IdempotencyKey))
-		if lookupErr != nil || !userUploadMatches(mapped, upload) {
+		if lookupErr != nil || mapped.URI != record.URI || mapped.SHA256 != record.SHA256 || !userUploadMatches(mapped, upload) {
 			return Record{}, ErrConflict
 		}
 		record = mapped
