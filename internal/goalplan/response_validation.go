@@ -60,6 +60,12 @@ func goalDraftSemanticValidator(request AgentInvocation, inventory *toolchain.In
 			if install.Method == contracts.ToolchainInstallUserArchive && install.DownloadURL != "" && !strings.Contains(string(message.Content), install.DownloadURL) {
 				return ErrAgentOutput
 			}
+			if install.Method == contracts.ToolchainInstallUserArchive && install.SourceSHA256 != "" && !strings.Contains(string(message.Content), install.SourceSHA256) {
+				return ErrAgentOutput
+			}
+			if install.Method == contracts.ToolchainInstallUserArchive && install.Authorized && !toolchain.SupportsPortableArchive(selected) {
+				return ErrAgentOutput
+			}
 		}
 		return nil
 	}

@@ -97,6 +97,7 @@ func provisioningErrorRetryable(err error) bool {
 		ErrUnsupportedTool,
 		ErrArchiveLimit,
 		ErrToolchainConflict,
+		ErrToolchainDigest,
 		ErrToolchainVersion,
 		ErrToolchainNotPortable,
 		ErrInvalidInventory,
@@ -116,6 +117,8 @@ func provisioningErrorCode(err error) string {
 		return "AOR_TOOLCHAIN_VERSION_MISMATCH"
 	case errors.Is(err, ErrToolchainConflict):
 		return "AOR_TOOLCHAIN_INVENTORY_CONFLICT"
+	case errors.Is(err, ErrToolchainDigest):
+		return "AOR_TOOLCHAIN_ARCHIVE_DIGEST_MISMATCH"
 	case errors.Is(err, ErrToolchainNotPortable):
 		return "AOR_TOOLCHAIN_ARCHIVE_NOT_PORTABLE"
 	case errors.Is(err, ErrUnsupportedArchive), errors.Is(err, ErrUnsupportedTool), errors.Is(err, ErrInvalidInventory):

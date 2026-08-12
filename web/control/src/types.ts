@@ -290,6 +290,7 @@ export interface GoalToolchainTool {
     authorized: boolean;
     evidenceRef?: string;
     downloadUrl?: string;
+    sourceSha256?: string;
   };
 }
 

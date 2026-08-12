@@ -210,10 +210,11 @@ type VersionedTool struct {
 }
 
 type ToolchainInstall struct {
-	Method      ToolchainInstallMethod `json:"method"`
-	Authorized  bool                   `json:"authorized"`
-	EvidenceRef string                 `json:"evidenceRef,omitempty"`
-	DownloadURL string                 `json:"downloadUrl,omitempty"`
+	Method       ToolchainInstallMethod `json:"method"`
+	Authorized   bool                   `json:"authorized"`
+	EvidenceRef  string                 `json:"evidenceRef,omitempty"`
+	DownloadURL  string                 `json:"downloadUrl,omitempty"`
+	SourceSHA256 string                 `json:"sourceSha256,omitempty"`
 }
 
 type GoalToolchain struct {
@@ -661,7 +662,7 @@ func validateToolchainInstall(tool VersionedTool) error {
 		return fmt.Errorf("toolchain installation descriptor is required")
 	}
 	if install.Method == ToolchainInstallManual {
-		if install.DownloadURL != "" || !IsGCCTool(tool) || install.Authorized || install.EvidenceRef != "" {
+		if install.DownloadURL != "" || install.SourceSHA256 != "" || !IsGCCTool(tool) || install.Authorized || install.EvidenceRef != "" {
 			return fmt.Errorf("manual installation is restricted to GCC without runtime authorization")
 		}
 		return nil
@@ -677,13 +678,19 @@ func validateToolchainInstall(tool VersionedTool) error {
 	case ToolchainInstallUserArchive:
 		if install.DownloadURL == "" {
 			if install.Authorized {
-				return fmt.Errorf("authorized user archive installation requires an HTTPS download URL")
+				return fmt.Errorf("authorized user archive installation requires an HTTPS download URL and SHA-256 digest")
+			}
+			if install.SourceSHA256 != "" {
+				return fmt.Errorf("unauthorized user archive installation cannot claim a SHA-256 digest")
 			}
 			return nil
 		}
 		parsed, err := url.Parse(install.DownloadURL)
 		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" || !install.Authorized {
 			return fmt.Errorf("user archive installation requires an HTTPS download URL")
+		}
+		if validateDigest(install.SourceSHA256) != nil {
+			return fmt.Errorf("authorized user archive installation requires a lowercase SHA-256 digest")
 		}
 	default:
 		return fmt.Errorf("toolchain installation method is invalid")
@@ -706,7 +713,8 @@ func IsGCCTool(tool VersionedTool) bool {
 
 func (tool VersionedTool) ReadyToProvision() bool {
 	return tool.Source == ToolchainInstallRequired && tool.Install != nil && tool.Install.Authorized &&
-		tool.Install.Method == ToolchainInstallUserArchive && tool.Install.DownloadURL != ""
+		tool.Install.Method == ToolchainInstallUserArchive && tool.Install.DownloadURL != "" &&
+		validateDigest(tool.Install.SourceSHA256) == nil && !IsGCCTool(tool)
 }
 
 func (tool VersionedTool) NeedsInstallationInput() bool {

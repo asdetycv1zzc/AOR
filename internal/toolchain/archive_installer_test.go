@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
@@ -28,7 +30,7 @@ func TestArchiveInstallerInstallsPortableGoArchive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tool := archiveTool("Go", "1.26.5")
+	tool := archiveTool("Go", "1.26.5", archive)
 	installed, err := installer.Install(context.Background(), tool, []string{"Go"})
 	if err != nil {
 		t.Fatal(err)
@@ -52,23 +54,27 @@ func TestArchiveInstallerRejectsTraversalAndGCC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = installer.Install(context.Background(), archiveTool("Go", "1.26.5"), []string{"Go"})
+	traversal := traversalArchive(t)
+	client.Transport = staticArchiveTransport{content: traversal}
+	_, err = installer.Install(context.Background(), archiveTool("Go", "1.26.5", traversal), []string{"Go"})
 	if !errors.Is(err, ErrUnsupportedArchive) {
 		t.Fatalf("expected unsafe archive rejection, got %v", err)
 	}
-	gcc := archiveTool("GCC", "15.2.0")
+	gcc := archiveTool("GCC", "15.2.0", traversal)
 	_, err = installer.Install(context.Background(), gcc, []string{"C"})
 	if !errors.Is(err, ErrUnsupportedTool) {
 		t.Fatalf("expected GCC rejection, got %v", err)
 	}
 }
 
-func archiveTool(name, version string) contracts.VersionedTool {
+func archiveTool(name, version string, archive []byte) contracts.VersionedTool {
+	digest := sha256.Sum256(archive)
 	return contracts.VersionedTool{
 		Kind: contracts.ToolchainCompiler, Name: name, Version: version, Platform: contracts.PlatformLinux,
 		Architecture: runtime.GOARCH, Source: contracts.ToolchainInstallRequired,
 		Install: &contracts.ToolchainInstall{Method: contracts.ToolchainInstallUserArchive, Authorized: true,
-			EvidenceRef: "artifact://sha256/" + strings.Repeat("a", 64), DownloadURL: "https://downloads.example.invalid/tool.tar"},
+			EvidenceRef: "artifact://sha256/" + strings.Repeat("a", 64), DownloadURL: "https://downloads.example.invalid/tool.tar",
+			SourceSHA256: "sha256:" + hex.EncodeToString(digest[:])},
 	}
 }
 

@@ -31,6 +31,7 @@ var (
 	ErrUnsupportedTool      = errors.New("unsupported portable toolchain")
 	ErrArchiveLimit         = errors.New("toolchain archive limit exceeded")
 	ErrToolchainConflict    = errors.New("toolchain inventory ID conflict")
+	ErrToolchainDigest      = errors.New("toolchain archive SHA-256 mismatch")
 	ErrToolchainVersion     = errors.New("toolchain version probe mismatch")
 	ErrToolchainNotPortable = errors.New("toolchain archive is not a self-contained portable distribution")
 )
@@ -119,7 +120,7 @@ func NewArchiveInstaller(config ArchiveInstallerConfig) (*ArchiveInstaller, erro
 
 func (installer *ArchiveInstaller) Install(ctx context.Context, tool contracts.VersionedTool, languages []string) (InstalledTool, error) {
 	if installer == nil || ctx == nil || !tool.ReadyToProvision() || tool.Install == nil || tool.Install.Method != contracts.ToolchainInstallUserArchive ||
-		contracts.IsGCCTool(tool) || tool.Platform != contracts.PlatformLinux || !architectureMatches(tool.Architecture) {
+		!SupportsPortableArchive(tool) {
 		return InstalledTool{}, ErrUnsupportedTool
 	}
 	if err := validateVersionedToolContract(tool); err != nil {
@@ -148,6 +149,9 @@ func (installer *ArchiveInstaller) Install(ctx context.Context, tool contracts.V
 	digest, err := installer.download(ctx, tool.Install.DownloadURL, archivePath)
 	if err != nil {
 		return InstalledTool{}, err
+	}
+	if "sha256:"+digest != tool.Install.SourceSHA256 {
+		return InstalledTool{}, ErrToolchainDigest
 	}
 	extractRoot := filepath.Join(jobRoot, "extracted")
 	if err := os.Mkdir(extractRoot, 0o700); err != nil {
@@ -548,6 +552,14 @@ func profileFor(name string) (toolProfile, bool) {
 		}
 	}
 	return toolProfile{}, false
+}
+
+func SupportsPortableArchive(tool contracts.VersionedTool) bool {
+	if tool.Platform != contracts.PlatformLinux || contracts.IsGCCTool(tool) || !architectureMatches(tool.Architecture) {
+		return false
+	}
+	_, found := profileFor(tool.Name)
+	return found
 }
 
 func locateExecutables(root string, profile toolProfile) ([]Executable, []string, error) {
