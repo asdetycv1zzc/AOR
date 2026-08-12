@@ -34,7 +34,7 @@ type knowledgeDraftOutput struct {
 	ChangeSummary string `json:"changeSummary"`
 }
 
-func goalDraftSemanticValidator(request AgentInvocation, inventory *toolchain.Inventory) func(json.RawMessage) error {
+func goalDraftSemanticValidator(request AgentInvocation, inventory *toolchain.Inventory, message SpecArtifact) func(json.RawMessage) error {
 	return func(content json.RawMessage) error {
 		goal, _, err := normalizeGoalRecord(responseAgentRecord(request, content), request.ProjectID, 1, time.Unix(0, 0).UTC())
 		if err != nil {
@@ -45,6 +45,21 @@ func goalDraftSemanticValidator(request AgentInvocation, inventory *toolchain.In
 		}
 		if err := toolchain.ValidateSelection(*inventory, *goal.Content.Toolchain); err != nil {
 			return ErrAgentOutput
+		}
+		if message.Kind != ArtifactUserMessage || message.URI == "" || len(message.Content) == 0 {
+			return ErrAgentOutput
+		}
+		for _, selected := range goal.Content.Toolchain.Tools {
+			if selected.Source != contracts.ToolchainInstallRequired || selected.Install == nil {
+				continue
+			}
+			install := selected.Install
+			if install.Authorized && install.EvidenceRef != message.URI {
+				return ErrAgentOutput
+			}
+			if install.Method == contracts.ToolchainInstallUserArchive && install.DownloadURL != "" && !strings.Contains(string(message.Content), install.DownloadURL) {
+				return ErrAgentOutput
+			}
 		}
 		return nil
 	}

@@ -98,11 +98,27 @@
         "version": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^*?<>^~|,]+$", "allOf": [{"not": {"pattern": "(^|[._+-])[xX]($|[._+-])"}}, {"not": {"enum": ["latest", "stable", "current", "default", "nightly", "next", "head", "main", "master", "dev", "snapshot", "preview"]}}], "description": "Exact tool version; ranges and wildcard versions are forbidden."},
         "platform": {"enum": ["LINUX", "WINDOWS"]},
         "architecture": {"type": "string", "minLength": 1, "maxLength": 128},
-        "source": {"enum": ["INSTALLED", "INSTALL_REQUIRED"]}
+        "source": {"enum": ["INSTALLED", "INSTALL_REQUIRED"]},
+        "install": {"$ref": "#/$defs/install"}
       },
       "allOf": [
-        {"if": {"properties": {"source": {"const": "INSTALLED"}}, "required": ["source"]}, "then": {"required": ["inventoryId"]}},
-        {"if": {"properties": {"source": {"const": "INSTALL_REQUIRED"}}, "required": ["source"]}, "then": {"not": {"required": ["inventoryId"]}}}
+        {"if": {"properties": {"source": {"const": "INSTALLED"}}, "required": ["source"]}, "then": {"required": ["inventoryId"], "not": {"required": ["install"]}}},
+        {"if": {"properties": {"source": {"const": "INSTALL_REQUIRED"}}, "required": ["source"]}, "then": {"required": ["install"], "not": {"required": ["inventoryId"]}}}
+      ]
+    },
+    "install": {
+      "type": "object", "additionalProperties": false,
+      "required": ["method", "authorized"],
+      "properties": {
+        "method": {"enum": ["CROSSTOOL_NG", "USER_ARCHIVE"]},
+        "authorized": {"type": "boolean"},
+        "evidenceRef": {"type": "string", "pattern": "^artifact://sha256/[0-9a-f]{64}$"},
+        "downloadUrl": {"type": "string", "format": "uri", "pattern": "^https://[^#]+$"}
+      },
+      "allOf": [
+        {"if": {"properties": {"authorized": {"const": true}}, "required": ["authorized"]}, "then": {"required": ["evidenceRef"]}, "else": {"not": {"required": ["evidenceRef"]}}},
+        {"if": {"properties": {"method": {"const": "USER_ARCHIVE"}, "authorized": {"const": true}}, "required": ["method", "authorized"]}, "then": {"required": ["downloadUrl"]}},
+        {"if": {"properties": {"method": {"const": "CROSSTOOL_NG"}}, "required": ["method"]}, "then": {"not": {"required": ["downloadUrl"]}}}
       ]
     }
   }

@@ -2,6 +2,7 @@ package contracts
 
 import (
 	"fmt"
+	"net/url"
 	"path"
 	"regexp"
 	"strings"
@@ -94,6 +95,13 @@ type ToolchainSource string
 const (
 	ToolchainInstalled       ToolchainSource = "INSTALLED"
 	ToolchainInstallRequired ToolchainSource = "INSTALL_REQUIRED"
+)
+
+type ToolchainInstallMethod string
+
+const (
+	ToolchainInstallCrosstoolNG ToolchainInstallMethod = "CROSSTOOL_NG"
+	ToolchainInstallUserArchive ToolchainInstallMethod = "USER_ARCHIVE"
 )
 
 type ToolchainKind string
@@ -198,6 +206,14 @@ type VersionedTool struct {
 	Platform     ExecutionPlatform `json:"platform"`
 	Architecture string            `json:"architecture"`
 	Source       ToolchainSource   `json:"source"`
+	Install      *ToolchainInstall `json:"install,omitempty"`
+}
+
+type ToolchainInstall struct {
+	Method      ToolchainInstallMethod `json:"method"`
+	Authorized  bool                   `json:"authorized"`
+	EvidenceRef string                 `json:"evidenceRef,omitempty"`
+	DownloadURL string                 `json:"downloadUrl,omitempty"`
 }
 
 type GoalToolchain struct {
@@ -626,17 +642,73 @@ func validateVersionedTool(tool VersionedTool) error {
 	}
 	switch tool.Source {
 	case ToolchainInstalled:
-		if !validExactToolchainValue(tool.InventoryID, 128) {
+		if !validExactToolchainValue(tool.InventoryID, 128) || tool.Install != nil {
 			return fmt.Errorf("installed toolchain requires an inventory ID")
 		}
 	case ToolchainInstallRequired:
-		if tool.InventoryID != "" {
+		if tool.InventoryID != "" || validateToolchainInstall(tool) != nil {
 			return fmt.Errorf("uninstalled toolchain cannot claim an inventory ID")
 		}
 	default:
 		return fmt.Errorf("goal toolchain source is invalid")
 	}
 	return nil
+}
+
+func validateToolchainInstall(tool VersionedTool) error {
+	install := tool.Install
+	if install == nil {
+		return fmt.Errorf("toolchain installation descriptor is required")
+	}
+	if install.Authorized {
+		if !validToolchainEvidenceRef(install.EvidenceRef) {
+			return fmt.Errorf("authorized toolchain installation requires immutable user evidence")
+		}
+	} else if install.EvidenceRef != "" {
+		return fmt.Errorf("unauthorized toolchain installation cannot claim evidence")
+	}
+	switch install.Method {
+	case ToolchainInstallCrosstoolNG:
+		if install.DownloadURL != "" || tool.Version != "15.2.0" || !IsGCCTool(tool) {
+			return fmt.Errorf("crosstool-ng installation is restricted to GCC 15.2.0")
+		}
+	case ToolchainInstallUserArchive:
+		if install.DownloadURL == "" {
+			if install.Authorized {
+				return fmt.Errorf("authorized user archive installation requires an HTTPS download URL")
+			}
+			return nil
+		}
+		parsed, err := url.Parse(install.DownloadURL)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" || !install.Authorized {
+			return fmt.Errorf("user archive installation requires an HTTPS download URL")
+		}
+	default:
+		return fmt.Errorf("toolchain installation method is invalid")
+	}
+	return nil
+}
+
+func validToolchainEvidenceRef(value string) bool {
+	const prefix = "artifact://sha256/"
+	return strings.HasPrefix(value, prefix) && len(value) == len(prefix)+64 && validateDigest("sha256:"+value[len(prefix):]) == nil
+}
+
+func IsGCCTool(tool VersionedTool) bool {
+	if tool.Kind != ToolchainCompiler {
+		return false
+	}
+	name := strings.ToLower(strings.TrimSpace(tool.Name))
+	return name == "gcc" || name == "g++" || name == "gnu gcc" || name == "gnu g++" || name == "gnu c++"
+}
+
+func (tool VersionedTool) ReadyToProvision() bool {
+	return tool.Source == ToolchainInstallRequired && tool.Install != nil && tool.Install.Authorized &&
+		(tool.Install.Method == ToolchainInstallCrosstoolNG || tool.Install.Method == ToolchainInstallUserArchive && tool.Install.DownloadURL != "")
+}
+
+func (tool VersionedTool) NeedsInstallationInput() bool {
+	return tool.Source == ToolchainInstallRequired && !tool.ReadyToProvision()
 }
 
 func validPinnedToolchains(ids []string, tools []VersionedTool) bool {
@@ -664,6 +736,29 @@ func validPinnedToolchains(ids []string, tools []VersionedTool) bool {
 func (selection GoalToolchain) RequiresInstallation() bool {
 	for _, tool := range selection.Tools {
 		if tool.Source == ToolchainInstallRequired {
+			return true
+		}
+	}
+	return false
+}
+
+func (selection GoalToolchain) ReadyToProvision() bool {
+	ready := false
+	for _, tool := range selection.Tools {
+		if tool.Source != ToolchainInstallRequired {
+			continue
+		}
+		if !tool.ReadyToProvision() {
+			return false
+		}
+		ready = true
+	}
+	return ready
+}
+
+func (selection GoalToolchain) NeedsInstallationInput() bool {
+	for _, tool := range selection.Tools {
+		if tool.NeedsInstallationInput() {
 			return true
 		}
 	}

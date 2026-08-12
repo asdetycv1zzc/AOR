@@ -295,7 +295,7 @@ func (preparer *AuthoritativeRuntimePreparer) stageContext(ctx context.Context, 
 	}
 	switch request.Stage {
 	case "GOAL_DRAFT":
-		stage.responseSemanticValidator = goalDraftSemanticValidator(request, inventory)
+		stage.responseSemanticValidator = goalDraftSemanticValidator(request, inventory, artifacts[ArtifactUserMessage])
 		if err := appendArtifact(ArtifactUserMessage, agentruntime.ContextUserInput, agentruntime.TrustExternalUntrusted); err != nil {
 			return preparedStageContext{}, err
 		}
@@ -329,7 +329,7 @@ func (preparer *AuthoritativeRuntimePreparer) stageContext(ctx context.Context, 
 		stage.goalRef = &ref
 		stage.responseSemanticValidator = challengeSemanticValidator(request, ref)
 	case "GOAL_REVISION":
-		stage.responseSemanticValidator = goalDraftSemanticValidator(request, inventory)
+		stage.responseSemanticValidator = goalDraftSemanticValidator(request, inventory, artifacts[ArtifactUserMessage])
 		if err := appendArtifact(ArtifactUserMessage, agentruntime.ContextUserInput, agentruntime.TrustExternalUntrusted); err != nil {
 			return preparedStageContext{}, err
 		}

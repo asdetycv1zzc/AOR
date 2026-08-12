@@ -46,7 +46,7 @@ func validateGoalContent(content contracts.GoalContent) error {
 	if content.DataClassification != contracts.DataPublic && content.DataClassification != contracts.DataInternal && content.DataClassification != contracts.DataConfidential && content.DataClassification != contracts.DataRestricted {
 		return ErrAgentOutput
 	}
-	if content.Toolchain == nil || content.Toolchain.Validate() != nil || content.Toolchain.RequiresInstallation() && len(content.UnresolvedItems) == 0 {
+	if content.Toolchain == nil || content.Toolchain.Validate() != nil || content.Toolchain.NeedsInstallationInput() && len(content.UnresolvedItems) == 0 {
 		return ErrAgentOutput
 	}
 	seen := make(map[string]bool)
