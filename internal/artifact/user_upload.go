@@ -74,6 +74,9 @@ func (catalog *PostgresS3Catalog) PublishUserUpload(ctx context.Context, upload 
 		}
 		return Record{}, ErrIntegrity
 	}
+	if err := catalog.verifyUploadedStage(ctx, stageName, digest, info.Size); err != nil {
+		return Record{}, err
+	}
 
 	metadata := cloneMetadataMap(upload.Metadata)
 	metadataBytes, err := json.Marshal(metadata)
@@ -227,6 +230,27 @@ func userUploadMatches(record Record, upload UserUpload) bool {
 		metadataString(record.Metadata, "toolVersion") == metadataString(upload.Metadata, "toolVersion") &&
 		metadataString(record.Metadata, "architecture") == metadataString(upload.Metadata, "architecture") &&
 		(upload.SizeBytes < 0 || record.SizeBytes == upload.SizeBytes) && strings.HasPrefix(record.URI, artifactURIPrefix)
+}
+
+func (catalog *PostgresS3Catalog) verifyUploadedStage(ctx context.Context, objectName, digest string, size int64) error {
+	object, err := catalog.objects.GetObject(ctx, catalog.bucket, objectName, minio.GetObjectOptions{})
+	if err != nil {
+		return err
+	}
+	hasher := sha256.New()
+	written, copyErr := io.CopyBuffer(hasher, io.LimitReader(object, size+1), make([]byte, verificationBufferBytes))
+	closeErr := object.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	actual := "sha256:" + hex.EncodeToString(hasher.Sum(nil))
+	if written != size || actual != digest {
+		return ErrIntegrity
+	}
+	return nil
 }
 
 var _ UserUploadPublisher = (*PostgresS3Catalog)(nil)
