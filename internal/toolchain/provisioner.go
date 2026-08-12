@@ -24,6 +24,7 @@ type Provisioner struct {
 	pollInterval time.Duration
 	clock        func() time.Time
 	running      atomic.Bool
+	failingSince atomic.Int64
 }
 
 func NewProvisioner(store *InstallStore, installer *ArchiveInstaller, pollInterval time.Duration, clock func() time.Time) (*Provisioner, error) {
@@ -49,7 +50,13 @@ func (provisioner *Provisioner) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-timer.C:
-			_ = provisioner.DispatchOnce(ctx)
+			dispatchErr := provisioner.DispatchOnce(ctx)
+			now := provisioner.clock().UTC()
+			if dispatchErr == nil {
+				provisioner.failingSince.Store(0)
+			} else {
+				provisioner.failingSince.CompareAndSwap(0, now.UnixNano())
+			}
 			timer.Reset(provisioner.pollInterval)
 		}
 	}
@@ -57,6 +64,9 @@ func (provisioner *Provisioner) Run(ctx context.Context) {
 
 func (provisioner *Provisioner) Ready() error {
 	if provisioner == nil || !provisioner.running.Load() {
+		return ErrProvisionerUnavailable
+	}
+	if failingSince := provisioner.failingSince.Load(); failingSince > 0 && provisioner.clock().UTC().Sub(time.Unix(0, failingSince)) > 30*time.Second {
 		return ErrProvisionerUnavailable
 	}
 	return nil

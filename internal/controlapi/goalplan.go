@@ -198,11 +198,25 @@ func (handler *Handler) scheduleToolchainInstallations(ctx context.Context, prin
 	if handler.toolchainInstalls == nil {
 		return aorerrors.New(aorerrors.CodeDependencyUnavailable, "", map[string]any{"scope": "toolchain installation queue"})
 	}
-	_, err := handler.toolchainInstalls.Schedule(ctx, request.TenantID, request.ProjectID, request.GoalSpecID, result.Goal.Content.Version, request.MessageID, principal, selection.Tools, handler.clock().UTC())
-	if err != nil {
-		return aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", err, map[string]any{"scope": "toolchain installation queue"})
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		_, err = handler.toolchainInstalls.Schedule(ctx, request.TenantID, request.ProjectID, request.GoalSpecID, result.Goal.Content.Version, request.MessageID, principal, selection.Tools, handler.clock().UTC())
+		if err == nil {
+			return nil
+		}
+		if attempt < 2 {
+			timer := time.NewTimer(time.Duration(attempt+1) * time.Second)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
 	}
-	return nil
+	return aorerrors.Wrap(aorerrors.CodeDependencyUnavailable, "", err, map[string]any{"scope": "toolchain installation queue"})
 }
 
 func (handler *Handler) suspendFailedGoalNegotiation(ctx context.Context, principal authn.Principal, request goalplan.NegotiationRequest) {

@@ -22,9 +22,11 @@ var (
 )
 
 type ToolchainRecoveryScheduler struct {
-	handler *Handler
-	store   *toolchain.InstallStore
-	running atomic.Bool
+	handler      *Handler
+	store        *toolchain.InstallStore
+	running      atomic.Bool
+	lastSuccess  atomic.Int64
+	failingSince atomic.Int64
 }
 
 func NewToolchainRecoveryScheduler(handler *Handler, store *toolchain.InstallStore) (*ToolchainRecoveryScheduler, error) {
@@ -36,6 +38,9 @@ func NewToolchainRecoveryScheduler(handler *Handler, store *toolchain.InstallSto
 
 func (scheduler *ToolchainRecoveryScheduler) Ready() error {
 	if scheduler == nil || !scheduler.running.Load() {
+		return ErrToolchainRecoveryUnavailable
+	}
+	if failingSince := scheduler.failingSince.Load(); failingSince > 0 && scheduler.handler.clock().UTC().Sub(time.Unix(0, failingSince)) > 30*time.Second {
 		return ErrToolchainRecoveryUnavailable
 	}
 	return nil
@@ -50,7 +55,14 @@ func (scheduler *ToolchainRecoveryScheduler) Run(ctx context.Context) error {
 	}
 	defer scheduler.running.Store(false)
 	for {
-		_ = scheduler.DispatchOnce(ctx)
+		dispatchErr := scheduler.DispatchOnce(ctx)
+		now := scheduler.handler.clock().UTC()
+		if dispatchErr == nil {
+			scheduler.lastSuccess.Store(now.UnixNano())
+			scheduler.failingSince.Store(0)
+		} else {
+			scheduler.failingSince.CompareAndSwap(0, now.UnixNano())
+		}
 		timer := time.NewTimer(time.Second)
 		select {
 		case <-ctx.Done():
@@ -89,6 +101,10 @@ func (scheduler *ToolchainRecoveryScheduler) DispatchOnce(ctx context.Context) e
 		code = string(typed.Code)
 		message = aorerrors.MetadataFor(typed.Code).Message
 		retry = aorerrors.MetadataFor(typed.Code).Retryable
+		switch typed.Code {
+		case aorerrors.CodeModelOutputSchemaInvalid, aorerrors.CodeTimeout, aorerrors.CodeDependencyUnavailable, aorerrors.CodeProviderRateLimited:
+			retry = true
+		}
 	}
 	finishErr := scheduler.store.FailBatch(ctx, batch.ID, leaseID.String(), batch.RecoveryAttempt, retry, code, message)
 	return errors.Join(recoveryErr, finishErr)
