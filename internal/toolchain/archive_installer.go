@@ -170,6 +170,16 @@ func (installer *ArchiveInstaller) Install(ctx context.Context, tool contracts.V
 	if err != nil {
 		return InstalledTool{}, err
 	}
+	id := inventoryID(tool, digest)
+	relocatedParent := filepath.Join(jobRoot, "relocated")
+	if err := os.Mkdir(relocatedParent, 0o700); err != nil {
+		return InstalledTool{}, err
+	}
+	relocatedRoot := filepath.Join(relocatedParent, id)
+	if err := os.Rename(payloadRoot, relocatedRoot); err != nil {
+		return InstalledTool{}, err
+	}
+	payloadRoot = relocatedRoot
 	executables, binDirs, err := locateExecutables(payloadRoot, profile)
 	if err != nil {
 		return InstalledTool{}, err
@@ -177,14 +187,13 @@ func (installer *ArchiveInstaller) Install(ctx context.Context, tool contracts.V
 	if err := installer.prober.Probe(ctx, probeRequest(payloadRoot, executables, profile, tool.Version)); err != nil {
 		return InstalledTool{}, err
 	}
-	id := inventoryID(tool, digest)
 	manifest := InstalledTool{
 		SchemaVersion: 1, ID: id, Kind: tool.Kind, Name: tool.Name, Version: tool.Version, Platform: tool.Platform,
 		Architecture: canonicalArchitecture(tool.Architecture), Languages: languages, BinDirs: binDirs, Executables: executables,
 		Provenance: &InstallationProvenance{Method: contracts.ToolchainInstallUserArchive, SourceURL: tool.Install.DownloadURL,
 			SourceSHA256: "sha256:" + digest, EvidenceRef: tool.Install.EvidenceRef, InstalledAt: installer.clock().UTC().Format(time.RFC3339Nano)},
 	}
-	return installer.publish(ctx, payloadRoot, manifest, profile)
+	return installer.publish(ctx, payloadRoot, manifest)
 }
 
 func validateVersionedToolContract(tool contracts.VersionedTool) error {
@@ -728,7 +737,7 @@ func inventoryID(tool contracts.VersionedTool, digest string) string {
 	return name + "-" + digest[:16]
 }
 
-func (installer *ArchiveInstaller) publish(ctx context.Context, payloadRoot string, manifest InstalledTool, profile toolProfile) (InstalledTool, error) {
+func (installer *ArchiveInstaller) publish(ctx context.Context, payloadRoot string, manifest InstalledTool) (InstalledTool, error) {
 	finalPath := filepath.Join(installer.toolchainRoot, manifest.ID)
 	if existing, err := readExistingTool(ctx, installer.toolchainRoot, manifest.ID); err == nil {
 		if sameInstalledArtifact(existing, manifest) {
@@ -762,9 +771,6 @@ func (installer *ArchiveInstaller) publish(ctx context.Context, payloadRoot stri
 	snapshot, err := stagingInventory.Snapshot(ctx)
 	if err != nil || len(snapshot.Tools) != 1 {
 		return InstalledTool{}, ErrInvalidInventory
-	}
-	if err := installer.prober.Probe(ctx, probeRequest(stagingPath, manifest.Executables, profile, manifest.Version)); err != nil {
-		return InstalledTool{}, err
 	}
 	if err := os.Rename(stagingPath, finalPath); err != nil {
 		existing, readErr := readExistingTool(ctx, installer.toolchainRoot, manifest.ID)

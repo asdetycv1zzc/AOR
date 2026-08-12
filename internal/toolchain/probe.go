@@ -111,6 +111,7 @@ type ProbeServer struct {
 	socketPath string
 	workRoot   string
 	running    atomic.Bool
+	ready      atomic.Bool
 	listener   *net.UnixListener
 	mutex      sync.Mutex
 }
@@ -123,7 +124,7 @@ func NewProbeServer(socketPath, workRoot string) (*ProbeServer, error) {
 }
 
 func (server *ProbeServer) Ready() error {
-	if server == nil || !server.running.Load() {
+	if server == nil || !server.ready.Load() {
 		return ErrProvisionerUnavailable
 	}
 	return nil
@@ -134,6 +135,7 @@ func (server *ProbeServer) Run(ctx context.Context) error {
 		return ErrProvisionerUnavailable
 	}
 	defer server.running.Store(false)
+	defer server.ready.Store(false)
 	if err := os.MkdirAll(filepath.Dir(server.socketPath), 0o770); err != nil {
 		return err
 	}
@@ -161,9 +163,10 @@ func (server *ProbeServer) Run(ctx context.Context) error {
 		server.listener = nil
 		server.mutex.Unlock()
 	}()
-	if err := os.Chmod(server.socketPath, 0o666); err != nil {
+	if err := os.Chmod(server.socketPath, 0o660); err != nil {
 		return err
 	}
+	server.ready.Store(true)
 	go func() {
 		<-ctx.Done()
 		_ = listener.Close()
