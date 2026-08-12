@@ -826,6 +826,21 @@ paths:
             text/event-stream:
               schema: {type: string}
         default: {$ref: '#/components/responses/Problem'}
+  /v1/projects/{projectId}/toolchain-installations:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+    get:
+      tags: [Projects]
+      operationId: listProjectToolchainInstallations
+      responses:
+        '200':
+          description: Durable installation and Goal recovery status for project toolchains
+          headers:
+            ETag: {$ref: '#/components/headers/ETag'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ToolchainInstallationPage'}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/projects/{projectId}/activity:
     parameters:
       - $ref: '#/components/parameters/ProjectId'
@@ -1060,6 +1075,45 @@ components:
         tools:
           type: array
           items: {$ref: '#/components/schemas/InstalledToolchain'}
+    ToolchainInstallation:
+      type: object
+      additionalProperties: false
+      required: [id, name, version, kind, platform, architecture, state, attempt, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, minLength: 1, maxLength: 128}
+        version: {type: string, minLength: 1, maxLength: 256}
+        kind: {enum: [COMPILER, RUNTIME, SDK, BUILD, INTEROP, TEST]}
+        platform: {enum: [LINUX, WINDOWS]}
+        architecture: {type: string, minLength: 1, maxLength: 128}
+        state: {enum: [QUEUED, INSTALLING, INSTALLED, FAILED]}
+        attempt: {type: integer, minimum: 0, maximum: 5}
+        inventoryId: {type: string, minLength: 1, maxLength: 128}
+        lastErrorCode: {type: string, minLength: 1, maxLength: 128}
+        lastErrorMessage: {type: string, minLength: 1, maxLength: 4096}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    ToolchainInstallationBatch:
+      type: object
+      additionalProperties: false
+      required: [id, goalSpecId, goalVersion, state, recoveryAttempt, installations]
+      properties:
+        id: {type: string, format: uuid}
+        goalSpecId: {type: string, format: uuid}
+        goalVersion: {type: integer, minimum: 1}
+        state: {enum: [WAITING, READY, RECOVERING, COMPLETED, FAILED]}
+        recoveryAttempt: {type: integer, minimum: 0, maximum: 5}
+        installations:
+          type: array
+          items: {$ref: '#/components/schemas/ToolchainInstallation'}
+    ToolchainInstallationPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/ToolchainInstallationBatch'}
     ModelProviderSettings:
       type: object
       additionalProperties: false

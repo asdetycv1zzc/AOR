@@ -24,29 +24,32 @@ import (
 	"github.com/akimisaka/aor/internal/policy"
 	"github.com/akimisaka/aor/internal/runtimeclient"
 	"github.com/akimisaka/aor/internal/runtimeconfig"
+	"github.com/akimisaka/aor/internal/toolchain"
 	"github.com/akimisaka/aor/internal/webui"
 	aorworkflow "github.com/akimisaka/aor/internal/workflow"
 )
 
 type controlHandler struct {
 	http.Handler
-	dispatcher           *eventing.OutboxDispatcher
-	retention            *artifact.RetentionWorker
-	scheduler            *aorworkflow.ReadyExecutionScheduler
-	moduleAuditScheduler *aorworkflow.ModuleAuditScheduler
-	integrationScheduler *aorworkflow.IntegrationScheduler
-	globalAuditScheduler *aorworkflow.GlobalAuditScheduler
-	planningRecovery     *goalplan.PlanningRecoveryScheduler
-	cancel               context.CancelFunc
-	dispatchDone         <-chan error
-	retentionDone        <-chan error
-	schedulerDone        <-chan error
-	moduleAuditDone      <-chan error
-	integrationDone      <-chan error
-	globalAuditDone      <-chan error
-	planningRecoveryDone <-chan error
-	close                sync.Once
-	closeErr             error
+	dispatcher            *eventing.OutboxDispatcher
+	retention             *artifact.RetentionWorker
+	scheduler             *aorworkflow.ReadyExecutionScheduler
+	moduleAuditScheduler  *aorworkflow.ModuleAuditScheduler
+	integrationScheduler  *aorworkflow.IntegrationScheduler
+	globalAuditScheduler  *aorworkflow.GlobalAuditScheduler
+	planningRecovery      *goalplan.PlanningRecoveryScheduler
+	toolchainRecovery     *controlapi.ToolchainRecoveryScheduler
+	cancel                context.CancelFunc
+	dispatchDone          <-chan error
+	retentionDone         <-chan error
+	schedulerDone         <-chan error
+	moduleAuditDone       <-chan error
+	integrationDone       <-chan error
+	globalAuditDone       <-chan error
+	planningRecoveryDone  <-chan error
+	toolchainRecoveryDone <-chan error
+	close                 sync.Once
+	closeErr              error
 }
 
 type artifactProjectEraser struct {
@@ -69,7 +72,7 @@ func (eraser artifactProjectEraser) FinalizeProjectAuthorizationErasure(ctx cont
 }
 
 func (handler *controlHandler) Ready() error {
-	if handler == nil || handler.dispatcher == nil || handler.retention == nil || handler.scheduler == nil || handler.moduleAuditScheduler == nil || handler.planningRecovery == nil {
+	if handler == nil || handler.dispatcher == nil || handler.retention == nil || handler.scheduler == nil || handler.moduleAuditScheduler == nil || handler.planningRecovery == nil || handler.toolchainRecovery == nil {
 		return runtimeclient.ErrDependencyUnavailable
 	}
 	if err := handler.dispatcher.Ready(); err != nil {
@@ -85,6 +88,9 @@ func (handler *controlHandler) Ready() error {
 		return err
 	}
 	if err := handler.planningRecovery.Ready(); err != nil {
+		return err
+	}
+	if err := handler.toolchainRecovery.Ready(); err != nil {
 		return err
 	}
 	if handler.integrationScheduler != nil {
@@ -120,6 +126,12 @@ func (handler *controlHandler) Close() error {
 		}
 		if handler.planningRecoveryDone != nil {
 			err := <-handler.planningRecoveryDone
+			if err != nil && !errors.Is(err, context.Canceled) {
+				handler.closeErr = errors.Join(handler.closeErr, err)
+			}
+		}
+		if handler.toolchainRecoveryDone != nil {
+			err := <-handler.toolchainRecoveryDone
 			if err != nil && !errors.Is(err, context.Canceled) {
 				handler.closeErr = errors.Join(handler.closeErr, err)
 			}
@@ -217,6 +229,10 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	if err != nil {
 		return nil, runtimeclient.ErrInvalidClientConfig
 	}
+	toolchainInstalls, err := toolchain.NewInstallStore(clients.Database())
+	if err != nil {
+		return nil, runtimeclient.ErrInvalidClientConfig
+	}
 	projectAgents, err := configuredGoalPlanServices(config, lifecycleStore, leaseService, authorizer, knowledgeService, knowledgeEvents)
 	if err != nil {
 		return nil, err
@@ -251,11 +267,16 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 		DecisionReportSigner: decisionReportSigner,
 		Eraser:               artifactProjectEraser{catalog: artifactCatalog}, Leases: leaseService,
 		GoalPlan: projectAgents.goalPlan, ClassroomCore: config.DeploymentProfile == "TEST",
-		Toolchains:     projectAgents.toolchains,
-		ModelProviders: modelProviders, DefaultModelRoutes: defaultModelRoutes, Clock: time.Now,
+		Toolchains:        projectAgents.toolchains,
+		ToolchainInstalls: toolchainInstalls,
+		ModelProviders:    modelProviders, DefaultModelRoutes: defaultModelRoutes, Clock: time.Now,
 		ProviderSettings: providerSettings, ProviderAdapter: modelproviders.AdapterFactory{},
 		SamplingSettings: samplingSettings,
 	})
+	if err != nil {
+		return nil, err
+	}
+	toolchainRecovery, err := controlapi.NewToolchainRecoveryScheduler(domain, toolchainInstalls)
 	if err != nil {
 		return nil, err
 	}
@@ -342,6 +363,7 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	schedulerDone := make(chan error, 1)
 	moduleAuditDone := make(chan error, 1)
 	planningRecoveryDone := make(chan error, 1)
+	toolchainRecoveryDone := make(chan error, 1)
 	var integrationDone chan error
 	var globalAuditDone chan error
 	go func() { dispatchDone <- dispatcher.Run(dispatchContext) }()
@@ -349,6 +371,7 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	go func() { schedulerDone <- scheduler.Run(dispatchContext) }()
 	go func() { moduleAuditDone <- moduleAuditScheduler.Run(dispatchContext) }()
 	go func() { planningRecoveryDone <- planningRecovery.Run(dispatchContext) }()
+	go func() { toolchainRecoveryDone <- toolchainRecovery.Run(dispatchContext) }()
 	if integrationScheduler != nil {
 		integrationDone = make(chan error, 1)
 		go func() { integrationDone <- integrationScheduler.Run(dispatchContext) }()
@@ -360,9 +383,10 @@ func ControlAPI(config runtimeconfig.Config, clients *runtimeclient.Clients) (ht
 	return &controlHandler{
 		Handler: domainHandler, dispatcher: dispatcher, retention: retentionWorker, scheduler: scheduler,
 		moduleAuditScheduler: moduleAuditScheduler, integrationScheduler: integrationScheduler,
-		globalAuditScheduler: globalAuditScheduler, planningRecovery: planningRecovery, cancel: cancel,
+		globalAuditScheduler: globalAuditScheduler, planningRecovery: planningRecovery, toolchainRecovery: toolchainRecovery, cancel: cancel,
 		dispatchDone: dispatchDone, retentionDone: retentionDone, schedulerDone: schedulerDone, moduleAuditDone: moduleAuditDone,
 		integrationDone: integrationDone, globalAuditDone: globalAuditDone, planningRecoveryDone: planningRecoveryDone,
+		toolchainRecoveryDone: toolchainRecoveryDone,
 	}, nil
 }
 
