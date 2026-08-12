@@ -260,6 +260,7 @@ services:
         if [ "$$toolchain_installations_installed" != "t" ]; then
           psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000056_toolchain_installations.up.sql
         fi
+        psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000057_toolchain_installation_hardening.up.sql
         unset AOR_APP_PASSWORD
     secrets: [postgres_password, postgres_app_password]
     volumes:
@@ -319,6 +320,7 @@ services:
       - ../../migrations/postgres/000054_project_activity_messages.up.sql:/migrations/000054_project_activity_messages.up.sql:ro
       - ../../migrations/postgres/000055_project_activity_reasoning_summary.up.sql:/migrations/000055_project_activity_reasoning_summary.up.sql:ro
       - ../../migrations/postgres/000056_toolchain_installations.up.sql:/migrations/000056_toolchain_installations.up.sql:ro
+      - ../../migrations/postgres/000057_toolchain_installation_hardening.up.sql:/migrations/000057_toolchain_installation_hardening.up.sql:ro
       - ./postgres-app-password.sql:/migrations/postgres-app-password.sql:ro
     read_only: true
     tmpfs: [/tmp]

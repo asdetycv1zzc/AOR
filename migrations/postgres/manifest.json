@@ -393,6 +393,13 @@
       "file": "000056_toolchain_installations.up.sql",
       "sha256": "sha256:a643f728e62335b5aaff09231b3d8ef8dfa658138d4eb3d6b8c0e4430c73040e",
       "destructive": false
+    },
+    {
+      "version": 57,
+      "mode": "EXPAND",
+      "file": "000057_toolchain_installation_hardening.up.sql",
+      "sha256": "sha256:361166d051ad0acca808469419ab223081ca2f9c0d493f5ddf97153bd6963d78",
+      "destructive": false
     }
   ]
 }

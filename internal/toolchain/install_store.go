@@ -209,6 +209,20 @@ FROM aor_claim_toolchain_installations($1, $2, $3)`, limit, leaseToken, int(leas
 	return installations, rows.Err()
 }
 
+func (store *InstallStore) ExtendClaim(ctx context.Context, installationID, leaseToken string, attempt int, leaseDuration time.Duration) error {
+	if store == nil || ctx == nil || installationID == "" || !validInstallToken(leaseToken, 256) || attempt < 1 || attempt > maxInstallationAttempts || leaseDuration < 30*time.Second || leaseDuration > time.Hour || leaseDuration%time.Second != 0 {
+		return errors.New("invalid toolchain installation lease extension")
+	}
+	var extended bool
+	if err := store.db.QueryRowContext(ctx, `SELECT aor_extend_toolchain_installation_lease($1::uuid, $2, $3, $4)`, installationID, leaseToken, attempt, int(leaseDuration/time.Second)).Scan(&extended); err != nil {
+		return err
+	}
+	if !extended {
+		return errors.New("toolchain installation lease is no longer current")
+	}
+	return nil
+}
+
 func (store *InstallStore) Complete(ctx context.Context, installationID, leaseToken, inventoryID string, attempt int, now time.Time) error {
 	if store == nil || ctx == nil || installationID == "" || !validInstallToken(leaseToken, 256) || !validInstallToken(inventoryID, 128) || attempt < 1 || attempt > maxInstallationAttempts || now.IsZero() {
 		return errors.New("invalid toolchain installation completion")

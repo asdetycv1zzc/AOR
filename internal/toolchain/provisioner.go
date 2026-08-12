@@ -13,6 +13,11 @@ import (
 
 var ErrProvisionerUnavailable = errors.New("toolchain provisioner unavailable")
 
+const (
+	installationLeaseDuration  = time.Hour
+	installationLeaseHeartbeat = 10 * time.Minute
+)
+
 type Provisioner struct {
 	store        *InstallStore
 	installer    *ArchiveInstaller
@@ -65,7 +70,7 @@ func (provisioner *Provisioner) DispatchOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	installations, err := provisioner.store.ClaimQueued(ctx, 1, leaseID.String(), time.Hour)
+	installations, err := provisioner.store.ClaimQueued(ctx, 1, leaseID.String(), installationLeaseDuration)
 	if err != nil {
 		return err
 	}
@@ -77,7 +82,15 @@ func (provisioner *Provisioner) DispatchOnce(ctx context.Context) error {
 		return provisioner.store.Fail(ctx, installation.ID, installation.LeaseToken, installation.Attempt, false,
 			"AOR_TOOLCHAIN_INSTALL_UNSUPPORTED", "only authorized non-GCC USER_ARCHIVE installations can be provisioned", provisioner.clock().UTC())
 	}
-	installed, installErr := provisioner.installer.Install(ctx, installation.Tool, nil)
+	installContext, cancelInstall := context.WithCancel(ctx)
+	heartbeatDone := make(chan error, 1)
+	go provisioner.renewInstallationLease(installContext, cancelInstall, installation, heartbeatDone)
+	installed, installErr := provisioner.installer.Install(installContext, installation.Tool, nil)
+	cancelInstall()
+	heartbeatErr := <-heartbeatDone
+	if heartbeatErr != nil {
+		installErr = errors.Join(installErr, heartbeatErr)
+	}
 	if installErr == nil {
 		return provisioner.store.Complete(ctx, installation.ID, installation.LeaseToken, installed.ID, installation.Attempt, provisioner.clock().UTC())
 	}
@@ -85,6 +98,27 @@ func (provisioner *Provisioner) DispatchOnce(ctx context.Context) error {
 	errorMessage := provisioningErrorMessage(installErr)
 	return provisioner.store.Fail(ctx, installation.ID, installation.LeaseToken, installation.Attempt,
 		provisioningErrorRetryable(installErr), errorCode, errorMessage, provisioner.clock().UTC())
+}
+
+func (provisioner *Provisioner) renewInstallationLease(ctx context.Context, cancel context.CancelFunc, installation Installation, done chan<- error) {
+	ticker := time.NewTicker(installationLeaseHeartbeat)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			done <- nil
+			return
+		case <-ticker.C:
+			extendContext, extendCancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+			err := provisioner.store.ExtendClaim(extendContext, installation.ID, installation.LeaseToken, installation.Attempt, installationLeaseDuration)
+			extendCancel()
+			if err != nil {
+				cancel()
+				done <- err
+				return
+			}
+		}
+	}
 }
 
 func validProvisioningRequest(tool contracts.VersionedTool) bool {
