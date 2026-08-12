@@ -391,7 +391,7 @@
       "version": 56,
       "mode": "EXPAND",
       "file": "000056_toolchain_installations.up.sql",
-      "sha256": "sha256:f135c565436bd1f1554998740507f7198c367cb06efdf71847ace9c2ab454749",
+      "sha256": "sha256:a643f728e62335b5aaff09231b3d8ef8dfa658138d4eb3d6b8c0e4430c73040e",
       "destructive": false
     }
   ]
