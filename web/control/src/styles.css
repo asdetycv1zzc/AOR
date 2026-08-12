@@ -1096,6 +1096,65 @@ button {
   color: var(--amber);
 }
 
+.toolchain-state.install-active {
+  border-color: rgb(183 129 48 / 40%);
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+.toolchain-state.install-failed {
+  border-color: rgb(165 50 45 / 35%);
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.toolchain-install-batch + .toolchain-install-batch {
+  margin-top: 16px;
+}
+
+.toolchain-install-batch-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 0 5px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.toolchain-install-batch-heading > span {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.toolchain-batch-state {
+  color: var(--quiet);
+  font-weight: 650;
+}
+
+.toolchain-batch-state.ready,
+.toolchain-batch-state.recovering,
+.toolchain-batch-state.waiting {
+  color: var(--amber);
+}
+
+.toolchain-batch-state.completed {
+  color: var(--green);
+}
+
+.toolchain-batch-state.failed {
+  color: var(--red);
+}
+
+.toolchain-detail {
+  display: grid;
+  gap: 3px;
+}
+
+.toolchain-install-error {
+  color: var(--red);
+  overflow-wrap: anywhere;
+}
+
 .toolchain-languages {
   display: flex;
   flex-wrap: wrap;

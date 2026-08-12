@@ -245,6 +245,33 @@ export interface ToolchainInventory {
   tools: ToolchainInventoryTool[];
 }
 
+export type ToolchainInstallationState = "QUEUED" | "INSTALLING" | "INSTALLED" | "FAILED";
+
+export interface ToolchainInstallation {
+  id: string;
+  name: string;
+  version: string;
+  kind: string;
+  platform: string;
+  architecture: string;
+  state: ToolchainInstallationState;
+  attempt: number;
+  inventoryId?: string;
+  lastErrorCode?: string;
+  lastErrorMessage?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ToolchainInstallationBatch {
+  id: string;
+  goalSpecId: string;
+  goalVersion: number;
+  state: "WAITING" | "READY" | "RECOVERING" | "COMPLETED" | "FAILED";
+  recoveryAttempt: number;
+  installations: ToolchainInstallation[];
+}
+
 export interface GoalToolchainLanguage {
   name: string;
   version: string;

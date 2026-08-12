@@ -72,6 +72,8 @@ import type {
   ProjectState,
   ReasoningEffort,
   RecentProject,
+  ToolchainInstallation,
+  ToolchainInstallationBatch,
   ToolchainInventory,
   ToolchainInventoryTool,
 } from "./types";
@@ -442,11 +444,12 @@ interface ProjectBundle {
   goalSpecs: GoalSpec[];
   plans: PlanSpec[];
   tasks: ModuleTask[];
+  toolchainInstallations: ToolchainInstallationBatch[];
   result?: ProjectResult;
 }
 
 function ControlConsole({ client }: { client: AorClient }) {
-  const [bundle, setBundle] = useState<ProjectBundle>({ goalSpecs: [], plans: [], tasks: [] });
+  const [bundle, setBundle] = useState<ProjectBundle>({ goalSpecs: [], plans: [], tasks: [], toolchainInstallations: [] });
   const [recent, setRecent] = useState(readRecentProjects);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -478,18 +481,22 @@ function ControlConsole({ client }: { client: AorClient }) {
       const tasksRequest = current.plan
         ? client.getTasks(projectId)
         : Promise.resolve({ items: [] as ModuleTask[] });
-      const [goals, plans, tasks, result] = await Promise.allSettled([
+      const [goals, plans, tasks, result, installations, inventory] = await Promise.allSettled([
         client.getGoalSpecs(projectId),
         client.getPlans(projectId),
         tasksRequest,
         client.getResult(projectId),
+        client.getToolchainInstallations(projectId),
+        client.getToolchains(),
       ]);
       const loadedResult = result.status === "fulfilled" ? result.value : undefined;
+      if (inventory.status === "fulfilled") setToolchainInventory(inventory.value);
       setBundle({
         project: current,
         goalSpecs: goals.status === "fulfilled" ? goals.value.items : [],
         plans: plans.status === "fulfilled" ? plans.value.items : [],
         tasks: tasks.status === "fulfilled" ? tasks.value.items : [],
+        toolchainInstallations: installations.status === "fulfilled" ? installations.value.items : [],
         result: loadedResult,
       });
       setRecent(rememberProject(current, loadedResult));
@@ -632,7 +639,7 @@ function ControlConsole({ client }: { client: AorClient }) {
 
   const returnHome = useCallback(() => {
     localStorage.removeItem(activeProjectKey);
-    setBundle({ goalSpecs: [], plans: [], tasks: [] });
+    setBundle({ goalSpecs: [], plans: [], tasks: [], toolchainInstallations: [] });
     setSelectedTask("");
     setAudits({});
     setAuditLoading("");
@@ -965,7 +972,7 @@ function Workspace({ bundle, toolchains, selectedTask, audits, auditLoading, onS
             ) : (
               <div className="stage-empty"><Sparkle /><strong>尚未生成 GoalSpec</strong><span>提交目标后，目标层会整理范围与验收标准。</span></div>
             )}
-            <ToolchainSummary inventory={toolchains} selection={goal?.content.toolchain} />
+            <ToolchainSummary inventory={toolchains} selection={goal?.content.toolchain} batches={bundle.toolchainInstallations} />
           </div>
           {(project.state === "CREATED" || project.state === "GOAL_NEGOTIATING" || project.state === "GOAL_SUSPENDED") && (
             <div className="goal-composer">
@@ -1059,7 +1066,38 @@ function PendingLine({ label, active }: { label: string; active: boolean }) {
   );
 }
 
-function ToolchainSummary({ inventory, selection }: { inventory: ToolchainInventoryTool[]; selection?: GoalToolchain }) {
+const toolchainInstallationStateLabels: Record<ToolchainInstallation["state"], string> = {
+  QUEUED: "等待安装",
+  INSTALLING: "安装中",
+  INSTALLED: "安装完成",
+  FAILED: "安装失败",
+};
+
+const toolchainInstallationBatchStateLabels: Record<ToolchainInstallationBatch["state"], string> = {
+  WAITING: "等待安装",
+  READY: "等待恢复目标",
+  RECOVERING: "正在恢复目标",
+  COMPLETED: "已完成",
+  FAILED: "恢复失败",
+};
+
+function installationStateLabel(installation: ToolchainInstallation): string {
+  if (installation.attempt > 0 && installation.state === "QUEUED") return "等待重试";
+  if (installation.attempt > 1 && installation.state === "INSTALLING") return `重试中 ${installation.attempt}/5`;
+  return toolchainInstallationStateLabels[installation.state];
+}
+
+function installationStateClass(state: ToolchainInstallation["state"]): string {
+  if (state === "INSTALLED") return "is-installed";
+  if (state === "FAILED") return "install-failed";
+  return "install-active";
+}
+
+function ToolchainSummary({ inventory, selection, batches }: {
+  inventory: ToolchainInventoryTool[];
+  selection?: GoalToolchain;
+  batches: ToolchainInstallationBatch[];
+}) {
   return (
     <div className="toolchain-summary">
       <div className="toolchain-block">
@@ -1086,6 +1124,48 @@ function ToolchainSummary({ inventory, selection }: { inventory: ToolchainInvent
           <p className="toolchain-empty">当前库存中没有已安装工具链。</p>
         )}
       </div>
+
+      {batches.length > 0 && (
+        <div className="toolchain-block">
+          <div className="toolchain-heading">
+            <span className="rail-label">工具链安装</span>
+            <span>{batches.length} 个批次</span>
+          </div>
+          {[...batches].reverse().map((batch) => (
+            <div className="toolchain-install-batch" key={batch.id}>
+              <div className="toolchain-install-batch-heading">
+                <span>GoalSpec v{batch.goalVersion}</span>
+                <strong className={`toolchain-batch-state ${batch.state.toLowerCase()}`}>
+                  {toolchainInstallationBatchStateLabels[batch.state]}
+                  {batch.recoveryAttempt > 1 ? ` · 恢复 ${batch.recoveryAttempt}/5` : ""}
+                </strong>
+              </div>
+              <div className="toolchain-list">
+                {batch.installations.map((installation) => (
+                  <div className="toolchain-row" key={installation.id}>
+                    <div className="toolchain-identity">
+                      <strong>{installation.name}</strong>
+                      <span>{installation.version}</span>
+                    </div>
+                    <div className="toolchain-detail">
+                      <span>{toolchainKindLabels[installation.kind] || installation.kind} · {toolchainPlatformLabels[installation.platform] || installation.platform}/{installation.architecture}</span>
+                      {(installation.lastErrorCode || installation.lastErrorMessage) && (
+                        <span className="toolchain-install-error">
+                          {[installation.lastErrorCode, installation.lastErrorMessage].filter(Boolean).join(" · ")}
+                        </span>
+                      )}
+                    </div>
+                    <span className={`toolchain-state ${installationStateClass(installation.state)}`}>
+                      {installationStateLabel(installation)}
+                      {installation.attempt > 0 && installation.state !== "INSTALLING" ? ` · ${installation.attempt}/5` : ""}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="toolchain-block">
         <div className="toolchain-heading">

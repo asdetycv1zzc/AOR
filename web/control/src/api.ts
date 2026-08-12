@@ -20,6 +20,7 @@ import type {
   ProjectActivitySnapshot,
   ProjectCreateInput,
   ProjectResult,
+  ToolchainInstallationBatch,
   ToolchainInventory,
 } from "./types";
 
@@ -157,6 +158,10 @@ export class AorClient {
 
   getToolchains(): Promise<ToolchainInventory> {
     return this.request("/v1/toolchains");
+  }
+
+  getToolchainInstallations(projectId: string): Promise<Page<ToolchainInstallationBatch>> {
+    return this.request(`/v1/projects/${encodeURIComponent(projectId)}/toolchain-installations`);
   }
 
   getModelProviderSettings(): Promise<ModelProviderSettingsPage> {
