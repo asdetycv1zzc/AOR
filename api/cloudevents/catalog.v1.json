@@ -18,6 +18,7 @@
     "io.aor.project.legal-hold-placed.v1": "https://schemas.aor.local/events/project-legal-hold-placed.v1.schema.json",
     "io.aor.project.legal-hold-released.v1": "https://schemas.aor.local/events/project-legal-hold-released.v1.schema.json",
     "io.aor.goal.negotiation-started.v1": "https://schemas.aor.local/events/goal-negotiation-started.v1.schema.json",
+    "io.aor.goal.toolchain-ready.v1": "https://schemas.aor.local/events/goal-toolchain-ready.v1.schema.json",
     "io.aor.goal.message-received.v1": "https://schemas.aor.local/events/goal-message-received.v1.schema.json",
     "io.aor.goal.message-stored.v1": "https://schemas.aor.local/events/goal-message-stored.v1.schema.json",
     "io.aor.goal.proposed.v1": "https://schemas.aor.local/events/goal-proposed.v1.schema.json",

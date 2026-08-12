@@ -208,7 +208,7 @@ func applyProjectLifecycleEvent(snapshot *ProjectLifecycleSnapshot, event Projec
 		if current == contracts.ProjectCreated || current == contracts.ProjectGoalNegotiating {
 			expected = contracts.ProjectGoalNegotiating
 		}
-	case "io.aor.goal.proposed.v1", "io.aor.goal.rejected.v1":
+	case "io.aor.goal.proposed.v1", "io.aor.goal.rejected.v1", "io.aor.goal.toolchain-ready.v1":
 		if current == contracts.ProjectGoalNegotiating {
 			expected = contracts.ProjectGoalNegotiating
 		}

@@ -250,6 +250,7 @@ type ProjectCommandType string
 const (
 	ProjectCommandCreate               ProjectCommandType = "CREATE_PROJECT"
 	ProjectCommandStartGoalNegotiation ProjectCommandType = "START_GOAL_NEGOTIATION"
+	ProjectCommandResumeToolchainGoal  ProjectCommandType = "RESUME_TOOLCHAIN_GOAL"
 	ProjectCommandSubmitGoalMessage    ProjectCommandType = "SUBMIT_GOAL_MESSAGE"
 	ProjectCommandProposeGoal          ProjectCommandType = "PROPOSE_GOAL"
 	ProjectCommandApproveGoal          ProjectCommandType = "APPROVE_GOAL"
@@ -375,6 +376,13 @@ func DecideProject(current Project, command ProjectCommand) (ProjectEvent, *aore
 		}
 		next.State = contracts.ProjectGoalNegotiating
 		eventType = "io.aor.goal.negotiation-started.v1"
+	case ProjectCommandResumeToolchainGoal:
+		if current.State != contracts.ProjectGoalNegotiating || current.GoalProcessing || current.Goal == nil || command.Goal == nil ||
+			current.Goal.ID != command.Goal.ID || current.Goal.Version != command.Goal.Version || current.Goal.SHA256 != command.Goal.SHA256 || current.Goal.ApprovedBy != "" {
+			return ProjectEvent{}, transitionProject(command, current.State)
+		}
+		next.GoalProcessing = true
+		eventType = "io.aor.goal.toolchain-ready.v1"
 	case ProjectCommandSubmitGoalMessage:
 		if current.State != contracts.ProjectCreated && current.State != contracts.ProjectGoalNegotiating && current.State != contracts.ProjectGoalSuspended {
 			return ProjectEvent{}, transitionProject(command, current.State)

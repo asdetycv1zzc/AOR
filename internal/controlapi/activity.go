@@ -499,6 +499,8 @@ func systemActivityForEvent(eventType string) (activityFlow, string, bool) {
 	switch eventType {
 	case "io.aor.goal.negotiation-started.v1":
 		return activityFlowGoal, "目标协商已开始", true
+	case "io.aor.goal.toolchain-ready.v1":
+		return activityFlowGoal, "工具链已安装，目标协商正在继续", true
 	case "io.aor.goal.message-received.v1":
 		return activityFlowGoal, "后端已接收目标", true
 	case "io.aor.goal.proposed.v1":
