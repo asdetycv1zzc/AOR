@@ -749,8 +749,26 @@ func IsGCCTool(tool VersionedTool) bool {
 	if tool.Kind != ToolchainCompiler {
 		return false
 	}
-	name := strings.ToLower(strings.TrimSpace(tool.Name))
-	return name == "gcc" || name == "g++" || name == "gnu gcc" || name == "gnu g++" || name == "gnu c++"
+	name := normalizeGCCToolName(tool.Name)
+	switch name {
+	case "gcc", "g++", "gnu gcc", "gnu g++", "gnu c++",
+		"gcc compiler", "g++ compiler", "gnu gcc compiler", "gnu g++ compiler", "gnu c++ compiler",
+		"gnu c compiler", "gnu compiler collection", "gnu compiler collection gcc", "gnu compiler collection g++",
+		"gnu compiler collection c compiler", "gnu compiler collection c++ compiler",
+		"gnu compiler collection c compiler gcc", "gnu compiler collection c++ compiler g++":
+		return true
+	default:
+		return false
+	}
+}
+
+// normalizeGCCToolName preserves compiler sigils such as ++ while making
+// historical display names comparable. It deliberately does not perform
+// substring matching, so unrelated tool names cannot be classified as GCC.
+func normalizeGCCToolName(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	name = strings.NewReplacer("(", " ", ")", " ", "[", " ", "]", " ", "{", " ", "}", " ", "/", " ", "\\", " ", "-", " ", "_", " ", ":", " ", ",", " ").Replace(name)
+	return strings.Join(strings.Fields(name), " ")
 }
 
 func (tool VersionedTool) ReadyToProvision() bool {
