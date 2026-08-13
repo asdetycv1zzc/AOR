@@ -14,7 +14,7 @@ func TestResolveProjectModelRouteFillsLegacyContextWindowFromMatchingFallback(t 
 	}
 	project := state.Project{ModelRoutes: map[string]state.ProjectModelRoute{string(agentruntime.RoleGoalProposer): configured}}
 	fallback := ModelRoute{
-		Provider: "openai", Model: "gpt-5.4", ReasoningEffort: "medium", ContextWindowTokens: 1_050_000,
+		Provider: "openai", Model: "gpt-5.4", ReasoningEffort: "medium", ContextWindowTokens: 400_000,
 		MaxOutputTokens: 128, ProviderPolicy: "default", CachePolicy: "local", MaxAttempts: 1,
 	}
 

@@ -103,6 +103,7 @@ func validProtocolValue(protocol Protocol) bool {
 }
 
 func openAIModels() []CatalogModel {
+	const maxInput = 258_000
 	models := []string{
 		"gpt-5.4", "gpt-5.4-mini",
 		"gpt-5.5",
@@ -110,11 +111,7 @@ func openAIModels() []CatalogModel {
 	}
 	result := make([]CatalogModel, 0, len(models))
 	for _, id := range models {
-		contextWindow := 1_050_000
-		if id == "gpt-5.4-mini" {
-			contextWindow = 400_000
-		}
-		result = append(result, CatalogModel{ID: id, MaxInput: contextWindow, ContextWindow: contextWindow, MaxOutput: 128000, ToolCalls: true, JSONSchema: true, Streaming: true, PromptCache: true})
+		result = append(result, CatalogModel{ID: id, MaxInput: maxInput, ContextWindow: 400_000, MaxOutput: 128000, ToolCalls: true, JSONSchema: true, Streaming: true, PromptCache: true})
 	}
 	return result
 }

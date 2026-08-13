@@ -428,6 +428,13 @@
       "file": "000061_expand_model_context_windows.up.sql",
       "sha256": "sha256:798bf2c7841e9abc1389a4f4a064bb2f8bc966c1146d77aadbbeaa121ec234de",
       "destructive": false
+    },
+    {
+      "version": 62,
+      "mode": "EXPAND",
+      "file": "000062_update_openai_context_windows.up.sql",
+      "sha256": "sha256:8e14d4be7aef63a0b77ba3c0179bc180f0c947ddb546e178c4abaeb4d30c6d9f",
+      "destructive": false
     }
   ]
 }
