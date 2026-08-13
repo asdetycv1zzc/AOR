@@ -12,41 +12,43 @@ import (
 // deliberately not a field on this type; callers can only observe whether a
 // key is configured.
 type ProviderSettings struct {
-	ID                         string     `json:"id"`
-	DisplayName                string     `json:"displayName"`
-	Provider                   string     `json:"provider"`
-	Custom                     bool       `json:"custom"`
-	BaseURL                    string     `json:"baseUrl"`
-	Protocol                   Protocol   `json:"protocol"`
-	Protocols                  []Protocol `json:"protocols"`
-	Enabled                    bool       `json:"enabled"`
-	Models                     []string   `json:"models"`
-	APIKeyConfigured           bool       `json:"apiKeyConfigured"`
-	InputMicrosPerToken        int64      `json:"inputMicrosPerToken"`
-	OutputMicrosPerToken       int64      `json:"outputMicrosPerToken"`
-	SupportsStreaming          bool       `json:"supportsStreaming"`
-	SupportsToolCalls          bool       `json:"supportsToolCalls"`
-	SupportsJSONSchema         bool       `json:"supportsJsonSchema"`
-	SupportsSeed               bool       `json:"supportsSeed"`
-	SupportsPromptCaching      bool       `json:"supportsPromptCaching"`
-	MaxInputTokens             int        `json:"maxInputTokens"`
-	MaxOutputTokens            int        `json:"maxOutputTokens"`
-	AllowedDataClassifications []string   `json:"allowedDataClassifications"`
-	DataResidency              []string   `json:"dataResidency"`
-	RetentionPolicy            string     `json:"retentionPolicy"`
-	Modalities                 []string   `json:"modalities"`
-	Version                    int64      `json:"version"`
+	ID                         string         `json:"id"`
+	DisplayName                string         `json:"displayName"`
+	Provider                   string         `json:"provider"`
+	Custom                     bool           `json:"custom"`
+	BaseURL                    string         `json:"baseUrl"`
+	Protocol                   Protocol       `json:"protocol"`
+	Protocols                  []Protocol     `json:"protocols"`
+	Enabled                    bool           `json:"enabled"`
+	Models                     []string       `json:"models"`
+	ModelContextWindowTokens   map[string]int `json:"modelContextWindowTokens"`
+	APIKeyConfigured           bool           `json:"apiKeyConfigured"`
+	InputMicrosPerToken        int64          `json:"inputMicrosPerToken"`
+	OutputMicrosPerToken       int64          `json:"outputMicrosPerToken"`
+	SupportsStreaming          bool           `json:"supportsStreaming"`
+	SupportsToolCalls          bool           `json:"supportsToolCalls"`
+	SupportsJSONSchema         bool           `json:"supportsJsonSchema"`
+	SupportsSeed               bool           `json:"supportsSeed"`
+	SupportsPromptCaching      bool           `json:"supportsPromptCaching"`
+	MaxInputTokens             int            `json:"maxInputTokens"`
+	MaxOutputTokens            int            `json:"maxOutputTokens"`
+	AllowedDataClassifications []string       `json:"allowedDataClassifications"`
+	DataResidency              []string       `json:"dataResidency"`
+	RetentionPolicy            string         `json:"retentionPolicy"`
+	Modalities                 []string       `json:"modalities"`
+	Version                    int64          `json:"version"`
 }
 
 // PutRequest is accepted by the settings API. An empty APIKey on an existing
 // row preserves its encrypted key; a new row must provide one.
 type PutRequest struct {
-	DisplayName string   `json:"displayName"`
-	BaseURL     string   `json:"baseUrl"`
-	APIKey      string   `json:"apiKey"`
-	Protocol    Protocol `json:"protocol"`
-	Models      []string `json:"models"`
-	Enabled     bool     `json:"enabled"`
+	DisplayName              string         `json:"displayName"`
+	BaseURL                  string         `json:"baseUrl"`
+	APIKey                   string         `json:"apiKey"`
+	Protocol                 Protocol       `json:"protocol"`
+	Models                   []string       `json:"models"`
+	ModelContextWindowTokens map[string]int `json:"modelContextWindowTokens,omitempty"`
+	Enabled                  bool           `json:"enabled"`
 }
 
 type ResolvedSettings struct {
@@ -76,4 +78,29 @@ func (factory AdapterFactory) New(provider, baseURL, apiKey string, models []str
 
 func (factory AdapterFactory) NewWithProtocol(provider string, protocol Protocol, baseURL, apiKey string, models []string) (modelgateway.ModelAdapter, error) {
 	return newAdapter(factory, provider, protocol, baseURL, apiKey, models)
+}
+
+func (factory AdapterFactory) NewWithSettings(settings ResolvedSettings) (modelgateway.ModelAdapter, error) {
+	adapter, err := newAdapter(factory, settings.Provider, settings.Protocol, settings.BaseURL, settings.APIKey, settings.Models)
+	if err != nil {
+		return nil, err
+	}
+	return &capabilityOverrideAdapter{ModelAdapter: adapter, contextWindows: cloneContextWindows(settings.ModelContextWindowTokens)}, nil
+}
+
+type capabilityOverrideAdapter struct {
+	modelgateway.ModelAdapter
+	contextWindows map[string]int
+}
+
+func (adapter *capabilityOverrideAdapter) Capabilities(ctx context.Context, model string) (modelgateway.ModelCapabilities, error) {
+	capabilities, err := adapter.ModelAdapter.Capabilities(ctx, model)
+	if err != nil {
+		return modelgateway.ModelCapabilities{}, err
+	}
+	if window := adapter.contextWindows[model]; window > 0 {
+		capabilities.ContextWindowTokens = window
+		capabilities.MaxInputTokens = window
+	}
+	return capabilities, nil
 }

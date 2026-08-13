@@ -273,19 +273,12 @@ func (r *Runtime) Generate(ctx context.Context, runID string, call ModelCall) (m
 
 func (r *Runtime) generateWithInterventions(ctx context.Context, runID string, call ModelCall, messages []modelgateway.Message, enforceResponseSchema, allowTools bool) (modelgateway.NormalizedResponse, []modelgateway.Message, error) {
 	conversation := cloneMessages(messages)
-	hasConversation := messages != nil
 	for {
-		response, err := r.generate(ctx, runID, call, conversation, enforceResponseSchema, allowTools)
+		response, usedConversation, err := r.generate(ctx, runID, call, conversation, enforceResponseSchema, allowTools)
 		if err != nil {
 			return modelgateway.NormalizedResponse{}, nil, err
 		}
-		if !hasConversation {
-			conversation, _, err = r.toolLoopContext(runID)
-			if err != nil {
-				return modelgateway.NormalizedResponse{}, nil, err
-			}
-			hasConversation = true
-		}
+		conversation = usedConversation
 		for _, intervention := range response.AppliedInterventions {
 			if intervention != "" {
 				conversation = append(conversation, modelgateway.Message{Role: "user", Content: intervention})
@@ -306,31 +299,31 @@ func interventionModelCall(call ModelCall, requestID string) ModelCall {
 	return call
 }
 
-func (r *Runtime) generate(ctx context.Context, runID string, call ModelCall, messages []modelgateway.Message, enforceResponseSchema, allowTools bool) (modelgateway.NormalizedResponse, error) {
+func (r *Runtime) generate(ctx context.Context, runID string, call ModelCall, messages []modelgateway.Message, enforceResponseSchema, allowTools bool) (modelgateway.NormalizedResponse, []modelgateway.Message, error) {
 	if r.gateway == nil {
-		return modelgateway.NormalizedResponse{}, ErrProviderUnavailable
+		return modelgateway.NormalizedResponse{}, nil, ErrProviderUnavailable
 	}
 	if validateModelCall(call) != nil {
-		return modelgateway.NormalizedResponse{}, modelgateway.ErrInvalidRequest
+		return modelgateway.NormalizedResponse{}, nil, modelgateway.ErrInvalidRequest
 	}
 	opCtx, executionLease, declaration, prompt, finish, err := r.beginOperation(ctx, runID, "model.generate", LeaseOperationModel, false)
 	if err != nil {
-		return modelgateway.NormalizedResponse{}, err
+		return modelgateway.NormalizedResponse{}, nil, err
 	}
 	defer finish()
 	lease, err := r.operationLease(opCtx, executionLease, OperationLeaseRequest{
 		Operation: LeaseOperationModel, RequestID: call.RequestID, Provider: call.Provider, Model: call.Model, ModelCall: call,
 	})
 	if err != nil {
-		return modelgateway.NormalizedResponse{}, err
+		return modelgateway.NormalizedResponse{}, nil, err
 	}
 	release, err := r.slots.Acquire(opCtx, declaration.Role, declarationPriority(declaration))
 	if err != nil {
-		return modelgateway.NormalizedResponse{}, err
+		return modelgateway.NormalizedResponse{}, nil, err
 	}
 	defer release()
 	if err := r.operationReady(opCtx, runID, executionLease, "model.generate", LeaseOperationModel, false); err != nil {
-		return modelgateway.NormalizedResponse{}, err
+		return modelgateway.NormalizedResponse{}, nil, err
 	}
 	if messages == nil {
 		messages = prompt.Messages
@@ -339,13 +332,29 @@ func (r *Runtime) generate(ctx context.Context, runID string, call ModelCall, me
 	if !allowTools {
 		tools = nil
 	}
+	responseSchema := declaration.ResponseSchema
+	if !enforceResponseSchema {
+		responseSchema = nil
+	}
+	overheadTokens := EstimateRequestOverheadTokens(tools, responseSchema)
+	compactionThreshold := ClampCompactionThreshold(call.ContextWindowTokens, call.CompactionThresholdTokens)
+	if compactionThreshold > call.MaxOutputTokens && EstimateMessagesTokens(messages)+overheadTokens+int64(call.MaxOutputTokens) >= int64(compactionThreshold) {
+		target := int64(EffectiveContextTokens(call.ContextWindowTokens)-call.MaxOutputTokens) - overheadTokens
+		if target <= 0 {
+			return modelgateway.NormalizedResponse{}, nil, modelgateway.ErrContextWindowExceeded
+		}
+		messages, _, err = CompactMessagesWithManifest(messages, declaration.ContextManifest, int(target))
+		if err != nil {
+			return modelgateway.NormalizedResponse{}, nil, err
+		}
+	}
 	request := modelgateway.NormalizedRequest{
 		RequestID: call.RequestID, TenantID: declaration.TenantID, ProjectID: declaration.ProjectID,
 		TaskID: declaration.TaskID, AgentInstanceID: declaration.AgentInstanceID, Role: string(declaration.Role),
 		Model: call.Model, PromptBundleVersion: declaration.PromptBundle.Version, Messages: cloneMessages(messages),
 		Tools: tools, ResponseSchemaRef: declaration.ResponseSchemaRef,
 		ResponseSchema: append(json.RawMessage(nil), declaration.ResponseSchema...), ResponseSemanticValidator: declaration.ResponseSemanticValidator,
-		MaxOutputTokens: call.MaxOutputTokens, ThinkingBudget: call.ThinkingBudget,
+		MaxOutputTokens: call.MaxOutputTokens, ContextWindowTokens: call.ContextWindowTokens, CompactionThresholdTokens: call.CompactionThresholdTokens, ThinkingBudget: call.ThinkingBudget,
 		Temperature: call.Temperature, ReasoningEffort: call.ReasoningEffort, ProviderPolicy: call.ProviderPolicy,
 		DataClassification: declaration.DataClassification, CachePolicy: call.CachePolicy, PromptDigest: prompt.SHA256,
 		ToolSchemaDigest: DigestToolDefinitions(tools), PolicyDigest: declaration.PolicyDigest, WorstCaseCostMicros: call.WorstCaseCostMicros,
@@ -361,24 +370,26 @@ func (r *Runtime) generate(ctx context.Context, runID string, call ModelCall, me
 	}
 	response, callErr := r.gateway.Generate(opCtx, request, modelgateway.GenerateOptions{Provider: call.Provider, AccountID: lease.BudgetAccountID, ReservationID: call.ReservationID, MaxAttempts: call.MaxAttempts})
 	if callErr != nil {
-		return modelgateway.NormalizedResponse{}, callErr
+		return modelgateway.NormalizedResponse{}, nil, callErr
 	}
 	if sameLeaseRevision(lease, executionLease) {
 		if err := r.validateLease(opCtx, runID, lease, "model.generate", LeaseOperationResult); err != nil {
-			return modelgateway.NormalizedResponse{}, err
+			return modelgateway.NormalizedResponse{}, nil, err
 		}
 	} else {
 		if err := r.validateLease(opCtx, runID, executionLease, "", LeaseOperationResult); err != nil {
-			return modelgateway.NormalizedResponse{}, err
+			return modelgateway.NormalizedResponse{}, nil, err
 		}
 	}
-	return response, nil
+	return response, cloneMessages(messages), nil
 }
 
 func validateModelCall(call ModelCall) error {
 	if !safeProtocolString(call.RequestID, 256) || !safeProtocolString(call.Provider, 128) || !safeProtocolString(call.Model, 256) ||
 		!safeProtocolString(call.ReservationID, 256) || !safeProtocolString(call.ProviderPolicy, 256) || !safeProtocolString(call.CachePolicy, 128) ||
 		call.MaxOutputTokens <= 0 || call.MaxOutputTokens > 1_000_000 || call.ThinkingBudget < 0 || call.ThinkingBudget >= call.MaxOutputTokens ||
+		(call.ContextWindowTokens != 0 && (call.ContextWindowTokens <= call.MaxOutputTokens || call.ContextWindowTokens > 10_000_000)) ||
+		(call.CompactionThresholdTokens != 0 && (call.ContextWindowTokens == 0 || call.CompactionThresholdTokens <= call.MaxOutputTokens || call.CompactionThresholdTokens > call.ContextWindowTokens*9/10)) ||
 		call.WorstCaseCostMicros < 0 || call.MaxAttempts < 0 || call.MaxAttempts > 5 ||
 		math.IsNaN(call.Temperature) || math.IsInf(call.Temperature, 0) || call.Temperature < 0 || call.Temperature > 2 {
 		return modelgateway.ErrInvalidRequest

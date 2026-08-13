@@ -37,17 +37,19 @@ type Project struct {
 }
 
 type ProjectModelRoute struct {
-	Provider            string  `json:"provider"`
-	Model               string  `json:"model"`
-	ReasoningEffort     string  `json:"reasoningEffort"`
-	MaxOutputTokens     int     `json:"maxOutputTokens"`
-	ThinkingBudget      int     `json:"thinkingBudget"`
-	Temperature         float64 `json:"temperature"`
-	Seed                *int64  `json:"seed,omitempty"`
-	ProviderPolicy      string  `json:"providerPolicy"`
-	CachePolicy         string  `json:"cachePolicy"`
-	WorstCaseCostMicros int64   `json:"worstCaseCostMicros"`
-	MaxAttempts         int     `json:"maxAttempts"`
+	Provider                  string  `json:"provider"`
+	Model                     string  `json:"model"`
+	ReasoningEffort           string  `json:"reasoningEffort"`
+	ContextWindowTokens       int     `json:"contextWindowTokens,omitempty"`
+	CompactionThresholdTokens int     `json:"compactionThresholdTokens,omitempty"`
+	MaxOutputTokens           int     `json:"maxOutputTokens"`
+	ThinkingBudget            int     `json:"thinkingBudget"`
+	Temperature               float64 `json:"temperature"`
+	Seed                      *int64  `json:"seed,omitempty"`
+	ProviderPolicy            string  `json:"providerPolicy"`
+	CachePolicy               string  `json:"cachePolicy"`
+	WorstCaseCostMicros       int64   `json:"worstCaseCostMicros"`
+	MaxAttempts               int     `json:"maxAttempts"`
 }
 
 var requiredProjectModelRoles = [...]string{
@@ -77,6 +79,8 @@ func ValidateProjectModelRoutes(routes map[string]ProjectModelRoute) error {
 func validProjectModelRoute(route ProjectModelRoute) bool {
 	return validProjectModelIdentity(route.Provider, 128) && validProjectModelIdentity(route.Model, 256) && route.Model != "*" &&
 		ValidModelReasoningEffort(route.Provider, route.ReasoningEffort) &&
+		(route.ContextWindowTokens == 0 || route.ContextWindowTokens >= route.MaxOutputTokens+1 && route.ContextWindowTokens <= 10_000_000) &&
+		(route.CompactionThresholdTokens == 0 || route.ContextWindowTokens > 0 && route.CompactionThresholdTokens >= route.MaxOutputTokens+1 && route.CompactionThresholdTokens <= route.ContextWindowTokens*9/10) &&
 		route.MaxOutputTokens >= 1 && route.MaxOutputTokens <= 1_000_000 &&
 		route.ThinkingBudget >= 0 && route.ThinkingBudget < route.MaxOutputTokens &&
 		!math.IsNaN(route.Temperature) && !math.IsInf(route.Temperature, 0) && route.Temperature >= 0 && route.Temperature <= 2 &&

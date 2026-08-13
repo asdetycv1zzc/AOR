@@ -54,7 +54,8 @@ func (store *Store) List(ctx context.Context, tenantID string) ([]ProviderSettin
 	}
 	defer func() { _ = tx.Rollback() }()
 	rows, err := tx.QueryContext(ctx, `
-SELECT provider_id, provider, display_name, base_url, protocol, enabled, models_jsonb, version,
+SELECT provider_id, provider, display_name, base_url, protocol, enabled, models_jsonb,
+       model_context_windows_jsonb, version,
        input_micros_per_token, output_micros_per_token,
        api_key_ciphertext IS NOT NULL
 FROM tenant_model_provider_settings
@@ -71,11 +72,12 @@ ORDER BY provider_id`, tenantID)
 		var protocol Protocol
 		var enabled, hasAPIKey bool
 		var encoded []byte
+		var encodedContextWindows []byte
 		var version, inputMicros, outputMicros int64
-		if err := rows.Scan(&id, &provider, &displayName, &baseURL, &protocol, &enabled, &encoded, &version, &inputMicros, &outputMicros, &hasAPIKey); err != nil {
+		if err := rows.Scan(&id, &provider, &displayName, &baseURL, &protocol, &enabled, &encoded, &encodedContextWindows, &version, &inputMicros, &outputMicros, &hasAPIKey); err != nil {
 			return nil, err
 		}
-		settings, err := settingsFromStored(id, provider, displayName, baseURL, protocol, enabled, encoded, version, inputMicros, outputMicros)
+		settings, err := settingsFromStored(id, provider, displayName, baseURL, protocol, enabled, encoded, encodedContextWindows, version, inputMicros, outputMicros)
 		if err != nil {
 			return nil, err
 		}
@@ -123,15 +125,17 @@ func (store *Store) Get(ctx context.Context, tenantID, providerID string) (Provi
 	var protocol Protocol
 	var enabled bool
 	var encoded []byte
+	var encodedContextWindows []byte
 	var version, inputMicros, outputMicros int64
 	var configured bool
 	err = tx.QueryRowContext(ctx, `
-SELECT provider_id, provider, display_name, base_url, protocol, enabled, models_jsonb, version,
+SELECT provider_id, provider, display_name, base_url, protocol, enabled, models_jsonb,
+       model_context_windows_jsonb, version,
        input_micros_per_token, output_micros_per_token,
        api_key_ciphertext IS NOT NULL
 FROM tenant_model_provider_settings
 WHERE tenant_id = $1::uuid AND provider_id = $2`, tenantID, providerID).
-		Scan(&id, &provider, &displayName, &baseURL, &protocol, &enabled, &encoded, &version, &inputMicros, &outputMicros, &configured)
+		Scan(&id, &provider, &displayName, &baseURL, &protocol, &enabled, &encoded, &encodedContextWindows, &version, &inputMicros, &outputMicros, &configured)
 	if errors.Is(err, sql.ErrNoRows) {
 		if commitErr := tx.Commit(); commitErr != nil {
 			return ProviderSettings{}, false, commitErr
@@ -145,7 +149,7 @@ WHERE tenant_id = $1::uuid AND provider_id = $2`, tenantID, providerID).
 	if err != nil {
 		return ProviderSettings{}, false, err
 	}
-	settings, err := settingsFromStored(id, provider, displayName, baseURL, protocol, enabled, encoded, version, inputMicros, outputMicros)
+	settings, err := settingsFromStored(id, provider, displayName, baseURL, protocol, enabled, encoded, encodedContextWindows, version, inputMicros, outputMicros)
 	if err != nil {
 		return ProviderSettings{}, false, err
 	}
@@ -171,15 +175,15 @@ func (store *Store) Resolve(ctx context.Context, tenantID, providerID string) (R
 	var id, provider, displayName, baseURL string
 	var protocol Protocol
 	var enabled bool
-	var encoded, nonce, ciphertext []byte
+	var encoded, encodedContextWindows, nonce, ciphertext []byte
 	var version, inputMicros, outputMicros int64
 	err = tx.QueryRowContext(ctx, `
-SELECT provider_id, provider, display_name, base_url, protocol, enabled, models_jsonb, api_key_nonce,
-       api_key_ciphertext, version, input_micros_per_token,
+SELECT provider_id, provider, display_name, base_url, protocol, enabled, models_jsonb,
+       model_context_windows_jsonb, api_key_nonce, api_key_ciphertext, version, input_micros_per_token,
        output_micros_per_token
 FROM tenant_model_provider_settings
 WHERE tenant_id = $1::uuid AND provider_id = $2`, tenantID, providerID).
-		Scan(&id, &provider, &displayName, &baseURL, &protocol, &enabled, &encoded, &nonce, &ciphertext, &version, &inputMicros, &outputMicros)
+		Scan(&id, &provider, &displayName, &baseURL, &protocol, &enabled, &encoded, &encodedContextWindows, &nonce, &ciphertext, &version, &inputMicros, &outputMicros)
 	if errors.Is(err, sql.ErrNoRows) {
 		if commitErr := tx.Commit(); commitErr != nil {
 			return ResolvedSettings{}, false, commitErr
@@ -202,7 +206,7 @@ WHERE tenant_id = $1::uuid AND provider_id = $2`, tenantID, providerID).
 	if err != nil || len(key) == 0 {
 		return ResolvedSettings{}, false, ErrAPIKeyUnavailable
 	}
-	settings, err := settingsFromStored(id, provider, displayName, baseURL, protocol, enabled, encoded, version, inputMicros, outputMicros)
+	settings, err := settingsFromStored(id, provider, displayName, baseURL, protocol, enabled, encoded, encodedContextWindows, version, inputMicros, outputMicros)
 	if err != nil {
 		return ResolvedSettings{}, false, err
 	}
@@ -237,6 +241,15 @@ func (store *Store) Put(ctx context.Context, tenantID, providerID string, reques
 		displayName = strings.TrimSpace(request.DisplayName)
 		models = normalizedCustomModels(request.Models)
 	}
+	if found && request.ModelContextWindowTokens != nil {
+		catalogWindows := make(map[string]int, len(catalog.Models))
+		for _, model := range catalog.Models {
+			catalogWindows[model.ID] = model.ContextWindow
+		}
+		if !equalContextWindows(catalogWindows, request.ModelContextWindowTokens) {
+			return ProviderSettings{}, ErrInvalidSettings
+		}
+	}
 	if displayName == "" || len(displayName) > 128 || strings.ContainsAny(displayName, "\r\n\x00") || len(models) == 0 || len(models) > maximumModels {
 		return ProviderSettings{}, ErrInvalidSettings
 	}
@@ -245,19 +258,30 @@ func (store *Store) Put(ctx context.Context, tenantID, providerID string, reques
 		return ProviderSettings{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var oldNonce, oldCipher []byte
+	var oldNonce, oldCipher, oldContextWindows []byte
 	var oldVersion int64
 	err = tx.QueryRowContext(ctx, `
-SELECT api_key_nonce, api_key_ciphertext, version
+SELECT api_key_nonce, api_key_ciphertext, model_context_windows_jsonb, version
 FROM tenant_model_provider_settings
 WHERE tenant_id = $1::uuid AND provider_id = $2
-FOR UPDATE`, tenantID, providerID).Scan(&oldNonce, &oldCipher, &oldVersion)
+FOR UPDATE`, tenantID, providerID).Scan(&oldNonce, &oldCipher, &oldContextWindows, &oldVersion)
 	existing := err == nil
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return ProviderSettings{}, err
 	}
 	if !existing && request.Enabled && request.APIKey == "" {
 		return ProviderSettings{}, ErrAPIKeyUnavailable
+	}
+	if !found && request.ModelContextWindowTokens == nil && existing {
+		if json.Unmarshal(oldContextWindows, &request.ModelContextWindowTokens) != nil {
+			return ProviderSettings{}, ErrInvalidSettings
+		}
+	}
+	if !found && existing && !sameModelSet(models, request.ModelContextWindowTokens) {
+		return ProviderSettings{}, ErrInvalidSettings
+	}
+	if !found && !validContextWindows(models, request.ModelContextWindowTokens) {
+		return ProviderSettings{}, ErrInvalidSettings
 	}
 	nonce, ciphertext := oldNonce, oldCipher
 	nextVersion := oldVersion + 1
@@ -290,12 +314,25 @@ FOR UPDATE`, tenantID, providerID).Scan(&oldNonce, &oldCipher, &oldVersion)
 	if err != nil {
 		return ProviderSettings{}, err
 	}
+	contextWindows := make(map[string]int, len(models))
+	if found {
+		for _, model := range catalog.Models {
+			contextWindows[model.ID] = model.ContextWindow
+		}
+	} else {
+		contextWindows = cloneContextWindows(request.ModelContextWindowTokens)
+	}
+	encodedContextWindows, err := json.Marshal(contextWindows)
+	if err != nil {
+		return ProviderSettings{}, err
+	}
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO tenant_model_provider_settings
-	  (tenant_id, provider_id, provider, display_name, base_url, protocol, enabled, models_jsonb, api_key_nonce,
+	  (tenant_id, provider_id, provider, display_name, base_url, protocol, enabled, models_jsonb,
+	   model_context_windows_jsonb, api_key_nonce,
 	   api_key_ciphertext, version, input_micros_per_token, output_micros_per_token,
 	   updated_at)
-VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, 1, 4, $12)
+VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11, $12, 1, 4, $13)
 ON CONFLICT (tenant_id, provider_id) DO UPDATE SET
 	  provider = EXCLUDED.provider,
 	  display_name = EXCLUDED.display_name,
@@ -303,22 +340,75 @@ ON CONFLICT (tenant_id, provider_id) DO UPDATE SET
   protocol = EXCLUDED.protocol,
   enabled = EXCLUDED.enabled,
   models_jsonb = EXCLUDED.models_jsonb,
+  model_context_windows_jsonb = EXCLUDED.model_context_windows_jsonb,
   api_key_nonce = EXCLUDED.api_key_nonce,
   api_key_ciphertext = EXCLUDED.api_key_ciphertext,
   version = EXCLUDED.version,
-	  updated_at = EXCLUDED.updated_at`, tenantID, providerID, providerID, displayName, request.BaseURL, request.Protocol, request.Enabled, encoded, nonce, ciphertext, nextVersion, store.clock().UTC())
+	  updated_at = EXCLUDED.updated_at`, tenantID, providerID, providerID, displayName, request.BaseURL, request.Protocol, request.Enabled, encoded, encodedContextWindows, nonce, ciphertext, nextVersion, store.clock().UTC())
 	if err != nil {
 		return ProviderSettings{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return ProviderSettings{}, err
 	}
-	settings, err := settingsFromStored(providerID, providerID, displayName, request.BaseURL, request.Protocol, request.Enabled, encoded, nextVersion, 1, 4)
+	settings, err := settingsFromStored(providerID, providerID, displayName, request.BaseURL, request.Protocol, request.Enabled, encoded, encodedContextWindows, nextVersion, 1, 4)
 	if err != nil {
 		return ProviderSettings{}, err
 	}
 	settings.APIKeyConfigured = len(ciphertext) != 0
 	return settings, nil
+}
+
+func validContextWindows(models []string, windows map[string]int) bool {
+	if len(windows) != len(models) {
+		return false
+	}
+	allowed := make(map[string]struct{}, len(models))
+	for _, model := range models {
+		allowed[model] = struct{}{}
+		window, found := windows[model]
+		if !found || window < 1 || window > 10_000_000 {
+			return false
+		}
+	}
+	for model := range windows {
+		if _, found := allowed[model]; !found {
+			return false
+		}
+	}
+	return true
+}
+
+func sameModelSet(models []string, windows map[string]int) bool {
+	if len(models) != len(windows) {
+		return false
+	}
+	for _, model := range models {
+		if _, found := windows[model]; !found {
+			return false
+		}
+	}
+	return true
+}
+
+func cloneContextWindows(windows map[string]int) map[string]int {
+	cloned := make(map[string]int, len(windows))
+	for model, window := range windows {
+		cloned[model] = window
+	}
+	return cloned
+}
+
+func equalContextWindows(left, right map[string]int) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for model, window := range left {
+		if right[model] != window {
+			return false
+		}
+	}
+	return true
 }
 
 func (store *Store) begin(ctx context.Context, tenantID string, readOnly bool) (*sql.Tx, error) {
@@ -407,7 +497,7 @@ func normalizedCustomModels(requested []string) []string {
 	return result
 }
 
-func settingsFromStored(id, provider, displayName, baseURL string, protocol Protocol, enabled bool, encoded []byte, version, inputMicros, outputMicros int64) (ProviderSettings, error) {
+func settingsFromStored(id, provider, displayName, baseURL string, protocol Protocol, enabled bool, encoded, encodedContextWindows []byte, version, inputMicros, outputMicros int64) (ProviderSettings, error) {
 	catalog, found := findCatalog(provider)
 	if !safeProviderID(id) || id != provider || !validProtocolValue(protocol) {
 		return ProviderSettings{}, ErrInvalidSettings
@@ -422,7 +512,9 @@ func settingsFromStored(id, provider, displayName, baseURL string, protocol Prot
 		return ProviderSettings{}, ErrInvalidSettings
 	}
 	capability := modelCapabilities(genericModel(models[0]))
+	var contextWindows map[string]int
 	if found {
+		contextWindows = make(map[string]int, len(catalog.Models))
 		if !validProtocol(catalog, protocol) {
 			return ProviderSettings{}, ErrInvalidSettings
 		}
@@ -430,19 +522,19 @@ func settingsFromStored(id, provider, displayName, baseURL string, protocol Prot
 		models = normalizedModels(catalog, nil)
 		capability = modelCapabilities(catalog.Models[0])
 		for _, model := range catalog.Models {
-			if model.ID == models[0] {
-				capability = modelCapabilities(model)
-				break
-			}
+			contextWindows[model.ID] = model.ContextWindow
 		}
-	} else if displayName == "" || len(displayName) > 128 || strings.TrimSpace(displayName) != displayName || strings.ContainsAny(displayName, "\r\n\x00") || len(models) == 0 {
-		return ProviderSettings{}, ErrInvalidSettings
+	} else {
+		if displayName == "" || len(displayName) > 128 || strings.TrimSpace(displayName) != displayName || strings.ContainsAny(displayName, "\r\n\x00") || len(models) == 0 || json.Unmarshal(encodedContextWindows, &contextWindows) != nil || !validContextWindows(models, contextWindows) {
+			return ProviderSettings{}, ErrInvalidSettings
+		}
 	}
 	return ProviderSettings{
 		ID: id, DisplayName: displayName, Provider: provider, Custom: custom, BaseURL: baseURL,
 		Protocol: protocol, Protocols: supportedProtocols(), Enabled: enabled,
-		Models:              append([]string(nil), models...),
-		InputMicrosPerToken: inputMicros, OutputMicrosPerToken: outputMicros,
+		Models:                   append([]string(nil), models...),
+		ModelContextWindowTokens: contextWindows,
+		InputMicrosPerToken:      inputMicros, OutputMicrosPerToken: outputMicros,
 		SupportsStreaming: capability.SupportsStreaming, SupportsToolCalls: capability.SupportsToolCalls,
 		SupportsJSONSchema: capability.SupportsJSONSchema, SupportsSeed: capability.SupportsSeed,
 		SupportsPromptCaching: capability.SupportsPromptCaching, MaxInputTokens: capability.MaxInputTokens,
@@ -457,7 +549,12 @@ func defaultSettings(catalog ProviderCatalog) ProviderSettings {
 		models = append(models, model.ID)
 	}
 	encoded, _ := json.Marshal(models)
-	settings, _ := settingsFromStored(catalog.ID, catalog.ID, catalog.DisplayName, "", catalog.Protocol, false, encoded, 0, 1, 4)
+	contextWindows := make(map[string]int, len(catalog.Models))
+	for _, model := range catalog.Models {
+		contextWindows[model.ID] = model.ContextWindow
+	}
+	encodedContextWindows, _ := json.Marshal(contextWindows)
+	settings, _ := settingsFromStored(catalog.ID, catalog.ID, catalog.DisplayName, "", catalog.Protocol, false, encoded, encodedContextWindows, 0, 1, 4)
 	return settings
 }
 

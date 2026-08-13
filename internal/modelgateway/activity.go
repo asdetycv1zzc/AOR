@@ -499,6 +499,8 @@ func activityErrorCode(err error) string {
 		return "AOR_PROVIDER_CREDENTIAL_DETECTED"
 	case errors.Is(err, ErrInvalidRequest):
 		return "AOR_INVALID_ARGUMENT"
+	case errors.Is(err, ErrContextWindowExceeded):
+		return "AOR_CONTEXT_WINDOW_EXCEEDED"
 	default:
 		var providerFailure *ProviderFailure
 		if errors.As(err, &providerFailure) && !providerFailure.OutcomeKnown {

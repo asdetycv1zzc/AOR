@@ -117,6 +117,7 @@ func configuredGoalPlanRoutes(config runtimeconfig.GoalPlanConfig) (map[agentrun
 		} else if !found {
 			return nil, runtimeconfig.ErrInvalidConfiguration
 		}
+		configured = routeWithCatalogContext(configured)
 		var seed *int64
 		if configured.Seed != nil {
 			value := *configured.Seed
@@ -124,6 +125,7 @@ func configuredGoalPlanRoutes(config runtimeconfig.GoalPlanConfig) (map[agentrun
 		}
 		routes[role] = goalplan.ModelRoute{
 			Provider: configured.Provider, Model: configured.Model, ReasoningEffort: configured.ReasoningEffort,
+			ContextWindowTokens: configured.ContextWindowTokens, CompactionThresholdTokens: configured.CompactionThresholdTokens,
 			MaxOutputTokens: configured.MaxOutputTokens, ThinkingBudget: configured.ThinkingBudget, Temperature: configured.Temperature, Seed: seed,
 			ProviderPolicy: configured.ProviderPolicy, CachePolicy: configured.CachePolicy,
 			WorstCaseCostMicros: configured.WorstCaseCostMicros, MaxAttempts: configured.MaxAttempts,

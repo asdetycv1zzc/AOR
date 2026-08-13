@@ -263,6 +263,7 @@ services:
         psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000057_toolchain_installation_hardening.up.sql
         psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000058_toolchain_schedule_reconciliation.up.sql
         psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000059_toolchain_crosstool_archives.up.sql
+        psql --host postgres --username aor --dbname aor --set ON_ERROR_STOP=1 --file /migrations/000060_model_context_windows.up.sql
         unset AOR_APP_PASSWORD
     secrets: [postgres_password, postgres_app_password]
     volumes:
@@ -325,6 +326,7 @@ services:
       - ../../migrations/postgres/000057_toolchain_installation_hardening.up.sql:/migrations/000057_toolchain_installation_hardening.up.sql:ro
       - ../../migrations/postgres/000058_toolchain_schedule_reconciliation.up.sql:/migrations/000058_toolchain_schedule_reconciliation.up.sql:ro
       - ../../migrations/postgres/000059_toolchain_crosstool_archives.up.sql:/migrations/000059_toolchain_crosstool_archives.up.sql:ro
+      - ../../migrations/postgres/000060_model_context_windows.up.sql:/migrations/000060_model_context_windows.up.sql:ro
       - ./postgres-app-password.sql:/migrations/postgres-app-password.sql:ro
     read_only: true
     tmpfs: [/tmp]

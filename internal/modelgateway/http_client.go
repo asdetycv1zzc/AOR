@@ -353,6 +353,8 @@ func httpResponseCause(status int, code string, retryable bool) error {
 		return ErrAuthorizationDenied
 	case "AOR_INVALID_ARGUMENT":
 		return ErrInvalidRequest
+	case "AOR_CONTEXT_WINDOW_EXCEEDED":
+		return ErrContextWindowExceeded
 	case "AOR_BUDGET_EXCEEDED":
 		return ErrBudgetExceeded
 	case "AOR_IDEMPOTENCY_CONFLICT":

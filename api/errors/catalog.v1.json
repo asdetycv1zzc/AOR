@@ -4,6 +4,7 @@
   "errors": [
     {"code": "AOR_INTERNAL_ERROR", "httpStatus": 500, "retryable": false},
     {"code": "AOR_INVALID_ARGUMENT", "httpStatus": 400, "retryable": false},
+    {"code": "AOR_CONTEXT_WINDOW_EXCEEDED", "httpStatus": 422, "retryable": false},
     {"code": "AOR_NOT_FOUND", "httpStatus": 404, "retryable": false},
     {"code": "AOR_CONFLICT", "httpStatus": 409, "retryable": false},
     {"code": "AOR_UNAUTHORIZED", "httpStatus": 401, "retryable": false},

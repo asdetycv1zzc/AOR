@@ -203,7 +203,7 @@ func (preparer *ExecutorRuntimePreparer) Prepare(ctx context.Context, request Pr
 	return PreparedRun{
 		Declaration: declaration, Lease: executionAgentLease(lease),
 		ModelCall: agentruntime.ModelCall{RequestID: requestID, Provider: route.Provider, Model: route.Model, ReservationID: reservationID,
-			ReasoningEffort: route.ReasoningEffort, MaxOutputTokens: route.MaxOutputTokens, ThinkingBudget: route.ThinkingBudget, Temperature: route.Temperature, Seed: cloneExecutionSeed(route.Seed),
+			ReasoningEffort: route.ReasoningEffort, ContextWindowTokens: route.ContextWindowTokens, CompactionThresholdTokens: route.CompactionThresholdTokens, MaxOutputTokens: route.MaxOutputTokens, ThinkingBudget: route.ThinkingBudget, Temperature: route.Temperature, Seed: cloneExecutionSeed(route.Seed),
 			ProviderPolicy: route.ProviderPolicy, CachePolicy: route.CachePolicy,
 			WorstCaseCostMicros: route.WorstCaseCostMicros, MaxAttempts: route.MaxAttempts},
 		MaxToolRounds: preparer.maxToolRounds,
@@ -359,7 +359,7 @@ func validPreparationRequest(request PreparationRequest) bool {
 }
 
 func validExecutionModelRoute(route goalplan.ModelRoute) bool {
-	return strings.TrimSpace(route.Provider) == route.Provider && route.Provider != "" && len(route.Provider) <= 128 && strings.TrimSpace(route.Model) == route.Model && route.Model != "" && len(route.Model) <= 256 && state.ValidModelReasoningEffort(route.Provider, route.ReasoningEffort) && route.MaxOutputTokens > 0 && route.MaxOutputTokens <= 1_000_000 && route.ThinkingBudget >= 0 && route.ThinkingBudget < route.MaxOutputTokens && !math.IsNaN(route.Temperature) && !math.IsInf(route.Temperature, 0) && route.Temperature >= 0 && route.Temperature <= 2 && route.ProviderPolicy != "" && len(route.ProviderPolicy) <= 256 && route.CachePolicy != "" && len(route.CachePolicy) <= 128 && route.WorstCaseCostMicros >= 0 && route.MaxAttempts >= 1 && route.MaxAttempts <= 5
+	return strings.TrimSpace(route.Provider) == route.Provider && route.Provider != "" && len(route.Provider) <= 128 && strings.TrimSpace(route.Model) == route.Model && route.Model != "" && len(route.Model) <= 256 && state.ValidModelReasoningEffort(route.Provider, route.ReasoningEffort) && (route.ContextWindowTokens == 0 || route.ContextWindowTokens > route.MaxOutputTokens && route.ContextWindowTokens <= 10_000_000) && (route.CompactionThresholdTokens == 0 || route.ContextWindowTokens > 0 && route.CompactionThresholdTokens > route.MaxOutputTokens && route.CompactionThresholdTokens <= route.ContextWindowTokens*9/10) && route.MaxOutputTokens > 0 && route.MaxOutputTokens <= 1_000_000 && route.ThinkingBudget >= 0 && route.ThinkingBudget < route.MaxOutputTokens && !math.IsNaN(route.Temperature) && !math.IsInf(route.Temperature, 0) && route.Temperature >= 0 && route.Temperature <= 2 && route.ProviderPolicy != "" && len(route.ProviderPolicy) <= 256 && route.CachePolicy != "" && len(route.CachePolicy) <= 128 && route.WorstCaseCostMicros >= 0 && route.MaxAttempts >= 1 && route.MaxAttempts <= 5
 }
 
 func validCommit(value string) bool {

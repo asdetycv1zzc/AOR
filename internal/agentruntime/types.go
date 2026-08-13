@@ -218,19 +218,21 @@ type Declaration struct {
 }
 
 type ModelCall struct {
-	RequestID           string
-	Provider            string
-	Model               string
-	ReasoningEffort     string
-	ReservationID       string
-	MaxOutputTokens     int
-	ThinkingBudget      int `json:"thinkingBudget,omitempty"`
-	Temperature         float64
-	Seed                *int64
-	ProviderPolicy      string
-	CachePolicy         string
-	WorstCaseCostMicros int64
-	MaxAttempts         int
+	RequestID                 string
+	Provider                  string
+	Model                     string
+	ReasoningEffort           string
+	ContextWindowTokens       int `json:"contextWindowTokens,omitempty"`
+	CompactionThresholdTokens int `json:"compactionThresholdTokens,omitempty"`
+	ReservationID             string
+	MaxOutputTokens           int
+	ThinkingBudget            int `json:"thinkingBudget,omitempty"`
+	Temperature               float64
+	Seed                      *int64
+	ProviderPolicy            string
+	CachePolicy               string
+	WorstCaseCostMicros       int64
+	MaxAttempts               int
 }
 
 type ToolCall struct {

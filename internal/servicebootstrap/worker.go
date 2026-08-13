@@ -652,7 +652,7 @@ func configuredModuleAudit(config runtimeconfig.Config, clients *runtimeclient.C
 	}
 	routeConfig := configuredRoleRoute(config, agentruntime.RoleModuleAuditor)
 	route := goalplan.ModelRoute{
-		Provider: routeConfig.Provider, Model: routeConfig.Model, ReasoningEffort: routeConfig.ReasoningEffort, MaxOutputTokens: routeConfig.MaxOutputTokens,
+		Provider: routeConfig.Provider, Model: routeConfig.Model, ReasoningEffort: routeConfig.ReasoningEffort, ContextWindowTokens: routeConfig.ContextWindowTokens, CompactionThresholdTokens: routeConfig.CompactionThresholdTokens, MaxOutputTokens: routeConfig.MaxOutputTokens,
 		ThinkingBudget: routeConfig.ThinkingBudget, Temperature: routeConfig.Temperature, Seed: routeConfig.Seed, ProviderPolicy: routeConfig.ProviderPolicy,
 		CachePolicy: routeConfig.CachePolicy, WorstCaseCostMicros: routeConfig.WorstCaseCostMicros, MaxAttempts: routeConfig.MaxAttempts,
 	}
@@ -865,7 +865,7 @@ func configuredWorkerExecution(config runtimeconfig.Config, clients *runtimeclie
 	preparer, err := execution.NewExecutorRuntimePreparer(execution.ExecutorRuntimePreparerConfig{
 		Knowledge: execution.KnowledgeServiceContextSource{Service: knowledgeService}, PriorEvidence: priorEvidence, Leases: leaseService,
 		Assignments: assignments, Tools: host.Broker().List(),
-		Route: goalplan.ModelRoute{Provider: route.Provider, Model: route.Model, MaxOutputTokens: route.MaxOutputTokens,
+		Route: goalplan.ModelRoute{Provider: route.Provider, Model: route.Model, ContextWindowTokens: route.ContextWindowTokens, CompactionThresholdTokens: route.CompactionThresholdTokens, MaxOutputTokens: route.MaxOutputTokens,
 			ReasoningEffort: route.ReasoningEffort, ThinkingBudget: route.ThinkingBudget, Temperature: route.Temperature, Seed: route.Seed, ProviderPolicy: route.ProviderPolicy,
 			CachePolicy: route.CachePolicy, WorstCaseCostMicros: route.WorstCaseCostMicros, MaxAttempts: route.MaxAttempts},
 		LeaseTTL: 5 * time.Minute, MaxToolRounds: config.Execution.MaxToolRounds, Clock: time.Now,
@@ -905,7 +905,7 @@ func configuredWorkerExecution(config runtimeconfig.Config, clients *runtimeclie
 			Artifacts: artifacts, Projects: tasks, Tasks: tasks, Leases: leaseService,
 			Routes: map[agentruntime.Role]goalplan.ModelRoute{
 				agentruntime.RolePlanSupervisor: {
-					Provider: route.Provider, Model: route.Model, MaxOutputTokens: route.MaxOutputTokens,
+					Provider: route.Provider, Model: route.Model, ContextWindowTokens: route.ContextWindowTokens, CompactionThresholdTokens: route.CompactionThresholdTokens, MaxOutputTokens: route.MaxOutputTokens,
 					ReasoningEffort: route.ReasoningEffort, ThinkingBudget: route.ThinkingBudget, Temperature: route.Temperature, Seed: route.Seed, ProviderPolicy: route.ProviderPolicy,
 					CachePolicy: route.CachePolicy, WorstCaseCostMicros: route.WorstCaseCostMicros, MaxAttempts: route.MaxAttempts,
 				},
@@ -940,7 +940,7 @@ func configuredGlobalAudit(config runtimeconfig.Config, clients *runtimeclient.C
 	}
 	routeConfig := configuredRoleRoute(config, agentruntime.RoleGlobalAuditor)
 	route := goalplan.ModelRoute{
-		Provider: routeConfig.Provider, Model: routeConfig.Model, ReasoningEffort: routeConfig.ReasoningEffort, MaxOutputTokens: routeConfig.MaxOutputTokens,
+		Provider: routeConfig.Provider, Model: routeConfig.Model, ReasoningEffort: routeConfig.ReasoningEffort, ContextWindowTokens: routeConfig.ContextWindowTokens, CompactionThresholdTokens: routeConfig.CompactionThresholdTokens, MaxOutputTokens: routeConfig.MaxOutputTokens,
 		ThinkingBudget: routeConfig.ThinkingBudget, Temperature: routeConfig.Temperature, Seed: routeConfig.Seed, ProviderPolicy: routeConfig.ProviderPolicy,
 		CachePolicy: routeConfig.CachePolicy, WorstCaseCostMicros: routeConfig.WorstCaseCostMicros, MaxAttempts: routeConfig.MaxAttempts,
 	}

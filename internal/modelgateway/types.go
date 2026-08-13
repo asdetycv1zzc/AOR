@@ -111,6 +111,7 @@ type ModelCapabilities struct {
 	SupportsSeed          bool     `json:"supportsSeed"`
 	SupportsPromptCaching bool     `json:"supportsPromptCaching"`
 	MaxInputTokens        int      `json:"maxInputTokens"`
+	ContextWindowTokens   int      `json:"contextWindowTokens"`
 	MaxOutputTokens       int      `json:"maxOutputTokens"`
 	DataResidency         []string `json:"dataResidency"`
 	RetentionPolicy       string   `json:"retentionPolicy"`
@@ -135,6 +136,8 @@ type NormalizedRequest struct {
 	// from request digests. It runs only after the complete stream is assembled.
 	ResponseSemanticValidator func(json.RawMessage) error `json:"-"`
 	MaxOutputTokens           int                         `json:"maxOutputTokens"`
+	ContextWindowTokens       int                         `json:"contextWindowTokens,omitempty"`
+	CompactionThresholdTokens int                         `json:"compactionThresholdTokens,omitempty"`
 	ThinkingBudget            int                         `json:"thinkingBudget,omitempty"`
 	Temperature               float64                     `json:"temperature"`
 	TopP                      float64                     `json:"topP,omitempty"`

@@ -8,6 +8,7 @@ type Code string
 const (
 	CodeInternalError                Code = "AOR_INTERNAL_ERROR"
 	CodeInvalidArgument              Code = "AOR_INVALID_ARGUMENT"
+	CodeContextWindowExceeded        Code = "AOR_CONTEXT_WINDOW_EXCEEDED"
 	CodeNotFound                     Code = "AOR_NOT_FOUND"
 	CodeConflict                     Code = "AOR_CONFLICT"
 	CodeUnauthorized                 Code = "AOR_UNAUTHORIZED"
@@ -58,7 +59,7 @@ type Metadata struct {
 }
 
 var codes = []Code{
-	CodeInternalError, CodeInvalidArgument, CodeNotFound, CodeConflict, CodeUnauthorized, CodeForbidden, CodeRateLimited, CodeTimeout, CodeDependencyUnavailable,
+	CodeInternalError, CodeInvalidArgument, CodeContextWindowExceeded, CodeNotFound, CodeConflict, CodeUnauthorized, CodeForbidden, CodeRateLimited, CodeTimeout, CodeDependencyUnavailable,
 	CodeStateVersionConflict, CodeInvalidStateTransition, CodeGoalNotApproved, CodeGoalHashMismatch, CodeSpecSuperseded, CodeTaskBlocked, CodeAttemptLimitReached, CodeLeaseExpired, CodeIdempotencyConflict,
 	CodeBudgetExceeded, CodeBudgetReservationFailed, CodeModelNotAllowed, CodeModelCapabilityMissing, CodeProviderRateLimited, CodeProviderResultUnknown, CodeModelOutputSchemaInvalid,
 	CodeToolNotAllowed, CodeToolInputInvalid, CodeToolOutputTooLarge, CodePolicyDenied, CodeApprovalRequired, CodeSandboxLevelInsufficient, CodeSandboxCreateFailed, CodeSandboxExecTimeout, CodeUnauthorizedPath, CodeNetworkDestinationDenied,
@@ -68,6 +69,7 @@ var codes = []Code{
 var metadata = map[Code]Metadata{
 	CodeInternalError:                {Message: "Internal error", HTTPStatus: 500},
 	CodeInvalidArgument:              {Message: "Invalid argument", HTTPStatus: 400},
+	CodeContextWindowExceeded:        {Message: "Model context window exceeded", HTTPStatus: 422},
 	CodeNotFound:                     {Message: "Resource not found", HTTPStatus: 404},
 	CodeConflict:                     {Message: "Resource conflict", HTTPStatus: 409},
 	CodeUnauthorized:                 {Message: "Authentication required", HTTPStatus: 401},

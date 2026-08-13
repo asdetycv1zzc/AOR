@@ -38,13 +38,14 @@ const (
 )
 
 type CatalogModel struct {
-	ID          string
-	MaxInput    int
-	MaxOutput   int
-	ToolCalls   bool
-	JSONSchema  bool
-	Streaming   bool
-	PromptCache bool
+	ID            string
+	MaxInput      int
+	ContextWindow int
+	MaxOutput     int
+	ToolCalls     bool
+	JSONSchema    bool
+	Streaming     bool
+	PromptCache   bool
 }
 
 // Catalog returns a defensive copy of the supported provider/model catalog.
@@ -60,29 +61,29 @@ func Catalog() []ProviderCatalog {
 		{
 			ID: ProviderDeepSeek, DisplayName: "DeepSeek", Protocol: ProtocolOpenAICompatible, Protocols: protocols,
 			Models: []CatalogModel{
-				{ID: "deepseek-v4-pro", MaxInput: 32768, MaxOutput: 384000, ToolCalls: true, JSONSchema: true, Streaming: true},
-				{ID: "deepseek-v4-flash", MaxInput: 32768, MaxOutput: 384000, ToolCalls: true, JSONSchema: true, Streaming: true},
+				{ID: "deepseek-v4-pro", MaxInput: 1_000_000, ContextWindow: 1_000_000, MaxOutput: 384000, ToolCalls: true, JSONSchema: true, Streaming: true},
+				{ID: "deepseek-v4-flash", MaxInput: 1_000_000, ContextWindow: 1_000_000, MaxOutput: 384000, ToolCalls: true, JSONSchema: true, Streaming: true},
 			},
 		},
 		{
 			ID: ProviderClaude, DisplayName: "Claude", Protocol: ProtocolAnthropic, Protocols: protocols,
 			Models: []CatalogModel{
-				{ID: "claude-sonnet-4-5", MaxInput: 200000, MaxOutput: 64000, ToolCalls: true, JSONSchema: true, Streaming: true},
-				{ID: "claude-sonnet-4-6", MaxInput: 200000, MaxOutput: 128000, ToolCalls: true, JSONSchema: true, Streaming: true},
-				{ID: "claude-sonnet-5", MaxInput: 200000, MaxOutput: 128000, ToolCalls: true, JSONSchema: true, Streaming: true},
-				{ID: "claude-opus-4-5", MaxInput: 200000, MaxOutput: 64000, ToolCalls: true, JSONSchema: true, Streaming: true},
-				{ID: "claude-opus-4-6", MaxInput: 200000, MaxOutput: 128000, ToolCalls: true, JSONSchema: true, Streaming: true},
-				{ID: "claude-opus-4-7", MaxInput: 200000, MaxOutput: 128000, ToolCalls: true, JSONSchema: true, Streaming: true},
-				{ID: "claude-opus-4-8", MaxInput: 200000, MaxOutput: 128000, ToolCalls: true, JSONSchema: true, Streaming: true},
-				{ID: "claude-opus-5", MaxInput: 200000, MaxOutput: 128000, ToolCalls: true, JSONSchema: true, Streaming: true},
-				{ID: "claude-fable-5", MaxInput: 200000, MaxOutput: 128000, ToolCalls: true, JSONSchema: true, Streaming: true},
-				{ID: "claude-haiku-4-5", MaxInput: 200000, MaxOutput: 64000, ToolCalls: true, JSONSchema: true, Streaming: true},
+				{ID: "claude-sonnet-4-5", MaxInput: 200000, ContextWindow: 200000, MaxOutput: 64000, ToolCalls: true, JSONSchema: true, Streaming: true},
+				{ID: "claude-sonnet-4-6", MaxInput: 1_000_000, ContextWindow: 1_000_000, MaxOutput: 128000, ToolCalls: true, JSONSchema: true, Streaming: true},
+				{ID: "claude-sonnet-5", MaxInput: 1_000_000, ContextWindow: 1_000_000, MaxOutput: 128000, ToolCalls: true, JSONSchema: true, Streaming: true},
+				{ID: "claude-opus-4-5", MaxInput: 200000, ContextWindow: 200000, MaxOutput: 64000, ToolCalls: true, JSONSchema: true, Streaming: true},
+				{ID: "claude-opus-4-6", MaxInput: 1_000_000, ContextWindow: 1_000_000, MaxOutput: 128000, ToolCalls: true, JSONSchema: true, Streaming: true},
+				{ID: "claude-opus-4-7", MaxInput: 1_000_000, ContextWindow: 1_000_000, MaxOutput: 128000, ToolCalls: true, JSONSchema: true, Streaming: true},
+				{ID: "claude-opus-4-8", MaxInput: 1_000_000, ContextWindow: 1_000_000, MaxOutput: 128000, ToolCalls: true, JSONSchema: true, Streaming: true},
+				{ID: "claude-opus-5", MaxInput: 1_000_000, ContextWindow: 1_000_000, MaxOutput: 128000, ToolCalls: true, JSONSchema: true, Streaming: true},
+				{ID: "claude-fable-5", MaxInput: 1_000_000, ContextWindow: 1_000_000, MaxOutput: 128000, ToolCalls: true, JSONSchema: true, Streaming: true},
+				{ID: "claude-haiku-4-5", MaxInput: 200000, ContextWindow: 200000, MaxOutput: 64000, ToolCalls: true, JSONSchema: true, Streaming: true},
 			},
 		},
 		{
 			ID: ProviderGrok, DisplayName: "Grok", Protocol: ProtocolOpenAICompatible, Protocols: protocols,
 			Models: []CatalogModel{
-				{ID: "grok-4.5", MaxInput: 131072, MaxOutput: 128000, ToolCalls: true, JSONSchema: true, Streaming: true},
+				{ID: "grok-4.5", MaxInput: 500000, ContextWindow: 500000, MaxOutput: 128000, ToolCalls: true, JSONSchema: true, Streaming: true},
 			},
 		},
 	})
@@ -109,7 +110,11 @@ func openAIModels() []CatalogModel {
 	}
 	result := make([]CatalogModel, 0, len(models))
 	for _, id := range models {
-		result = append(result, CatalogModel{ID: id, MaxInput: 128000, MaxOutput: 128000, ToolCalls: true, JSONSchema: true, Streaming: true, PromptCache: true})
+		contextWindow := 1_050_000
+		if id == "gpt-5.4-mini" {
+			contextWindow = 400_000
+		}
+		result = append(result, CatalogModel{ID: id, MaxInput: contextWindow, ContextWindow: contextWindow, MaxOutput: 128000, ToolCalls: true, JSONSchema: true, Streaming: true, PromptCache: true})
 	}
 	return result
 }
@@ -134,7 +139,7 @@ func validProtocol(provider ProviderCatalog, protocol Protocol) bool {
 }
 
 func genericModel(id string) CatalogModel {
-	return CatalogModel{ID: id, MaxInput: 1_000_000, MaxOutput: 1_000_000, ToolCalls: true, JSONSchema: true, Streaming: true}
+	return CatalogModel{ID: id, MaxInput: 1_000_000, ContextWindow: 1_000_000, MaxOutput: 1_000_000, ToolCalls: true, JSONSchema: true, Streaming: true}
 }
 
 func findCatalog(provider string) (ProviderCatalog, bool) {
@@ -167,6 +172,7 @@ func modelCapabilities(model CatalogModel) modelgateway.ModelCapabilities {
 		SupportsJSONSchema:    model.JSONSchema,
 		SupportsPromptCaching: model.PromptCache,
 		MaxInputTokens:        model.MaxInput,
+		ContextWindowTokens:   model.ContextWindow,
 		MaxOutputTokens:       model.MaxOutput,
 		DataResidency:         []string{"provider-defined"},
 		RetentionPolicy:       "provider-defined",

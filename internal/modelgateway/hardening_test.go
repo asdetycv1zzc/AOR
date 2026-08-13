@@ -781,6 +781,30 @@ func hardeningRequest(requestID string) NormalizedRequest {
 	}
 }
 
+func TestContextWindowExceededUsesExplicitTotalWindow(t *testing.T) {
+	request := hardeningRequest("context-window")
+	request.MaxOutputTokens = 20
+	request.ContextWindowTokens = 100
+	capabilities := ModelCapabilities{MaxInputTokens: 100, ContextWindowTokens: 120}
+	if !contextWindowExceeded(request, capabilities, TokenEstimate{InputTokens: 81}) {
+		t.Fatal("request exceeding its configured total context window was accepted")
+	}
+	if contextWindowExceeded(request, capabilities, TokenEstimate{InputTokens: 80}) {
+		t.Fatal("request exactly fitting the configured total context window was rejected")
+	}
+}
+
+func TestContextWindowExceededSupportsLegacyCapabilities(t *testing.T) {
+	request := hardeningRequest("legacy-context-window")
+	capabilities := ModelCapabilities{MaxInputTokens: 10}
+	if contextWindowExceeded(request, capabilities, TokenEstimate{InputTokens: 10}) {
+		t.Fatal("legacy capabilities treated max input tokens as a total context window")
+	}
+	if !contextWindowExceeded(request, capabilities, TokenEstimate{InputTokens: 11}) {
+		t.Fatal("legacy max input limit was not enforced")
+	}
+}
+
 type hardeningAdapter struct {
 	mu             sync.Mutex
 	failures       []error

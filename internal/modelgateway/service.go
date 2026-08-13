@@ -502,6 +502,8 @@ func stableError(err error) httpError {
 	switch {
 	case errors.Is(err, ErrAuthorizationDenied):
 		return httpError{Status: http.StatusForbidden, Code: "AOR_FORBIDDEN", Message: "model operation denied"}
+	case errors.Is(err, ErrContextWindowExceeded):
+		return httpError{Status: http.StatusUnprocessableEntity, Code: "AOR_CONTEXT_WINDOW_EXCEEDED", Message: "model context window exceeded"}
 	case errors.Is(err, ErrInvalidRequest), errors.Is(err, errHTTPBodyTooLarge):
 		return httpError{Status: http.StatusBadRequest, Code: "AOR_INVALID_ARGUMENT", Message: "invalid model request"}
 	case errors.Is(err, ErrBudgetExceeded):

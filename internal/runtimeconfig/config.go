@@ -149,17 +149,19 @@ type IntegrationCheckConfig struct {
 }
 
 type GoalPlanRouteConfig struct {
-	Provider            string  `json:"provider"`
-	Model               string  `json:"model"`
-	ReasoningEffort     string  `json:"reasoningEffort"`
-	MaxOutputTokens     int     `json:"maxOutputTokens"`
-	ThinkingBudget      int     `json:"thinkingBudget"`
-	Temperature         float64 `json:"temperature"`
-	Seed                *int64  `json:"seed,omitempty"`
-	ProviderPolicy      string  `json:"providerPolicy"`
-	CachePolicy         string  `json:"cachePolicy"`
-	WorstCaseCostMicros int64   `json:"worstCaseCostMicros"`
-	MaxAttempts         int     `json:"maxAttempts"`
+	Provider                  string  `json:"provider"`
+	Model                     string  `json:"model"`
+	ReasoningEffort           string  `json:"reasoningEffort"`
+	ContextWindowTokens       int     `json:"contextWindowTokens"`
+	CompactionThresholdTokens int     `json:"compactionThresholdTokens"`
+	MaxOutputTokens           int     `json:"maxOutputTokens"`
+	ThinkingBudget            int     `json:"thinkingBudget"`
+	Temperature               float64 `json:"temperature"`
+	Seed                      *int64  `json:"seed,omitempty"`
+	ProviderPolicy            string  `json:"providerPolicy"`
+	CachePolicy               string  `json:"cachePolicy"`
+	WorstCaseCostMicros       int64   `json:"worstCaseCostMicros"`
+	MaxAttempts               int     `json:"maxAttempts"`
 }
 
 type ProviderConfig struct {
@@ -439,10 +441,8 @@ func (config Config) Validate() error {
 		return ErrInvalidConfiguration
 	}
 	if config.Component == "aor-server" {
-		if len(config.GoalPlan.Routes) != 0 {
-			if err := validateGoalPlanRoutes(config.GoalPlan.Routes); err != nil {
-				return err
-			}
+		if err := validateGoalPlanRoutes(config.GoalPlan.Routes); err != nil {
+			return err
 		}
 	}
 	if needsDatabase(config.Component) {
@@ -526,7 +526,7 @@ func (config Config) Validate() error {
 }
 
 func globalAuditRouteConfigured(route GoalPlanRouteConfig) bool {
-	return route.Provider != "" || route.Model != "" || route.ReasoningEffort != "" || route.MaxOutputTokens != 0 || route.ThinkingBudget != 0 || route.Temperature != 0 || route.Seed != nil || route.ProviderPolicy != "" || route.CachePolicy != "" || route.WorstCaseCostMicros != 0 || route.MaxAttempts != 0
+	return route.Provider != "" || route.Model != "" || route.ReasoningEffort != "" || route.ContextWindowTokens != 0 || route.CompactionThresholdTokens != 0 || route.MaxOutputTokens != 0 || route.ThinkingBudget != 0 || route.Temperature != 0 || route.Seed != nil || route.ProviderPolicy != "" || route.CachePolicy != "" || route.WorstCaseCostMicros != 0 || route.MaxAttempts != 0
 }
 
 func validateProviders(providers []ProviderConfig) error {
@@ -599,6 +599,8 @@ func validateGoalPlanRoutes(routes map[string]GoalPlanRouteConfig) error {
 func validGoalPlanRoute(route GoalPlanRouteConfig) bool {
 	return validIdentityPart(route.Provider, 128) && validIdentityPart(route.Model, 256) && route.Model != "*" &&
 		state.ValidModelReasoningEffort(route.Provider, route.ReasoningEffort) &&
+		(route.ContextWindowTokens == 0 || route.ContextWindowTokens > route.MaxOutputTokens && route.ContextWindowTokens <= 10_000_000) &&
+		(route.CompactionThresholdTokens == 0 || route.ContextWindowTokens > 0 && route.CompactionThresholdTokens > route.MaxOutputTokens && route.CompactionThresholdTokens <= route.ContextWindowTokens*9/10) &&
 		route.MaxOutputTokens >= 1 && route.MaxOutputTokens <= 1_000_000 && route.Temperature >= 0 && route.Temperature <= 2 &&
 		route.ThinkingBudget >= 0 && route.ThinkingBudget < route.MaxOutputTokens &&
 		validIdentityPart(route.ProviderPolicy, 256) && validIdentityPart(route.CachePolicy, 128) &&

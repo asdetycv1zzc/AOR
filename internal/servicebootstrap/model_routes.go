@@ -30,11 +30,13 @@ func configuredControlModelConfiguration(config runtimeconfig.Config) ([]control
 	for _, provider := range modelproviders.Catalog() {
 		models := make([]string, 0, len(provider.Models))
 		modelMaxOutputTokens := make(map[string]int, len(provider.Models))
+		modelContextWindowTokens := make(map[string]int, len(provider.Models))
 		maxInputTokens, maxOutputTokens := 0, 0
 		supportsStreaming, supportsToolCalls, supportsJSONSchema, supportsPromptCaching := true, true, true, true
 		for _, model := range provider.Models {
 			models = append(models, model.ID)
 			modelMaxOutputTokens[model.ID] = model.MaxOutput
+			modelContextWindowTokens[model.ID] = model.ContextWindow
 			if model.MaxInput > maxInputTokens {
 				maxInputTokens = model.MaxInput
 			}
@@ -48,8 +50,9 @@ func configuredControlModelConfiguration(config runtimeconfig.Config) ([]control
 		}
 		providers = append(providers, controlapi.ModelProvider{
 			ID: provider.ID, Provider: provider.ID, Models: models,
-			ModelMaxOutputTokens: modelMaxOutputTokens,
-			InputMicrosPerToken:  1, OutputMicrosPerToken: 4,
+			ModelMaxOutputTokens:     modelMaxOutputTokens,
+			ModelContextWindowTokens: modelContextWindowTokens,
+			InputMicrosPerToken:      1, OutputMicrosPerToken: 4,
 			SupportsStreaming: supportsStreaming, SupportsToolCalls: supportsToolCalls,
 			SupportsJSONSchema: supportsJSONSchema, SupportsPromptCaching: supportsPromptCaching,
 			MaxInputTokens: maxInputTokens, MaxOutputTokens: maxOutputTokens,
@@ -65,21 +68,28 @@ func configuredRoleRoute(config runtimeconfig.Config, role agentruntime.Role) ru
 	switch role {
 	case agentruntime.RoleExecutor:
 		if config.Execution.Route.Provider != "" {
-			return config.Execution.Route
+			return routeWithCatalogContext(config.Execution.Route)
 		}
 	case agentruntime.RoleModuleAuditor:
 		if config.ModuleAuditRoute.Provider != "" {
-			return config.ModuleAuditRoute
+			return routeWithCatalogContext(config.ModuleAuditRoute)
 		}
 	case agentruntime.RoleGlobalAuditor:
 		if config.GlobalAuditRoute.Provider != "" {
-			return config.GlobalAuditRoute
+			return routeWithCatalogContext(config.GlobalAuditRoute)
 		}
 	}
 	if route, found := config.GoalPlan.Routes[string(role)]; found {
-		return route
+		return routeWithCatalogContext(route)
 	}
 	return defaultRoleRoute(role)
+}
+
+func routeWithCatalogContext(route runtimeconfig.GoalPlanRouteConfig) runtimeconfig.GoalPlanRouteConfig {
+	if route.ContextWindowTokens == 0 {
+		route.ContextWindowTokens = catalogModelContextWindow(route.Provider, route.Model)
+	}
+	return route
 }
 
 func defaultRoleRoute(role agentruntime.Role) runtimeconfig.GoalPlanRouteConfig {
@@ -87,10 +97,25 @@ func defaultRoleRoute(role agentruntime.Role) runtimeconfig.GoalPlanRouteConfig 
 	if role == agentruntime.RolePlanSupervisor || role == agentruntime.RoleModuleAuditor || role == agentruntime.RoleGlobalAuditor {
 		provider, model, reasoningEffort = modelproviders.ProviderDeepSeek, "deepseek-v4-flash", "high"
 	}
+	window := catalogModelContextWindow(provider, model)
 	return runtimeconfig.GoalPlanRouteConfig{
-		Provider: provider, Model: model, ReasoningEffort: reasoningEffort, MaxOutputTokens: catalogModelMaxOutputTokens(provider, model), ThinkingBudget: 0, Temperature: 0,
+		Provider: provider, Model: model, ReasoningEffort: reasoningEffort, ContextWindowTokens: window, CompactionThresholdTokens: window * 9 / 10, MaxOutputTokens: catalogModelMaxOutputTokens(provider, model), ThinkingBudget: 0, Temperature: 0,
 		ProviderPolicy: "default", CachePolicy: "NO_STORE", MaxAttempts: 5,
 	}
+}
+
+func catalogModelContextWindow(providerID, modelID string) int {
+	for _, provider := range modelproviders.Catalog() {
+		if provider.ID != providerID {
+			continue
+		}
+		for _, model := range provider.Models {
+			if model.ID == modelID {
+				return model.ContextWindow
+			}
+		}
+	}
+	return 0
 }
 
 func catalogModelMaxOutputTokens(providerID, modelID string) int {
@@ -114,7 +139,7 @@ func projectModelRoute(route runtimeconfig.GoalPlanRouteConfig) state.ProjectMod
 		seed = &value
 	}
 	return state.ProjectModelRoute{
-		Provider: route.Provider, Model: route.Model, ReasoningEffort: route.ReasoningEffort, MaxOutputTokens: route.MaxOutputTokens,
+		Provider: route.Provider, Model: route.Model, ReasoningEffort: route.ReasoningEffort, ContextWindowTokens: route.ContextWindowTokens, CompactionThresholdTokens: route.CompactionThresholdTokens, MaxOutputTokens: route.MaxOutputTokens,
 		ThinkingBudget: route.ThinkingBudget,
 		Temperature:    route.Temperature, Seed: seed, ProviderPolicy: route.ProviderPolicy,
 		CachePolicy: route.CachePolicy, WorstCaseCostMicros: route.WorstCaseCostMicros,

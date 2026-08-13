@@ -21,6 +21,7 @@ type ModelProvider struct {
 	ID                         string         `json:"id"`
 	Provider                   string         `json:"provider"`
 	Models                     []string       `json:"models"`
+	ModelContextWindowTokens   map[string]int `json:"modelContextWindowTokens,omitempty"`
 	ModelMaxOutputTokens       map[string]int `json:"modelMaxOutputTokens,omitempty"`
 	InputMicrosPerToken        int64          `json:"inputMicrosPerToken"`
 	OutputMicrosPerToken       int64          `json:"outputMicrosPerToken"`
@@ -91,6 +92,19 @@ func validateModelProviders(providers []ModelProvider) error {
 				return errors.New("invalid model output limit")
 			}
 		}
+		for model, window := range provider.ModelContextWindowTokens {
+			if !safeModelValue(model, 256) || window < 1 || window > 10_000_000 {
+				return errors.New("invalid model context window")
+			}
+		}
+		if len(provider.ModelContextWindowTokens) > 0 && len(provider.ModelContextWindowTokens) != len(provider.Models) {
+			return errors.New("incomplete model context windows")
+		}
+		for _, model := range provider.Models {
+			if window := provider.ModelContextWindowTokens[model]; len(provider.ModelContextWindowTokens) > 0 && window < 1 {
+				return errors.New("missing model context window")
+			}
+		}
 	}
 	return nil
 }
@@ -106,13 +120,22 @@ func validateRoutesAgainstProviders(routes map[string]state.ProjectModelRoute, p
 	for role, route := range routes {
 		provider, found := byID[route.Provider]
 		maximum := provider.MaxOutputTokens
+		contextWindow := provider.MaxInputTokens
 		if modelMaximum, known := provider.ModelMaxOutputTokens[route.Model]; known {
 			maximum = modelMaximum
 		}
+		if modelWindow, known := provider.ModelContextWindowTokens[route.Model]; known {
+			contextWindow = modelWindow
+		}
+		if route.ContextWindowTokens == 0 {
+			route.ContextWindowTokens = contextWindow
+		}
 		if !found || !safeModelValue(route.Model, 256) || route.Model == "*" || route.MaxOutputTokens > maximum ||
+			route.ContextWindowTokens > contextWindow || route.MaxOutputTokens >= route.ContextWindowTokens ||
 			route.Seed != nil && !provider.SupportsSeed || !provider.SupportsJSONSchema || routeUsesTools(role) && !provider.SupportsToolCalls {
 			return errors.New("model route is not supported by provider")
 		}
+		routes[role] = route
 	}
 	return nil
 }
@@ -143,6 +166,7 @@ func cloneModelProviders(providers []ModelProvider) []ModelProvider {
 	cloned := append([]ModelProvider(nil), providers...)
 	for index := range cloned {
 		cloned[index].Models = append([]string(nil), providers[index].Models...)
+		cloned[index].ModelContextWindowTokens = cloneTokenLimits(providers[index].ModelContextWindowTokens)
 		cloned[index].ModelMaxOutputTokens = cloneModelOutputLimits(providers[index].ModelMaxOutputTokens)
 		cloned[index].AllowedDataClassifications = append([]string(nil), providers[index].AllowedDataClassifications...)
 		cloned[index].DataResidency = append([]string(nil), providers[index].DataResidency...)
@@ -324,8 +348,9 @@ func (handler *Handler) tenantModelProviders(ctx context.Context, tenantID strin
 		known[setting.ID] = struct{}{}
 		providers = append(providers, ModelProvider{
 			ID: setting.ID, Provider: setting.Provider, Models: append([]string(nil), setting.Models...),
-			ModelMaxOutputTokens: modelOutputLimits(setting.Models, setting.MaxOutputTokens),
-			InputMicrosPerToken:  setting.InputMicrosPerToken, OutputMicrosPerToken: setting.OutputMicrosPerToken,
+			ModelMaxOutputTokens:     modelOutputLimits(setting.Models, setting.MaxOutputTokens),
+			ModelContextWindowTokens: cloneTokenLimits(setting.ModelContextWindowTokens),
+			InputMicrosPerToken:      setting.InputMicrosPerToken, OutputMicrosPerToken: setting.OutputMicrosPerToken,
 			SupportsStreaming: setting.SupportsStreaming, SupportsToolCalls: setting.SupportsToolCalls,
 			SupportsJSONSchema: setting.SupportsJSONSchema, SupportsSeed: setting.SupportsSeed,
 			SupportsPromptCaching: setting.SupportsPromptCaching, MaxInputTokens: setting.MaxInputTokens,
@@ -336,6 +361,14 @@ func (handler *Handler) tenantModelProviders(ctx context.Context, tenantID strin
 		})
 	}
 	return providers, nil
+}
+
+func cloneTokenLimits(values map[string]int) map[string]int {
+	cloned := make(map[string]int, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func modelOutputLimits(models []string, maximum int) map[string]int {

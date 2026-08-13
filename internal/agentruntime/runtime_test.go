@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -79,6 +80,94 @@ func TestRuntimeUsesOnlyGatewayAndBrokerBoundaries(t *testing.T) {
 	final, _ := runtime.Snapshot(declaration.RunID)
 	if final.State != StateCompleted {
 		t.Fatalf("runtime completion state = %s", final.State)
+	}
+}
+
+func TestRuntimeCompactsOversizedPromptBeforeGateway(t *testing.T) {
+	clock := &mutableClock{now: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)}
+	gateway := &fakeGateway{response: modelgateway.NormalizedResponse{Content: json.RawMessage(`{"ok":true}`)}}
+	runtime := newTestRuntime(t, clock, &fakeAuthority{clock: clock}, gateway, &fakeBroker{})
+	declaration := testDeclaration(RoleExecutor)
+	item := testContextItem("repository", ContextRepositoryContent, "aor://repository/large", TrustExternalUntrusted, strings.Repeat("repository context ", 1_000))
+	declaration.ContextManifest.Items = append(declaration.ContextManifest.Items, item)
+	declaration.ContextManifest.SHA256 = DigestContextManifest(declaration.ContextManifest)
+	startRun(t, runtime, declaration, testLease(clock.Now(), declaration))
+
+	call := ModelCall{
+		RequestID: "req_compact", Provider: "provider", Model: "model", ReservationID: "res_compact",
+		ContextWindowTokens: 3_500, CompactionThresholdTokens: 3_150, MaxOutputTokens: 128,
+		ProviderPolicy: "default", CachePolicy: "local", MaxAttempts: 1,
+	}
+	if _, err := runtime.Generate(context.Background(), declaration.RunID, call); err != nil {
+		t.Fatal(err)
+	}
+	request, _ := gateway.Captured()
+	if request.PromptDigest == "" || request.ContextWindowTokens != call.ContextWindowTokens || request.CompactionThresholdTokens != call.CompactionThresholdTokens {
+		t.Fatalf("request metadata = %#v", request)
+	}
+	if EstimateMessagesTokens(request.Messages) > int64(EffectiveContextTokens(call.ContextWindowTokens)-call.MaxOutputTokens) {
+		t.Fatalf("compacted tokens = %d", EstimateMessagesTokens(request.Messages))
+	}
+	checkpoint, ok := parseCompactionCheckpoint(request.Messages[len(request.Messages)-1].Content)
+	if !ok || checkpoint.SourceContextSHA256 != declaration.ContextManifest.SHA256 {
+		t.Fatalf("checkpoint = %#v", checkpoint)
+	}
+	if snapshot, err := runtime.Snapshot(declaration.RunID); err != nil || request.PromptDigest != snapshot.PromptDigest {
+		t.Fatalf("prompt digest request=%s snapshot=%#v error=%v", request.PromptDigest, snapshot, err)
+	}
+}
+
+func TestRuntimeReservesToolAndResponseSchemaTokensWhenCompacting(t *testing.T) {
+	clock := &mutableClock{now: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)}
+	gateway := &fakeGateway{response: modelgateway.NormalizedResponse{Content: json.RawMessage(`{"ok":true}`)}}
+	runtime := newTestRuntime(t, clock, &fakeAuthority{clock: clock}, gateway, &fakeBroker{})
+	declaration := testDeclaration(RoleExecutor)
+	declaration.Tools[0].Schema = json.RawMessage(`{"type":"object","description":"` + strings.Repeat("tool schema ", 600) + `"}`)
+	declaration.ToolSchemaDigest = DigestToolDefinitions(declaration.Tools)
+	declaration.ResponseSchema = json.RawMessage(`{"type":"object","description":"` + strings.Repeat("response schema ", 150) + `"}`)
+	item := testContextItem("repository", ContextRepositoryContent, "aor://repository/large", TrustExternalUntrusted, strings.Repeat("repository context ", 1_000))
+	declaration.ContextManifest.Items = append(declaration.ContextManifest.Items, item)
+	declaration.ContextManifest.SHA256 = DigestContextManifest(declaration.ContextManifest)
+	startRun(t, runtime, declaration, testLease(clock.Now(), declaration))
+
+	call := ModelCall{
+		RequestID: "req_compact_overhead", Provider: "provider", Model: "model", ReservationID: "res_compact_overhead",
+		ContextWindowTokens: 6_000, CompactionThresholdTokens: 5_400, MaxOutputTokens: 128,
+		ProviderPolicy: "default", CachePolicy: "local", MaxAttempts: 1,
+	}
+	if _, err := runtime.Generate(context.Background(), declaration.RunID, call); err != nil {
+		t.Fatal(err)
+	}
+	request, _ := gateway.Captured()
+	inputTokens := EstimateMessagesTokens(request.Messages) + EstimateRequestOverheadTokens(request.Tools, request.ResponseSchema)
+	if inputTokens > int64(EffectiveContextTokens(call.ContextWindowTokens)-call.MaxOutputTokens) {
+		t.Fatalf("compacted request tokens = %d", inputTokens)
+	}
+	if _, ok := parseCompactionCheckpoint(request.Messages[len(request.Messages)-1].Content); !ok {
+		t.Fatal("request was not compacted after accounting for fixed request overhead")
+	}
+}
+
+func TestRuntimeRejectsRequestWhenFixedOverheadExceedsContextWindow(t *testing.T) {
+	clock := &mutableClock{now: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)}
+	gateway := &fakeGateway{response: modelgateway.NormalizedResponse{Content: json.RawMessage(`{"ok":true}`)}}
+	runtime := newTestRuntime(t, clock, &fakeAuthority{clock: clock}, gateway, &fakeBroker{})
+	declaration := testDeclaration(RoleExecutor)
+	declaration.Tools[0].Schema = json.RawMessage(`{"type":"object","description":"` + strings.Repeat("large tool schema ", 300) + `"}`)
+	declaration.ToolSchemaDigest = DigestToolDefinitions(declaration.Tools)
+	startRun(t, runtime, declaration, testLease(clock.Now(), declaration))
+
+	call := ModelCall{
+		RequestID: "req_fixed_overhead", Provider: "provider", Model: "model", ReservationID: "res_fixed_overhead",
+		ContextWindowTokens: 1_000, CompactionThresholdTokens: 900, MaxOutputTokens: 128,
+		ProviderPolicy: "default", CachePolicy: "local", MaxAttempts: 1,
+	}
+	_, err := runtime.Generate(context.Background(), declaration.RunID, call)
+	if !errors.Is(err, modelgateway.ErrContextWindowExceeded) {
+		t.Fatalf("generate error = %v", err)
+	}
+	if request, _ := gateway.Captured(); request.RequestID != "" {
+		t.Fatalf("gateway received oversized request: %#v", request)
 	}
 }
 

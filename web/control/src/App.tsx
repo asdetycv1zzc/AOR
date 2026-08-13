@@ -224,10 +224,44 @@ function modelOutputLimit(provider: ModelProvider | undefined, model: string): n
     : 1_000_000;
 }
 
+function modelContextWindow(provider: ModelProvider | undefined, model: string): number {
+  const modelWindow = provider?.modelContextWindowTokens?.[model];
+  if (typeof modelWindow === "number" && Number.isInteger(modelWindow) && modelWindow > 0) {
+    return Math.min(10_000_000, modelWindow);
+  }
+  const providerWindow = provider?.maxInputTokens;
+  return typeof providerWindow === "number" && Number.isInteger(providerWindow) && providerWindow > 0
+    ? Math.min(10_000_000, providerWindow)
+    : 1_000_000;
+}
+
+function defaultCompactionThreshold(contextWindowTokens: number): number {
+  return Math.max(1, Math.floor(contextWindowTokens * 0.9));
+}
+
+function modelRouteOutputLimit(provider: ModelProvider | undefined, model: string, contextWindowTokens = modelContextWindow(provider, model)): number {
+  return Math.min(modelOutputLimit(provider, model), Math.max(1, defaultCompactionThreshold(contextWindowTokens) - 1));
+}
+
+function parseModelContextWindows(value: string, models: string[]): Record<string, number> | undefined {
+  const entries = value.split(/[,\n]/).map((entry) => entry.trim()).filter(Boolean);
+  const result: Record<string, number> = {};
+  for (const entry of entries) {
+    const separator = entry.lastIndexOf("=");
+    if (separator < 1) return undefined;
+    const model = entry.slice(0, separator).trim();
+    const tokens = Number(entry.slice(separator + 1).trim());
+    if (!models.includes(model) || !Number.isInteger(tokens) || tokens < 1 || tokens > 10_000_000 || result[model] !== undefined) return undefined;
+    result[model] = tokens;
+  }
+  return models.every((model) => result[model] !== undefined) ? result : undefined;
+}
+
 type ModelProviderDraft = ModelProviderSettings & {
   draftKey: string;
   apiKey: string;
   modelsText: string;
+  contextWindowsText: string;
   testModel: string;
   testReasoningEffort: ReasoningEffort;
 };
@@ -255,6 +289,7 @@ function cloneModelProviderDrafts(settings: ModelProviderSettings[]): ModelProvi
       models: [...setting.models],
       apiKey: "",
       modelsText: setting.models.join(", "),
+      contextWindowsText: setting.models.map((model) => `${model}=${setting.modelContextWindowTokens?.[model] || 1_000_000}`).join(", "),
       testModel: setting.models[0] || "",
       testReasoningEffort: normalizedReasoningEffort(key),
     };
@@ -277,6 +312,8 @@ function customProviderDraft(draftKey: string): ModelProviderDraft {
     protocols: ["openai-responses", "anthropic-messages", "openai-compatible"],
     models: [],
     modelsText: "",
+    contextWindowsText: "",
+    modelContextWindowTokens: {},
     apiKey: "",
     apiKeyConfigured: false,
     enabled: true,
@@ -293,7 +330,7 @@ function modelProviderDraftsValid(drafts: ModelProviderDrafts): boolean {
     ids.add(draft.id);
     if (!draft.custom) return true;
     const models = providerModels(draft.modelsText);
-    return Boolean(draft.displayName?.trim() && draft.displayName.trim().length <= 128 && models.length > 0 && models.length <= 128 && models.every((model) => model.length <= 256));
+    return Boolean(draft.displayName?.trim() && draft.displayName.trim().length <= 128 && models.length > 0 && models.length <= 128 && models.every((model) => model.length <= 256) && parseModelContextWindows(draft.contextWindowsText, models));
   });
 }
 
@@ -303,9 +340,12 @@ function cloneModelRoutes(routes?: ModelRoutes, providers: ModelProvider[] = [])
     const route = routes[role];
     const provider = providers.find((item) => item.id === route.provider);
     const key = modelProviderKey(provider || route.provider);
+    const contextWindowTokens = Number.isInteger(route.contextWindowTokens) && route.contextWindowTokens > 0 ? route.contextWindowTokens : modelContextWindow(provider, route.model);
     return [role, {
       ...route,
       reasoningEffort: normalizedReasoningEffort(key, route.reasoningEffort),
+      contextWindowTokens,
+      compactionThresholdTokens: Number.isInteger(route.compactionThresholdTokens) && route.compactionThresholdTokens > 0 ? route.compactionThresholdTokens : defaultCompactionThreshold(contextWindowTokens),
       thinkingBudget: Number.isInteger(route.thinkingBudget) && route.thinkingBudget >= 0 ? route.thinkingBudget : 0,
     }];
   })) as ModelRoutes;
@@ -326,6 +366,12 @@ function modelRoutesValid(routes: ModelRoutes | undefined, providers: ModelProvi
       Number.isInteger(route.maxOutputTokens) &&
       route.maxOutputTokens >= 1 &&
       route.maxOutputTokens <= modelOutputLimit(provider, route.model) &&
+      Number.isInteger(route.contextWindowTokens) &&
+      route.contextWindowTokens >= route.maxOutputTokens + 1 &&
+      route.contextWindowTokens <= modelContextWindow(provider, route.model) &&
+      Number.isInteger(route.compactionThresholdTokens) &&
+      route.compactionThresholdTokens >= route.maxOutputTokens + 1 &&
+      route.compactionThresholdTokens <= Math.floor(route.contextWindowTokens * 0.9) &&
       Number.isInteger(route.thinkingBudget) &&
       route.thinkingBudget >= 0 &&
       route.thinkingBudget < route.maxOutputTokens,
@@ -1362,27 +1408,36 @@ function ModelSettingsDialog({ open, busy, providers, providerSettings, settings
     const known = new Set(next.map((provider) => provider.id));
     for (const draft of drafts) {
       const models = providerModels(draft.modelsText);
-      if (!draft.custom || !draft.id || known.has(draft.id) || models.length === 0) continue;
-      known.add(draft.id);
-      next.push({
+      if (!draft.custom || !draft.id || models.length === 0) continue;
+      const index = next.findIndex((provider) => provider.id === draft.id);
+      const contextWindows = parseModelContextWindows(draft.contextWindowsText, models);
+      const previous = index >= 0 ? next[index] : undefined;
+      const candidate: ModelProvider = {
         id: draft.id,
         provider: draft.id,
         models,
-        inputMicrosPerToken: 1,
-        outputMicrosPerToken: 4,
-        supportsStreaming: true,
-        supportsToolCalls: true,
-        supportsJsonSchema: true,
-        supportsSeed: false,
-        supportsPromptCaching: false,
-        maxInputTokens: 1_000_000,
-        maxOutputTokens: 1_000_000,
-        modelMaxOutputTokens: {},
-        allowedDataClassifications: ["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"],
-        dataResidency: ["provider-defined"],
-        retentionPolicy: "provider-defined",
-        modalities: ["text"],
-      });
+        inputMicrosPerToken: previous?.inputMicrosPerToken || 1,
+        outputMicrosPerToken: previous?.outputMicrosPerToken || 4,
+        supportsStreaming: previous?.supportsStreaming ?? true,
+        supportsToolCalls: previous?.supportsToolCalls ?? true,
+        supportsJsonSchema: previous?.supportsJsonSchema ?? true,
+        supportsSeed: previous?.supportsSeed ?? false,
+        supportsPromptCaching: previous?.supportsPromptCaching ?? false,
+        maxInputTokens: previous?.maxInputTokens || 1_000_000,
+        maxOutputTokens: previous?.maxOutputTokens || 1_000_000,
+        modelContextWindowTokens: Object.fromEntries(models.map((model) => [model, contextWindows?.[model] || 1_000_000])),
+        modelMaxOutputTokens: previous?.modelMaxOutputTokens || {},
+        allowedDataClassifications: previous?.allowedDataClassifications || ["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"],
+        dataResidency: previous?.dataResidency || ["provider-defined"],
+        retentionPolicy: previous?.retentionPolicy || "provider-defined",
+        modalities: previous?.modalities || ["text"],
+      };
+      if (index >= 0) {
+        next[index] = candidate;
+      } else if (!known.has(draft.id)) {
+        known.add(draft.id);
+        next.push(candidate);
+      }
     }
     return next;
   }, [drafts, providers]);
@@ -1445,7 +1500,9 @@ function ModelSettingsDialog({ open, busy, providers, providerSettings, settings
       };
       if (draft.custom) {
         input.displayName = draft.displayName?.trim();
-        input.models = providerModels(draft.modelsText);
+        const models = providerModels(draft.modelsText);
+        input.models = models;
+        input.modelContextWindowTokens = parseModelContextWindows(draft.contextWindowsText, models);
       }
       if (draft.apiKey.trim()) input.apiKey = draft.apiKey.trim();
       updates.push({ id: draft.id, input });
@@ -1544,8 +1601,17 @@ function ModelProviderSettingsEditor({ drafts, testStates, busy, onChange, onTes
                 <Field label="模型（逗号分隔）" required>
                   <Input value={draft.modelsText} placeholder="model-a, model-b" onChange={(_, data) => {
                     const models = providerModels(data.value);
-                    onChange(draft.draftKey, { modelsText: data.value, models, testModel: models.includes(draft.testModel) ? draft.testModel : models[0] || "" });
+                    const existing = parseModelContextWindows(draft.contextWindowsText, draft.models) || draft.modelContextWindowTokens || {};
+                    onChange(draft.draftKey, {
+                      modelsText: data.value,
+                      models,
+                      contextWindowsText: models.map((model) => `${model}=${existing[model] || 1_000_000}`).join(", "),
+                      testModel: models.includes(draft.testModel) ? draft.testModel : models[0] || "",
+                    });
                   }} />
+                </Field>
+                <Field label="模型上下文窗口（model=tokens）" required>
+                  <Input value={draft.contextWindowsText} placeholder="model-a=1000000, model-b=200000" onChange={(_, data) => onChange(draft.draftKey, { contextWindowsText: data.value })} />
                 </Field>
               </div>}
               <div className="provider-settings-heading">
@@ -1606,7 +1672,8 @@ function ModelRouteEditor({ routes, providers, onChange }: {
     const current = routes[role];
     const key = modelProviderKey(provider);
     const model = provider.models.includes(current.model) ? current.model : provider.models[0] || "";
-    const maxOutputTokens = modelOutputLimit(provider, model);
+    const contextWindowTokens = modelContextWindow(provider, model);
+    const maxOutputTokens = modelRouteOutputLimit(provider, model, contextWindowTokens);
     onChange({
       ...routes,
       [role]: {
@@ -1614,6 +1681,8 @@ function ModelRouteEditor({ routes, providers, onChange }: {
         provider: provider.id,
         model,
         reasoningEffort: normalizedReasoningEffort(key),
+        contextWindowTokens,
+        compactionThresholdTokens: defaultCompactionThreshold(contextWindowTokens),
         maxOutputTokens,
         thinkingBudget: current.thinkingBudget > 0 ? Math.min(current.thinkingBudget, Math.max(0, maxOutputTokens - 1)) : 0,
         seed: provider.supportsSeed ? current.seed : undefined,
@@ -1623,12 +1692,15 @@ function ModelRouteEditor({ routes, providers, onChange }: {
   const updateModel = (role: ModelRole, model: string) => {
     const current = routes[role];
     const provider = providers.find((item) => item.id === current.provider);
-    const maxOutputTokens = modelOutputLimit(provider, model);
+    const contextWindowTokens = modelContextWindow(provider, model);
+    const maxOutputTokens = modelRouteOutputLimit(provider, model, contextWindowTokens);
     onChange({
       ...routes,
       [role]: {
         ...current,
         model,
+        contextWindowTokens,
+        compactionThresholdTokens: defaultCompactionThreshold(contextWindowTokens),
         maxOutputTokens,
         thinkingBudget: current.thinkingBudget > 0 ? Math.min(current.thinkingBudget, Math.max(0, maxOutputTokens - 1)) : 0,
       },
@@ -1639,14 +1711,35 @@ function ModelRouteEditor({ routes, providers, onChange }: {
   };
   const updateMaxOutputTokens = (role: ModelRole, maxOutputTokens: number) => {
     const current = routes[role];
+    const maximumThreshold = defaultCompactionThreshold(current.contextWindowTokens);
     onChange({
       ...routes,
       [role]: {
         ...current,
         maxOutputTokens,
+        compactionThresholdTokens: Math.min(maximumThreshold, Math.max(current.compactionThresholdTokens, maxOutputTokens + 1)),
         thinkingBudget: current.thinkingBudget > 0 ? Math.min(current.thinkingBudget, Math.max(0, maxOutputTokens - 1)) : 0,
       },
     });
+  };
+  const updateContextWindowTokens = (role: ModelRole, contextWindowTokens: number) => {
+    const current = routes[role];
+    const maximumThreshold = defaultCompactionThreshold(contextWindowTokens);
+    const provider = providers.find((item) => item.id === current.provider);
+    const maxOutputTokens = Math.min(current.maxOutputTokens, modelRouteOutputLimit(provider, current.model, contextWindowTokens));
+    onChange({
+      ...routes,
+      [role]: {
+        ...current,
+        contextWindowTokens,
+        maxOutputTokens,
+        compactionThresholdTokens: Math.min(maximumThreshold, Math.max(maxOutputTokens + 1, current.compactionThresholdTokens)),
+        thinkingBudget: current.thinkingBudget > 0 ? Math.min(current.thinkingBudget, Math.max(0, maxOutputTokens - 1)) : 0,
+      },
+    });
+  };
+  const updateCompactionThresholdTokens = (role: ModelRole, compactionThresholdTokens: number) => {
+    onChange({ ...routes, [role]: { ...routes[role], compactionThresholdTokens } });
   };
   const updateThinkingBudget = (role: ModelRole, thinkingBudget: number) => {
     onChange({ ...routes, [role]: { ...routes[role], thinkingBudget } });
@@ -1654,8 +1747,8 @@ function ModelRouteEditor({ routes, providers, onChange }: {
   return (
     <fieldset className="model-route-editor">
       <legend>模型组合</legend>
-      <p className="model-route-note">思考预算设为 0 时使用供应商默认值。OpenAI Responses 没有独立的数值思考预算，将使用思考深度和输出 Token 总上限；兼容协议或原生协议仅在供应商支持时应用该值。</p>
-      <div className="model-route-head"><span>角色</span><span>供应商</span><span>模型</span><span>思考深度</span><span>输出 Token</span><span>思考预算</span></div>
+      <p className="model-route-note">上下文窗口不能高于模型能力。系统在压缩阈值前建立版本化检查点；阈值最高为窗口的 90%。思考预算设为 0 时使用供应商默认值。</p>
+      <div className="model-route-head"><span>角色</span><span>供应商</span><span>模型</span><span>思考深度</span><span>上下文窗口</span><span>压缩阈值</span><span>输出 Token</span><span>思考预算</span></div>
       {modelRoles.map((role) => {
         const route = routes[role];
         const eligibleProviders = providersForRole(role);
@@ -1678,8 +1771,14 @@ function ModelRouteEditor({ routes, providers, onChange }: {
                 {effortOptions.map((option) => <option value={option.value} key={option.value || "empty"}>{option.label}</option>)}
               </select>
             </div>
+            <div className="model-route-control" data-label="上下文窗口">
+              <Input aria-label={`${modelRoleLabels[role]}上下文窗口`} type="number" min={route.maxOutputTokens + 1} max={modelContextWindow(provider, route.model)} step={1} value={route.contextWindowTokens} onChange={(_, data) => updateContextWindowTokens(role, Number(data.value))} />
+            </div>
+            <div className="model-route-control" data-label="压缩阈值">
+              <Input aria-label={`${modelRoleLabels[role]}压缩阈值`} type="number" min={route.maxOutputTokens + 1} max={Math.floor(route.contextWindowTokens * 0.9)} step={1} value={route.compactionThresholdTokens} onChange={(_, data) => updateCompactionThresholdTokens(role, Number(data.value))} />
+            </div>
             <div className="model-route-control" data-label="输出 Token">
-              <Input aria-label={`${modelRoleLabels[role]}输出 Token`} type="number" min={1} max={modelOutputLimit(provider, route.model)} step={1} value={route.maxOutputTokens} onChange={(_, data) => updateMaxOutputTokens(role, Number(data.value))} />
+              <Input aria-label={`${modelRoleLabels[role]}输出 Token`} type="number" min={1} max={modelRouteOutputLimit(provider, route.model, route.contextWindowTokens)} step={1} value={route.maxOutputTokens} onChange={(_, data) => updateMaxOutputTokens(role, Number(data.value))} />
             </div>
             <div className="model-route-control" data-label="思考预算">
               <Input aria-label={`${modelRoleLabels[role]}思考预算`} type="number" min={0} max={Math.max(0, route.maxOutputTokens - 1)} step={1} value={route.thinkingBudget} onChange={(_, data) => updateThinkingBudget(role, Number(data.value))} />

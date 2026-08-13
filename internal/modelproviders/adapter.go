@@ -215,7 +215,8 @@ func (adapter *DynamicAdapter) resolve(ctx context.Context, tenantID, model stri
 		adapter.mu.Unlock()
 		return resolved, entry.adapter, nil
 	}
-	concrete, err := adapter.factory.NewWithProtocol(resolved.Provider, resolved.Protocol, resolved.BaseURL, resolved.APIKey, []string{model})
+	resolved.Models = []string{model}
+	concrete, err := adapter.factory.NewWithSettings(resolved)
 	if err == nil {
 		adapter.current[cacheKey] = dynamicAdapterEntry{version: resolved.Version, adapter: concrete}
 	}

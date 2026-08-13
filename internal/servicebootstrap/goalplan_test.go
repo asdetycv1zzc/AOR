@@ -5,13 +5,14 @@ import (
 	"testing"
 
 	"github.com/akimisaka/aor/internal/agentruntime"
+	"github.com/akimisaka/aor/internal/modelproviders"
 	"github.com/akimisaka/aor/internal/runtimeconfig"
 )
 
 func TestConfiguredGoalPlanRoutesBindEveryRequiredRole(t *testing.T) {
 	seed := int64(7)
 	configured := runtimeconfig.GoalPlanRouteConfig{
-		Provider: "provider", Model: "model", MaxOutputTokens: 4096, Temperature: 0,
+		Provider: modelproviders.ProviderOpenAI, Model: "gpt-5.6-sol", MaxOutputTokens: 4096, Temperature: 0,
 		Seed: &seed, ProviderPolicy: "default", CachePolicy: "NO_STORE", MaxAttempts: 3,
 	}
 	routes, err := configuredGoalPlanRoutes(runtimeconfig.GoalPlanConfig{Routes: map[string]runtimeconfig.GoalPlanRouteConfig{
@@ -28,7 +29,7 @@ func TestConfiguredGoalPlanRoutesBindEveryRequiredRole(t *testing.T) {
 		agentruntime.RoleKnowledgeCurator,
 	} {
 		route, found := routes[role]
-		if !found || route.Provider != configured.Provider || route.Model != configured.Model || route.Seed == nil || *route.Seed != seed || route.MaxAttempts != 3 {
+		if !found || route.Provider != configured.Provider || route.Model != configured.Model || route.ContextWindowTokens != catalogModelContextWindow(configured.Provider, configured.Model) || route.Seed == nil || *route.Seed != seed || route.MaxAttempts != 3 {
 			t.Fatalf("route %s = %#v", role, route)
 		}
 	}

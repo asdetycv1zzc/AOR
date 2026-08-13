@@ -390,6 +390,8 @@ func normalizeGoalPlanError(err error) error {
 		return typed
 	}
 	switch {
+	case errors.Is(err, modelgateway.ErrContextWindowExceeded):
+		return aorerrors.New(aorerrors.CodeContextWindowExceeded, "", nil)
 	case errors.Is(err, context.DeadlineExceeded):
 		return aorerrors.New(aorerrors.CodeTimeout, "", nil)
 	case errors.Is(err, goalplan.ErrArtifactConflict), errors.Is(err, modelgateway.ErrRequestConflict):

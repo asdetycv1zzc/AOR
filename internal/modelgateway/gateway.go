@@ -901,8 +901,8 @@ func (g *Gateway) selectProviders(ctx context.Context, operation string, request
 			lastErr = redactError(countErr)
 			continue
 		}
-		if estimate.InputTokens < 0 || estimate.InputTokens > int64(capabilities.MaxInputTokens) {
-			lastErr = ErrInvalidRequest
+		if contextWindowExceeded(candidateRequest, capabilities, estimate) {
+			lastErr = ErrContextWindowExceeded
 			continue
 		}
 		inputCost, costErr := multiplyCost(estimate.InputTokens, pricing.InputMicrosPerToken)
@@ -1291,8 +1291,8 @@ func (g *Gateway) generateSingle(ctx context.Context, request NormalizedRequest,
 		g.recordProviderFailure(key, err)
 		return NormalizedResponse{}, redactError(err)
 	}
-	if estimate.InputTokens < 0 || estimate.InputTokens > int64(capabilities.MaxInputTokens) {
-		return NormalizedResponse{}, ErrInvalidRequest
+	if contextWindowExceeded(request, capabilities, estimate) {
+		return NormalizedResponse{}, ErrContextWindowExceeded
 	}
 	inputCost, err := multiplyCost(estimate.InputTokens, pricing.InputMicrosPerToken)
 	if err != nil {
@@ -1593,8 +1593,8 @@ func (g *Gateway) prepare(ctx context.Context, request NormalizedRequest, option
 		g.recordProviderFailure(key, err)
 		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", Pricing{}, 0, redactError(err)
 	}
-	if estimate.InputTokens < 0 || estimate.InputTokens > int64(capabilities.MaxInputTokens) {
-		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", Pricing{}, 0, ErrInvalidRequest
+	if contextWindowExceeded(request, capabilities, estimate) {
+		return nil, "", ModelCapabilities{}, TokenEstimate{}, "", Pricing{}, 0, ErrContextWindowExceeded
 	}
 	inputCost, err := multiplyCost(estimate.InputTokens, pricing.InputMicrosPerToken)
 	if err != nil {
@@ -1918,7 +1918,7 @@ func requestUsesNativeTools(request NormalizedRequest) bool {
 }
 
 func validateRequest(request NormalizedRequest) error {
-	if request.RequestID == "" || request.TenantID == "" || request.ProjectID == "" || request.AgentInstanceID == "" || request.Role == "" || request.Model == "" || request.PromptBundleVersion == "" || len(request.Messages) == 0 || len(request.Messages) > MaximumMessages || len(request.Tools) > MaximumTools || request.MaxOutputTokens <= 0 || request.MaxOutputTokens > 1_000_000 || request.ThinkingBudget < 0 || request.ThinkingBudget >= request.MaxOutputTokens || request.DataClassification == "" {
+	if request.RequestID == "" || request.TenantID == "" || request.ProjectID == "" || request.AgentInstanceID == "" || request.Role == "" || request.Model == "" || request.PromptBundleVersion == "" || len(request.Messages) == 0 || len(request.Messages) > MaximumMessages || len(request.Tools) > MaximumTools || request.MaxOutputTokens <= 0 || request.MaxOutputTokens > 1_000_000 || request.ThinkingBudget < 0 || request.ThinkingBudget >= request.MaxOutputTokens || request.ContextWindowTokens < 0 || request.ContextWindowTokens > 10_000_000 || request.ContextWindowTokens > 0 && request.ContextWindowTokens <= request.MaxOutputTokens || request.CompactionThresholdTokens < 0 || request.CompactionThresholdTokens > request.ContextWindowTokens || request.CompactionThresholdTokens > 0 && (request.ContextWindowTokens == 0 || request.CompactionThresholdTokens <= request.MaxOutputTokens || request.CompactionThresholdTokens > request.ContextWindowTokens*9/10) || request.DataClassification == "" {
 		return ErrInvalidRequest
 	}
 	if ValidateSamplingSettings(SamplingSettings{Temperature: request.Temperature, TopP: request.TopP, TopK: request.TopK}) != nil {
@@ -1950,6 +1950,19 @@ func validateRequest(request NormalizedRequest) error {
 		return ErrCredentialDetected
 	}
 	return nil
+}
+
+func contextWindowExceeded(request NormalizedRequest, capabilities ModelCapabilities, estimate TokenEstimate) bool {
+	if estimate.InputTokens < 0 || capabilities.MaxInputTokens > 0 && estimate.InputTokens > int64(capabilities.MaxInputTokens) {
+		return true
+	}
+	window := capabilities.ContextWindowTokens
+	if request.ContextWindowTokens > 0 {
+		if window <= 0 || request.ContextWindowTokens < window {
+			window = request.ContextWindowTokens
+		}
+	}
+	return window > 0 && estimate.InputTokens+int64(request.MaxOutputTokens) > int64(window)
 }
 
 type normalizedResponseOutput struct {

@@ -239,6 +239,7 @@ func newConfiguredAdapter(provider runtimeconfig.ProviderConfig, credential []by
 		SupportsSeed:          provider.SupportsSeed,
 		SupportsPromptCaching: provider.SupportsPromptCaching,
 		MaxInputTokens:        provider.MaxInputTokens,
+		ContextWindowTokens:   provider.MaxInputTokens,
 		MaxOutputTokens:       provider.MaxOutputTokens,
 		DataResidency:         append([]string(nil), provider.DataResidency...),
 		RetentionPolicy:       provider.RetentionPolicy,

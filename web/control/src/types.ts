@@ -32,6 +32,8 @@ export interface ProjectModelRoute {
   provider: string;
   model: string;
   reasoningEffort: ReasoningEffort;
+  contextWindowTokens: number;
+  compactionThresholdTokens: number;
   maxOutputTokens: number;
   thinkingBudget: number;
   temperature: number;
@@ -57,6 +59,7 @@ export interface ModelProvider {
   supportsPromptCaching: boolean;
   maxInputTokens: number;
   maxOutputTokens: number;
+  modelContextWindowTokens: Record<string, number>;
   modelMaxOutputTokens: Record<string, number>;
   allowedDataClassifications: string[];
   dataResidency: string[];
@@ -73,6 +76,7 @@ export interface ModelProviderSettings {
   protocol: string;
   protocols?: string[];
   models: string[];
+  modelContextWindowTokens: Record<string, number>;
   apiKeyConfigured: boolean;
   enabled: boolean;
   version: number;
@@ -88,6 +92,7 @@ export interface ModelProviderSettingsInput {
   protocol: string;
   apiKey?: string;
   models?: string[];
+  modelContextWindowTokens?: Record<string, number>;
   enabled: boolean;
 }
 

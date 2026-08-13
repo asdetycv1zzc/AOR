@@ -18,6 +18,7 @@ var (
 	ErrRequestConflict           = errors.New("model request id conflicts with a different request")
 	ErrReplayUnavailable         = errors.New("completed model request has no replayable response")
 	ErrInvalidRequest            = errors.New("invalid normalized model request")
+	ErrContextWindowExceeded     = errors.New("model context window exceeded")
 	ErrProviderNotAllowed        = errors.New("model provider or model is not allowed")
 	ErrProviderUnavailable       = errors.New("model provider is temporarily unavailable")
 	ErrOutputSchema              = errors.New("model output does not satisfy response schema")

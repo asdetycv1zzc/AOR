@@ -414,6 +414,13 @@
       "file": "000059_toolchain_crosstool_archives.up.sql",
       "sha256": "sha256:db154fa6745d9cf1bf3c58ee88738b681b586f068bf452bc5ae2b6429c50b972",
       "destructive": false
+    },
+    {
+      "version": 60,
+      "mode": "EXPAND",
+      "file": "000060_model_context_windows.up.sql",
+      "sha256": "sha256:8e8bca8e37570eb842dde0614ba0af1e2c11097863d7e66f22ab2e5182e684c7",
+      "destructive": false
     }
   ]
 }

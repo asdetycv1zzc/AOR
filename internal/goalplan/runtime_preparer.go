@@ -25,17 +25,19 @@ import (
 )
 
 type ModelRoute struct {
-	Provider            string
-	Model               string
-	ReasoningEffort     string
-	MaxOutputTokens     int
-	ThinkingBudget      int `json:"thinkingBudget,omitempty"`
-	Temperature         float64
-	Seed                *int64
-	ProviderPolicy      string
-	CachePolicy         string
-	WorstCaseCostMicros int64
-	MaxAttempts         int
+	Provider                  string
+	Model                     string
+	ReasoningEffort           string
+	ContextWindowTokens       int `json:"contextWindowTokens,omitempty"`
+	CompactionThresholdTokens int `json:"compactionThresholdTokens,omitempty"`
+	MaxOutputTokens           int
+	ThinkingBudget            int `json:"thinkingBudget,omitempty"`
+	Temperature               float64
+	Seed                      *int64
+	ProviderPolicy            string
+	CachePolicy               string
+	WorstCaseCostMicros       int64
+	MaxAttempts               int
 }
 
 type runtimeProjectReader interface {
@@ -239,7 +241,7 @@ func (preparer *AuthoritativeRuntimePreparer) Prepare(ctx context.Context, reque
 		Declaration: declaration, Lease: runtimeAgentLease(lease), Intent: expectedRuntimeIntent(request),
 		ModelCall: agentruntime.ModelCall{
 			RequestID: requestID, Provider: route.Provider, Model: route.Model, ReservationID: reservationID,
-			ReasoningEffort: route.ReasoningEffort, MaxOutputTokens: route.MaxOutputTokens, ThinkingBudget: route.ThinkingBudget, Temperature: route.Temperature, Seed: cloneSeed(route.Seed),
+			ReasoningEffort: route.ReasoningEffort, ContextWindowTokens: route.ContextWindowTokens, CompactionThresholdTokens: route.CompactionThresholdTokens, MaxOutputTokens: route.MaxOutputTokens, ThinkingBudget: route.ThinkingBudget, Temperature: route.Temperature, Seed: cloneSeed(route.Seed),
 			ProviderPolicy: route.ProviderPolicy, CachePolicy: route.CachePolicy,
 			WorstCaseCostMicros: route.WorstCaseCostMicros, MaxAttempts: route.MaxAttempts,
 		},
@@ -557,6 +559,8 @@ func findRuntimeModule(modules []contracts.PlanModule, moduleID string) (contrac
 func validModelRoute(route ModelRoute) bool {
 	return route.Provider != "" && len(route.Provider) <= 128 && route.Model != "" && route.Model != "*" && len(route.Model) <= 256 &&
 		state.ValidModelReasoningEffort(route.Provider, route.ReasoningEffort) &&
+		(route.ContextWindowTokens == 0 || route.ContextWindowTokens > route.MaxOutputTokens && route.ContextWindowTokens <= 10_000_000) &&
+		(route.CompactionThresholdTokens == 0 || route.ContextWindowTokens > 0 && route.CompactionThresholdTokens > route.MaxOutputTokens && route.CompactionThresholdTokens <= route.ContextWindowTokens*9/10) &&
 		route.MaxOutputTokens > 0 && route.MaxOutputTokens <= 1_000_000 && route.ThinkingBudget >= 0 && route.ThinkingBudget < route.MaxOutputTokens &&
 		!math.IsNaN(route.Temperature) && !math.IsInf(route.Temperature, 0) &&
 		route.Temperature >= 0 && route.Temperature <= 2 && route.ProviderPolicy != "" && len(route.ProviderPolicy) <= 256 &&

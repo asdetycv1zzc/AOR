@@ -25,20 +25,25 @@ func ResolveProjectModelRoute(project state.Project, role agentruntime.Role, fal
 		return cloneProjectModelRoute(fallback), true
 	}
 	route := ModelRoute{
-		Provider:            configured.Provider,
-		Model:               configured.Model,
-		ReasoningEffort:     configured.ReasoningEffort,
-		MaxOutputTokens:     configured.MaxOutputTokens,
-		ThinkingBudget:      configured.ThinkingBudget,
-		Temperature:         configured.Temperature,
-		Seed:                configured.Seed,
-		ProviderPolicy:      configured.ProviderPolicy,
-		CachePolicy:         configured.CachePolicy,
-		WorstCaseCostMicros: configured.WorstCaseCostMicros,
-		MaxAttempts:         configured.MaxAttempts,
+		Provider:                  configured.Provider,
+		Model:                     configured.Model,
+		ReasoningEffort:           configured.ReasoningEffort,
+		ContextWindowTokens:       configured.ContextWindowTokens,
+		CompactionThresholdTokens: configured.CompactionThresholdTokens,
+		MaxOutputTokens:           configured.MaxOutputTokens,
+		ThinkingBudget:            configured.ThinkingBudget,
+		Temperature:               configured.Temperature,
+		Seed:                      configured.Seed,
+		ProviderPolicy:            configured.ProviderPolicy,
+		CachePolicy:               configured.CachePolicy,
+		WorstCaseCostMicros:       configured.WorstCaseCostMicros,
+		MaxAttempts:               configured.MaxAttempts,
 	}
 	if route.ReasoningEffort == "" {
 		route.ReasoningEffort = state.DefaultModelReasoningEffort(route.Provider)
+	}
+	if route.ContextWindowTokens == 0 && route.Provider == fallback.Provider && route.Model == fallback.Model {
+		route.ContextWindowTokens = fallback.ContextWindowTokens
 	}
 	if !validModelRoute(route) {
 		return ModelRoute{}, false
