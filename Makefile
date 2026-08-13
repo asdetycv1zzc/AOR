@@ -103,12 +103,9 @@ compose-pull: compose-check-infrastructure-secrets
 
 compose-deps-up: compose-pull
 	$(COMPOSE) up -d --wait --wait-timeout 240 $(COMPOSE_DEPENDENCIES)
-	$(COMPOSE) up -d postgres-migrate
-	$(COMPOSE) wait postgres-migrate
-	$(COMPOSE) up -d temporal-init
-	$(COMPOSE) wait temporal-init
-	$(COMPOSE) up -d minio-init
-	$(COMPOSE) wait minio-init
+	$(COMPOSE) up --no-deps --force-recreate --exit-code-from postgres-migrate postgres-migrate
+	$(COMPOSE) up --no-deps --force-recreate --exit-code-from temporal-init temporal-init
+	$(COMPOSE) up --no-deps --force-recreate --exit-code-from minio-init minio-init
 
 compose-aor-up: compose-deps-up
 	$(COMPOSE) --profile aor build aor-api aor-curator

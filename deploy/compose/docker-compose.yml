@@ -410,9 +410,10 @@ services:
   nats:
     image: nats:2.11.8-alpine@sha256:71092f77d707a4a81b12aca5096d6b2d2e07ad16aa57c84066940a17af74f61a
     restart: unless-stopped
-    command: [--jetstream, --addr=127.0.0.1, --store_dir=/data, --http_port=8222, --max_payload=33554432]
+    command: [--config=/etc/nats/nats.conf]
     volumes:
       - nats-data:/data
+      - ./nats.conf:/etc/nats/nats.conf:ro
     read_only: true
     tmpfs: [/tmp]
     security_opt: [no-new-privileges:true]
@@ -592,6 +593,8 @@ services:
       AOR_MODEL_REPLAY_KEY_REF: secret://model_replay_key
       AOR_MODEL_REPLAY_KEY_ID: compose-model-replay-v1
       AOR_MODEL_REPLAY_TTL_HOURS: "24"
+      AOR_GOAL_PLAN_ROUTES_JSON: >-
+        {"GOAL_PROPOSER":{"provider":"openai","model":"gpt-5.6-sol","reasoningEffort":"medium","contextWindowTokens":400000,"compactionThresholdTokens":360000,"maxOutputTokens":128000,"thinkingBudget":0,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":5},"GOAL_CHALLENGER":{"provider":"openai","model":"gpt-5.6-sol","reasoningEffort":"medium","contextWindowTokens":400000,"compactionThresholdTokens":360000,"maxOutputTokens":128000,"thinkingBudget":0,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":5},"PLAN_SUPERVISOR":{"provider":"deepseek","model":"deepseek-v4-flash","reasoningEffort":"high","contextWindowTokens":1000000,"compactionThresholdTokens":900000,"maxOutputTokens":384000,"thinkingBudget":0,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":5},"MODULE_PLANNER":{"provider":"openai","model":"gpt-5.6-sol","reasoningEffort":"medium","contextWindowTokens":400000,"compactionThresholdTokens":360000,"maxOutputTokens":128000,"thinkingBudget":0,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":5},"KNOWLEDGE_CURATOR":{"provider":"openai","model":"gpt-5.6-sol","reasoningEffort":"medium","contextWindowTokens":400000,"compactionThresholdTokens":360000,"maxOutputTokens":128000,"thinkingBudget":0,"temperature":0,"providerPolicy":"default","cachePolicy":"NO_STORE","worstCaseCostMicros":0,"maxAttempts":5}}
     secrets: [postgres_app_password, model_replay_key, lease_signing_key, minio_root_user, minio_root_password, aor_server_oauth_client_secret]
     volumes:
       - "${AOR_KNOWLEDGE_HOST_PATH:-aor-knowledge-data}:/var/lib/aor/knowledge:ro"
