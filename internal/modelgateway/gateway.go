@@ -22,9 +22,9 @@ import (
 )
 
 const (
-	MaximumResponseBytes          = 4 << 20
-	MaximumResponseSchemaBytes    = 256 << 10
-	MaximumNormalizedRequestBytes = 8 << 20
+	MaximumResponseBytes          = 32 << 20
+	MaximumResponseSchemaBytes    = 4 << 20
+	MaximumNormalizedRequestBytes = 512 << 20
 	maximumGenerateAttempts       = 5
 )
 
@@ -1918,7 +1918,7 @@ func requestUsesNativeTools(request NormalizedRequest) bool {
 }
 
 func validateRequest(request NormalizedRequest) error {
-	if request.RequestID == "" || request.TenantID == "" || request.ProjectID == "" || request.AgentInstanceID == "" || request.Role == "" || request.Model == "" || request.PromptBundleVersion == "" || len(request.Messages) == 0 || len(request.Messages) > MaximumMessages || len(request.Tools) > MaximumTools || request.MaxOutputTokens <= 0 || request.MaxOutputTokens > 1_000_000 || request.ThinkingBudget < 0 || request.ThinkingBudget >= request.MaxOutputTokens || request.ContextWindowTokens < 0 || request.ContextWindowTokens > 10_000_000 || request.ContextWindowTokens > 0 && request.ContextWindowTokens <= request.MaxOutputTokens || request.CompactionThresholdTokens < 0 || request.CompactionThresholdTokens > request.ContextWindowTokens || request.CompactionThresholdTokens > 0 && (request.ContextWindowTokens == 0 || request.CompactionThresholdTokens <= request.MaxOutputTokens || request.CompactionThresholdTokens > request.ContextWindowTokens*9/10) || request.DataClassification == "" {
+	if request.RequestID == "" || request.TenantID == "" || request.ProjectID == "" || request.AgentInstanceID == "" || request.Role == "" || request.Model == "" || request.PromptBundleVersion == "" || len(request.Messages) == 0 || len(request.Messages) > MaximumMessages || len(request.Tools) > MaximumTools || request.MaxOutputTokens <= 0 || request.MaxOutputTokens > 1_000_000 || request.ThinkingBudget < 0 || request.ThinkingBudget >= request.MaxOutputTokens || request.ContextWindowTokens < 0 || request.ContextWindowTokens > MaximumContextWindowTokens || request.ContextWindowTokens > 0 && request.ContextWindowTokens <= request.MaxOutputTokens || request.CompactionThresholdTokens < 0 || request.CompactionThresholdTokens > request.ContextWindowTokens || request.CompactionThresholdTokens > 0 && (request.ContextWindowTokens == 0 || request.CompactionThresholdTokens <= request.MaxOutputTokens || request.CompactionThresholdTokens > request.ContextWindowTokens*9/10) || request.DataClassification == "" {
 		return ErrInvalidRequest
 	}
 	if ValidateSamplingSettings(SamplingSettings{Temperature: request.Temperature, TopP: request.TopP, TopK: request.TopK}) != nil {

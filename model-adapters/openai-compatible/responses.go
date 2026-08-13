@@ -10,7 +10,7 @@ import (
 
 const (
 	maximumResponsesContinuationEntries = 128
-	maximumResponsesContinuationBytes   = 8 << 20
+	maximumResponsesContinuationBytes   = 64 << 20
 )
 
 func (a *Adapter) encodeResponsesRequest(request modelgateway.NormalizedRequest, stream bool) ([]byte, error) {

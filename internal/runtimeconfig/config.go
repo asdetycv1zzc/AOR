@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/akimisaka/aor/internal/modelgateway"
 	"github.com/akimisaka/aor/internal/state"
 )
 
@@ -599,7 +600,7 @@ func validateGoalPlanRoutes(routes map[string]GoalPlanRouteConfig) error {
 func validGoalPlanRoute(route GoalPlanRouteConfig) bool {
 	return validIdentityPart(route.Provider, 128) && validIdentityPart(route.Model, 256) && route.Model != "*" &&
 		state.ValidModelReasoningEffort(route.Provider, route.ReasoningEffort) &&
-		(route.ContextWindowTokens == 0 || route.ContextWindowTokens > route.MaxOutputTokens && route.ContextWindowTokens <= 10_000_000) &&
+		(route.ContextWindowTokens == 0 || route.ContextWindowTokens > route.MaxOutputTokens && route.ContextWindowTokens <= modelgateway.MaximumContextWindowTokens) &&
 		(route.CompactionThresholdTokens == 0 || route.ContextWindowTokens > 0 && route.CompactionThresholdTokens > route.MaxOutputTokens && route.CompactionThresholdTokens <= route.ContextWindowTokens*9/10) &&
 		route.MaxOutputTokens >= 1 && route.MaxOutputTokens <= 1_000_000 && route.Temperature >= 0 && route.Temperature <= 2 &&
 		route.ThinkingBudget >= 0 && route.ThinkingBudget < route.MaxOutputTokens &&

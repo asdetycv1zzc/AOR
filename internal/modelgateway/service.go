@@ -16,9 +16,9 @@ import (
 )
 
 const (
-	defaultHTTPMaxRequestBytes  int64 = 1 << 20
-	defaultHTTPMaxResponseBytes int64 = MaximumResponseBytes + 512<<10
-	maximumHTTPBodyBytes        int64 = 8 << 20
+	defaultHTTPMaxRequestBytes  int64 = MaximumNormalizedRequestBytes + 1<<20
+	defaultHTTPMaxResponseBytes int64 = MaximumResponseBytes + 1<<20
+	maximumHTTPBodyBytes        int64 = MaximumNormalizedRequestBytes + 16<<20
 )
 
 var (

@@ -79,7 +79,7 @@ func ValidateProjectModelRoutes(routes map[string]ProjectModelRoute) error {
 func validProjectModelRoute(route ProjectModelRoute) bool {
 	return validProjectModelIdentity(route.Provider, 128) && validProjectModelIdentity(route.Model, 256) && route.Model != "*" &&
 		ValidModelReasoningEffort(route.Provider, route.ReasoningEffort) &&
-		(route.ContextWindowTokens == 0 || route.ContextWindowTokens >= route.MaxOutputTokens+1 && route.ContextWindowTokens <= 10_000_000) &&
+		(route.ContextWindowTokens == 0 || route.ContextWindowTokens >= route.MaxOutputTokens+1 && route.ContextWindowTokens <= 64_000_000) &&
 		(route.CompactionThresholdTokens == 0 || route.ContextWindowTokens > 0 && route.CompactionThresholdTokens >= route.MaxOutputTokens+1 && route.CompactionThresholdTokens <= route.ContextWindowTokens*9/10) &&
 		route.MaxOutputTokens >= 1 && route.MaxOutputTokens <= 1_000_000 &&
 		route.ThinkingBudget >= 0 && route.ThinkingBudget < route.MaxOutputTokens &&

@@ -18,7 +18,7 @@ import (
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
 )
 
-const maximumGoalMessageBytes = 1 << 20
+const maximumGoalMessageBytes = 16 << 20
 
 // GoalSpecProjection keeps immutable GoalSpec content and its explicit review
 // status in the same tenant-scoped event-sourced aggregate.

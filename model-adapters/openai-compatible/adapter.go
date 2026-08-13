@@ -25,10 +25,10 @@ import (
 const (
 	DefaultRequestTimeout      = 60 * time.Second
 	MaximumRequestTimeout      = 10*time.Minute + 30*time.Second
-	DefaultMaxRequestBytes     = 8 << 20
-	DefaultMaxResponseBytes    = 8 << 20
-	DefaultMaxStreamEventBytes = 4 << 20
-	maximumBodyBytes           = 16 << 20
+	DefaultMaxRequestBytes     = 528 << 20
+	DefaultMaxResponseBytes    = 64 << 20
+	DefaultMaxStreamEventBytes = 64 << 20
+	maximumBodyBytes           = 528 << 20
 )
 
 var errAdapterRequestTimeout = errors.New("openai-compatible adapter request timed out")

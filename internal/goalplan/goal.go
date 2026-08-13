@@ -199,7 +199,7 @@ func (n *Negotiator) Approve(ctx context.Context, request ApprovalRequest) (orch
 }
 
 func (n *Negotiator) validateNegotiation(ctx context.Context, request NegotiationRequest, finalVersion int) (state.Project, *SpecArtifact, bool, bool, error) {
-	if request.TenantID == "" || request.ProjectID == "" || request.GoalSpecID == "" || request.MessageID == "" || request.UserPrincipalID == "" || len(request.UserInput) == 0 || len(request.UserInput) > 1<<20 || request.GoalAgentCount < 1 || request.GoalAgentCount > 2 || request.ExpectedProjectVersion < 1 || request.IdempotencyKey == "" {
+	if request.TenantID == "" || request.ProjectID == "" || request.GoalSpecID == "" || request.MessageID == "" || request.UserPrincipalID == "" || len(request.UserInput) == 0 || len(request.UserInput) > agentruntime.MaximumContextItemBytes || request.GoalAgentCount < 1 || request.GoalAgentCount > 2 || request.ExpectedProjectVersion < 1 || request.IdempotencyKey == "" {
 		return state.Project{}, nil, false, false, ErrInvalidRequest
 	}
 	project, found, err := n.projects.Project(ctx, request.TenantID, request.ProjectID)

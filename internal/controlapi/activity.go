@@ -26,11 +26,12 @@ import (
 type activityFlow string
 
 const (
-	activityFlowGoal      activityFlow = "GOAL"
-	activityFlowPlan      activityFlow = "PLAN"
-	activityFlowExecution activityFlow = "EXECUTION"
-	activityFlowAudit     activityFlow = "AUDIT"
-	activityFlowKnowledge activityFlow = "KNOWLEDGE"
+	activityFlowGoal            activityFlow = "GOAL"
+	activityFlowPlan            activityFlow = "PLAN"
+	activityFlowExecution       activityFlow = "EXECUTION"
+	activityFlowAudit           activityFlow = "AUDIT"
+	activityFlowKnowledge       activityFlow = "KNOWLEDGE"
+	maximumActivityMessageBytes              = 1 << 20
 )
 
 type activityState string
@@ -706,7 +707,7 @@ func (handler *Handler) submitActivityIntervention(response http.ResponseWriter,
 		return
 	}
 	var body activityInterventionBody
-	if err := decodeJSON(request, &body); err != nil || body.ExpectedVersion < 1 || !validActivityFlow(body.Flow) || strings.TrimSpace(body.Message) == "" || len(body.Message) > maximumRequestBytes || strings.ContainsRune(body.Message, '\x00') || len(body.AgentID) > 256 || strings.ContainsAny(body.AgentID, "\r\n\x00") {
+	if err := decodeJSON(request, &body); err != nil || body.ExpectedVersion < 1 || !validActivityFlow(body.Flow) || strings.TrimSpace(body.Message) == "" || len(body.Message) > maximumActivityMessageBytes || strings.ContainsRune(body.Message, '\x00') || len(body.AgentID) > 256 || strings.ContainsAny(body.AgentID, "\r\n\x00") {
 		writeError(response, request, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "activity intervention"}))
 		return
 	}

@@ -388,7 +388,7 @@ func validateModelCall(call ModelCall) error {
 	if !safeProtocolString(call.RequestID, 256) || !safeProtocolString(call.Provider, 128) || !safeProtocolString(call.Model, 256) ||
 		!safeProtocolString(call.ReservationID, 256) || !safeProtocolString(call.ProviderPolicy, 256) || !safeProtocolString(call.CachePolicy, 128) ||
 		call.MaxOutputTokens <= 0 || call.MaxOutputTokens > 1_000_000 || call.ThinkingBudget < 0 || call.ThinkingBudget >= call.MaxOutputTokens ||
-		(call.ContextWindowTokens != 0 && (call.ContextWindowTokens <= call.MaxOutputTokens || call.ContextWindowTokens > 10_000_000)) ||
+		(call.ContextWindowTokens != 0 && (call.ContextWindowTokens <= call.MaxOutputTokens || call.ContextWindowTokens > modelgateway.MaximumContextWindowTokens)) ||
 		(call.CompactionThresholdTokens != 0 && (call.ContextWindowTokens == 0 || call.CompactionThresholdTokens <= call.MaxOutputTokens || call.CompactionThresholdTokens > call.ContextWindowTokens*9/10)) ||
 		call.WorstCaseCostMicros < 0 || call.MaxAttempts < 0 || call.MaxAttempts > 5 ||
 		math.IsNaN(call.Temperature) || math.IsInf(call.Temperature, 0) || call.Temperature < 0 || call.Temperature > 2 {

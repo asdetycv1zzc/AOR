@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/akimisaka/aor/internal/modelgateway"
 )
 
 const (
@@ -367,7 +369,7 @@ func validContextWindows(models []string, windows map[string]int) bool {
 	for _, model := range models {
 		allowed[model] = struct{}{}
 		window, found := windows[model]
-		if !found || window < 1 || window > 10_000_000 {
+		if !found || window < 1 || window > modelgateway.MaximumContextWindowTokens {
 			return false
 		}
 	}

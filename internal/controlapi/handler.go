@@ -39,7 +39,7 @@ import (
 )
 
 const (
-	maximumRequestBytes  = 1 << 20
+	maximumRequestBytes  = 32 << 20
 	budgetMicrosPerMinor = int64(10_000)
 	maximumBudgetMinor   = int64(1<<63-1) / budgetMicrosPerMinor
 )

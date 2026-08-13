@@ -987,8 +987,8 @@ components:
         model: {type: string, minLength: 1, maxLength: 256}
         reasoningEffort: {enum: ['', none, low, medium, high, xhigh, max]}
         maxOutputTokens: {type: integer, minimum: 1, maximum: 1000000}
-        contextWindowTokens: {type: integer, minimum: 0, maximum: 10000000, description: "Effective context window for this model route, including input and reserved output tokens; 0 or omission uses the selected model's configured window for legacy routes."}
-        compactionThresholdTokens: {type: integer, minimum: 0, maximum: 9000000, description: "Total-token threshold that triggers context compaction before the model call; 0 or omission uses 90 percent of the effective context window."}
+        contextWindowTokens: {type: integer, minimum: 0, maximum: 64000000, description: "Effective context window for this model route, including input and reserved output tokens; 0 or omission uses the selected model's configured window for legacy routes."}
+        compactionThresholdTokens: {type: integer, minimum: 0, maximum: 57600000, description: "Total-token threshold that triggers context compaction before the model call; 0 or omission uses 90 percent of the effective context window."}
         thinkingBudget: {type: integer, minimum: 0, default: 0, description: "Provider-specific thinking token budget; 0 leaves the provider default in effect and non-zero values must be lower than maxOutputTokens."}
         temperature: {type: number, minimum: 0, maximum: 2}
         seed: {type: integer, format: int64}
@@ -1048,7 +1048,7 @@ components:
         modelContextWindowTokens:
           type: object
           minProperties: 1
-          additionalProperties: {type: integer, minimum: 1, maximum: 10000000}
+          additionalProperties: {type: integer, minimum: 1, maximum: 64000000}
         inputMicrosPerToken: {type: integer, format: int64, minimum: 0}
         outputMicrosPerToken: {type: integer, format: int64, minimum: 0}
         supportsStreaming: {type: boolean}
@@ -1189,7 +1189,7 @@ components:
         modelContextWindowTokens:
           type: object
           minProperties: 1
-          additionalProperties: {type: integer, minimum: 1, maximum: 10000000}
+          additionalProperties: {type: integer, minimum: 1, maximum: 64000000}
         apiKeyConfigured: {type: boolean}
         enabled: {type: boolean}
         version: {type: integer, format: int64, minimum: 0}
@@ -1221,7 +1221,7 @@ components:
           type: object
           minProperties: 1
           maxProperties: 128
-          additionalProperties: {type: integer, minimum: 1, maximum: 10000000}
+          additionalProperties: {type: integer, minimum: 1, maximum: 64000000}
         enabled: {type: boolean}
     ModelProviderTestInput:
       type: object
@@ -1407,7 +1407,7 @@ components:
       required: [expectedVersion, message]
       properties:
         expectedVersion: {type: integer, format: int64, minimum: 1}
-        message: {type: string, minLength: 1, maxLength: 1048576}
+        message: {type: string, minLength: 1, maxLength: 16777216}
     ProjectActivityIntervention:
       type: object
       additionalProperties: false
@@ -1479,7 +1479,7 @@ components:
         tenantId: {type: string, format: uuid}
         projectId: {type: string, format: uuid}
         kind: {enum: [USER, REJECTION, CHANGE_REQUEST]}
-        message: {type: string, minLength: 1, maxLength: 1048576}
+        message: {type: string, minLength: 1, maxLength: 16777216}
         contentSha256: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
         artifactUri: {type: string, pattern: '^artifact://sha256/[0-9a-f]{64}$'}
         createdAt: {type: string, format: date-time}
@@ -1523,7 +1523,7 @@ components:
         expectedVersion: {type: integer, format: int64, minimum: 1}
         version: {type: integer, minimum: 1}
         sha256: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
-        message: {type: string, minLength: 1, maxLength: 1048576}
+        message: {type: string, minLength: 1, maxLength: 16777216}
         impactedTaskIds:
           type: array
           uniqueItems: true

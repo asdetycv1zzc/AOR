@@ -9,16 +9,17 @@ import (
 )
 
 const (
-	MaximumMessages             = 1024
-	MaximumMessageContentBytes  = 4 << 20
+	MaximumContextWindowTokens  = 64_000_000
+	MaximumMessages             = 16384
+	MaximumMessageContentBytes  = 128 << 20
 	MaximumTools                = 128
 	MaximumToolCalls            = 64
 	MaximumToolCallIDBytes      = 512
 	MaximumToolNameBytes        = 128
 	MaximumToolDescriptionBytes = 16 << 10
-	MaximumToolSchemaBytes      = 256 << 10
-	MaximumToolArgumentsBytes   = 1 << 20
-	MaximumToolResultBytes      = 1 << 20
+	MaximumToolSchemaBytes      = 4 << 20
+	MaximumToolArgumentsBytes   = 16 << 20
+	MaximumToolResultBytes      = 16 << 20
 )
 
 type Message struct {

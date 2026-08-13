@@ -15,6 +15,7 @@ import (
 	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/authz"
 	"github.com/akimisaka/aor/internal/leaseauthority"
+	"github.com/akimisaka/aor/internal/modelgateway"
 	"github.com/akimisaka/aor/internal/observability"
 	"github.com/akimisaka/aor/internal/state"
 	"github.com/akimisaka/aor/internal/toolchain"
@@ -559,7 +560,7 @@ func findRuntimeModule(modules []contracts.PlanModule, moduleID string) (contrac
 func validModelRoute(route ModelRoute) bool {
 	return route.Provider != "" && len(route.Provider) <= 128 && route.Model != "" && route.Model != "*" && len(route.Model) <= 256 &&
 		state.ValidModelReasoningEffort(route.Provider, route.ReasoningEffort) &&
-		(route.ContextWindowTokens == 0 || route.ContextWindowTokens > route.MaxOutputTokens && route.ContextWindowTokens <= 10_000_000) &&
+		(route.ContextWindowTokens == 0 || route.ContextWindowTokens > route.MaxOutputTokens && route.ContextWindowTokens <= modelgateway.MaximumContextWindowTokens) &&
 		(route.CompactionThresholdTokens == 0 || route.ContextWindowTokens > 0 && route.CompactionThresholdTokens > route.MaxOutputTokens && route.CompactionThresholdTokens <= route.ContextWindowTokens*9/10) &&
 		route.MaxOutputTokens > 0 && route.MaxOutputTokens <= 1_000_000 && route.ThinkingBudget >= 0 && route.ThinkingBudget < route.MaxOutputTokens &&
 		!math.IsNaN(route.Temperature) && !math.IsInf(route.Temperature, 0) &&

@@ -227,11 +227,11 @@ function modelOutputLimit(provider: ModelProvider | undefined, model: string): n
 function modelContextWindow(provider: ModelProvider | undefined, model: string): number {
   const modelWindow = provider?.modelContextWindowTokens?.[model];
   if (typeof modelWindow === "number" && Number.isInteger(modelWindow) && modelWindow > 0) {
-    return Math.min(10_000_000, modelWindow);
+    return Math.min(64_000_000, modelWindow);
   }
   const providerWindow = provider?.maxInputTokens;
   return typeof providerWindow === "number" && Number.isInteger(providerWindow) && providerWindow > 0
-    ? Math.min(10_000_000, providerWindow)
+    ? Math.min(64_000_000, providerWindow)
     : 1_000_000;
 }
 
@@ -251,7 +251,7 @@ function parseModelContextWindows(value: string, models: string[]): Record<strin
     if (separator < 1) return undefined;
     const model = entry.slice(0, separator).trim();
     const tokens = Number(entry.slice(separator + 1).trim());
-    if (!models.includes(model) || !Number.isInteger(tokens) || tokens < 1 || tokens > 10_000_000 || result[model] !== undefined) return undefined;
+    if (!models.includes(model) || !Number.isInteger(tokens) || tokens < 1 || tokens > 64_000_000 || result[model] !== undefined) return undefined;
     result[model] = tokens;
   }
   return models.every((model) => result[model] !== undefined) ? result : undefined;

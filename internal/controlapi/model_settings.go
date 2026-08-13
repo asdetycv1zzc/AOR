@@ -12,6 +12,7 @@ import (
 
 	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/authz"
+	"github.com/akimisaka/aor/internal/modelgateway"
 	"github.com/akimisaka/aor/internal/state"
 	"github.com/akimisaka/aor/pkg/canonicaljson"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
@@ -93,7 +94,7 @@ func validateModelProviders(providers []ModelProvider) error {
 			}
 		}
 		for model, window := range provider.ModelContextWindowTokens {
-			if !safeModelValue(model, 256) || window < 1 || window > 10_000_000 {
+			if !safeModelValue(model, 256) || window < 1 || window > modelgateway.MaximumContextWindowTokens {
 				return errors.New("invalid model context window")
 			}
 		}

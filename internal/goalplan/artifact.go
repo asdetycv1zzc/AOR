@@ -31,7 +31,7 @@ const (
 	ArtifactPlanCompletion         ArtifactKind = "PLAN_COMPLETION"
 	ArtifactKnowledgeUpdateRequest ArtifactKind = "KNOWLEDGE_UPDATE_REQUEST"
 	ArtifactKnowledgeUpdateDraft   ArtifactKind = "KNOWLEDGE_UPDATE_DRAFT"
-	MaximumArtifactBytes                        = 4 << 20
+	MaximumArtifactBytes                        = 32 << 20
 )
 
 var ErrArtifactConflict = errors.New("immutable artifact conflict")

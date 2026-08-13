@@ -421,6 +421,13 @@
       "file": "000060_model_context_windows.up.sql",
       "sha256": "sha256:8e8bca8e37570eb842dde0614ba0af1e2c11097863d7e66f22ab2e5182e684c7",
       "destructive": false
+    },
+    {
+      "version": 61,
+      "mode": "EXPAND",
+      "file": "000061_expand_model_context_windows.up.sql",
+      "sha256": "sha256:798bf2c7841e9abc1389a4f4a064bb2f8bc966c1146d77aadbbeaa121ec234de",
+      "destructive": false
     }
   ]
 }

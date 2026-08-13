@@ -16,12 +16,12 @@ const (
 	DefaultHeartbeatSeconds    = 30
 	MissedHeartbeatLimit       = 3
 	MaximumActiveAgentLimit    = 8
-	MaximumContextItems        = 100
-	MaximumContextItemBytes    = 32 << 10
-	MaximumContextBytes        = 1 << 20
-	MaximumPromptBundleBytes   = 256 << 10
-	MaximumResponseSchemaBytes = 256 << 10
-	MaximumAgentOutputBytes    = 1 << 20
+	MaximumContextItems        = 4096
+	MaximumContextItemBytes    = 16 << 20
+	MaximumContextBytes        = 256 << 20
+	MaximumPromptBundleBytes   = 4 << 20
+	MaximumResponseSchemaBytes = 4 << 20
+	MaximumAgentOutputBytes    = 16 << 20
 	MaximumNativeToolRounds    = 8
 )
 

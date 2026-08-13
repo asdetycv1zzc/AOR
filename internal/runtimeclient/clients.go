@@ -276,7 +276,7 @@ func openNATS(ctx context.Context, config runtimeconfig.Config) (*nats.Conn, jet
 		Storage:     jetstream.FileStorage,
 		Discard:     jetstream.DiscardOld,
 		MaxAge:      30 * 24 * time.Hour,
-		MaxMsgSize:  4 << 20,
+		MaxMsgSize:  32 << 20,
 		Replicas:    1,
 	})
 	if err != nil {
