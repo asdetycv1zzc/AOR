@@ -427,7 +427,7 @@ func decodeGoalSpecProjection(stored eventing.Projection) (GoalSpecProjection, e
 	if projection.TenantID != stored.TenantID || projection.ProjectID != stored.ProjectID || projection.GoalSpecID == "" || projection.RecordID == "" || projection.Spec.Content.Version < 1 || projection.Spec.Content.ProjectID != stored.ProjectID {
 		return GoalSpecProjection{}, aorerrors.New(aorerrors.CodeInternalError, "", map[string]any{"scope": "goal spec projection"})
 	}
-	if err := validateGoalSpecCommand(stored.ProjectID, &state.GoalRecord{ID: projection.GoalSpecID, Version: projection.Spec.Content.Version, SHA256: projection.Spec.ContentSHA256}, projection.Spec); err != nil {
+	if err := validateStoredGoalSpecCommand(stored.ProjectID, &state.GoalRecord{ID: projection.GoalSpecID, Version: projection.Spec.Content.Version, SHA256: projection.Spec.ContentSHA256}, projection.Spec); err != nil {
 		return GoalSpecProjection{}, err
 	}
 	projection.Revision = stored.Version
@@ -438,6 +438,37 @@ func validateGoalSpecCommand(projectID string, goal *state.GoalRecord, spec cont
 	if goal == nil || goal.ID == "" || spec.Content.ProjectID != projectID || spec.Content.Version != goal.Version || spec.ContentSHA256 != goal.SHA256 || spec.Validate() != nil {
 		return invalidGoalCommand("goal spec binding")
 	}
+	return validateGoalSpecContentDigest(spec)
+}
+
+// Immutable projections created before the toolchain installation contract was
+// introduced may contain INSTALL_REQUIRED tools without an install descriptor.
+// They remain readable, but every newly written or approved spec still passes
+// the strict validator above.
+func validateStoredGoalSpecCommand(projectID string, goal *state.GoalRecord, spec contracts.GoalSpec) error {
+	if goal == nil || goal.ID == "" || spec.Content.ProjectID != projectID || spec.Content.Version != goal.Version || spec.ContentSHA256 != goal.SHA256 {
+		return invalidGoalCommand("goal spec binding")
+	}
+	validationSpec := cloneGoalSpec(spec)
+	if validationSpec.Content.GoalSpecVersion == 2 && validationSpec.Content.Toolchain != nil {
+		for index, tool := range validationSpec.Content.Toolchain.Tools {
+			if tool.Source != contracts.ToolchainInstallRequired || tool.Install != nil {
+				continue
+			}
+			method := contracts.ToolchainInstallUserArchive
+			if contracts.IsGCCTool(tool) {
+				method = contracts.ToolchainInstallManual
+			}
+			validationSpec.Content.Toolchain.Tools[index].Install = &contracts.ToolchainInstall{Method: method}
+		}
+	}
+	if validationSpec.Validate() != nil {
+		return invalidGoalCommand("goal spec binding")
+	}
+	return validateGoalSpecContentDigest(spec)
+}
+
+func validateGoalSpecContentDigest(spec contracts.GoalSpec) error {
 	content, err := json.Marshal(spec.Content)
 	if err != nil {
 		return err
