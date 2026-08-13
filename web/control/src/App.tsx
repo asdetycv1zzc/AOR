@@ -862,6 +862,7 @@ function Workspace({ bundle, toolchains, selectedTask, audits, auditLoading, onS
   const project = bundle.project!;
   const goal = latestByVersion(bundle.goalSpecs, (item) => item.content.version);
   const plan = latestByVersion(bundle.plans, (item) => item.planSpecVersion || 0);
+  const goalNeedsToolchain = Boolean(goal?.content.toolchain?.tools.some((tool) => tool.source === "INSTALL_REQUIRED"));
   const [goalMessage, setGoalMessage] = useState("");
   const [action, setAction] = useState("");
   const [acceptedGoalVersion, setAcceptedGoalVersion] = useState<number>();
@@ -958,12 +959,15 @@ function Workspace({ bundle, toolchains, selectedTask, audits, auditLoading, onS
                     ))}
                   </div>
                 )}
+                {goalNeedsToolchain && (
+                  <p className="goal-installation-note">工具链安装完成并出现在主机清单后，才能批准此 GoalSpec。</p>
+                )}
                 {goal.status === "DRAFT" && (
                   <Button
                     appearance="primary"
                     icon={action === "approve" ? <Spinner size="tiny" /> : <Check />}
                     onClick={() => void approveGoal()}
-                    disabled={action !== "" || goal.content.unresolvedItems.length > 0}
+                    disabled={action !== "" || goal.content.unresolvedItems.length > 0 || goalNeedsToolchain}
                   >
                     批准 GoalSpec
                   </Button>

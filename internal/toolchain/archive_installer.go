@@ -433,13 +433,14 @@ func (reader *commandReader) Close() error {
 func (installer *ArchiveInstaller) extractTar(ctx context.Context, input io.Reader, destination string) error {
 	reader := tar.NewReader(input)
 	state := extractionState{maxBytes: installer.maxExtractBytes, maxFiles: installer.maxFiles}
+	var hardLinks []archiveHardLink
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		header, err := reader.Next()
 		if errors.Is(err, io.EOF) {
-			return nil
+			break
 		}
 		if err != nil {
 			return err
@@ -467,12 +468,68 @@ func (installer *ArchiveInstaller) extractTar(ctx context.Context, input io.Read
 			if err := createArchiveSymlink(destination, path, header.Linkname); err != nil {
 				return err
 			}
+		case tar.TypeLink:
+			if header.Size != 0 {
+				return ErrUnsupportedArchive
+			}
+			target, targetErr := archiveDestination(destination, header.Linkname)
+			if targetErr != nil {
+				return targetErr
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				return err
+			}
+			hardLinks = append(hardLinks, archiveHardLink{path: path, target: target})
 		case tar.TypeXGlobalHeader, tar.TypeXHeader, tar.TypeGNULongName, tar.TypeGNULongLink:
 			continue
 		default:
 			return ErrUnsupportedArchive
 		}
 	}
+	return resolveArchiveHardLinks(ctx, destination, hardLinks)
+}
+
+type archiveHardLink struct {
+	path   string
+	target string
+}
+
+func resolveArchiveHardLinks(ctx context.Context, root string, links []archiveHardLink) error {
+	for len(links) > 0 {
+		progress := false
+		remaining := links[:0]
+		for _, link := range links {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := rejectSymlinkParent(root, link.path); err != nil {
+				return err
+			}
+			if err := rejectSymlinkParent(root, link.target); err != nil {
+				return err
+			}
+			info, err := os.Lstat(link.target)
+			if errors.Is(err, os.ErrNotExist) {
+				remaining = append(remaining, link)
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+				return ErrUnsupportedArchive
+			}
+			if err := os.Link(link.target, link.path); err != nil {
+				return err
+			}
+			progress = true
+		}
+		if !progress {
+			return ErrUnsupportedArchive
+		}
+		links = remaining
+	}
+	return nil
 }
 
 func (installer *ArchiveInstaller) extractZip(ctx context.Context, archivePath, destination string) error {
