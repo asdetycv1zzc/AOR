@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/akimisaka/aor/internal/artifact"
 	"github.com/akimisaka/aor/internal/authn"
@@ -16,7 +17,10 @@ import (
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
 )
 
-const maximumToolchainArchiveFormBytes = artifact.MaxUserUploadBytes + 1<<20
+const (
+	maximumToolchainArchiveFormBytes = artifact.MaxUserUploadBytes + 1<<20
+	toolchainArchiveUploadTimeout    = 4 * time.Hour
+)
 
 type toolchainArchiveResource struct {
 	ID           string `json:"id"`
@@ -38,6 +42,16 @@ type toolchainArchiveFields struct {
 }
 
 func (handler *Handler) uploadToolchainArchive(response http.ResponseWriter, request *http.Request, principal authn.Principal, projectID string) {
+	deadline := time.Now().Add(toolchainArchiveUploadTimeout)
+	controller := http.NewResponseController(response)
+	if err := controller.SetReadDeadline(deadline); err != nil {
+		writeError(response, request, aorerrors.Wrap(aorerrors.CodeInternalError, "", err, map[string]any{"scope": "toolchain archive read deadline"}))
+		return
+	}
+	if err := controller.SetWriteDeadline(deadline); err != nil {
+		writeError(response, request, aorerrors.Wrap(aorerrors.CodeInternalError, "", err, map[string]any{"scope": "toolchain archive write deadline"}))
+		return
+	}
 	idempotencyKey, err := requiredIdempotencyKey(request)
 	if err != nil {
 		writeError(response, request, err)
