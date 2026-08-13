@@ -175,3 +175,19 @@ func TestCrosstoolNGArchiveCanAwaitUpload(t *testing.T) {
 		t.Fatalf("pending crosstool-ng upload state invalid: %v", err)
 	}
 }
+
+func TestCrosstoolNGSuiteUsesOneCompilerEntry(t *testing.T) {
+	gcc := VersionedTool{
+		Kind: ToolchainCompiler, Name: "GCC", Version: "15.2.0", Platform: PlatformLinux, Architecture: "amd64", Source: ToolchainInstallRequired,
+		Install: &ToolchainInstall{Method: ToolchainInstallCrosstoolNGArchive, Authorized: false},
+	}
+	gxx := gcc
+	gxx.Name = "G++"
+	selection := GoalToolchain{
+		Languages: []LanguageRequirement{{Name: "C", Version: "C23"}, {Name: "C++", Version: "C++23"}},
+		Tools:     []VersionedTool{gcc, gxx},
+	}
+	if selection.Validate() == nil {
+		t.Fatal("separate GCC and G++ entries accepted for one crosstool-ng suite")
+	}
+}

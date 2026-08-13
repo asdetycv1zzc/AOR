@@ -621,6 +621,7 @@ func (selection GoalToolchain) Validate() error {
 		languages[key] = struct{}{}
 	}
 	tools := make(map[string]struct{}, len(selection.Tools))
+	gccSuites := make(map[string]struct{})
 	for _, tool := range selection.Tools {
 		if err := validateVersionedTool(tool); err != nil {
 			return err
@@ -630,6 +631,13 @@ func (selection GoalToolchain) Validate() error {
 			return fmt.Errorf("goal toolchains must be unique")
 		}
 		tools[key] = struct{}{}
+		if IsGCCTool(tool) {
+			suiteKey := strings.ToLower(tool.Version + "\x00" + string(tool.Platform) + "\x00" + tool.Architecture)
+			if _, duplicate := gccSuites[suiteKey]; duplicate {
+				return fmt.Errorf("a GCC toolchain suite must be represented by one compiler entry")
+			}
+			gccSuites[suiteKey] = struct{}{}
+		}
 	}
 	return nil
 }
