@@ -61,7 +61,7 @@ const flowLabels: Record<ProjectActivityFlow, string> = {
   KNOWLEDGE: "智库层",
 };
 
-const crosstoolToolNames = new Set(["GCC", "G++", "GNU GCC", "GNU G++", "GNU C++"]);
+const crosstoolToolNames = new Set(["gcc", "g++", "gnu gcc", "gnu g++", "gnu c++"]);
 const maximumToolchainArchiveSize = 4 * 1024 * 1024 * 1024;
 
 function latestGoalSpec(items: GoalSpec[]): GoalSpec | undefined {
@@ -75,7 +75,7 @@ function pendingCrosstoolTool(goal: GoalSpec | undefined): GoalToolchainTool | u
     tool.source === "INSTALL_REQUIRED"
     && tool.install?.method === "CROSSTOOL_NG_ARCHIVE"
     && !tool.install.authorized
-    && crosstoolToolNames.has(tool.name)
+    && crosstoolToolNames.has(tool.name.trim().toLowerCase())
   ));
 }
 
