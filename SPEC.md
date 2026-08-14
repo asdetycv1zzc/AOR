@@ -390,7 +390,7 @@ AOR 自己实现 Agent 主循环，而不是调用 LangChain AgentExecutor、Aut
 | 动作 / 工具 | 读取文件、写入被拥有路径、删除被拥有文件、执行受控命令、提交不可变版本 | Tool Definition allowlist、JSON Schema、Lease、项目/任务/路径绑定和 Tool Broker 二次授权；Executor 不能直接宣布模块完成 | `internal/agentruntime/tool_loop_test.go`、`internal/execution/service_test.go` |
 | 客观反馈 | 编译、测试、格式、lint、类型检查、审计 finding 与退出状态 | plan-owned `verificationEntrypoint` 在不可变 Submission 上运行；Evidence Bundle 转为 `PRIOR_FINDING` 上下文，下一 attempt 必须看到该结构化反馈 | `internal/execution/rework_feedback_test.go`、`internal/audit/module_test_check_test.go` |
 | 危险动作 / HITL | 删除数据、递归强制删除、提权、对外 push、网络客户端、解释器 eval、越出工作区和凭据参数 | `internal/commandapproval` 先执行不依赖 LLM 的 argv/path 护栏；命中即拒绝并上报，未命中才允许补充模型审核；模型失败或非法决定一律 fail closed | `internal/commandapproval/approval_test.go` |
-| 记忆 / 上下文 | Goal/Plan/Module 版本、项目约定、历史 finding、知识引用和长对话中的最新用户决定 | Context Manifest 对来源、信任级别、revision、内容 SHA 和总量做校验；Knowledge Service 分页读取；接近窗口时生成可重复压缩的 checkpoint | `internal/agentruntime/prompt_test.go`、`compaction_test.go`、`internal/knowledge/service_test.go` |
+| 记忆 / 上下文 | Goal/Plan/Module 版本、项目约定、历史 finding、知识引用和长对话中的最新用户决定 | Context Manifest 对来源、信任级别、revision、内容 SHA 和总量做校验；Knowledge Service 分页读取；接近窗口时生成可重复压缩的 checkpoint | `internal/agentruntime/prompt_test.go`、`compaction_test.go`、`mechanism_demo_test.go`、`internal/knowledge/service_test.go` |
 
 危险命令的模型审核只是第二意见，不是安全边界；确定性护栏即使移除真实 LLM 仍能测试。相同地，Auditor 的自然语言判断不能替代验证入口和 Evidence Bundle。
 
@@ -409,13 +409,13 @@ AOR 自己实现 Agent 主循环，而不是调用 LangChain AgentExecutor、Aut
 
 #### 6.11.4 课程机制演示验收
 
-课程演示必须在无网络、无真实 LLM 的条件下一键复现：
+课程演示在 `internal/agentruntime/mechanism_demo_test.go` 中实现，并在无网络、无真实 LLM 的条件下一键复现：
 
 1. scripted LLM 提出危险动作，确定性 guardrail 阻断，且危险动作执行器调用次数为 0；
-2. 首次动作得到注入的失败结果，该结果进入下一次模型请求，scripted LLM 随后选择不同动作；
+2. 首次获准执行的测试动作得到注入的失败结果，该结果进入下一次模型请求，scripted LLM 随后选择不同动作；
 3. 构造超窗历史和伪造 canonical 引用，压缩保留真实 Manifest 上下文与最新用户输入，并拒绝提升伪造内容。
 
-现有分项测试提供机制证据；是否存在满足三项组合验收的统一演示，以 `PLAN.md` 的 `COURSE-DEMO-01` 状态为准，不得用文档声明替代可运行测试。
+统一测试驱动真实 `Runtime.RunToolLoop`、`commandapproval.Layer` 和 `CompactMessagesWithManifest`，并将完整场景连续运行两次比较证据。执行命令为 `go test ./internal/agentruntime -run TestMockLLMUnifiedMechanismDemo -count=1 -v`；`PLAN.md` 的 `COURSE-DEMO-01` 记录实现提交和验证状态。
 
 ---
 

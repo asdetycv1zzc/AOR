@@ -1,6 +1,6 @@
 # AOR 实现计划与课程交付状态
 
-> 基线：2026-08-14，源代码提交 `8cfbe44`
+> 基线：2026-08-14，源代码提交 `6fbe253`
 >
 > 计划性质：基于不可变 Git 历史和 `work-packages/` 的 as-built 计划，加上尚未完成的课程收尾计划
 >
@@ -90,12 +90,12 @@ WP-02/03、WP-04/05/11 以及 WP-13/14 在依赖满足后可逻辑并行；实�
 | COURSE-DOC-05 | 记录 brainstorming、偏差和冷启动事实 | `SPEC_PROCESS.md` | 三轮迭代；明确未用 Superpowers，不伪造 worktree/PR/TDD | 检查三轮节选、采纳/否决、偏差清单 | COURSE-DOC-01 | DONE `572eaa4` |
 | COURSE-DOC-06 | 建立时间序列过程日志 | `AGENT_LOG.md` | session、模型、人工决策、review、commit、教训 | 检查时间戳、task、模型/skill、hash 字段 | COURSE-DOC-05 | DONE `572eaa4` |
 | COURSE-DOC-07 | 完整 README 并回填文档提交证据 | `README.md`、`PLAN.md`、`AGENT_LOG.md` | 安装、运行、分发、key、目录、安全、限制、机制命令 | Markdown 结构、凭据模式、`git diff --check`、跟踪范围 | COURSE-DOC-01..06 | DONE `572eaa4` + 本回填提交 |
+| COURSE-DEMO-01 | 单一 mock-LLM 演示覆盖 A.6 三项行为 | `internal/agentruntime/mechanism_demo_test.go` | 危险动作零执行；失败回灌后动作改变；Manifest 压缩保留最新输入且拒绝提升伪造引用 | 聚焦测试连续运行 5 次；`agentruntime` 与 `commandapproval` 包测试通过 | EV-04/06 | DONE `6fbe253` |
 
 ## 6. 尚未完成的课程要求
 
 | Task | 目标 | 文件 | 预期实现要点 | 必须先看到的失败 / 验证 | 依赖 | 状态 |
 |---|---|---|---|---|---|---|
-| COURSE-DEMO-01 | 单一 mock-LLM 演示覆盖 A.6 三项行为 | 建议 `internal/agentruntime/mechanism_demo_test.go` 或 `scripts/` | 危险动作零执行；失败回灌后动作改变；Manifest 压缩抗伪造 | 新测试先因缺少组合编排而失败；随后离线重复运行至少 2 次结果一致 | EV-04/06 | PENDING |
 | COURSE-PROC-01 | 陌生、不同类型 Agent 的实现前冷启动 | `SPEC_PROCESS.md` | 只能记录真实新会话及修订前后 diff | 由于实现已经完成，无法满足“实现前”；不得事后伪造 | SPEC/PLAN | DEVIATION |
 | COURSE-PROC-02 | worktree + 每功能 PR + 两阶段 review 证据 | GitHub PR、分支、worktree | 后续功能可按要求执行；历史提交不能改写成 PR | 当前 `git log --merges` 为空且仅一个 worktree | 无 | DEVIATION |
 | COURSE-PROC-03 | 可审计红-绿-重构顺序 | 后续 commit/CI 日志 | 新任务分别提交失败测试、最小实现和重构 | 旧提交树不能稳定证明测试先于实现 | 无 | DEVIATION |
@@ -110,8 +110,9 @@ WP-02/03、WP-04/05/11 以及 WP-13/14 在依赖满足后可逻辑并行；实�
 ```bash
 make test
 make verify
+go test ./internal/agentruntime -run TestMockLLMUnifiedMechanismDemo -count=1 -v
 go test ./internal/agentruntime ./internal/commandapproval ./internal/execution
 pnpm --filter @aor/control-ui build
 ```
 
-`make verify` 是完整源码门禁；机制演示在 `COURSE-DEMO-01` 完成前不能由上述分项测试替代。容器分发由 GitHub CI 的 `container-vulnerabilities` matrix 构建，不把 Go/Node 单元测试藏在运行时镜像内执行。
+`make verify` 是完整源码门禁；`TestMockLLMUnifiedMechanismDemo` 是 A.6 的组合演示，其他分项测试不能替代它。容器分发由 GitHub CI 的 `container-vulnerabilities` matrix 构建，不把 Go/Node 单元测试藏在运行时镜像内执行。

@@ -172,10 +172,20 @@
 - Go 聚焦测试：未执行成功。仓库要求 Go `1.26.5`，宿主只有 `1.26.0`；自动工具链下载被沙箱网络策略阻止。此次仅改文档，未将该环境失败写成测试通过。
 - 全仓 `source-format` / `secrets`：被用户已有且未纳入提交的 `projects/` 不可读目录阻断；secret scan 还扫描到未跟踪 `.research-codex/` 及既有测试夹具。课程文档提交没有包含这些路径。
 
+## 2026-08-14 - COURSE-DEMO-01 统一 Mock LLM 机制演示
+
+- **Prompt / context**：用户确认 Mock LLM 已存在，并要求补齐课程 A.6 的统一机制演示，而不是继续扩展生产架构。
+- **Skill / subagent**：未使用 Skill，也未启动 subagent；直接复用现有 Runtime、ToolLoop、命令审批和上下文压缩测试夹具。
+- **Agent 输出**：新增一个确定性 mock gateway 场景。Mock LLM 先提出 `rm -rf /`，确定性 guardrail 在 reviewer/执行器之前阻断并上报；随后批准的 `go test` 收到一次注入失败，失败结果进入下一模型请求，Mock LLM 改为文件修复后提交终态。
+- **主要贡献证据**：同一场景先压缩超窗历史，再通过真实 intervention 路径注入伪造 Goal context；后续 checkpoint 只保留 Manifest 授权引用，伪造正文作为最新不受信任输入保留但不被提升。
+- **确定性**：测试内部完整执行两次并比较动作、执行命令、风险码、压缩绑定与终态证据；另以 `-count=5` 重复运行通过。
+- **提交**：`6fbe253`。
+- **验证**：`go test ./internal/agentruntime -run TestMockLLMUnifiedMechanismDemo -count=5`、`go test ./internal/agentruntime -count=1`、`go test ./internal/commandapproval -count=1` 均通过。
+- **教训**：统一演示应编排已有机制并证明反馈跨边界流动，不需要再增加一套 Agent、审批层或沙箱。
+
 ## 当前未闭环事项
 
-1. `COURSE-DEMO-01`：仍缺一个统一 mock-LLM 测试同时证明危险动作拦截、失败后动作改变和 Manifest 压缩行为。
-2. 实现前陌生 Agent 冷启动、worktree/PR 和逐 task 红-绿-重构没有历史证据，不能补造。
-3. 最终远端 CI pass、助教仓库访问和公网 WebUI 需要仓库所有者/部署者执行。
-4. 课程 §4.8 要 GitHub Actions，而最终清单字面写 `.gitlab-ci.yml`；当前仓库按用户要求使用 GitHub Actions `unit-test`，需确认课程最终口径。
-5. `REFLECTION.md` 必须由学生本人撰写，本轮不创建。
+1. 实现前陌生 Agent 冷启动、worktree/PR 和逐 task 红-绿-重构没有历史证据，不能补造。
+2. 最终远端 CI pass、助教仓库访问和公网 WebUI 需要仓库所有者/部署者执行。
+3. 课程 §4.8 要 GitHub Actions，而最终清单字面写 `.gitlab-ci.yml`；当前仓库按用户要求使用 GitHub Actions `unit-test`，需确认课程最终口径。
+4. `REFLECTION.md` 必须由学生本人撰写，本轮不创建。

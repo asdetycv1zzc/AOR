@@ -111,17 +111,17 @@ make verify
 Harness 分项机制可离线复现：
 
 ```bash
+go test ./internal/agentruntime -run TestMockLLMUnifiedMechanismDemo -count=1 -v
 go test ./internal/agentruntime -run 'TestRunToolLoop|TestCompactMessages|TestRuntimeCompacts'
 go test ./internal/commandapproval -run TestLayerGuardrailsEscalateBeforeReviewer
 go test ./internal/execution -run TestExecutorRetryReceivesStructuredPriorAuditFeedback
 ```
 
+- `mechanism_demo_test.go` 是课程 A.6 的统一演示：同一个确定性 mock LLM 先提出 `rm -rf /` 并被零执行拦截，再接收注入的测试失败后改为文件修复，期间验证 Manifest 绑定压缩保留最新不受信任输入但不提升伪造引用；测试连续运行两次并比较完整证据。
 - `tool_loop_test.go` 使用 scripted gateway，证明工具结果进入下一次模型请求并改变终态动作。
 - `approval_test.go` 证明提权、递归删除、push、网络、解释器 eval、数据库破坏、路径逃逸和凭据参数在执行前被确定性拦截。
 - `rework_feedback_test.go` 证明前一次失败 Evidence 被绑定并注入下一 attempt。
 - `compaction_test.go` 证明长上下文压缩保留权威规范和最新用户输入，同时拒绝伪造、跨 Manifest 和递归 checkpoint。
-
-课程 A.6 要求的“单一 mock LLM 场景同时覆盖危险拦截、失败后动作改变、主贡献行为”尚未形成统一测试，见 [`PLAN.md`](PLAN.md) 的 `COURSE-DEMO-01`。上述分项测试不能被文档包装成该组合演示已经完成。
 
 ## 目录结构
 
