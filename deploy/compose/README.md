@@ -1,5 +1,7 @@
 # Local Compose
 
+[中文极简启动教程](./QUICKSTART.zh-CN.md)
+
 This profile starts the complete local dependency set before any AOR process:
 
 - PostgreSQL 16 with the AOR migration
