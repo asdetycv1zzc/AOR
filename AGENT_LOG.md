@@ -183,6 +183,14 @@
 - **验证**：`go test ./internal/agentruntime -run TestMockLLMUnifiedMechanismDemo -count=5`、`go test ./internal/agentruntime -count=1`、`go test ./internal/commandapproval -count=1` 均通过。
 - **教训**：统一演示应编排已有机制并证明反馈跨边界流动，不需要再增加一套 Agent、审批层或沙箱。
 
+## 2026-08-14 - DIST-01 Docker Hub 公开镜像
+
+- **Prompt / context**：用户确认本机已登录 Docker Hub，并要求发布公开镜像。
+- **Skill / subagent**：未使用 Skill 或 subagent；直接使用仓库 Dockerfile 的六个运行目标。
+- **Agent 输出**：以提交 `223f771` 构建 Linux amd64 镜像，发布 `0.1.0-test` 和 `latest`，并增加 `make compose-prebuilt-up` 入口；默认 `make compose-up` 仍从源码构建 TEST 链路。
+- **验证**：六个 Docker Hub repository 均返回 `is_private=false`；每个 repository 的两个 tag 均可公开查询；Compose config 校验通过。
+- **人工干预**：用户授权外部 Docker Hub 发布；未执行 Git push。
+
 ## 当前未闭环事项
 
 1. 实现前陌生 Agent 冷启动、worktree/PR 和逐 task 红-绿-重构没有历史证据，不能补造。

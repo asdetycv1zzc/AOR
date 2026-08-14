@@ -14,6 +14,12 @@ cd AOR
 make compose-up
 ```
 
+上述命令从当前源码构建 AOR。若只需默认 TEST 链路并希望直接使用公开 Docker Hub 镜像，改用：
+
+```bash
+make compose-prebuilt-up
+```
+
 命令结束且所有服务显示为 `healthy` 后，打开：
 
 ```text
@@ -33,4 +39,3 @@ make compose-ps
 # 停止服务并保留数据
 docker compose --parallel 1 -f deploy/compose/docker-compose.yml --profile aor down
 ```
-

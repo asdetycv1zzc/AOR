@@ -76,6 +76,7 @@ WP-02/03、WP-04/05/11 以及 WP-13/14 在依赖满足后可逻辑并行；实�
 | EV-04 | 长对话上下文压缩、窗口配置与容量边界 | mock gateway、manifest forgery、overhead 和超窗测试 | DONE `a816cd0`、`7d2c882`、`9cf01a4` |
 | EV-05 | 单命令 TEST 部署与极简教程 | Compose config、所有 readiness endpoint | DONE `9a64c29`、`b15fc43` |
 | EV-06 | Mock 环境、凭据清除、命令审核和 GitHub CI | 聚焦 Go/Web tests、`make verify`、容器 build | DONE `4167ec8`、`3a16877`、`d1378b9`、`8cfbe44` |
+| EV-07 | 发布公开 TEST 镜像并提供预构建启动入口 | Docker Hub public API、Compose config、公开 tag digest | DONE；`akimisaka/aor-*:0.1.0-test` 与 `latest` |
 
 ## 5. 课程文档收尾任务
 

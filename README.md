@@ -22,6 +22,8 @@ make compose-up
 http://127.0.0.1:8090/ui/
 ```
 
+不需要在本机编译 AOR 时，可将最后一条命令替换为 `make compose-prebuilt-up`，直接拉取公开 Docker Hub 镜像。
+
 更短的中文说明见 [`deploy/compose/QUICKSTART.zh-CN.md`](deploy/compose/QUICKSTART.zh-CN.md)，完整 Compose 说明见 [`deploy/compose/README.md`](deploy/compose/README.md)。
 
 ## 安装
@@ -84,7 +86,24 @@ docker compose --parallel 1 -f deploy/compose/docker-compose.yml --profile aor d
 
 ## 分发命令
 
-本项目选择容器作为主要分发形态。`make compose-up` 会从当前源码构建全部运行镜像；单个服务也可直接构建：
+本项目选择容器作为主要分发形态。公开镜像均为 Linux amd64，`0.1.0-test` 对应提交 `223f771`；`latest` 当前指向同一构建，但部署时建议固定版本标签。
+
+| 组件 | Docker Hub 镜像 |
+|---|---|
+| Server / API / Curator | [`akimisaka/aor-server:0.1.0-test`](https://hub.docker.com/r/akimisaka/aor-server) |
+| Model Gateway | [`akimisaka/aor-model-gateway:0.1.0-test`](https://hub.docker.com/r/akimisaka/aor-model-gateway) |
+| Tool Broker | [`akimisaka/aor-tool-broker:0.1.0-test`](https://hub.docker.com/r/akimisaka/aor-tool-broker) |
+| Worker | [`akimisaka/aor-worker:0.1.0-test`](https://hub.docker.com/r/akimisaka/aor-worker) |
+| Toolchain Provisioner | [`akimisaka/aor-toolchain-provisioner:0.1.0-test`](https://hub.docker.com/r/akimisaka/aor-toolchain-provisioner) |
+| Toolchain Prober | [`akimisaka/aor-toolchain-prober:0.1.0-test`](https://hub.docker.com/r/akimisaka/aor-toolchain-prober) |
+
+克隆仓库后直接使用预构建镜像启动默认 TEST 链路：
+
+```bash
+make compose-prebuilt-up
+```
+
+`make compose-up` 仍会从当前源码构建全部运行镜像；单个服务也可直接构建：
 
 ```bash
 docker build -f deploy/compose/Dockerfile --target final --build-arg AOR_COMPONENT=aor-server -t aor/aor-server:local .
@@ -92,7 +111,7 @@ docker build -f deploy/compose/Dockerfile --target worker-runtime --build-arg AO
 docker build -f deploy/compose/Dockerfile --target tool-broker-runtime --build-arg AOR_COMPONENT=aor-tool-broker -t aor/aor-tool-broker:local .
 ```
 
-当前仓库不发布公共 registry 镜像，clone 后会在目标机本地构建。GitHub CI 在宿主 runner 上直接执行 Go 测试、源码检查、PostgreSQL reconciliation 和 Web build；只有运行制品构建与漏洞扫描使用 Docker，不会把整个 CI 过程塞进一个镜像。
+GitHub CI 在宿主 runner 上直接执行 Go 测试、源码检查、PostgreSQL reconciliation 和 Web build；只有运行制品构建与漏洞扫描使用 Docker，不会把整个 CI 过程塞进一个镜像。
 
 ## 测试与机制证据
 
@@ -162,7 +181,7 @@ runbooks/               运维、恢复、密钥和事故流程
 
 - 截至 `8cfbe44`，需求追踪为 85 项 `implemented`、41 项 `planned`；仓库不得标记为 Production Ready。
 - 默认 TEST profile 关闭 Integration 和 Global Audit，不用于敌对多租户或生产数据。
-- 目前没有公共镜像 registry、托管 SaaS 或截止期公网 WebUI URL；README 中的地址是本机或显式局域网地址。
+- 目前没有托管 SaaS 或截止期公网 WebUI URL；README 中的地址是本机或显式局域网地址。
 - Windows 原生 Worker 设计报告 `isolationLevel=NONE`，不能运行不受信任生产代码；默认一键部署只面向 Linux。
 - OpenAI 内置能力区分 258K MaxInput 与 400K ContextWindow；本地 256 MiB Context Manifest 上限不会扩大模型 token 窗口。
 - 课程实现前冷启动、worktree/PR 和逐 task 红-绿-重构没有可补造的历史证据；详见 [`SPEC_PROCESS.md`](SPEC_PROCESS.md)。

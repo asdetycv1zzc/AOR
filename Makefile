@@ -1,4 +1,4 @@
-.PHONY: build test lint schema cross-language sdk backup-restore supply-chain release-tool release-package-check repository-check secret-scan security-corpus license-scan state-machine postgres-reconciliation verify compose-init-secrets compose-check compose-check-secrets compose-check-infrastructure-secrets compose-pull compose-deps-up compose-aor-up compose-up compose-ps
+.PHONY: build test lint schema cross-language sdk backup-restore supply-chain release-tool release-package-check repository-check secret-scan security-corpus license-scan state-machine postgres-reconciliation verify compose-init-secrets compose-check compose-check-secrets compose-check-infrastructure-secrets compose-pull compose-deps-up compose-aor-up compose-prebuilt-up compose-up compose-ps
 
 GOCACHE ?= $(CURDIR)/.cache/go-build
 GOMODCACHE ?= $(CURDIR)/.cache/go-mod
@@ -112,6 +112,10 @@ compose-aor-up: compose-deps-up
 	$(COMPOSE) --profile aor build aor-model-gateway
 	$(COMPOSE) --profile aor build aor-tool-broker
 	$(COMPOSE) --profile aor build aor-worker
+	$(COMPOSE) --profile aor up -d --no-build --no-deps --wait --wait-timeout 240 $(COMPOSE_AOR)
+
+compose-prebuilt-up: compose-deps-up
+	$(COMPOSE) --profile aor pull $(COMPOSE_AOR)
 	$(COMPOSE) --profile aor up -d --no-build --no-deps --wait --wait-timeout 240 $(COMPOSE_AOR)
 
 compose-up: compose-aor-up

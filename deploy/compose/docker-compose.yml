@@ -523,7 +523,7 @@ services:
 
   aor-api:
     <<: *aor-common
-    image: aor/aor-server:0.1.0-test
+    image: docker.io/akimisaka/aor-server:0.1.0-test
     build:
       context: ../..
       dockerfile: deploy/compose/Dockerfile
@@ -616,7 +616,7 @@ services:
 
   aor-model-gateway:
     <<: *aor-common
-    image: aor/aor-model-gateway:0.1.0-test
+    image: docker.io/akimisaka/aor-model-gateway:0.1.0-test
     build:
       context: ../..
       dockerfile: deploy/compose/Dockerfile
@@ -659,7 +659,7 @@ services:
 
   aor-tool-broker:
     <<: *aor-common
-    image: aor/aor-tool-broker:0.1.0-test
+    image: docker.io/akimisaka/aor-tool-broker:0.1.0-test
     build:
       context: ../..
       dockerfile: deploy/compose/Dockerfile
@@ -718,7 +718,7 @@ services:
     <<: *aor-common
     read_only: false
     tmpfs: []
-    image: aor/aor-worker:0.1.0-test
+    image: docker.io/akimisaka/aor-worker:0.1.0-test
     build:
       context: ../..
       dockerfile: deploy/compose/Dockerfile
@@ -780,7 +780,7 @@ services:
     <<: *aor-common
     read_only: false
     tmpfs: []
-    image: aor/aor-toolchain-provisioner:0.1.0-test
+    image: docker.io/akimisaka/aor-toolchain-provisioner:0.1.0-test
     build:
       context: ../..
       dockerfile: deploy/compose/Dockerfile
@@ -828,7 +828,7 @@ services:
 
   aor-toolchain-prober:
     <<: *aor-common
-    image: aor/aor-toolchain-prober:0.1.0-test
+    image: docker.io/akimisaka/aor-toolchain-prober:0.1.0-test
     build:
       context: ../..
       dockerfile: deploy/compose/Dockerfile

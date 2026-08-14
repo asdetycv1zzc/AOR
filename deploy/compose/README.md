@@ -70,6 +70,12 @@ From the repository root, the complete deployment is one command:
 make compose-up
 ```
 
+This builds AOR from the checked-out source. To pull the public Linux amd64 images from `docker.io/akimisaka` instead, run:
+
+```bash
+make compose-prebuilt-up
+```
+
 The target performs these stages in order:
 
 1. Generate local infrastructure secrets and validate the Compose model.
@@ -79,7 +85,7 @@ The target performs these stages in order:
 5. Build the AOR server image (shared by the API and curator), Model Gateway, Tool Broker, and Worker from the current source.
 6. Start AOR only after every dependency and initializer has completed successfully, then wait for every process readiness endpoint.
 
-Individual stages are available as `make compose-pull`, `make compose-deps-up`, `make compose-aor-up`, and `make compose-ps`.
+Individual stages are available as `make compose-pull`, `make compose-deps-up`, `make compose-aor-up`, `make compose-prebuilt-up`, and `make compose-ps`.
 
 ### LAN access on this test host
 
