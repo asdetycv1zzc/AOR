@@ -79,17 +79,17 @@ WP-02/03、WP-04/05/11 以及 WP-13/14 在依赖满足后可逻辑并行；实�
 
 ## 5. 课程文档收尾任务
 
-以下任务按 2 至 5 分钟的可检查步骤拆分。首次文档提交完成后，`COURSE-DOC-07` 会回填该提交哈希。
+以下任务按 2 至 5 分钟的可检查步骤拆分。课程文档主体提交为 `572eaa4`。
 
 | Task | 目标 | 文件 | 实现要点 | 失败检查与验证 | 依赖 | 状态 |
 |---|---|---|---|---|---|---|
-| COURSE-DOC-01 | 保存原始课程要求和 brainstorming | 两份 `AI4SE_*.md`、`ChatGPT-Agent组织器设计可行性.json` | 原文跟踪，不改写对话 | `git ls-files` 缺少文件时失败；JSON 用 `jq empty` | 无 | DONE，待回填提交 |
-| COURSE-DOC-02 | 补足用户故事和课程范围 | `SPEC.md` | 至少 5 个 INVEST 故事；区分 TEST 与 Production | 检查 `US-01` 至 `US-08`、课程范围标题 | COURSE-DOC-01 | DONE，待回填提交 |
-| COURSE-DOC-03 | 明确四类机制和主贡献 | `SPEC.md` | 动作、反馈、危险、记忆；主贡献为受信任上下文/压缩 | 检查精确标题和测试证据路径 | COURSE-DOC-02 | DONE，待回填提交 |
-| COURSE-DOC-04 | 重建细粒度计划和依赖 | `PLAN.md` | as-built 证据与 remaining plan 分开 | 检查每个 pending task 含文件、验证、依赖、状态 | COURSE-DOC-01 | DONE，待回填提交 |
-| COURSE-DOC-05 | 记录 brainstorming、偏差和冷启动事实 | `SPEC_PROCESS.md` | 三轮迭代；明确未用 Superpowers，不伪造 worktree/PR/TDD | 检查三轮节选、采纳/否决、偏差清单 | COURSE-DOC-01 | DONE，待回填提交 |
-| COURSE-DOC-06 | 建立时间序列过程日志 | `AGENT_LOG.md` | session、模型、人工决策、review、commit、教训 | 检查时间戳、task、模型/skill、hash 字段 | COURSE-DOC-05 | DONE，待回填提交 |
-| COURSE-DOC-07 | 完整 README 并回填文档提交证据 | `README.md`、`PLAN.md`、`AGENT_LOG.md` | 安装、运行、分发、key、目录、安全、限制、机制命令 | Markdown/链接检查、secret scan、`git status` | COURSE-DOC-01..06 | IN PROGRESS |
+| COURSE-DOC-01 | 保存原始课程要求和 brainstorming | 两份 `AI4SE_*.md`、`ChatGPT-Agent组织器设计可行性.json` | 原文跟踪，不改写对话 | `git ls-files` 缺少文件时失败；JSON 用 `jq empty` | 无 | DONE `572eaa4` |
+| COURSE-DOC-02 | 补足用户故事和课程范围 | `SPEC.md` | 至少 5 个 INVEST 故事；区分 TEST 与 Production | 检查 `US-01` 至 `US-08`、课程范围标题 | COURSE-DOC-01 | DONE `572eaa4` |
+| COURSE-DOC-03 | 明确四类机制和主贡献 | `SPEC.md` | 动作、反馈、危险、记忆；主贡献为受信任上下文/压缩 | 检查精确标题和测试证据路径 | COURSE-DOC-02 | DONE `572eaa4` |
+| COURSE-DOC-04 | 重建细粒度计划和依赖 | `PLAN.md` | as-built 证据与 remaining plan 分开 | 检查每个 pending task 含文件、验证、依赖、状态 | COURSE-DOC-01 | DONE `572eaa4` |
+| COURSE-DOC-05 | 记录 brainstorming、偏差和冷启动事实 | `SPEC_PROCESS.md` | 三轮迭代；明确未用 Superpowers，不伪造 worktree/PR/TDD | 检查三轮节选、采纳/否决、偏差清单 | COURSE-DOC-01 | DONE `572eaa4` |
+| COURSE-DOC-06 | 建立时间序列过程日志 | `AGENT_LOG.md` | session、模型、人工决策、review、commit、教训 | 检查时间戳、task、模型/skill、hash 字段 | COURSE-DOC-05 | DONE `572eaa4` |
+| COURSE-DOC-07 | 完整 README 并回填文档提交证据 | `README.md`、`PLAN.md`、`AGENT_LOG.md` | 安装、运行、分发、key、目录、安全、限制、机制命令 | Markdown 结构、凭据模式、`git diff --check`、跟踪范围 | COURSE-DOC-01..06 | DONE `572eaa4` + 本回填提交 |
 
 ## 6. 尚未完成的课程要求
 

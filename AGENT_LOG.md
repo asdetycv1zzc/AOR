@@ -160,8 +160,17 @@
 - **Skill**：未使用；本任务也未启动 subagent。
 - **Agent 输出**：补充用户故事、课程 TEST 范围、领域与机制设计、上下文压缩 main contribution、Key 生命周期；创建 PLAN、SPEC_PROCESS、AGENT_LOG；重写 README。
 - **人工干预**：用户明确要求写明不使用 Superpowers，原因是 `gpt-5.6-sol max` 后续训练已覆盖大部分方法，再叠加会降低效率；同时禁止 AI 创建反思报告。
-- **提交**：将在本轮文档提交后回填。
+- **提交**：`572eaa4`。
 - **教训**：过程文档的价值在于暴露偏差，不在于把缺失步骤事后包装成已完成。
+
+### COURSE-DOC-01 校验记录
+
+- `jq empty ChatGPT-Agent组织器设计可行性.json`：通过；记录包含 3 轮 Prompt/Response。
+- 用户故事、README 必需章节、Superpowers/冷启动/偏差字段检查：通过。
+- `git diff --cached --check`：通过后提交。
+- 目标文档凭据形状检查：无高置信 Key/私钥命中。
+- Go 聚焦测试：未执行成功。仓库要求 Go `1.26.5`，宿主只有 `1.26.0`；自动工具链下载被沙箱网络策略阻止。此次仅改文档，未将该环境失败写成测试通过。
+- 全仓 `source-format` / `secrets`：被用户已有且未纳入提交的 `projects/` 不可读目录阻断；secret scan 还扫描到未跟踪 `.research-codex/` 及既有测试夹具。课程文档提交没有包含这些路径。
 
 ## 当前未闭环事项
 
