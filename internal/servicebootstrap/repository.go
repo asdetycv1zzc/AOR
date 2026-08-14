@@ -40,9 +40,10 @@ type repositoryExecutionAuthority struct {
 }
 
 type repositoryExecutionScope struct {
-	module   contracts.ModuleSpec
-	provider string
-	model    string
+	module             contracts.ModuleSpec
+	provider           string
+	model              string
+	dataClassification string
 }
 
 type repositoryMCPClient struct {
@@ -474,11 +475,15 @@ func (authority *repositoryExecutionAuthority) readClaim(ctx context.Context) (t
 }
 
 func (authority *repositoryExecutionAuthority) claimForRoles(ctx context.Context, toolID string, roles ...string) (toolbroker.LeaseValidation, repository.LeaseProof, error) {
+	return authority.claimForServerRoles(ctx, repositoryMCPServerID, toolID, roles...)
+}
+
+func (authority *repositoryExecutionAuthority) claimForServerRoles(ctx context.Context, serverID, toolID string, roles ...string) (toolbroker.LeaseValidation, repository.LeaseProof, error) {
 	if authority == nil || authority.database == nil || authority.leases == nil || authority.clock == nil || ctx == nil {
 		return toolbroker.LeaseValidation{}, repository.LeaseProof{}, repository.ErrLeaseStale
 	}
 	claim, ok := toolbroker.ExecutionAuthorizationFromContext(ctx)
-	if !ok || claim.MCPServerID != repositoryMCPServerID || claim.ToolVersion != repositoryMCPVersion || claim.ToolID != toolID || claim.Principal.Type != "AGENT_INSTANCE" || !repositoryRoleAllowed(roles, claim.Principal.Role) || claim.Principal.ID == "" || claim.ExecutionLeaseID == "" {
+	if !ok || claim.MCPServerID != serverID || claim.ToolVersion != repositoryMCPVersion || claim.ToolID != toolID || claim.Principal.Type != "AGENT_INSTANCE" || !repositoryRoleAllowed(roles, claim.Principal.Role) || claim.Principal.ID == "" || claim.ExecutionLeaseID == "" {
 		return toolbroker.LeaseValidation{}, repository.LeaseProof{}, repository.ErrLeaseStale
 	}
 	expiresAt, err := time.Parse(time.RFC3339, claim.Lease.ExpiresAt)
@@ -642,13 +647,13 @@ func (authority *repositoryExecutionAuthority) loadScope(ctx context.Context, cl
 	if _, err := tx.ExecContext(ctx, `SELECT set_config('aor.tenant_id', $1, true)`, claim.TenantID); err != nil {
 		return repositoryExecutionScope{}, err
 	}
-	var projectState, taskState, activeSeriesID, agentRole, agentState string
+	var projectState, taskState, activeSeriesID, agentRole, agentState, dataClassification string
 	var attemptCount, moduleVersion int
 	var latestFencing int64
 	var moduleDigest, provider, model string
 	var moduleJSON []byte
 	err = tx.QueryRowContext(ctx, `
-SELECT p.state, t.state, t.active_attempt_series_id::text, t.attempt_count,
+SELECT p.state, p.data_classification, t.state, t.active_attempt_series_id::text, t.attempt_count,
        t.latest_fencing_token, ms.version, ms.content_sha256, ms.content_jsonb,
        ai.role, ai.provider, ai.logical_model, ai.state
 FROM projects p
@@ -661,7 +666,7 @@ JOIN agent_instances ai ON ai.tenant_id = p.tenant_id AND ai.project_id = p.id
   AND ai.id = $4
 WHERE p.tenant_id = $1::uuid AND p.id = $2::uuid AND t.id = $3::uuid`,
 		claim.TenantID, claim.ProjectID, claim.TaskID, claim.Principal.ID).Scan(
-		&projectState, &taskState, &activeSeriesID, &attemptCount, &latestFencing,
+		&projectState, &dataClassification, &taskState, &activeSeriesID, &attemptCount, &latestFencing,
 		&moduleVersion, &moduleDigest, &moduleJSON, &agentRole, &provider, &model, &agentState,
 	)
 	if err != nil {
@@ -674,7 +679,7 @@ WHERE p.tenant_id = $1::uuid AND p.id = $2::uuid AND t.id = $3::uuid`,
 	if err := tx.Commit(); err != nil {
 		return repositoryExecutionScope{}, err
 	}
-	return repositoryExecutionScope{module: module, provider: provider, model: model}, nil
+	return repositoryExecutionScope{module: module, provider: provider, model: model, dataClassification: dataClassification}, nil
 }
 
 func repositoryAttemptIsCurrent(completed, requested int) bool {

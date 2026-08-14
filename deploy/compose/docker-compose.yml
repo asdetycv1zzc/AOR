@@ -735,6 +735,7 @@ services:
         condition: service_healthy
     environment:
       AOR_ENVIRONMENT: test
+      AOR_MOCK_ENVIRONMENT: "${AOR_MOCK_ENVIRONMENT:-false}"
       AOR_OTEL_EXPORTER_OTLP_ENDPOINT: http://127.0.0.1:4318
       AOR_DEPLOYMENT_PROFILE: TEST
       AOR_LISTEN_ADDR: 127.0.0.1:8093

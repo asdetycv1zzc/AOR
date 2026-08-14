@@ -483,7 +483,7 @@ func Worker(config runtimeconfig.Config, clients *runtimeclient.Clients) (http.H
 	var provider sandbox.SandboxProvider
 	probeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if config.DeploymentProfile != "TEST" {
+	if config.DeploymentProfile != "TEST" || config.Sandbox.EngineEndpoint != "" {
 		configuredProvider, err := newExecutionProvider(config)
 		if err != nil {
 			return nil, err
@@ -543,7 +543,7 @@ func Worker(config runtimeconfig.Config, clients *runtimeclient.Clients) (http.H
 	if err != nil {
 		return nil, err
 	}
-	services, err := configuredWorkerExecution(config, clients, leaseManager, leaseSigner, repositorySigner, secretResolver)
+	services, err := configuredWorkerExecution(config, clients, provider, leaseManager, leaseSigner, repositorySigner, secretResolver)
 	if err != nil {
 		return nil, err
 	}
@@ -723,7 +723,7 @@ func moduleAuditToolDefinitions(descriptors []toolbroker.ToolDescriptor) ([]mode
 	return tools, nil
 }
 
-func configuredWorkerExecution(config runtimeconfig.Config, clients *runtimeclient.Clients, leaseManager *authz.LeaseManager, leaseSigner authz.Signer, repositorySigner repository.Signer, secretResolver *credentials.SecretResolver) (*workerExecutionServices, error) {
+func configuredWorkerExecution(config runtimeconfig.Config, clients *runtimeclient.Clients, provider sandbox.SandboxProvider, leaseManager *authz.LeaseManager, leaseSigner authz.Signer, repositorySigner repository.Signer, secretResolver *credentials.SecretResolver) (*workerExecutionServices, error) {
 	if clients == nil || leaseManager == nil || leaseSigner == nil || repositorySigner == nil || secretResolver == nil {
 		return nil, ErrWorkerConfiguration
 	}
@@ -781,6 +781,28 @@ func configuredWorkerExecution(config runtimeconfig.Config, clients *runtimeclie
 		_ = host.Close()
 		return nil, err
 	}
+	resolveContext, resolveCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	gateway, err := configuredModelGatewayClient(resolveContext, config, secretResolver)
+	resolveCancel()
+	if err != nil {
+		_ = host.Close()
+		return nil, err
+	}
+	if provider != nil {
+		commandClient, err := configuredCommandMCP(config, clients, gateway, repositoryClient, provider)
+		if err != nil {
+			_ = host.Close()
+			return nil, err
+		}
+		commandLoadContext, commandLoadCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err = host.AddServerWithPolicies(commandLoadContext, commandMCPServerID, repositoryMCPVersion, commandClient, commandMCPPolicies())
+		commandLoadCancel()
+		if err != nil {
+			_ = commandClient.Close()
+			_ = host.Close()
+			return nil, err
+		}
+	}
 
 	leaseScopes, err := leaseauthority.NewPostgresScopeResolver(clients.Database(), config.DeploymentProfile)
 	if err != nil {
@@ -803,13 +825,6 @@ func configuredWorkerExecution(config runtimeconfig.Config, clients *runtimeclie
 		return nil, err
 	}
 	slots, err := agentruntime.NewSlotPool(agentruntime.MaximumActiveAgentLimit, time.Now)
-	if err != nil {
-		_ = host.Close()
-		return nil, err
-	}
-	resolveContext, resolveCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	gateway, err := configuredModelGatewayClient(resolveContext, config, secretResolver)
-	resolveCancel()
 	if err != nil {
 		_ = host.Close()
 		return nil, err

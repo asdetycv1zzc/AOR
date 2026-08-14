@@ -13,3 +13,15 @@ func TestOpenAIModelsUseConfiguredMaxInput(t *testing.T) {
 		}
 	}
 }
+
+func TestCodexAutoReviewMatchesLunaCapabilities(t *testing.T) {
+	reviewer, reviewerFound := findModel(ProviderOpenAI, "codex-auto-review")
+	luna, lunaFound := findModel(ProviderOpenAI, "gpt-5.6-luna")
+	if !reviewerFound || !lunaFound {
+		t.Fatal("command reviewer or Luna model is missing")
+	}
+	reviewer.ID = luna.ID
+	if reviewer != luna {
+		t.Fatalf("command reviewer capabilities = %#v, want Luna capabilities %#v", reviewer, luna)
+	}
+}

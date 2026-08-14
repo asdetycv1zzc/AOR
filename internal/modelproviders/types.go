@@ -102,7 +102,6 @@ func (adapter *capabilityOverrideAdapter) Capabilities(ctx context.Context, mode
 	}
 	if window := adapter.contextWindows[model]; window > 0 {
 		capabilities.ContextWindowTokens = window
-		capabilities.MaxInputTokens = window
 	}
 	return capabilities, nil
 }

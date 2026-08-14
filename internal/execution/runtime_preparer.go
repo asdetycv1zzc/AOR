@@ -330,7 +330,7 @@ func (source KnowledgeServiceContextSource) Context(ctx context.Context, princip
 }
 
 func executorToolDefinitions(descriptors []toolbroker.ToolDescriptor) ([]modelgateway.ToolDefinition, error) {
-	required := map[string]bool{RepositoryCreateWorkspace: false, RepositoryReadFile: false, RepositoryWriteFile: false, RepositoryDeleteFile: false, RepositorySubmit: false}
+	required := map[string]bool{RepositoryCreateWorkspace: false, RepositoryReadFile: false, RepositoryWriteFile: false, RepositoryDeleteFile: false, RepositoryExecuteCommand: false, RepositorySubmit: false}
 	byID := make(map[string]toolbroker.ToolDescriptor, len(descriptors))
 	for _, descriptor := range descriptors {
 		if _, needed := required[descriptor.ToolID]; !needed {
@@ -345,6 +345,9 @@ func executorToolDefinitions(descriptors []toolbroker.ToolDescriptor) ([]modelga
 	for name := range required {
 		descriptor, found := byID[name]
 		if !found {
+			if name == RepositoryExecuteCommand {
+				continue
+			}
 			return nil, ErrPreparationInvalid
 		}
 		required[name] = true

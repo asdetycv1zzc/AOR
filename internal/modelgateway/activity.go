@@ -61,6 +61,11 @@ type ActivityIntervention struct {
 	Content string
 }
 
+const (
+	CommandReviewModel         = "codex-auto-review"
+	CommandReviewPromptVersion = "command-approval-v1"
+)
+
 type ActivityInterventionSource interface {
 	Claim(context.Context, NormalizedRequest, time.Time) ([]ActivityIntervention, error)
 	Complete(context.Context, NormalizedRequest, []string, error, time.Time) error
@@ -83,7 +88,7 @@ func (recorder *PostgresActivityRecorder) Start(ctx context.Context, request Nor
 		TenantID: request.TenantID, ProjectID: request.ProjectID,
 		ID: modelActivityID(request.RequestID), RequestID: request.RequestID,
 		TaskID: request.TaskID, Flow: activityFlowForRole(request.Role),
-		AgentInstanceID: request.AgentInstanceID, Role: request.Role,
+		AgentInstanceID: request.AgentInstanceID, Role: activityDisplayRole(request),
 		Sender: projectactivity.SenderAgent, State: projectactivity.StateStreaming,
 		Provider: options.Provider, Model: request.Model,
 		CreatedAt: startedAt.UTC(), UpdatedAt: startedAt.UTC(),
@@ -125,7 +130,7 @@ func streamingActivityMessage(request NormalizedRequest, updatedAt time.Time) pr
 		TenantID: request.TenantID, ProjectID: request.ProjectID,
 		ID: modelActivityID(request.RequestID), RequestID: request.RequestID,
 		TaskID: request.TaskID, Flow: activityFlowForRole(request.Role),
-		AgentInstanceID: request.AgentInstanceID, Role: request.Role,
+		AgentInstanceID: request.AgentInstanceID, Role: activityDisplayRole(request),
 		Sender: projectactivity.SenderAgent, State: projectactivity.StateStreaming,
 		Model: request.Model, CreatedAt: updatedAt, UpdatedAt: updatedAt,
 	}
@@ -156,7 +161,7 @@ func (recorder *PostgresActivityRecorder) Finish(ctx context.Context, request No
 		TenantID: request.TenantID, ProjectID: request.ProjectID,
 		ID: modelActivityID(request.RequestID), RequestID: request.RequestID,
 		TaskID: request.TaskID, Flow: activityFlowForRole(request.Role),
-		AgentInstanceID: request.AgentInstanceID, Role: request.Role,
+		AgentInstanceID: request.AgentInstanceID, Role: activityDisplayRole(request),
 		Sender: projectactivity.SenderAgent, State: stateValue,
 		Content: content, ErrorCode: errorCode, Provider: provider, Model: model,
 		InputTokens: response.Usage.InputTokens, OutputTokens: response.Usage.OutputTokens,
@@ -188,7 +193,7 @@ func (recorder *PostgresActivityRecorder) RecordAttempt(ctx context.Context, req
 		// request_id empty avoids the model-call uniqueness constraint while the
 		// stable event ID retains the parent request binding.
 		RequestID: "", Flow: activityFlowForRole(request.Role),
-		Role: request.Role, Sender: projectactivity.SenderAgent, State: stateValue,
+		Role: activityDisplayRole(request), Sender: projectactivity.SenderAgent, State: stateValue,
 		Content: content, ErrorCode: errorCode, Provider: attempt.Provider, Model: attempt.Model,
 		CreatedAt: occurredAt.UTC(), UpdatedAt: occurredAt.UTC(),
 	})
@@ -196,7 +201,7 @@ func (recorder *PostgresActivityRecorder) RecordAttempt(ctx context.Context, req
 
 func (recorder *PostgresActivityRecorder) Claim(ctx context.Context, request NormalizedRequest, now time.Time) ([]ActivityIntervention, error) {
 	flow := activityFlowForRole(request.Role)
-	if request.TenantID == "" || request.ProjectID == "" || flow == projectactivity.FlowGoal {
+	if request.TenantID == "" || request.ProjectID == "" || !activityRequestAcceptsInterventions(request, flow) {
 		return nil, nil
 	}
 	messages, err := recorder.store.ClaimQueued(ctx, request.TenantID, request.ProjectID, flow, request.AgentInstanceID, request.RequestID, now)
@@ -219,10 +224,25 @@ func (recorder *PostgresActivityRecorder) Complete(ctx context.Context, request 
 
 func (recorder *PostgresActivityRecorder) Pending(ctx context.Context, request NormalizedRequest, continuationRequestID string) (bool, error) {
 	flow := activityFlowForRole(request.Role)
-	if request.TenantID == "" || request.ProjectID == "" || continuationRequestID == "" || flow == projectactivity.FlowGoal {
+	if request.TenantID == "" || request.ProjectID == "" || continuationRequestID == "" || !activityRequestAcceptsInterventions(request, flow) {
 		return false, nil
 	}
 	return recorder.store.HasQueuedOrClaimed(ctx, request.TenantID, request.ProjectID, flow, request.AgentInstanceID, continuationRequestID)
+}
+
+func activityRequestAcceptsInterventions(request NormalizedRequest, flow projectactivity.Flow) bool {
+	return !commandReviewActivity(request) && flow != projectactivity.FlowGoal
+}
+
+func activityDisplayRole(request NormalizedRequest) string {
+	if commandReviewActivity(request) {
+		return "COMMAND_REVIEWER"
+	}
+	return request.Role
+}
+
+func commandReviewActivity(request NormalizedRequest) bool {
+	return request.Model == CommandReviewModel && request.PromptBundleVersion == CommandReviewPromptVersion
 }
 
 type activityDeltaContextKey struct{}

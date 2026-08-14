@@ -522,6 +522,9 @@ func (config Config) Validate() error {
 		if engineConfigured && (!validSandboxEngineEndpoint(config.Sandbox.EngineEndpoint) || !validSandboxRuntimeName(config.Sandbox.RuntimeName) || !validImmutableImageReference(config.Sandbox.ImageReference) || !validSandboxSeccompProfile(config.Sandbox.SeccompProfile) || !validSandboxMandatoryPolicy(config.Sandbox.MandatoryPolicy) || !validSandboxHoldCommand(config.Sandbox.HoldCommand) || !validSandboxMountRoots(config.Sandbox.AllowedMountRoots)) {
 			return ErrInvalidConfiguration
 		}
+		if engineConfigured && (!pathWithinAllowedRoot(config.RepositoryRoot, config.Sandbox.AllowedMountRoots) || !pathWithinAllowedRoot(config.ToolchainRoot, config.Sandbox.AllowedMountRoots)) {
+			return ErrInvalidConfiguration
+		}
 	}
 	return nil
 }

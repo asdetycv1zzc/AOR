@@ -328,7 +328,7 @@ func executionPreparedRun(request PreparationRequest) PreparedRun {
 	tools := []modelgateway.ToolDefinition{
 		{Name: RepositoryCreateWorkspace, Version: "1.0.0"}, {Name: RepositoryReadFile, Version: "1.0.0"},
 		{Name: RepositoryWriteFile, Version: "1.0.0"}, {Name: RepositoryDeleteFile, Version: "1.0.0"},
-		{Name: RepositorySubmit, Version: "1.0.0"},
+		{Name: RepositoryExecuteCommand, Version: "1.0.0"}, {Name: RepositorySubmit, Version: "1.0.0"},
 	}
 	return PreparedRun{
 		Declaration: agentruntime.Declaration{

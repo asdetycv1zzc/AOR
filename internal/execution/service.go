@@ -33,6 +33,7 @@ const (
 	RepositoryReadFile        = "repository.file.read"
 	RepositoryWriteFile       = "repository.file.write"
 	RepositoryDeleteFile      = "repository.file.delete"
+	RepositoryExecuteCommand  = "repository.command.execute"
 	RepositorySubmit          = "repository.submission.commit"
 )
 
