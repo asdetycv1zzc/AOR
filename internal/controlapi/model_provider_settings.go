@@ -45,6 +45,7 @@ type modelProviderSettingsBody struct {
 	BaseURL                  string         `json:"baseUrl"`
 	Protocol                 string         `json:"protocol"`
 	APIKey                   string         `json:"apiKey,omitempty"`
+	ClearAPIKey              bool           `json:"clearApiKey,omitempty"`
 	Models                   []string       `json:"models,omitempty"`
 	ModelContextWindowTokens map[string]int `json:"modelContextWindowTokens,omitempty"`
 	Enabled                  bool           `json:"enabled"`
@@ -98,11 +99,14 @@ func (handler *Handler) putModelProviderSettings(response http.ResponseWriter, r
 		return
 	}
 	var body modelProviderSettingsBody
-	if decodeJSON(request, &body) != nil || !validModelProviderProtocol(body.Protocol) {
+	if decodeJSON(request, &body) != nil || !validModelProviderProtocol(body.Protocol) || (body.ClearAPIKey && body.APIKey != "") {
 		writeError(response, request, invalidModelProviderSettings("model provider settings"))
 		return
 	}
-	digest, err := modelProviderSettingsDigest(providerID, body.DisplayName, body.BaseURL, body.Protocol, body.Models, body.ModelContextWindowTokens, body.Enabled, "", "")
+	if body.ClearAPIKey {
+		body.Enabled = false
+	}
+	digest, err := modelProviderSettingsDigest(providerID, body.DisplayName, body.BaseURL, body.Protocol, body.Models, body.ModelContextWindowTokens, body.Enabled, body.ClearAPIKey, "", "")
 	if err != nil {
 		writeError(response, request, invalidModelProviderSettings("model provider settings"))
 		return
@@ -120,7 +124,7 @@ func (handler *Handler) putModelProviderSettings(response http.ResponseWriter, r
 		return
 	}
 	setting, err := handler.providerSettings.Put(request.Context(), principal.TenantID, providerID, modelproviders.PutRequest{
-		DisplayName: body.DisplayName, BaseURL: body.BaseURL, Protocol: modelproviders.Protocol(body.Protocol), APIKey: body.APIKey, Models: body.Models, ModelContextWindowTokens: body.ModelContextWindowTokens, Enabled: body.Enabled,
+		DisplayName: body.DisplayName, BaseURL: body.BaseURL, Protocol: modelproviders.Protocol(body.Protocol), APIKey: body.APIKey, ClearAPIKey: body.ClearAPIKey, Models: body.Models, ModelContextWindowTokens: body.ModelContextWindowTokens, Enabled: body.Enabled,
 	})
 	if err != nil {
 		writeError(response, request, mapModelProviderSettingsError(err))
@@ -140,7 +144,7 @@ func (handler *Handler) testModelProvider(response http.ResponseWriter, request 
 		writeError(response, request, invalidModelProviderSettings("model provider test"))
 		return
 	}
-	digest, err := modelProviderSettingsDigest(providerID, "", body.BaseURL, body.Protocol, nil, nil, true, body.Model, body.ReasoningEffort)
+	digest, err := modelProviderSettingsDigest(providerID, "", body.BaseURL, body.Protocol, nil, nil, true, false, body.Model, body.ReasoningEffort)
 	if err != nil {
 		writeError(response, request, invalidModelProviderSettings("model provider test"))
 		return
@@ -283,7 +287,7 @@ func modelProviderSettingsResourceFrom(setting modelproviders.ProviderSettings) 
 	}
 }
 
-func modelProviderSettingsDigest(providerID, displayName, baseURL, protocol string, models []string, contextWindows map[string]int, enabled bool, model, reasoningEffort string) (string, error) {
+func modelProviderSettingsDigest(providerID, displayName, baseURL, protocol string, models []string, contextWindows map[string]int, enabled, clearAPIKey bool, model, reasoningEffort string) (string, error) {
 	encoded, err := json.Marshal(struct {
 		ProviderID               string         `json:"providerId"`
 		DisplayName              string         `json:"displayName,omitempty"`
@@ -292,9 +296,10 @@ func modelProviderSettingsDigest(providerID, displayName, baseURL, protocol stri
 		Models                   []string       `json:"models,omitempty"`
 		ModelContextWindowTokens map[string]int `json:"modelContextWindowTokens,omitempty"`
 		Enabled                  bool           `json:"enabled"`
+		ClearAPIKey              bool           `json:"clearApiKey,omitempty"`
 		Model                    string         `json:"model,omitempty"`
 		ReasoningEffort          string         `json:"reasoningEffort,omitempty"`
-	}{ProviderID: providerID, DisplayName: displayName, BaseURL: baseURL, Protocol: protocol, Models: models, ModelContextWindowTokens: contextWindows, Enabled: enabled, Model: model, ReasoningEffort: reasoningEffort})
+	}{ProviderID: providerID, DisplayName: displayName, BaseURL: baseURL, Protocol: protocol, Models: models, ModelContextWindowTokens: contextWindows, Enabled: enabled, ClearAPIKey: clearAPIKey, Model: model, ReasoningEffort: reasoningEffort})
 	if err != nil {
 		return "", err
 	}

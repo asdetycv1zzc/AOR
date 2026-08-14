@@ -91,6 +91,7 @@ export interface ModelProviderSettingsInput {
   displayName?: string;
   protocol: string;
   apiKey?: string;
+  clearApiKey?: boolean;
   models?: string[];
   modelContextWindowTokens?: Record<string, number>;
   enabled: boolean;

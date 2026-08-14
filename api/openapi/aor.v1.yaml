@@ -1205,12 +1205,13 @@ components:
       type: object
       additionalProperties: false
       required: [baseUrl, protocol, enabled]
-      description: modelContextWindowTokens is required when creating a custom provider; an omitted value on update preserves the stored mapping only when the model list is unchanged.
+      description: modelContextWindowTokens is required when creating a custom provider; an omitted value on update preserves the stored mapping only when the model list is unchanged. clearApiKey removes the stored credential and disables the provider, and cannot be combined with apiKey.
       properties:
         baseUrl: {type: string, maxLength: 2048}
         displayName: {type: string, minLength: 1, maxLength: 128}
         protocol: {enum: [openai-compatible, openai-responses, anthropic-messages]}
         apiKey: {type: string, minLength: 1, maxLength: 65536, writeOnly: true}
+        clearApiKey: {type: boolean, default: false}
         models:
           type: array
           minItems: 1

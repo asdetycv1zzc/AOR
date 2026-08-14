@@ -1882,6 +1882,28 @@ button {
   color: #2f6b43;
 }
 
+.provider-api-key-control {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.provider-api-key-control .ui-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.provider-api-key-control > .ui-tooltip-wrap {
+  flex: 0 0 32px;
+}
+
+.provider-api-key-clear {
+  width: 32px;
+  min-width: 32px;
+  padding: 0;
+}
+
 .provider-protocol {
   display: flex;
   min-height: 32px;

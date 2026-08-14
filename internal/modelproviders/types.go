@@ -40,11 +40,13 @@ type ProviderSettings struct {
 }
 
 // PutRequest is accepted by the settings API. An empty APIKey on an existing
-// row preserves its encrypted key; a new row must provide one.
+// row preserves its encrypted key unless ClearAPIKey is set; a new enabled row
+// must provide one.
 type PutRequest struct {
 	DisplayName              string         `json:"displayName"`
 	BaseURL                  string         `json:"baseUrl"`
 	APIKey                   string         `json:"apiKey"`
+	ClearAPIKey              bool           `json:"clearApiKey"`
 	Protocol                 Protocol       `json:"protocol"`
 	Models                   []string       `json:"models"`
 	ModelContextWindowTokens map[string]int `json:"modelContextWindowTokens,omitempty"`

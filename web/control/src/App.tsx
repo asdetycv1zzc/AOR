@@ -31,6 +31,7 @@ import {
   ShieldCheck,
   Sparkle,
   Target,
+  Trash,
   TreeStructure,
   WarningCircle,
   X,
@@ -260,6 +261,7 @@ function parseModelContextWindows(value: string, models: string[]): Record<strin
 type ModelProviderDraft = ModelProviderSettings & {
   draftKey: string;
   apiKey: string;
+  clearApiKey: boolean;
   modelsText: string;
   contextWindowsText: string;
   testModel: string;
@@ -288,6 +290,7 @@ function cloneModelProviderDrafts(settings: ModelProviderSettings[]): ModelProvi
       protocols: setting.protocols ? [...setting.protocols] : undefined,
       models: [...setting.models],
       apiKey: "",
+      clearApiKey: false,
       modelsText: setting.models.join(", "),
       contextWindowsText: setting.models.map((model) => `${model}=${setting.modelContextWindowTokens?.[model] || 1_000_000}`).join(", "),
       testModel: setting.models[0] || "",
@@ -315,6 +318,7 @@ function customProviderDraft(draftKey: string): ModelProviderDraft {
     contextWindowsText: "",
     modelContextWindowTokens: {},
     apiKey: "",
+    clearApiKey: false,
     apiKeyConfigured: false,
     enabled: true,
     version: 0,
@@ -328,6 +332,8 @@ function modelProviderDraftsValid(drafts: ModelProviderDrafts): boolean {
   return drafts.every((draft) => {
     if (!draft.id || !/^[a-z0-9][a-z0-9._-]{0,127}$/.test(draft.id) || ids.has(draft.id)) return false;
     ids.add(draft.id);
+    if (draft.clearApiKey && draft.apiKey.trim()) return false;
+    if (draft.enabled && !draft.apiKeyConfigured && !draft.apiKey.trim()) return false;
     if (!draft.custom) return true;
     const models = providerModels(draft.modelsText);
     return Boolean(draft.displayName?.trim() && draft.displayName.trim().length <= 128 && models.length > 0 && models.length <= 128 && models.every((model) => model.length <= 256) && parseModelContextWindows(draft.contextWindowsText, models));
@@ -1504,6 +1510,7 @@ function ModelSettingsDialog({ open, busy, providers, providerSettings, settings
         input.models = models;
         input.modelContextWindowTokens = parseModelContextWindows(draft.contextWindowsText, models);
       }
+      if (draft.clearApiKey) input.clearApiKey = true;
       if (draft.apiKey.trim()) input.apiKey = draft.apiKey.trim();
       updates.push({ id: draft.id, input });
     }
@@ -1617,14 +1624,17 @@ function ModelProviderSettingsEditor({ drafts, testStates, busy, onChange, onTes
               <div className="provider-settings-heading">
                 <strong>{draft.displayName || label}</strong>
                 <span className={`provider-config-state ${draft.apiKeyConfigured ? "is-configured" : ""}`}>
-                  {draft.apiKeyConfigured ? "已配置" : "未配置"}
+                  {draft.clearApiKey ? "待清除" : draft.apiKeyConfigured ? "已配置" : "未配置"}
                 </span>
               </div>
               <Field label="Base URL">
                 <Input type="url" value={draft.baseUrl} onChange={(_, data) => onChange(draft.draftKey, { baseUrl: data.value })} />
               </Field>
               <Field label="API Key">
-                <Input type="password" autoComplete="new-password" value={draft.apiKey} placeholder={draft.apiKeyConfigured ? "留空保持不变" : "输入 API Key"} onChange={(_, data) => onChange(draft.draftKey, { apiKey: data.value })} />
+                <div className="provider-api-key-control">
+                  <Input type="password" autoComplete="new-password" value={draft.apiKey} placeholder={draft.apiKeyConfigured ? "留空保持不变" : "输入 API Key"} onChange={(_, data) => onChange(draft.draftKey, { apiKey: data.value, clearApiKey: false })} />
+                  {draft.apiKeyConfigured && <Tooltip content="清除 API Key"><Button appearance="outline" size="small" className="provider-api-key-clear" aria-label={`清除 ${label} API Key`} icon={<Trash />} disabled={busy} onClick={() => onChange(draft.draftKey, { apiKey: "", apiKeyConfigured: false, clearApiKey: true, enabled: false })} /></Tooltip>}
+                </div>
               </Field>
               <Field label="协议">
                 {protocols.length > 1 ? (
@@ -1636,7 +1646,7 @@ function ModelProviderSettingsEditor({ drafts, testStates, busy, onChange, onTes
               <Field label="测试模型">
                 <ModelChoice models={draft.models} value={draft.testModel} label={`${label} 测试模型`} onChange={(model) => onChange(draft.draftKey, { testModel: model })} />
               </Field>
-              <label className="provider-enabled"><input type="checkbox" checked={draft.enabled} onChange={(event) => onChange(draft.draftKey, { enabled: event.target.checked })} /><span>启用</span></label>
+              <label className="provider-enabled"><input type="checkbox" checked={draft.enabled} disabled={busy || (draft.clearApiKey && !draft.apiKey.trim())} onChange={(event) => onChange(draft.draftKey, { enabled: event.target.checked })} /><span>启用</span></label>
               <div className="provider-test-line">
                 <div className="provider-reasoning-field">
                   <Field label="测试思考深度">
@@ -1645,7 +1655,7 @@ function ModelProviderSettingsEditor({ drafts, testStates, busy, onChange, onTes
                     </select>
                   </Field>
                 </div>
-                <Button appearance="outline" size="small" icon={testState?.status === "testing" ? <Spinner size="tiny" /> : <ArrowClockwise />} disabled={busy || testState?.status === "testing" || !draft.id || !draft.baseUrl.trim() || !draft.testModel} onClick={() => onTest(draft.draftKey)}>测试连接</Button>
+                <Button appearance="outline" size="small" icon={testState?.status === "testing" ? <Spinner size="tiny" /> : <ArrowClockwise />} disabled={busy || testState?.status === "testing" || !draft.id || !draft.baseUrl.trim() || !draft.testModel || (!draft.apiKey.trim() && !draft.apiKeyConfigured)} onClick={() => onTest(draft.draftKey)}>测试连接</Button>
                 {testState?.status === "success" && <span className="provider-test-status is-success"><CheckCircle />{testState.message}{testState.latencyMs ? ` · ${testState.latencyMs} ms` : ""}</span>}
                 {testState?.status === "error" && <span className="provider-test-status is-error"><WarningCircle />{testState.message}</span>}
               </div>

@@ -225,6 +225,12 @@ func (store *Store) Put(ctx context.Context, tenantID, providerID string, reques
 	if err := validateContextTenant(ctx, tenantID); err != nil {
 		return ProviderSettings{}, err
 	}
+	if request.ClearAPIKey && request.APIKey != "" {
+		return ProviderSettings{}, ErrInvalidSettings
+	}
+	if request.ClearAPIKey {
+		request.Enabled = false
+	}
 	catalog, found := findCatalog(providerID)
 	if request.Protocol == "" {
 		if found {
@@ -290,7 +296,9 @@ FOR UPDATE`, tenantID, providerID).Scan(&oldNonce, &oldCipher, &oldContextWindow
 	if !existing {
 		nextVersion = 1
 	}
-	if request.APIKey != "" {
+	if request.ClearAPIKey {
+		nonce, ciphertext = nil, nil
+	} else if request.APIKey != "" {
 		nonce = make([]byte, store.aead.NonceSize())
 		if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 			return ProviderSettings{}, err
