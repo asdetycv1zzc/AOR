@@ -59,7 +59,7 @@ func Catalog() []ProviderCatalog {
 			Models: openAIModels(),
 		},
 		{
-			ID: ProviderDeepSeek, DisplayName: "DeepSeek", Protocol: ProtocolOpenAICompatible, Protocols: protocols,
+			ID: ProviderDeepSeek, DisplayName: "DeepSeek", Protocol: ProtocolOpenAIResponses, Protocols: protocols,
 			Models: []CatalogModel{
 				{ID: "deepseek-v4-pro", MaxInput: 1_000_000, ContextWindow: 1_000_000, MaxOutput: 384000, ToolCalls: true, JSONSchema: true, Streaming: true},
 				{ID: "deepseek-v4-flash", MaxInput: 1_000_000, ContextWindow: 1_000_000, MaxOutput: 384000, ToolCalls: true, JSONSchema: true, Streaming: true},

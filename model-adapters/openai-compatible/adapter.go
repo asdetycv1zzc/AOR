@@ -176,7 +176,7 @@ func (a *Adapter) Generate(ctx context.Context, request modelgateway.NormalizedR
 	if err := a.requireInputLimit(ctx, request, capabilities); err != nil {
 		return modelgateway.NormalizedResponse{}, err
 	}
-	if capabilities.SupportsStreaming && !requestUsesNativeTools(request) {
+	if capabilities.SupportsStreaming && (a.wireFormat == WireFormatResponses || !requestUsesNativeTools(request)) {
 		return a.generateStream(ctx, request, capabilities)
 	}
 	body, err := a.encodeRequest(request, false)
@@ -207,7 +207,7 @@ func (a *Adapter) Stream(ctx context.Context, request modelgateway.NormalizedReq
 	if err != nil {
 		return nil, err
 	}
-	if requestUsesNativeTools(request) {
+	if a.wireFormat != WireFormatResponses && requestUsesNativeTools(request) {
 		return nil, modelgateway.ErrProviderNotAllowed
 	}
 	if !capabilities.SupportsStreaming {
@@ -264,6 +264,9 @@ func (a *Adapter) generateStream(ctx context.Context, request modelgateway.Norma
 		if receiveErr != nil {
 			return modelgateway.NormalizedResponse{}, receiveErr
 		}
+	}
+	if responsesStream, ok := stream.(*responsesResponseStream); ok {
+		return responsesStream.FinalResponse()
 	}
 	contentStream, contentOK := stream.(modelgateway.FinalContentAwareStream)
 	usageStream, usageOK := stream.(modelgateway.UsageAwareStream)
@@ -426,6 +429,11 @@ func (a *Adapter) encodeChatRequest(request modelgateway.NormalizedRequest, stre
 	reasoningEffort := ""
 	if a.supportsReasoningEffort {
 		reasoningEffort = request.ReasoningEffort
+		// Older Chat Completions-compatible DeepSeek gateways accept high but
+		// reject the newer max alias. Native Responses keeps max unchanged.
+		if reasoningEffort == "max" {
+			reasoningEffort = "high"
+		}
 	}
 	value := chatRequest{
 		Model: request.Model, MaxTokens: request.MaxOutputTokens, Temperature: request.Temperature,

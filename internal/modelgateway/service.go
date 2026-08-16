@@ -220,6 +220,12 @@ func (s *HTTPService) serveStream(writer http.ResponseWriter, request *http.Requ
 	streamContext = withActivityReasoningSummaryRecorder(streamContext, func(delta string) {
 		writeDelta("reasoning_summary", delta)
 	})
+	streamContext = withActivityReasoningContentRecorder(streamContext, func(delta string) {
+		writeDelta("reasoning_content", delta)
+	})
+	streamContext = withActivityReasoningContentFinalizer(streamContext, func(content string) {
+		writeDelta("reasoning_content_final", content)
+	})
 	response, err := s.gateway.Generate(streamContext, requestValue, options)
 	writeMu.Lock()
 	streamWriteErr := writeErr

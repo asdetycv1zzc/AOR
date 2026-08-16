@@ -201,6 +201,8 @@ export interface ProjectActivityMessage {
   sender: "USER" | "AGENT" | "SYSTEM" | string;
   state: ProjectActivityState;
   content: string;
+  inputPrompt?: string;
+  reasoningContent?: string;
   reasoningSummary?: string;
   errorCode?: string;
   provider?: string;

@@ -170,9 +170,9 @@ func normalizeGenerateOptions(options GenerateOptions) (GenerateOptions, error) 
 	return options, nil
 }
 
-// DeepSeek-compatible endpoints expose high as their strongest supported
-// effort. Preserve the project-level max setting while sending the provider's
-// accepted wire value.
+// The deployed DeepSeek-compatible gateway accepts the Responses shape but
+// currently rejects the project-level max alias. Keep the public route value
+// intact and normalize only the provider wire value.
 func normalizeProviderReasoningEffort(provider, effort string) string {
 	if (strings.EqualFold(provider, "deepseek") || strings.EqualFold(provider, "deepseek-audit")) && effort == "max" {
 		return "high"
@@ -543,19 +543,27 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 	var activityDeltaMu sync.Mutex
 	var activityDelta []byte
 	var activityReasoningSummary []byte
+	var activityReasoningContent []byte
+	activityReasoningContentFinalized := false
 	flushActivityDelta := func() {
 		activityDeltaMu.Lock()
-		if len(activityDelta) == 0 && len(activityReasoningSummary) == 0 {
+		if len(activityDelta) == 0 && len(activityReasoningSummary) == 0 && len(activityReasoningContent) == 0 {
 			activityDeltaMu.Unlock()
 			return
 		}
 		pending := string(activityDelta)
 		pendingReasoningSummary := string(activityReasoningSummary)
+		pendingReasoningContent := ""
+		if !activityReasoningContentFinalized {
+			pendingReasoningContent = string(activityReasoningContent)
+		}
 		activityDelta = nil
 		activityReasoningSummary = nil
+		activityReasoningContent = nil
 		activityDeltaMu.Unlock()
 		g.recordActivityDelta(activityContext, request, pending)
 		g.recordActivityReasoningSummary(activityContext, request, pendingReasoningSummary)
+		g.recordActivityReasoningContent(activityContext, request, pendingReasoningContent)
 	}
 	activityDeltaWake := make(chan struct{}, 1)
 	activityDeltaStop := make(chan struct{})
@@ -613,6 +621,39 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 			default:
 			}
 		}
+	})
+	parentReasoningContent, _ := ctx.Value(activityReasoningContentContextKey{}).(func(string))
+	ctx = withActivityReasoningContentRecorder(ctx, func(delta string) {
+		if delta == "" {
+			return
+		}
+		if parentReasoningContent != nil {
+			parentReasoningContent(delta)
+		}
+		activityDeltaMu.Lock()
+		activityReasoningContent = append(activityReasoningContent, delta...)
+		shouldFlush := len(activityReasoningContent) >= 1024
+		activityDeltaMu.Unlock()
+		if shouldFlush {
+			select {
+			case activityDeltaWake <- struct{}{}:
+			default:
+			}
+		}
+	})
+	parentReasoningContentFinalizer, _ := ctx.Value(activityReasoningContentFinalizerContextKey{}).(func(string))
+	ctx = withActivityReasoningContentFinalizer(ctx, func(content string) {
+		if content == "" {
+			return
+		}
+		if parentReasoningContentFinalizer != nil {
+			parentReasoningContentFinalizer(content)
+		}
+		activityDeltaMu.Lock()
+		activityReasoningContentFinalized = true
+		activityReasoningContent = nil
+		activityDeltaMu.Unlock()
+		g.recordActivityReasoningContentFinal(ctx, request, content)
 	})
 	var stopActivityDeltasOnce sync.Once
 	stopActivityDeltas := func() {

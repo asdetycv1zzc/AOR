@@ -40,7 +40,7 @@ func TestHTTPClientGenerateUsesPrivateEnvelopeTokenAndTrace(t *testing.T) {
 			Traceparent: request.Header.Get(observability.TraceParentHeader), Tracestate: request.Header.Get(observability.TraceStateHeader), Input: input,
 		}
 		writer.Header().Set("Content-Type", "text/event-stream")
-		_, _ = writer.Write([]byte(": connected\n\nevent: reasoning_summary\ndata: {\"delta\":\"summary\"}\n\n"))
+		_, _ = writer.Write([]byte(": connected\n\nevent: reasoning_summary\ndata: {\"delta\":\"summary\"}\n\nevent: reasoning_content\ndata: {\"delta\":\"chain\"}\n\nevent: reasoning_content_final\ndata: {\"delta\":\"final-chain\"}\n\n"))
 		writeHTTPClientStream(writer, NormalizedResponse{
 			RequestID: input.Request.RequestID, ProviderRequestID: "provider-request", ModelVersion: "model-v1",
 			Content: json.RawMessage(`{"ok":true}`), FinishReason: "stop",
@@ -64,8 +64,12 @@ func TestHTTPClientGenerateUsesPrivateEnvelopeTokenAndTrace(t *testing.T) {
 	}
 	var streamedContent strings.Builder
 	var streamedReasoning strings.Builder
+	var streamedReasoningContent strings.Builder
+	var streamedReasoningFinal strings.Builder
 	ctx = withActivityDeltaRecorder(ctx, func(delta string) { streamedContent.WriteString(delta) })
 	ctx = withActivityReasoningSummaryRecorder(ctx, func(delta string) { streamedReasoning.WriteString(delta) })
+	ctx = withActivityReasoningContentRecorder(ctx, func(delta string) { streamedReasoningContent.WriteString(delta) })
+	ctx = withActivityReasoningContentFinalizer(ctx, func(content string) { streamedReasoningFinal.WriteString(content) })
 	semanticCalls := 0
 	input := httpClientNormalizedRequest()
 	input.ResponseSchema = json.RawMessage(`{"type":"object","required":["ok"],"properties":{"ok":{"type":"boolean"}},"additionalProperties":false}`)
@@ -80,7 +84,7 @@ func TestHTTPClientGenerateUsesPrivateEnvelopeTokenAndTrace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.RequestID != input.RequestID || string(response.Content) != `{"ok":true}` || streamedContent.String() != `{"ok":true}` || streamedReasoning.String() != "summary" || semanticCalls != 1 || tokens.Calls() != 1 {
+	if response.RequestID != input.RequestID || string(response.Content) != `{"ok":true}` || streamedContent.String() != `{"ok":true}` || streamedReasoning.String() != "summary" || streamedReasoningContent.String() != "chain" || streamedReasoningFinal.String() != "final-chain" || semanticCalls != 1 || tokens.Calls() != 1 {
 		t.Fatalf("response=%#v semanticCalls=%d tokenCalls=%d", response, semanticCalls, tokens.Calls())
 	}
 	captured := <-observed

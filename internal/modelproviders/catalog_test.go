@@ -25,3 +25,15 @@ func TestCodexAutoReviewMatchesLunaCapabilities(t *testing.T) {
 		t.Fatalf("command reviewer capabilities = %#v, want Luna capabilities %#v", reviewer, luna)
 	}
 }
+
+func TestDeepSeekUsesResponsesCapabilities(t *testing.T) {
+	provider, found := findCatalog(ProviderDeepSeek)
+	if !found || provider.Protocol != ProtocolOpenAIResponses {
+		t.Fatalf("DeepSeek catalog = %#v", provider)
+	}
+	for _, model := range provider.Models {
+		if model.MaxInput != 1_000_000 || model.ContextWindow != 1_000_000 || !model.Streaming || model.PromptCache {
+			t.Fatalf("DeepSeek model capabilities = %#v", model)
+		}
+	}
+}

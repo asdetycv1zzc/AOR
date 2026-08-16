@@ -435,6 +435,20 @@
       "file": "000062_update_openai_context_windows.up.sql",
       "sha256": "sha256:8e14d4be7aef63a0b77ba3c0179bc180f0c947ddb546e178c4abaeb4d30c6d9f",
       "destructive": false
+    },
+    {
+      "version": 63,
+      "mode": "EXPAND",
+      "file": "000063_deepseek_responses_protocol.up.sql",
+      "sha256": "sha256:8ecf440bf641cd9341106b18e63d1ec3a64b4b9f20b632976fdc9101a83d7702",
+      "destructive": false
+    },
+    {
+      "version": 64,
+      "mode": "EXPAND",
+      "file": "000064_project_activity_model_trace.up.sql",
+      "sha256": "sha256:cba34c69fde9be053ee88f8f726de4e337b799a91c7f7a6052c49cd546d39df7",
+      "destructive": false
     }
   ]
 }

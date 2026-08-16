@@ -64,6 +64,8 @@ type projectActivityMessage struct {
 	Sender           activitySender  `json:"sender"`
 	State            activityState   `json:"state"`
 	Content          string          `json:"content"`
+	InputPrompt      string          `json:"inputPrompt,omitempty"`
+	ReasoningContent string          `json:"reasoningContent,omitempty"`
 	ReasoningSummary string          `json:"reasoningSummary,omitempty"`
 	ErrorCode        string          `json:"errorCode,omitempty"`
 	Provider         string          `json:"provider,omitempty"`
@@ -289,8 +291,14 @@ func activityProjectKey(tenantID, projectID string) string {
 
 func activityCursor(message projectActivityMessage) string {
 	value := message.ID + "\x00" + string(message.State) + "\x00" + message.UpdatedAt.UTC().Format(time.RFC3339Nano) + "\x00" + message.Content + "\x00" + message.ErrorCode
+	if message.InputPrompt != "" {
+		value += "\x00" + message.InputPrompt
+	}
 	if message.ReasoningSummary != "" {
 		value += "\x00" + message.ReasoningSummary
+	}
+	if message.ReasoningContent != "" {
+		value += "\x00" + message.ReasoningContent
 	}
 	digest := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(digest[:])
@@ -381,6 +389,7 @@ func activityFromStored(message projectactivity.Message) projectActivityMessage 
 		ID: message.ID, ProjectID: message.ProjectID, TaskID: message.TaskID,
 		Flow: activityFlow(message.Flow), AgentID: message.AgentInstanceID, Role: message.Role,
 		Sender: activitySender(message.Sender), State: activityState(message.State), Content: message.Content,
+		InputPrompt: message.InputPrompt, ReasoningContent: message.ReasoningContent,
 		ReasoningSummary: message.ReasoningSummary,
 		ErrorCode:        message.ErrorCode, Provider: message.Provider, Model: message.Model,
 		InputTokens: message.InputTokens, OutputTokens: message.OutputTokens,
@@ -397,8 +406,9 @@ func activityToStored(tenantID string, message projectActivityMessage) projectac
 		TenantID: tenantID, ProjectID: message.ProjectID, ID: message.ID, TaskID: message.TaskID,
 		Flow: projectactivity.Flow(message.Flow), AgentInstanceID: message.AgentID, Role: message.Role,
 		Sender: projectactivity.Sender(message.Sender), State: projectactivity.State(message.State),
-		Content: message.Content, ReasoningSummary: message.ReasoningSummary,
-		ErrorCode: message.ErrorCode, Provider: message.Provider, Model: message.Model,
+		Content: message.Content, InputPrompt: message.InputPrompt, ReasoningContent: message.ReasoningContent,
+		ReasoningSummary: message.ReasoningSummary,
+		ErrorCode:        message.ErrorCode, Provider: message.Provider, Model: message.Model,
 		InputTokens: message.InputTokens, OutputTokens: message.OutputTokens, LatencyMS: message.LatencyMS,
 		OutputSHA256: message.OutputSHA256, PrincipalID: message.PrincipalID,
 		IdempotencyKey: message.IdempotencyKey, RequestSHA256: message.RequestSHA256,

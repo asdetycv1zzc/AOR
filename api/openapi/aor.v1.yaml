@@ -1442,7 +1442,9 @@ components:
         role: {type: string, maxLength: 512}
         sender: {enum: [USER, AGENT, SYSTEM]}
         state: {enum: [QUEUED, STREAMING, COMPLETED, FAILED]}
-        content: {type: string, maxLength: 4194304}
+        content: {type: string, maxLength: 33554432}
+        inputPrompt: {type: string, maxLength: 536870912}
+        reasoningContent: {type: string, maxLength: 33554432}
         reasoningSummary: {type: string, maxLength: 4194304}
         errorCode: {type: string, maxLength: 512}
         provider: {type: string, maxLength: 512}

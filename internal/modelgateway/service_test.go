@@ -128,6 +128,7 @@ func TestHTTPServiceCapabilitiesCancelAndStreaming(t *testing.T) {
 	streamBody := marshalTransport(t, transportGenerateRequest{Request: transportRequest("stream-1"), Options: GenerateOptions{Provider: "provider", AccountID: "account", ReservationID: "stream-reservation", MaxAttempts: 1}})
 	adapter.mu.Lock()
 	adapter.generateReasoningDeltas = []string{"reason"}
+	adapter.generateReasoningContentDeltas = []string{"chain"}
 	adapter.mu.Unlock()
 	streamRequest := httptest.NewRequest(http.MethodPost, "/v1/model/stream", bytes.NewReader(streamBody))
 	streamRequest.Header.Set("Content-Type", "application/json")
@@ -136,11 +137,12 @@ func TestHTTPServiceCapabilitiesCancelAndStreaming(t *testing.T) {
 	body := streamWriter.Body.String()
 	connected := strings.Index(body, ": connected")
 	reasoning := strings.Index(body, "event: reasoning_summary")
+	reasoningContent := strings.Index(body, "event: reasoning_content")
 	firstDelta := strings.Index(body, "data: {\"delta\":\"o\"}")
 	secondDelta := strings.Index(body, "data: {\"delta\":\"k\"}")
 	response := strings.Index(body, "event: response")
 	done := strings.Index(body, "data: [DONE]")
-	if streamWriter.Code != http.StatusOK || streamWriter.Header().Get("Content-Type") != "text/event-stream" || streamWriter.Header().Get("X-Accel-Buffering") != "no" || connected < 0 || reasoning <= connected || firstDelta <= reasoning || secondDelta <= firstDelta || response <= secondDelta || done <= response {
+	if streamWriter.Code != http.StatusOK || streamWriter.Header().Get("Content-Type") != "text/event-stream" || streamWriter.Header().Get("X-Accel-Buffering") != "no" || connected < 0 || reasoning <= connected || reasoningContent <= reasoning || firstDelta <= reasoningContent || secondDelta <= firstDelta || response <= secondDelta || done <= response {
 		t.Fatalf("stream status=%d headers=%v body=%q", streamWriter.Code, streamWriter.Header(), streamWriter.Body.String())
 	}
 	reservation, found := ledger.Reservation("tenant", "stream-reservation")
@@ -320,13 +322,14 @@ func (serviceAuthorizer) AuthorizeModel(_ context.Context, request ModelAuthoriz
 }
 
 type serviceAdapter struct {
-	mu                      sync.Mutex
-	generateCalls           int
-	cancelCalls             int
-	generateDeltas          []string
-	generateReasoningDeltas []string
-	generateErr             error
-	streamOverride          ResponseStream
+	mu                             sync.Mutex
+	generateCalls                  int
+	cancelCalls                    int
+	generateDeltas                 []string
+	generateReasoningDeltas        []string
+	generateReasoningContentDeltas []string
+	generateErr                    error
+	streamOverride                 ResponseStream
 }
 
 func (a *serviceAdapter) Capabilities(context.Context, string) (ModelCapabilities, error) {
@@ -342,6 +345,7 @@ func (a *serviceAdapter) Generate(ctx context.Context, request NormalizedRequest
 	a.generateCalls++
 	deltas := append([]string(nil), a.generateDeltas...)
 	reasoningDeltas := append([]string(nil), a.generateReasoningDeltas...)
+	reasoningContentDeltas := append([]string(nil), a.generateReasoningContentDeltas...)
 	generateErr := a.generateErr
 	a.mu.Unlock()
 	if len(deltas) == 0 {
@@ -349,6 +353,9 @@ func (a *serviceAdapter) Generate(ctx context.Context, request NormalizedRequest
 	}
 	for _, delta := range reasoningDeltas {
 		ReportActivityReasoningSummary(ctx, delta)
+	}
+	for _, delta := range reasoningContentDeltas {
+		ReportActivityReasoningContent(ctx, delta)
 	}
 	for _, delta := range deltas {
 		ReportActivityDelta(ctx, delta)

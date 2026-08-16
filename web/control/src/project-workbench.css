@@ -575,7 +575,8 @@
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 
-.message-content > p {
+.message-content > p,
+.message-output > p {
   margin: 8px 0;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
@@ -585,25 +586,41 @@
   line-height: 1.55;
 }
 
-.message-reasoning {
+.message-trace {
   margin-top: 8px;
   padding: 8px 9px;
   border-left: 2px solid var(--blue);
   background: #f3f7f8;
 }
 
-.message-reasoning > strong {
+.message-trace.is-input {
+  border-left-color: var(--green);
+  background: #f4f7f3;
+}
+
+.message-trace > strong,
+.message-output > strong {
   color: var(--blue);
   font-size: 9px;
 }
 
-.message-reasoning > p {
+.message-trace.is-input > strong,
+.message-output > strong {
+  color: var(--green-dark);
+}
+
+.message-trace > pre {
   margin: 4px 0 0;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
   color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 10px;
   line-height: 1.5;
+}
+
+.message-output {
+  margin-top: 8px;
 }
 
 .message-bubble > footer {

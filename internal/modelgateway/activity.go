@@ -27,6 +27,19 @@ type ActivityReasoningSummaryRecorder interface {
 	AppendReasoningSummary(context.Context, NormalizedRequest, string, time.Time) error
 }
 
+// ActivityReasoningContentRecorder records provider-returned reasoning text
+// separately from a provider-generated reasoning summary.
+type ActivityReasoningContentRecorder interface {
+	AppendReasoningContent(context.Context, NormalizedRequest, string, time.Time) error
+}
+
+// ActivityReasoningContentFinalizer lets a provider's terminal response
+// replace a partially received reasoning stream when the terminal payload is
+// authoritative. It is optional so existing recorders remain compatible.
+type ActivityReasoningContentFinalizer interface {
+	SetReasoningContent(context.Context, NormalizedRequest, string, time.Time) error
+}
+
 // ActivityAttemptRecorder is an optional extension for recorders that expose
 // provider attempts separately from the final model request summary. Keeping
 // it separate from ActivityRecorder preserves compatibility with existing
@@ -84,13 +97,17 @@ func NewPostgresActivityRecorder(store *projectactivity.Store) (*PostgresActivit
 }
 
 func (recorder *PostgresActivityRecorder) Start(ctx context.Context, request NormalizedRequest, options GenerateOptions, startedAt time.Time) error {
+	inputPrompt, err := activityInputPrompt(request)
+	if err != nil {
+		return err
+	}
 	return recorder.store.Upsert(ctx, projectactivity.Message{
 		TenantID: request.TenantID, ProjectID: request.ProjectID,
 		ID: modelActivityID(request.RequestID), RequestID: request.RequestID,
 		TaskID: request.TaskID, Flow: activityFlowForRole(request.Role),
 		AgentInstanceID: request.AgentInstanceID, Role: activityDisplayRole(request),
 		Sender: projectactivity.SenderAgent, State: projectactivity.StateStreaming,
-		Provider: options.Provider, Model: request.Model,
+		InputPrompt: inputPrompt, Provider: options.Provider, Model: request.Model,
 		CreatedAt: startedAt.UTC(), UpdatedAt: startedAt.UTC(),
 	})
 }
@@ -104,7 +121,11 @@ func (recorder *PostgresActivityRecorder) AppendDelta(ctx context.Context, reque
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	if err := recorder.store.Upsert(ctx, streamingActivityMessage(request, updatedAt)); err != nil {
+	message, messageErr := streamingActivityMessage(request, updatedAt)
+	if messageErr != nil {
+		return messageErr
+	}
+	if err := recorder.store.Upsert(ctx, message); err != nil {
 		return err
 	}
 	return recorder.store.AppendDelta(ctx, request.TenantID, modelActivityID(request.RequestID), delta, updatedAt)
@@ -119,24 +140,74 @@ func (recorder *PostgresActivityRecorder) AppendReasoningSummary(ctx context.Con
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	if err := recorder.store.Upsert(ctx, streamingActivityMessage(request, updatedAt)); err != nil {
+	message, messageErr := streamingActivityMessage(request, updatedAt)
+	if messageErr != nil {
+		return messageErr
+	}
+	if err := recorder.store.Upsert(ctx, message); err != nil {
 		return err
 	}
 	return recorder.store.AppendReasoningSummary(ctx, request.TenantID, modelActivityID(request.RequestID), delta, updatedAt)
 }
 
-func streamingActivityMessage(request NormalizedRequest, updatedAt time.Time) projectactivity.Message {
+func (recorder *PostgresActivityRecorder) AppendReasoningContent(ctx context.Context, request NormalizedRequest, delta string, updatedAt time.Time) error {
+	if delta == "" {
+		return nil
+	}
+	updatedAt = updatedAt.UTC()
+	err := recorder.store.AppendReasoningContent(ctx, request.TenantID, modelActivityID(request.RequestID), delta, updatedAt)
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	message, messageErr := streamingActivityMessage(request, updatedAt)
+	if messageErr != nil {
+		return messageErr
+	}
+	if err := recorder.store.Upsert(ctx, message); err != nil {
+		return err
+	}
+	return recorder.store.AppendReasoningContent(ctx, request.TenantID, modelActivityID(request.RequestID), delta, updatedAt)
+}
+
+func (recorder *PostgresActivityRecorder) SetReasoningContent(ctx context.Context, request NormalizedRequest, content string, updatedAt time.Time) error {
+	if content == "" {
+		return nil
+	}
+	updatedAt = updatedAt.UTC()
+	err := recorder.store.SetReasoningContent(ctx, request.TenantID, modelActivityID(request.RequestID), content, updatedAt)
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	message, messageErr := streamingActivityMessage(request, updatedAt)
+	if messageErr != nil {
+		return messageErr
+	}
+	if err := recorder.store.Upsert(ctx, message); err != nil {
+		return err
+	}
+	return recorder.store.SetReasoningContent(ctx, request.TenantID, modelActivityID(request.RequestID), content, updatedAt)
+}
+
+func streamingActivityMessage(request NormalizedRequest, updatedAt time.Time) (projectactivity.Message, error) {
+	inputPrompt, err := activityInputPrompt(request)
+	if err != nil {
+		return projectactivity.Message{}, err
+	}
 	return projectactivity.Message{
 		TenantID: request.TenantID, ProjectID: request.ProjectID,
 		ID: modelActivityID(request.RequestID), RequestID: request.RequestID,
 		TaskID: request.TaskID, Flow: activityFlowForRole(request.Role),
 		AgentInstanceID: request.AgentInstanceID, Role: activityDisplayRole(request),
 		Sender: projectactivity.SenderAgent, State: projectactivity.StateStreaming,
-		Model: request.Model, CreatedAt: updatedAt, UpdatedAt: updatedAt,
-	}
+		InputPrompt: inputPrompt, Model: request.Model, CreatedAt: updatedAt, UpdatedAt: updatedAt,
+	}, nil
 }
 
 func (recorder *PostgresActivityRecorder) Finish(ctx context.Context, request NormalizedRequest, options GenerateOptions, response NormalizedResponse, resultErr error, startedAt, completedAt time.Time) error {
+	inputPrompt, err := activityInputPrompt(request)
+	if err != nil {
+		return err
+	}
 	stateValue := projectactivity.StateCompleted
 	content := activityResponseContent(response)
 	errorCode := ""
@@ -163,12 +234,36 @@ func (recorder *PostgresActivityRecorder) Finish(ctx context.Context, request No
 		TaskID: request.TaskID, Flow: activityFlowForRole(request.Role),
 		AgentInstanceID: request.AgentInstanceID, Role: activityDisplayRole(request),
 		Sender: projectactivity.SenderAgent, State: stateValue,
-		Content: content, ErrorCode: errorCode, Provider: provider, Model: model,
+		Content: content, InputPrompt: inputPrompt, ErrorCode: errorCode, Provider: provider, Model: model,
 		InputTokens: response.Usage.InputTokens, OutputTokens: response.Usage.OutputTokens,
 		LatencyMS:    elapsedMilliseconds(startedAt, completedAt),
 		OutputSHA256: outputSHA256,
 		CreatedAt:    startedAt.UTC(), UpdatedAt: completedAt.UTC(),
 	})
+}
+
+func activityInputPrompt(request NormalizedRequest) (string, error) {
+	encoded, err := json.MarshalIndent(struct {
+		Messages          []Message        `json:"messages"`
+		Tools             []ToolDefinition `json:"tools,omitempty"`
+		ResponseSchemaRef string           `json:"responseSchemaRef,omitempty"`
+		ResponseSchema    json.RawMessage  `json:"responseSchema,omitempty"`
+		MaxOutputTokens   int              `json:"maxOutputTokens"`
+		ThinkingBudget    int              `json:"thinkingBudget,omitempty"`
+		Temperature       float64          `json:"temperature"`
+		TopP              float64          `json:"topP,omitempty"`
+		TopK              int              `json:"topK,omitempty"`
+		ReasoningEffort   string           `json:"reasoningEffort,omitempty"`
+	}{
+		Messages: request.Messages, Tools: request.Tools, ResponseSchemaRef: request.ResponseSchemaRef,
+		ResponseSchema: request.ResponseSchema, MaxOutputTokens: request.MaxOutputTokens,
+		ThinkingBudget: request.ThinkingBudget, Temperature: request.Temperature, TopP: request.TopP,
+		TopK: request.TopK, ReasoningEffort: request.ReasoningEffort,
+	}, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
 }
 
 func (recorder *PostgresActivityRecorder) RecordAttempt(ctx context.Context, request NormalizedRequest, options GenerateOptions, attempt ActivityAttempt, occurredAt time.Time) error {
@@ -247,6 +342,8 @@ func commandReviewActivity(request NormalizedRequest) bool {
 
 type activityDeltaContextKey struct{}
 type activityReasoningSummaryContextKey struct{}
+type activityReasoningContentContextKey struct{}
+type activityReasoningContentFinalizerContextKey struct{}
 
 func withActivityDeltaRecorder(ctx context.Context, callback func(string)) context.Context {
 	if callback == nil {
@@ -284,6 +381,44 @@ func ReportActivityReasoningSummary(ctx context.Context, delta string) {
 	}
 }
 
+func withActivityReasoningContentRecorder(ctx context.Context, callback func(string)) context.Context {
+	if callback == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, activityReasoningContentContextKey{}, callback)
+}
+
+// ReportActivityReasoningContent records reasoning text explicitly returned by
+// a provider. Adapters must not synthesize hidden model reasoning.
+func ReportActivityReasoningContent(ctx context.Context, delta string) {
+	if ctx == nil || delta == "" {
+		return
+	}
+	callback, _ := ctx.Value(activityReasoningContentContextKey{}).(func(string))
+	if callback != nil {
+		callback(delta)
+	}
+}
+
+func withActivityReasoningContentFinalizer(ctx context.Context, callback func(string)) context.Context {
+	if callback == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, activityReasoningContentFinalizerContextKey{}, callback)
+}
+
+// ReplaceActivityReasoningContent publishes authoritative terminal reasoning
+// when a stream was incomplete or out of order.
+func ReplaceActivityReasoningContent(ctx context.Context, content string) {
+	if ctx == nil || content == "" {
+		return
+	}
+	callback, _ := ctx.Value(activityReasoningContentFinalizerContextKey{}).(func(string))
+	if callback != nil {
+		callback(content)
+	}
+}
+
 func (g *Gateway) recordActivityStart(ctx context.Context, request NormalizedRequest, options GenerateOptions, startedAt time.Time) {
 	if g.activityRecorder == nil {
 		return
@@ -313,6 +448,32 @@ func (g *Gateway) recordActivityReasoningSummary(ctx context.Context, request No
 	recordContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer cancel()
 	_ = recorder.AppendReasoningSummary(recordContext, request, delta, g.clock().UTC())
+}
+
+func (g *Gateway) recordActivityReasoningContent(ctx context.Context, request NormalizedRequest, delta string) {
+	if g.activityRecorder == nil || delta == "" {
+		return
+	}
+	recorder, ok := g.activityRecorder.(ActivityReasoningContentRecorder)
+	if !ok {
+		return
+	}
+	recordContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	_ = recorder.AppendReasoningContent(recordContext, request, delta, g.clock().UTC())
+}
+
+func (g *Gateway) recordActivityReasoningContentFinal(ctx context.Context, request NormalizedRequest, content string) {
+	if g.activityRecorder == nil || content == "" {
+		return
+	}
+	recorder, ok := g.activityRecorder.(ActivityReasoningContentFinalizer)
+	if !ok {
+		return
+	}
+	recordContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	_ = recorder.SetReasoningContent(recordContext, request, content, g.clock().UTC())
 }
 
 func (g *Gateway) recordActivityFinish(ctx context.Context, request NormalizedRequest, options GenerateOptions, response NormalizedResponse, resultErr error, startedAt time.Time) {

@@ -127,9 +127,10 @@ func TestGenerateUsesResponsesAndPreservesToolHistory(t *testing.T) {
 		if strings.Contains(string(encoded), "prompt_cache_breakpoint") || strings.Contains(string(encoded), "prompt_cache_options") || strings.Contains(string(encoded), `"context":`) {
 			t.Fatalf("explicit cache controls = %s", encoded)
 		}
-		if payload.Model != "gpt-5.6-sol" || payload.MaxOutputTokens != 16 || payload.Reasoning == nil || payload.Reasoning.Effort != "high" || payload.Reasoning.Summary != "auto" || payload.Temperature != nil || payload.TopP != nil || len(payload.Tools) != 1 || payload.Text == nil || payload.Text.Format.Type != "json_schema" || payload.PromptCacheKey == "" {
+		if !payload.Stream || payload.Model != "gpt-5.6-sol" || payload.MaxOutputTokens != 16 || payload.Reasoning == nil || payload.Reasoning.Effort != "max" || payload.Reasoning.Summary != "auto" || payload.Temperature != nil || payload.TopP != nil || len(payload.Tools) != 1 || payload.Text == nil || payload.Text.Format.Type != "json_schema" || payload.PromptCacheKey == "" {
 			t.Fatalf("payload = %#v", payload)
 		}
+		writer.Header().Set("Content-Type", "text/event-stream")
 		switch providerCalls {
 		case 1:
 			if len(payload.Input) != 2 || payload.Input[0].Role != "system" || payload.Input[1].Role != "user" {
@@ -138,7 +139,7 @@ func TestGenerateUsesResponsesAndPreservesToolHistory(t *testing.T) {
 			if payload.Input[0].Content != "rules" {
 				t.Fatalf("system content = %q", payload.Input[0].Content)
 			}
-			_, _ = writer.Write([]byte(`{"id":"resp-1","model":"gpt-test-2026-08","status":"completed","output":[{"type":"reasoning","id":"rs-1","encrypted_content":"opaque-reasoning"},{"type":"function_call","id":"fc-1","call_id":"call-1","name":"repo.read","arguments":"{\"path\":\"README.md\"}"}],"usage":{"input_tokens":12,"output_tokens":5,"total_tokens":17,"input_tokens_details":{"cached_tokens":9,"cache_write_tokens":2}}}`))
+			_, _ = writer.Write([]byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"model\":\"gpt-test-2026-08\",\"status\":\"completed\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs-1\",\"encrypted_content\":\"opaque-reasoning\"},{\"type\":\"function_call\",\"id\":\"fc-1\",\"call_id\":\"call-1\",\"name\":\"repo.read\",\"arguments\":\"{\\\"path\\\":\\\"README.md\\\"}\"}],\"usage\":{\"input_tokens\":12,\"output_tokens\":5,\"total_tokens\":17,\"input_tokens_details\":{\"cached_tokens\":9,\"cache_write_tokens\":2}}}}\n\n"))
 		case 2:
 			if len(payload.Input) != 5 || payload.Input[2].Type != "reasoning" || payload.Input[2].EncryptedContent != "opaque-reasoning" {
 				t.Fatalf("continued input = %#v", payload.Input)
@@ -150,7 +151,7 @@ func TestGenerateUsesResponsesAndPreservesToolHistory(t *testing.T) {
 			if result.Type != "function_call_output" || result.CallID != "call-1" || result.Output != `{"content":"README"}` {
 				t.Fatalf("function output input = %#v", result)
 			}
-			_, _ = writer.Write([]byte(`{"id":"resp-2","model":"gpt-test-2026-08","status":"completed","output":[{"type":"reasoning","id":"rs-2"},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"{\"ok\":true}"}]}],"usage":{"input_tokens":20,"output_tokens":4,"total_tokens":24}}`))
+			_, _ = writer.Write([]byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-2\",\"model\":\"gpt-test-2026-08\",\"status\":\"completed\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs-2\"},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"{\\\"ok\\\":true}\"}]}],\"usage\":{\"input_tokens\":20,\"output_tokens\":4,\"total_tokens\":24}}}\n\n"))
 		default:
 			t.Fatalf("provider calls = %d", providerCalls)
 		}
@@ -165,7 +166,7 @@ func TestGenerateUsesResponsesAndPreservesToolHistory(t *testing.T) {
 	})
 	request := testRequest()
 	request.Model = "gpt-5.6-sol"
-	request.ReasoningEffort = "high"
+	request.ReasoningEffort = "max"
 	request.TopP = 0.8
 	request.PromptDigest = "sha256:prompt"
 	request.ToolSchemaDigest = "sha256:tools"

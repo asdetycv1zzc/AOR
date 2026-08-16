@@ -72,7 +72,7 @@ func (a *Adapter) encodeResponsesRequest(request modelgateway.NormalizedRequest,
 			Type: "function", Name: tool.Name, Description: tool.Description, Parameters: parameters,
 		})
 	}
-	if len(request.ResponseSchema) != 0 && !stream {
+	if len(request.ResponseSchema) != 0 {
 		providerSchema, err := compatibleResponseSchema(request.ResponseSchema)
 		if err != nil {
 			return nil, err
@@ -115,7 +115,7 @@ func (a *Adapter) decodeResponsesResponse(request modelgateway.NormalizedRequest
 			}
 			for _, part := range item.Content {
 				switch part.Type {
-				case "output_text":
+				case "output_text", "text":
 					text.WriteString(part.Text)
 				case "refusal":
 					if part.Refusal != "" {
@@ -358,17 +358,66 @@ type responsesResponse struct {
 
 type responsesOutputItem struct {
 	raw       json.RawMessage
-	Type      string `json:"type"`
-	ID        string `json:"id,omitempty"`
-	Role      string `json:"role,omitempty"`
-	CallID    string `json:"call_id,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Arguments string `json:"arguments,omitempty"`
-	Content   []struct {
-		Type    string `json:"type"`
-		Text    string `json:"text,omitempty"`
-		Refusal string `json:"refusal,omitempty"`
-	} `json:"content,omitempty"`
+	Type      string           `json:"type"`
+	ID        string           `json:"id,omitempty"`
+	Role      string           `json:"role,omitempty"`
+	CallID    string           `json:"call_id,omitempty"`
+	Name      string           `json:"name,omitempty"`
+	Arguments string           `json:"arguments,omitempty"`
+	Content   responsesContent `json:"content,omitempty"`
+}
+
+type responsesContentPart struct {
+	Type    string `json:"type"`
+	Text    string `json:"text,omitempty"`
+	Refusal string `json:"refusal,omitempty"`
+}
+
+type responsesContent []responsesContentPart
+
+func (content *responsesContent) UnmarshalJSON(encoded []byte) error {
+	var text string
+	if json.Unmarshal(encoded, &text) == nil {
+		*content = responsesContent{{Type: "reasoning_text", Text: text}}
+		return nil
+	}
+	var parts []responsesContentPart
+	if err := json.Unmarshal(encoded, &parts); err == nil {
+		*content = parts
+		return nil
+	}
+	var part responsesContentPart
+	if err := json.Unmarshal(encoded, &part); err != nil {
+		return err
+	}
+	*content = responsesContent{part}
+	return nil
+}
+
+func responsesReasoningContent(payload []byte) (string, error) {
+	var response responsesResponse
+	if json.Unmarshal(payload, &response) != nil {
+		return "", modelgateway.ErrOutputSchema
+	}
+	var reasoning strings.Builder
+	for _, item := range response.Output {
+		if item.Type != "reasoning" {
+			continue
+		}
+		for _, part := range item.Content {
+			if part.Type != "" && part.Type != "reasoning_text" && part.Type != "text" {
+				continue
+			}
+			if len(part.Text) > modelgateway.MaximumResponseBytes-reasoning.Len() {
+				return "", modelgateway.ErrOutputTooLarge
+			}
+			reasoning.WriteString(part.Text)
+		}
+	}
+	if !utf8.ValidString(reasoning.String()) {
+		return "", modelgateway.ErrOutputSchema
+	}
+	return reasoning.String(), nil
 }
 
 func (item *responsesOutputItem) UnmarshalJSON(encoded []byte) error {

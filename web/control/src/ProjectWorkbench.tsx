@@ -218,9 +218,13 @@ function messageAvatar(sender: ProjectActivityMessage["sender"]) {
 
 function messageContent(message: ProjectActivityMessage) {
   const content = message.content || (message.state === "FAILED" ? "处理失败，详情见错误码。" : "");
+  const hasTrace = Boolean(message.inputPrompt || message.reasoningContent || message.reasoningSummary);
+  const output = <p>{content}{message.state === "STREAMING" && <span className="typing-indicator" aria-label={content ? undefined : "Agent 正在响应"} aria-hidden={content ? "true" : undefined}><i /><i /><i /></span>}</p>;
   return <>
-    {message.reasoningSummary && <div className="message-reasoning"><strong>思考摘要</strong><p>{message.reasoningSummary}</p></div>}
-    <p>{content}{message.state === "STREAMING" && <span className="typing-indicator" aria-label={content ? undefined : "Agent 正在响应"} aria-hidden={content ? "true" : undefined}><i /><i /><i /></span>}</p>
+    {message.inputPrompt && <section className="message-trace is-input"><strong>输入提示词</strong><pre>{message.inputPrompt}</pre></section>}
+    {message.reasoningContent && <section className="message-trace is-reasoning"><strong>思考链</strong><pre>{message.reasoningContent}</pre></section>}
+    {message.reasoningSummary && <section className="message-trace is-summary"><strong>思考摘要</strong><pre>{message.reasoningSummary}</pre></section>}
+    {hasTrace ? <section className="message-output"><strong>输出文本</strong>{output}</section> : output}
   </>;
 }
 
@@ -383,7 +387,7 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
   const flows = activity?.flows?.length ? activity.flows : fallbackFlows;
   const visibleAgents = agents.filter((agent) => agent.flow === activeFlow);
   const visibleMessages = messages.filter((item) => messageBelongsToConversation(item, activeFlow, selectedAgent));
-  const visibleMessageVersion = visibleMessages.map((item) => `${item.id}:${item.updatedAt || item.createdAt}:${item.content.length}:${item.reasoningSummary?.length || 0}`).join("|");
+  const visibleMessageVersion = visibleMessages.map((item) => `${item.id}:${item.updatedAt || item.createdAt}:${item.content.length}:${item.inputPrompt?.length || 0}:${item.reasoningContent?.length || 0}:${item.reasoningSummary?.length || 0}`).join("|");
   const crosstoolTool = pendingCrosstoolTool(goalSpec);
   const goalProcessing = activity?.goalProcessing ?? project.goalProcessing;
   const showArchiveUpload = activeFlow === "GOAL"

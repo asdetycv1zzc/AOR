@@ -18,13 +18,16 @@ import (
 // terminal Responses object for final validation and budget settlement.
 type responsesResponseStream struct {
 	*responseStream
-	request      modelgateway.NormalizedRequest
-	capabilities modelgateway.ModelCapabilities
-	deltaBytes   int
-	summaryBytes int
-	summaryItem  string
-	summaryIndex int
-	summarySet   bool
+	request          modelgateway.NormalizedRequest
+	capabilities     modelgateway.ModelCapabilities
+	deltaBytes       int
+	reasoningContent []byte
+	reasoningBytes   int
+	summaryBytes     int
+	summaryItem      string
+	summaryIndex     int
+	summarySet       bool
+	finalResponse    modelgateway.NormalizedResponse
 }
 
 type responsesStreamError struct {
@@ -187,6 +190,9 @@ func (s *responsesResponseStream) readResponsesJSON() {
 	s.stateMu.RLock()
 	content := append([]byte(nil), s.content...)
 	s.stateMu.RUnlock()
+	if len(content) == 0 {
+		return
+	}
 	modelgateway.ReportActivityDelta(s.activityContext, string(content))
 	delta, _ := json.Marshal(struct {
 		Delta string `json:"delta"`
@@ -209,6 +215,8 @@ func (s *responsesResponseStream) observeResponsesEvent(eventName string, payloa
 		ID           string                `json:"id"`
 		Model        string                `json:"model"`
 		Delta        string                `json:"delta"`
+		Text         string                `json:"text"`
+		Content      json.RawMessage       `json:"content"`
 		ItemID       string                `json:"item_id"`
 		SummaryIndex *int                  `json:"summary_index"`
 		Error        *responsesStreamError `json:"error"`
@@ -228,6 +236,30 @@ func (s *responsesResponseStream) observeResponsesEvent(eventName string, payloa
 	}
 
 	switch eventName {
+	case "response.reasoning_text.delta", "response.reasoning_content.delta", "response.reasoning.delta":
+		if event.Delta == "" {
+			return nil, false, nil
+		}
+		if !utf8.ValidString(event.Delta) || len(event.Delta) > modelgateway.MaximumResponseBytes-s.reasoningBytes {
+			return nil, false, modelgateway.ErrOutputTooLarge
+		}
+		s.reasoningContent = append(s.reasoningContent, event.Delta...)
+		s.reasoningBytes = len(s.reasoningContent)
+		modelgateway.ReportActivityReasoningContent(s.activityContext, event.Delta)
+		return nil, false, nil
+	case "response.reasoning_text.done", "response.reasoning_content.done":
+		text, err := reasoningEventText(event.Text, event.Content)
+		if err != nil || text == "" {
+			if err != nil {
+				return nil, false, err
+			}
+			return nil, false, nil
+		}
+		if !utf8.ValidString(text) || len(text) > modelgateway.MaximumResponseBytes {
+			return nil, false, modelgateway.ErrOutputTooLarge
+		}
+		s.reconcileReasoningContent(text)
+		return nil, false, nil
 	case "response.reasoning_summary_text.delta":
 		if event.Delta == "" {
 			return nil, false, nil
@@ -360,6 +392,10 @@ func (s *responsesResponseStream) completeResponsesResponse(payload json.RawMess
 	if err != nil {
 		return err
 	}
+	reasoning, err := responsesReasoningContent(payload)
+	if err != nil {
+		return err
+	}
 	if err := s.observeResponsesMetadata(response.ProviderRequestID, response.ModelVersion, nil); err != nil {
 		return err
 	}
@@ -368,9 +404,88 @@ func (s *responsesResponseStream) completeResponsesResponse(payload json.RawMess
 	s.usage = response.Usage
 	s.usageFound = true
 	s.finishReason = response.FinishReason
+	s.finalResponse = cloneResponsesNormalizedResponse(response)
 	s.complete = true
 	s.stateMu.Unlock()
+	if reasoning != "" {
+		s.reconcileReasoningContent(reasoning)
+	}
 	return nil
+}
+
+func reasoningEventText(text string, content json.RawMessage) (string, error) {
+	if text != "" {
+		return text, nil
+	}
+	if len(content) == 0 || string(content) == "null" {
+		return "", nil
+	}
+	var value string
+	if json.Unmarshal(content, &value) == nil {
+		return value, nil
+	}
+	var parts responsesContent
+	if err := json.Unmarshal(content, &parts); err != nil {
+		return "", modelgateway.ErrOutputSchema
+	}
+	var result strings.Builder
+	for _, part := range parts {
+		if part.Type == "" || part.Type == "text" || part.Type == "reasoning_text" {
+			result.WriteString(part.Text)
+		}
+	}
+	return result.String(), nil
+}
+
+func (s *responsesResponseStream) reconcileReasoningContent(terminal string) {
+	if terminal == "" {
+		return
+	}
+	s.stateMu.Lock()
+	current := string(s.reasoningContent)
+	if current == terminal {
+		s.stateMu.Unlock()
+		return
+	}
+	if strings.HasPrefix(terminal, current) {
+		suffix := terminal[len(current):]
+		s.reasoningContent = append(s.reasoningContent, suffix...)
+		s.reasoningBytes = len(s.reasoningContent)
+		s.stateMu.Unlock()
+		if suffix != "" {
+			modelgateway.ReportActivityReasoningContent(s.activityContext, suffix)
+		}
+		return
+	}
+	if strings.HasPrefix(current, terminal) {
+		s.stateMu.Unlock()
+		return
+	}
+	s.reasoningContent = append(s.reasoningContent[:0], terminal...)
+	s.reasoningBytes = len(s.reasoningContent)
+	s.stateMu.Unlock()
+	modelgateway.ReplaceActivityReasoningContent(s.activityContext, terminal)
+}
+
+func (s *responsesResponseStream) FinalResponse() (modelgateway.NormalizedResponse, error) {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	if !s.complete {
+		return modelgateway.NormalizedResponse{}, modelgateway.ErrOutputSchema
+	}
+	return cloneResponsesNormalizedResponse(s.finalResponse), nil
+}
+
+func cloneResponsesNormalizedResponse(response modelgateway.NormalizedResponse) modelgateway.NormalizedResponse {
+	result := response
+	result.Content = append(json.RawMessage(nil), response.Content...)
+	result.ToolCalls = make([]modelgateway.ToolCall, len(response.ToolCalls))
+	for index, call := range response.ToolCalls {
+		result.ToolCalls[index] = call
+		result.ToolCalls[index].Arguments = append(json.RawMessage(nil), call.Arguments...)
+	}
+	result.AppliedInterventions = append([]string(nil), response.AppliedInterventions...)
+	return result
 }
 
 func responsesStreamFailure(err error) error {

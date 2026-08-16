@@ -22,7 +22,7 @@ func TestResponsesStreamPreservesTerminalResponse(t *testing.T) {
 		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
 		}
-		if !payload.Stream || payload.Text != nil || payload.Reasoning == nil || payload.Reasoning.Summary != "auto" {
+		if !payload.Stream || payload.Text == nil || payload.Text.Format.Type != "json_schema" || payload.Reasoning == nil || payload.Reasoning.Summary != "auto" {
 			t.Fatal("Responses stream request did not enable streaming")
 		}
 		writer.Header().Set("Content-Type", "text/event-stream")
@@ -39,6 +39,10 @@ data: {"type":"response.output_text.delta","item_id":"msg-1","output_index":0,"c
 data: {"type":"response.reasoning_summary_text.delta","item_id":"rs-1","output_index":0,"summary_index":0,"delta":"Checking constraints"}
 
 `,
+			`event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","item_id":"rs-1","output_index":0,"content_index":0,"delta":"Inspecting"}
+
+`,
 			`event: response.reasoning_summary_text.delta
 data: {"type":"response.reasoning_summary_text.delta","item_id":"rs-1","output_index":0,"summary_index":1,"delta":"Selecting tools"}
 
@@ -47,7 +51,7 @@ data: {"type":"response.reasoning_summary_text.delta","item_id":"rs-1","output_i
 
 `,
 			`event: response.completed
-data: {"type":"response.completed","response":{"id":"resp-stream","model":"gpt-test-v3","status":"completed","output":[{"type":"reasoning","id":"rs-1"},{"type":"message","id":"msg-1","role":"assistant","content":[{"type":"output_text","text":"{\"ok\":true}"}]}],"usage":{"input_tokens":9,"output_tokens":3,"total_tokens":12,"input_tokens_details":{"cached_tokens":6,"cache_write_tokens":1}}}}
+data: {"type":"response.completed","response":{"id":"resp-stream","model":"gpt-test-v3","status":"completed","output":[{"type":"reasoning","id":"rs-1","content":"Inspecting the request"},{"type":"message","id":"msg-1","role":"assistant","content":[{"type":"output_text","text":"{\"ok\":true}"}]}],"usage":{"input_tokens":9,"output_tokens":3,"total_tokens":12,"input_tokens_details":{"cached_tokens":6,"cache_write_tokens":1}}}}
 
 `,
 		}
@@ -99,8 +103,8 @@ data: {"type":"response.completed","response":{"id":"resp-stream","model":"gpt-t
 		t.Fatalf("final usage = %#v, ready = %v", usage, ready)
 	}
 	responsesStream := stream.(*responsesResponseStream)
-	if responsesStream.summaryBytes != len("Checking constraints\n\nSelecting tools") || responsesStream.summaryIndex != 1 {
-		t.Fatalf("reasoning summary bytes = %d", responsesStream.summaryBytes)
+	if responsesStream.summaryBytes != len("Checking constraints\n\nSelecting tools") || responsesStream.summaryIndex != 1 || responsesStream.reasoningBytes != len("Inspecting the request") {
+		t.Fatalf("reasoning bytes = %d, summary bytes = %d", responsesStream.reasoningBytes, responsesStream.summaryBytes)
 	}
 	finishReason, ready := responsesStream.FinalFinishReason()
 	if !ready || finishReason != "stop" {
