@@ -134,8 +134,9 @@ func ValidateCompose(input []byte) error {
 	if err := root.Decode(&document); err != nil || len(document.Services) == 0 {
 		return ErrInvalidDeployment
 	}
-	for _, service := range document.Services {
-		if service.Privileged || service.NetworkMode != "host" {
+	for name, service := range document.Services {
+		isolatedToolchainProber := name == "aor-toolchain-prober" && service.NetworkMode == "none"
+		if service.Privileged || service.NetworkMode != "host" && !isolatedToolchainProber {
 			return ErrInvalidDeployment
 		}
 		for _, volume := range service.Volumes {

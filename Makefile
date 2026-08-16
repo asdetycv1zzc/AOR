@@ -8,7 +8,7 @@ export GOTOOLCHAIN = local
 COMPOSE = docker compose --parallel 1 -f deploy/compose/docker-compose.yml
 COMPOSE_DEPENDENCIES = postgres temporal temporal-ui nats minio opa identity otel-collector
 COMPOSE_INITIALIZERS = postgres-migrate temporal-init minio-init
-COMPOSE_AOR = aor-api aor-curator aor-model-gateway aor-tool-broker aor-worker
+COMPOSE_AOR = aor-api aor-curator aor-model-gateway aor-tool-broker aor-worker aor-toolchain-prober aor-toolchain-provisioner
 
 build:
 	go build ./...
@@ -112,6 +112,8 @@ compose-aor-up: compose-deps-up
 	$(COMPOSE) --profile aor build aor-model-gateway
 	$(COMPOSE) --profile aor build aor-tool-broker
 	$(COMPOSE) --profile aor build aor-worker
+	$(COMPOSE) --profile aor build aor-toolchain-prober
+	$(COMPOSE) --profile aor build aor-toolchain-provisioner
 	$(COMPOSE) --profile aor up -d --no-build --no-deps --wait --wait-timeout 240 $(COMPOSE_AOR)
 
 compose-prebuilt-up: compose-deps-up

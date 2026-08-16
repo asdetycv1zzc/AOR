@@ -119,7 +119,7 @@ WITH scheduled AS (
   ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7, $8, $9,
             'WAITING', 0, $10, $10, $10)
   ON CONFLICT (tenant_id, project_id, goal_spec_id, goal_version) DO NOTHING
-  RETURNING id
+  RETURNING id, message_id, principal_id, principal_type, principal_role
 )
 SELECT id::text, message_id, principal_id, principal_type, principal_role
 FROM scheduled

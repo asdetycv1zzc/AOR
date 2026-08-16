@@ -257,7 +257,7 @@ func validateInstalledTool(root string, tool InstalledTool) error {
 	}
 	seenExecutables := make(map[string]struct{}, len(tool.Executables))
 	for _, executable := range tool.Executables {
-		if !safeToken(executable.Name, 128) {
+		if !safeExecutableName(executable.Name, 128) {
 			return ErrInvalidInventory
 		}
 		path, err := containedPath(root, filepath.Join(tool.ID, executable.Path))
@@ -333,6 +333,19 @@ func safeToken(value string, maximum int) bool {
 	}
 	for _, character := range value {
 		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '.' || character == '_' || character == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func safeExecutableName(value string, maximum int) bool {
+	if !safeText(value, maximum) || strings.ContainsAny(value, "/\\") {
+		return false
+	}
+	for _, character := range value {
+		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '.' || character == '_' || character == '-' || character == '+' {
 			continue
 		}
 		return false

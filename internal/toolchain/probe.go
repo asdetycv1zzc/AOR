@@ -248,7 +248,7 @@ func validateProbeRequest(request ProbeRequest, workRoot string) error {
 		request.Root = resolvedRoot
 	}
 	for _, command := range request.Commands {
-		if !safeToken(command.Name, 128) || len(command.Args) > 16 {
+		if !safeExecutableName(command.Name, 128) || len(command.Args) > 16 {
 			return ErrInvalidInventory
 		}
 		if len(command.Source) > 4096 || strings.ContainsRune(command.Source, '\x00') {

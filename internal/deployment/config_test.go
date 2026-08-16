@@ -85,6 +85,22 @@ func TestDeploymentProfilesFailClosed(t *testing.T) {
 	}
 }
 
+func TestComposeStartupIncludesToolchainServices(t *testing.T) {
+	makefile, err := os.ReadFile("../../Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{
+		"COMPOSE_AOR = aor-api aor-curator aor-model-gateway aor-tool-broker aor-worker aor-toolchain-prober aor-toolchain-provisioner",
+		"--profile aor build aor-toolchain-prober",
+		"--profile aor build aor-toolchain-provisioner",
+	} {
+		if !strings.Contains(string(makefile), value) {
+			t.Errorf("Makefile missing toolchain service startup setting %q", value)
+		}
+	}
+}
+
 func TestComposeTelemetryDependencyCannotBeDropped(t *testing.T) {
 	compose, err := os.ReadFile("../../deploy/compose/docker-compose.yml")
 	if err != nil {

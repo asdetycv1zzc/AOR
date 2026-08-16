@@ -56,7 +56,7 @@ func TestUnixProbeServerChecksVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := ProbeRequest{Root: root, ExpectedVersion: "PASS", Commands: []ProbeCommand{{Name: "tool", Path: "bin/tool", Args: []string{"-test.v", "-test.run=^$"}}}}
+	request := ProbeRequest{Root: root, ExpectedVersion: "PASS", Commands: []ProbeCommand{{Name: "g++", Path: "bin/tool", Args: []string{"-test.v", "-test.run=^$"}}}}
 	if err := client.Probe(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
