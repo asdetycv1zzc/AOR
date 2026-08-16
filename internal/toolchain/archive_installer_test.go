@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -64,6 +65,98 @@ func TestArchiveInstallerRejectsTraversalAndGCC(t *testing.T) {
 	_, err = installer.Install(context.Background(), gcc, []string{"C"})
 	if !errors.Is(err, ErrUnsupportedTool) {
 		t.Fatalf("expected GCC rejection, got %v", err)
+	}
+}
+
+// Minimal BSD-3-Clause fixture from bodgit/sevenzip v1.6.5 containing "bar" and "foo".
+const test7zArchiveBase64 = "N3q8ryccAASgR6WICAAAAAAAAABmAAAAAAAAAN2R8/FiYXIKZm9vCgEEBgACCQQEAAcLAgABAQABAQAMBAQACAoB6bOiBKhlMn4AAAUCGQUAAAAAABERAGIAYQByAAAAZgBvAG8AAAAZAgAAFBIBAACFM3PyY9YBAFgCcvJj1gEVCgEAIICkgSCApIEAAA=="
+
+func TestArchiveKindFromUploadedContent(t *testing.T) {
+	sevenZip, err := base64.StdEncoding.DecodeString(test7zArchiveBase64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		payload []byte
+		kind    string
+	}{
+		{name: "tar", payload: portableArchive(t, "bin/tool", "tool"), kind: "tar"},
+		{name: "tar gzip", payload: []byte{0x1f, 0x8b}, kind: "tar.gz"},
+		{name: "tar xz", payload: []byte{0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00}, kind: "tar.xz"},
+		{name: "zip", payload: []byte{'P', 'K', 0x03, 0x04}, kind: "zip"},
+		{name: "7z", payload: sevenZip, kind: "7z"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "uploaded.archive")
+			if err := os.WriteFile(path, test.payload, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			kind, err := archiveKindFromFile(path)
+			if err != nil || kind != test.kind {
+				t.Fatalf("kind = %q, err = %v; want %q", kind, err, test.kind)
+			}
+		})
+	}
+}
+
+func TestArchiveInstallerExtractsUploaded7zWithinLimits(t *testing.T) {
+	archive, err := base64.StdEncoding.DecodeString(test7zArchiveBase64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	archivePath := filepath.Join(workspace, "toolchain.archive")
+	if err := os.WriteFile(archivePath, archive, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	installer, err := NewArchiveInstaller(ArchiveInstallerConfig{
+		ToolchainRoot: filepath.Join(workspace, "tools"), WorkRoot: filepath.Join(workspace, "work"), MaxExtractBytes: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(workspace, "extracted")
+	if err := os.Mkdir(destination, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := installer.extract(context.Background(), archivePath, "", destination); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"bar", "foo"} {
+		content, err := os.ReadFile(filepath.Join(destination, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(content) != name+"\n" {
+			t.Fatalf("%s content = %q", name, content)
+		}
+	}
+}
+
+func TestArchiveInstallerRejectsOversizedUploaded7z(t *testing.T) {
+	archive, err := base64.StdEncoding.DecodeString(test7zArchiveBase64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	archivePath := filepath.Join(workspace, "toolchain.archive")
+	if err := os.WriteFile(archivePath, archive, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	installer, err := NewArchiveInstaller(ArchiveInstallerConfig{
+		ToolchainRoot: filepath.Join(workspace, "tools"), WorkRoot: filepath.Join(workspace, "work"), MaxExtractBytes: 7,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(workspace, "extracted")
+	if err := os.Mkdir(destination, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := installer.extract(context.Background(), archivePath, "", destination); !errors.Is(err, ErrArchiveLimit) {
+		t.Fatalf("expected archive limit error, got %v", err)
 	}
 }
 

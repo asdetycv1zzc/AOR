@@ -620,7 +620,7 @@ paths:
     post:
       tags: [Artifacts]
       operationId: uploadToolchainArchive
-      summary: Upload a prebuilt crosstool-ng GCC or G++ tar.gz artifact
+      summary: Upload a prebuilt crosstool-ng GCC or G++ archive
       description: The immutable upload is not scheduled until a subsequent Goal message authorizes and references it.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -637,7 +637,7 @@ paths:
                 file:
                   type: string
                   format: binary
-                  description: Prebuilt crosstool-ng tar.gz archive, at most 4 GiB.
+                  description: Prebuilt crosstool-ng .tar, .tar.xz, .tar.gz, .zip, or .7z archive, at most 4 GiB.
                 toolName:
                   type: string
                   enum: [GCC, G++, GNU GCC, GNU G++, GNU C++]
@@ -651,7 +651,7 @@ paths:
                   maxLength: 128
             encoding:
               file:
-                contentType: application/gzip, application/x-gzip
+                contentType: application/x-tar, application/x-xz, application/gzip, application/x-gzip, application/zip, application/x-7z-compressed
       responses:
         '201':
           description: Project-scoped immutable archive; linked remains false until Goal negotiation references it.

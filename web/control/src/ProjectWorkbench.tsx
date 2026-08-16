@@ -69,6 +69,21 @@ const crosstoolToolNames = new Set([
   "gnu compiler collection c compiler gcc", "gnu compiler collection c++ compiler g++",
 ]);
 const maximumToolchainArchiveSize = 4 * 1024 * 1024 * 1024;
+const supportedToolchainArchiveExtensions = [".tar", ".tar.xz", ".tar.gz", ".zip", ".7z"];
+const toolchainArchiveAccept = [
+  ...supportedToolchainArchiveExtensions,
+  "application/x-tar",
+  "application/x-xz",
+  "application/gzip",
+  "application/x-gzip",
+  "application/zip",
+  "application/x-7z-compressed",
+].join(",");
+
+function isSupportedToolchainArchive(fileName: string): boolean {
+  const lower = fileName.toLowerCase();
+  return supportedToolchainArchiveExtensions.some((extension) => lower.endsWith(extension));
+}
 
 function normalizeCrosstoolToolName(name: string): string {
   return name
@@ -100,7 +115,7 @@ function toolIdentity(tool: Pick<GoalToolchainTool, "name" | "version" | "archit
 
 function archiveAuthorizationMessage(upload: ToolchainArchiveUpload): string {
   return [
-    "我明确授权安装以下由我上传的预构建、路径无关的 crosstool-ng C/C++ 工具链 tar.gz 归档。",
+    "我明确授权安装以下由我上传的预构建、路径无关的 crosstool-ng C/C++ 工具链归档。",
     "请在下一版 GoalSpec 中保持工具名称、版本和架构完全一致，将该工具设置为 source=INSTALL_REQUIRED、install.method=CROSSTOOL_NG_ARCHIVE、install.authorized=true，并原样绑定以下不可变产物；install.evidenceRef 必须引用本条用户消息。",
     JSON.stringify({
       toolName: upload.toolName,
@@ -436,8 +451,8 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
 
   const uploadArchive = async () => {
     if (!crosstoolTool || !archiveFile || archiveSubmitting.current || sending || goalProcessing) return;
-    if (!archiveFile.name.toLowerCase().endsWith(".tar.gz")) {
-      setArchiveError("请选择 .tar.gz 格式的 crosstool-ng 产物");
+    if (!isSupportedToolchainArchive(archiveFile.name)) {
+      setArchiveError("请选择 .tar、.tar.xz、.tar.gz、.zip 或 .7z 格式的 crosstool-ng 产物");
       return;
     }
     if (archiveFile.size < 1 || archiveFile.size > maximumToolchainArchiveSize) {
@@ -548,7 +563,7 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
             <section className="workbench-toolchain-upload" aria-labelledby="toolchain-upload-title">
               <header>
                 <FileArchive weight="duotone" />
-                <div><strong id="toolchain-upload-title">上传 C/C++ 工具链</strong><span>crosstool-ng 预构建 tar.gz，最大 4 GiB</span></div>
+                <div><strong id="toolchain-upload-title">上传 C/C++ 工具链</strong><span>支持 tar、tar.xz、tar.gz、zip、7z，最大 4 GiB</span></div>
               </header>
               <dl>
                 <div><dt>工具</dt><dd>{crosstoolTool.name} {crosstoolTool.version}</dd></div>
@@ -565,7 +580,7 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
                   <label className={`toolchain-file-picker${archiveFile ? " has-file" : ""}`}>
                     <input
                       type="file"
-                      accept=".tar.gz,application/gzip,application/x-gzip"
+                      accept={toolchainArchiveAccept}
                       disabled={Boolean(archiveBusy) || sending || goalProcessing}
                       onChange={(event) => {
                         setArchiveFile(event.currentTarget.files?.[0]);
@@ -573,7 +588,7 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
                       }}
                     />
                     <UploadSimple />
-                    <span>{archiveFile ? archiveFile.name : "选择 tar.gz 归档"}</span>
+                    <span>{archiveFile ? archiveFile.name : "选择工具链归档"}</span>
                   </label>
                   <Button appearance="primary" size="small" icon={archiveBusy === "upload" ? <Spinner size="tiny" /> : <UploadSimple />} disabled={!archiveFile || Boolean(archiveBusy) || sending || goalProcessing} onClick={() => void uploadArchive()}>{archiveBusy === "upload" ? "上传中" : goalProcessing ? "Goal 处理中" : "上传并授权"}</Button>
                 </div>

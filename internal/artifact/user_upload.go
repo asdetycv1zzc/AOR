@@ -214,7 +214,15 @@ func validUserUpload(upload UserUpload) bool {
 		return false
 	}
 	mediaType, _, err := mime.ParseMediaType(upload.ContentType)
-	return err == nil && (mediaType == "application/gzip" || mediaType == "application/x-gzip")
+	if err != nil {
+		return false
+	}
+	switch mediaType {
+	case "application/gzip", "application/x-gzip", "application/x-tar", "application/x-xz", "application/zip", "application/x-7z-compressed":
+		return true
+	default:
+		return false
+	}
 }
 
 func userUploadMatches(record Record, upload UserUpload) bool {

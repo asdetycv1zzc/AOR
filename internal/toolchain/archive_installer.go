@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -23,6 +24,7 @@ import (
 	"time"
 
 	"github.com/akimisaka/aor/pkg/contracts"
+	"github.com/bodgit/sevenzip"
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -148,7 +150,7 @@ func (installer *ArchiveInstaller) InstallUploaded(ctx context.Context, tool con
 		tool.Install.Method != contracts.ToolchainInstallCrosstoolNGArchive || !SupportsCrosstoolNGArchive(tool) {
 		return InstalledTool{}, ErrUnsupportedTool
 	}
-	return installer.installArchive(ctx, tool, languages, "toolchain.tar.gz", func(destination string) (string, error) {
+	return installer.installArchive(ctx, tool, languages, "", func(destination string) (string, error) {
 		return installer.copyArchive(source, destination)
 	})
 }
@@ -325,9 +327,18 @@ func (installer *ArchiveInstaller) download(ctx context.Context, rawURL, destina
 
 func (installer *ArchiveInstaller) extract(ctx context.Context, archivePath, rawURL, destination string) error {
 	kind := archiveKind(rawURL)
+	if rawURL == "" {
+		var err error
+		kind, err = archiveKindFromFile(archivePath)
+		if err != nil {
+			return err
+		}
+	}
 	switch kind {
 	case "zip":
 		return installer.extractZip(ctx, archivePath, destination)
+	case "7z":
+		return installer.extract7z(ctx, archivePath, destination)
 	case "tar", "tar.gz", "tar.xz", "tar.zst":
 		reader, closeReader, err := tarStream(ctx, archivePath, kind, installer.maxExtractBytes)
 		if err != nil {
@@ -346,12 +357,42 @@ func archiveKind(rawURL string) string {
 		return ""
 	}
 	path := strings.ToLower(parsed.Path)
-	for _, suffix := range []struct{ suffix, kind string }{{".tar.gz", "tar.gz"}, {".tgz", "tar.gz"}, {".tar.xz", "tar.xz"}, {".txz", "tar.xz"}, {".tar.zst", "tar.zst"}, {".tzst", "tar.zst"}, {".zip", "zip"}, {".tar", "tar"}} {
+	for _, suffix := range []struct{ suffix, kind string }{{".tar.gz", "tar.gz"}, {".tgz", "tar.gz"}, {".tar.xz", "tar.xz"}, {".txz", "tar.xz"}, {".tar.zst", "tar.zst"}, {".tzst", "tar.zst"}, {".zip", "zip"}, {".7z", "7z"}, {".tar", "tar"}} {
 		if strings.HasSuffix(path, suffix.suffix) {
 			return suffix.kind
 		}
 	}
 	return ""
+}
+
+func archiveKindFromFile(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	probe := make([]byte, 512)
+	read, readErr := io.ReadFull(file, probe)
+	if readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) {
+		return "", readErr
+	}
+	probe = probe[:read]
+	switch {
+	case len(probe) >= 6 && bytes.Equal(probe[:6], []byte{0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c}):
+		return "7z", nil
+	case len(probe) >= 6 && bytes.Equal(probe[:6], []byte{0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00}):
+		return "tar.xz", nil
+	case len(probe) >= 4 && bytes.Equal(probe[:2], []byte{'P', 'K'}) &&
+		((probe[2] == 0x03 && probe[3] == 0x04) || (probe[2] == 0x05 && probe[3] == 0x06) || (probe[2] == 0x07 && probe[3] == 0x08)):
+		return "zip", nil
+	case len(probe) >= 2 && probe[0] == 0x1f && probe[1] == 0x8b:
+		return "tar.gz", nil
+	case len(probe) >= 512:
+		if _, err := tar.NewReader(bytes.NewReader(probe)).Next(); err == nil {
+			return "tar", nil
+		}
+	}
+	return "", ErrUnsupportedArchive
 }
 
 func tarStream(ctx context.Context, path, kind string, maximumDecodedBytes int64) (io.Reader, func(), error) {
@@ -571,6 +612,53 @@ func (installer *ArchiveInstaller) extractZip(ctx context.Context, archivePath, 
 		_ = input.Close()
 		if err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func (installer *ArchiveInstaller) extract7z(ctx context.Context, archivePath, destination string) error {
+	reader, err := sevenzip.OpenReader(archivePath)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+	state := extractionState{maxBytes: installer.maxExtractBytes, maxFiles: installer.maxFiles}
+	for _, entry := range reader.File {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if entry.UncompressedSize > uint64(^uint64(0)>>1) || state.addHeader(int64(entry.UncompressedSize)) != nil {
+			return ErrArchiveLimit
+		}
+		path, err := archiveDestination(destination, entry.Name)
+		if err != nil {
+			return err
+		}
+		if err := rejectSymlinkParent(destination, path); err != nil {
+			return err
+		}
+		mode := entry.Mode()
+		if mode.IsDir() {
+			if err := os.MkdirAll(path, sanitizedDirMode(mode)); err != nil {
+				return err
+			}
+			continue
+		}
+		if mode&os.ModeType != 0 {
+			return ErrUnsupportedArchive
+		}
+		input, err := entry.Open()
+		if err != nil {
+			return err
+		}
+		writeErr := writeArchiveFile(path, input, int64(entry.UncompressedSize), mode)
+		closeErr := input.Close()
+		if writeErr != nil {
+			return writeErr
+		}
+		if closeErr != nil {
+			return closeErr
 		}
 	}
 	return nil

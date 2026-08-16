@@ -3,7 +3,7 @@ import json
 from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
-OPENAPI_SHA256 = "sha256:83f650d4623d93c9b69dfc346d40b2789050e638b7f4da000ff8e68dd08e4902"
+OPENAPI_SHA256 = "sha256:4898cba206c5ae70851924d042853239d51b4a7bd1275aef9f8e6b4189a93741"
 
 
 class AORClient:

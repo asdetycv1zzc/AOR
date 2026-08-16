@@ -1,7 +1,9 @@
 package controlapi
 
 import (
+	"archive/tar"
 	"bufio"
+	"bytes"
 	"errors"
 	"io"
 	"mime"
@@ -20,6 +22,7 @@ import (
 const (
 	maximumToolchainArchiveFormBytes = artifact.MaxUserUploadBytes + 1<<20
 	toolchainArchiveUploadTimeout    = 4 * time.Hour
+	toolchainArchiveProbeBytes       = 512
 )
 
 type toolchainArchiveResource struct {
@@ -37,6 +40,8 @@ type toolchainArchiveFields struct {
 	ToolName     string
 	ToolVersion  string
 	Architecture string
+	ArchiveKind  string
+	ContentType  string
 	File         *multipart.Part
 	SizeBytes    int64
 }
@@ -89,18 +94,18 @@ func (handler *Handler) uploadToolchainArchive(response http.ResponseWriter, req
 		writeError(response, request, err)
 		return
 	}
-	buffered := bufio.NewReaderSize(fields.File, 2)
-	magic, err := buffered.Peek(2)
-	if err != nil || magic[0] != 0x1f || magic[1] != 0x8b {
-		writeError(response, request, invalidToolchainArchive("gzip payload"))
+	buffered := bufio.NewReaderSize(fields.File, toolchainArchiveProbeBytes)
+	probe, _ := buffered.Peek(toolchainArchiveProbeBytes)
+	if !validUploadedToolchainArchive(fields.ArchiveKind, probe) {
+		writeError(response, request, invalidToolchainArchive(fields.ArchiveKind+" payload"))
 		return
 	}
 	record, err := handler.userUploads.PublishUserUpload(request.Context(), artifact.UserUpload{
 		TenantID: principal.TenantID, ProjectID: projectID, IdempotencyKey: idempotencyKey,
-		CreatedByPrincipal: principal.ID, ContentType: "application/gzip", Body: buffered, SizeBytes: fields.SizeBytes,
+		CreatedByPrincipal: principal.ID, ContentType: fields.ContentType, Body: buffered, SizeBytes: fields.SizeBytes,
 		Metadata: map[string]any{
 			"kind": "crosstool-ng-archive", "toolName": fields.ToolName,
-			"toolVersion": fields.ToolVersion, "architecture": fields.Architecture,
+			"toolVersion": fields.ToolVersion, "architecture": fields.Architecture, "archiveKind": fields.ArchiveKind,
 		},
 	})
 	if err != nil {
@@ -155,9 +160,8 @@ func readToolchainArchiveFields(request *http.Request) (toolchainArchiveFields, 
 				fields.Architecture = value
 			}
 		case "file":
-			partMediaType, _, mediaErr := mime.ParseMediaType(part.Header.Get("Content-Type"))
-			if !strings.HasSuffix(strings.ToLower(part.FileName()), ".tar.gz") || fields.File != nil || mediaErr != nil ||
-				partMediaType != "application/gzip" && partMediaType != "application/x-gzip" {
+			archiveKind, contentType := uploadedToolchainArchiveType(part.FileName())
+			if archiveKind == "" || fields.File != nil {
 				part.Close()
 				return toolchainArchiveFields{}, invalidToolchainArchive("file")
 			}
@@ -165,6 +169,8 @@ func readToolchainArchiveFields(request *http.Request) (toolchainArchiveFields, 
 				part.Close()
 				return toolchainArchiveFields{}, invalidToolchainArchive("field order")
 			}
+			fields.ArchiveKind = archiveKind
+			fields.ContentType = contentType
 			fields.File = part
 			return fields, nil
 		default:
@@ -173,6 +179,48 @@ func readToolchainArchiveFields(request *http.Request) (toolchainArchiveFields, 
 		}
 	}
 	return fields, nil
+}
+
+func uploadedToolchainArchiveType(fileName string) (string, string) {
+	lower := strings.ToLower(strings.TrimSpace(fileName))
+	for _, candidate := range []struct {
+		suffix      string
+		kind        string
+		contentType string
+	}{
+		{suffix: ".tar.xz", kind: "tar.xz", contentType: "application/x-xz"},
+		{suffix: ".tar.gz", kind: "tar.gz", contentType: "application/gzip"},
+		{suffix: ".tar", kind: "tar", contentType: "application/x-tar"},
+		{suffix: ".zip", kind: "zip", contentType: "application/zip"},
+		{suffix: ".7z", kind: "7z", contentType: "application/x-7z-compressed"},
+	} {
+		if strings.HasSuffix(lower, candidate.suffix) {
+			return candidate.kind, candidate.contentType
+		}
+	}
+	return "", ""
+}
+
+func validUploadedToolchainArchive(kind string, probe []byte) bool {
+	switch kind {
+	case "tar":
+		if len(probe) < toolchainArchiveProbeBytes {
+			return false
+		}
+		_, err := tar.NewReader(bytes.NewReader(probe)).Next()
+		return err == nil
+	case "tar.gz":
+		return len(probe) >= 2 && probe[0] == 0x1f && probe[1] == 0x8b
+	case "tar.xz":
+		return len(probe) >= 6 && bytes.Equal(probe[:6], []byte{0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00})
+	case "zip":
+		return len(probe) >= 4 && bytes.Equal(probe[:2], []byte{'P', 'K'}) &&
+			((probe[2] == 0x03 && probe[3] == 0x04) || (probe[2] == 0x05 && probe[3] == 0x06) || (probe[2] == 0x07 && probe[3] == 0x08))
+	case "7z":
+		return len(probe) >= 6 && bytes.Equal(probe[:6], []byte{0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c})
+	default:
+		return false
+	}
 }
 
 func readSmallMultipartField(part *multipart.Part) (string, error) {
