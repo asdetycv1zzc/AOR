@@ -95,11 +95,23 @@ class AORClient:
     def get_knowledge_update(self, options=None):
         return self._request("GET", "/v1/projects/{projectId}/knowledge/updates/{updateId}", options)
 
+    def get_model_provider_settings(self, options=None):
+        return self._request("GET", "/v1/settings/model-providers", options)
+
+    def get_model_route_settings(self, options=None):
+        return self._request("GET", "/v1/settings/model-routes", options)
+
+    def get_model_sampling_settings(self, options=None):
+        return self._request("GET", "/v1/settings/model-sampling", options)
+
     def get_plan(self, options=None):
         return self._request("GET", "/v1/projects/{projectId}/plans/{version}", options)
 
     def get_project(self, options=None):
         return self._request("GET", "/v1/projects/{projectId}", options)
+
+    def get_project_activity(self, options=None):
+        return self._request("GET", "/v1/projects/{projectId}/activity", options)
 
     def get_project_state(self, options=None):
         return self._request("GET", "/v1/projects/{projectId}/state", options)
@@ -128,11 +140,20 @@ class AORClient:
     def list_goal_specs(self, options=None):
         return self._request("GET", "/v1/projects/{projectId}/goal/specs", options)
 
+    def list_model_providers(self, options=None):
+        return self._request("GET", "/v1/model-providers", options)
+
     def list_plans(self, options=None):
         return self._request("GET", "/v1/projects/{projectId}/plans", options)
 
     def list_project_legal_holds(self, options=None):
         return self._request("GET", "/v1/projects/{projectId}/legal-holds", options)
+
+    def list_project_toolchain_installations(self, options=None):
+        return self._request("GET", "/v1/projects/{projectId}/toolchain-installations", options)
+
+    def list_projects(self, options=None):
+        return self._request("GET", "/v1/projects", options)
 
     def list_task_audits(self, options=None):
         return self._request("GET", "/v1/projects/{projectId}/tasks/{taskId}/audits", options)
@@ -142,6 +163,9 @@ class AORClient:
 
     def list_tasks(self, options=None):
         return self._request("GET", "/v1/projects/{projectId}/tasks", options)
+
+    def list_toolchains(self, options=None):
+        return self._request("GET", "/v1/toolchains", options)
 
     def pause_project(self, options=None):
         return self._request("POST", "/v1/projects/{projectId}:pause", options)
@@ -154,6 +178,18 @@ class AORClient:
 
     def propose_knowledge_update(self, options=None):
         return self._request("POST", "/v1/projects/{projectId}/knowledge:propose-update", options)
+
+    def put_model_provider_settings(self, options=None):
+        return self._request("PUT", "/v1/settings/model-providers/{providerId}", options)
+
+    def put_model_route_settings(self, options=None):
+        return self._request("PUT", "/v1/settings/model-routes", options)
+
+    def put_model_sampling_settings(self, options=None):
+        return self._request("PUT", "/v1/settings/model-sampling", options)
+
+    def queue_project_activity_message(self, options=None):
+        return self._request("POST", "/v1/projects/{projectId}/activity/messages", options)
 
     def read_knowledge_range(self, options=None):
         return self._request("POST", "/v1/projects/{projectId}/knowledge:read-range", options)
@@ -185,11 +221,20 @@ class AORClient:
     def send_goal_message(self, options=None):
         return self._request("POST", "/v1/projects/{projectId}/goal/messages", options)
 
+    def stream_project_activity(self, options=None):
+        return self._request("GET", "/v1/projects/{projectId}/activity/events", options)
+
     def stream_project_events(self, options=None):
         return self._request("GET", "/v1/projects/{projectId}/events", options)
 
+    def test_model_provider(self, options=None):
+        return self._request("POST", "/v1/settings/model-providers/{providerId}:test", options)
+
     def test_policies(self, options=None):
         return self._request("POST", "/v1/admin/policies:test", options)
+
+    def upload_toolchain_archive(self, options=None):
+        return self._request("POST", "/v1/projects/{projectId}/toolchain-archives", options)
 
     def verify_backup(self, options=None):
         return self._request("POST", "/v1/admin/backup:verify", options)

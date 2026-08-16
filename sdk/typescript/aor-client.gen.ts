@@ -116,12 +116,28 @@ export class AORClient {
     return this.request("GET", "/v1/projects/{projectId}/knowledge/updates/{updateId}", options);
   }
 
+  getModelProviderSettings(options: RequestOptions = {}): Promise<Response> {
+    return this.request("GET", "/v1/settings/model-providers", options);
+  }
+
+  getModelRouteSettings(options: RequestOptions = {}): Promise<Response> {
+    return this.request("GET", "/v1/settings/model-routes", options);
+  }
+
+  getModelSamplingSettings(options: RequestOptions = {}): Promise<Response> {
+    return this.request("GET", "/v1/settings/model-sampling", options);
+  }
+
   getPlan(options: RequestOptions = {}): Promise<Response> {
     return this.request("GET", "/v1/projects/{projectId}/plans/{version}", options);
   }
 
   getProject(options: RequestOptions = {}): Promise<Response> {
     return this.request("GET", "/v1/projects/{projectId}", options);
+  }
+
+  getProjectActivity(options: RequestOptions = {}): Promise<Response> {
+    return this.request("GET", "/v1/projects/{projectId}/activity", options);
   }
 
   getProjectState(options: RequestOptions = {}): Promise<Response> {
@@ -160,12 +176,24 @@ export class AORClient {
     return this.request("GET", "/v1/projects/{projectId}/goal/specs", options);
   }
 
+  listModelProviders(options: RequestOptions = {}): Promise<Response> {
+    return this.request("GET", "/v1/model-providers", options);
+  }
+
   listPlans(options: RequestOptions = {}): Promise<Response> {
     return this.request("GET", "/v1/projects/{projectId}/plans", options);
   }
 
   listProjectLegalHolds(options: RequestOptions = {}): Promise<Response> {
     return this.request("GET", "/v1/projects/{projectId}/legal-holds", options);
+  }
+
+  listProjectToolchainInstallations(options: RequestOptions = {}): Promise<Response> {
+    return this.request("GET", "/v1/projects/{projectId}/toolchain-installations", options);
+  }
+
+  listProjects(options: RequestOptions = {}): Promise<Response> {
+    return this.request("GET", "/v1/projects", options);
   }
 
   listTaskAudits(options: RequestOptions = {}): Promise<Response> {
@@ -178,6 +206,10 @@ export class AORClient {
 
   listTasks(options: RequestOptions = {}): Promise<Response> {
     return this.request("GET", "/v1/projects/{projectId}/tasks", options);
+  }
+
+  listToolchains(options: RequestOptions = {}): Promise<Response> {
+    return this.request("GET", "/v1/toolchains", options);
   }
 
   pauseProject(options: RequestOptions = {}): Promise<Response> {
@@ -194,6 +226,22 @@ export class AORClient {
 
   proposeKnowledgeUpdate(options: RequestOptions = {}): Promise<Response> {
     return this.request("POST", "/v1/projects/{projectId}/knowledge:propose-update", options);
+  }
+
+  putModelProviderSettings(options: RequestOptions = {}): Promise<Response> {
+    return this.request("PUT", "/v1/settings/model-providers/{providerId}", options);
+  }
+
+  putModelRouteSettings(options: RequestOptions = {}): Promise<Response> {
+    return this.request("PUT", "/v1/settings/model-routes", options);
+  }
+
+  putModelSamplingSettings(options: RequestOptions = {}): Promise<Response> {
+    return this.request("PUT", "/v1/settings/model-sampling", options);
+  }
+
+  queueProjectActivityMessage(options: RequestOptions = {}): Promise<Response> {
+    return this.request("POST", "/v1/projects/{projectId}/activity/messages", options);
   }
 
   readKnowledgeRange(options: RequestOptions = {}): Promise<Response> {
@@ -236,12 +284,24 @@ export class AORClient {
     return this.request("POST", "/v1/projects/{projectId}/goal/messages", options);
   }
 
+  streamProjectActivity(options: RequestOptions = {}): Promise<Response> {
+    return this.request("GET", "/v1/projects/{projectId}/activity/events", options);
+  }
+
   streamProjectEvents(options: RequestOptions = {}): Promise<Response> {
     return this.request("GET", "/v1/projects/{projectId}/events", options);
   }
 
+  testModelProvider(options: RequestOptions = {}): Promise<Response> {
+    return this.request("POST", "/v1/settings/model-providers/{providerId}:test", options);
+  }
+
   testPolicies(options: RequestOptions = {}): Promise<Response> {
     return this.request("POST", "/v1/admin/policies:test", options);
+  }
+
+  uploadToolchainArchive(options: RequestOptions = {}): Promise<Response> {
+    return this.request("POST", "/v1/projects/{projectId}/toolchain-archives", options);
   }
 
   verifyBackup(options: RequestOptions = {}): Promise<Response> {

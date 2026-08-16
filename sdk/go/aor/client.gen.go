@@ -171,12 +171,28 @@ func (c *Client) GetKnowledgeUpdate(ctx context.Context, options RequestOptions)
 	return c.request(ctx, "GET", "/v1/projects/{projectId}/knowledge/updates/{updateId}", options)
 }
 
+func (c *Client) GetModelProviderSettings(ctx context.Context, options RequestOptions) (*http.Response, error) {
+	return c.request(ctx, "GET", "/v1/settings/model-providers", options)
+}
+
+func (c *Client) GetModelRouteSettings(ctx context.Context, options RequestOptions) (*http.Response, error) {
+	return c.request(ctx, "GET", "/v1/settings/model-routes", options)
+}
+
+func (c *Client) GetModelSamplingSettings(ctx context.Context, options RequestOptions) (*http.Response, error) {
+	return c.request(ctx, "GET", "/v1/settings/model-sampling", options)
+}
+
 func (c *Client) GetPlan(ctx context.Context, options RequestOptions) (*http.Response, error) {
 	return c.request(ctx, "GET", "/v1/projects/{projectId}/plans/{version}", options)
 }
 
 func (c *Client) GetProject(ctx context.Context, options RequestOptions) (*http.Response, error) {
 	return c.request(ctx, "GET", "/v1/projects/{projectId}", options)
+}
+
+func (c *Client) GetProjectActivity(ctx context.Context, options RequestOptions) (*http.Response, error) {
+	return c.request(ctx, "GET", "/v1/projects/{projectId}/activity", options)
 }
 
 func (c *Client) GetProjectState(ctx context.Context, options RequestOptions) (*http.Response, error) {
@@ -215,12 +231,24 @@ func (c *Client) ListGoalSpecs(ctx context.Context, options RequestOptions) (*ht
 	return c.request(ctx, "GET", "/v1/projects/{projectId}/goal/specs", options)
 }
 
+func (c *Client) ListModelProviders(ctx context.Context, options RequestOptions) (*http.Response, error) {
+	return c.request(ctx, "GET", "/v1/model-providers", options)
+}
+
 func (c *Client) ListPlans(ctx context.Context, options RequestOptions) (*http.Response, error) {
 	return c.request(ctx, "GET", "/v1/projects/{projectId}/plans", options)
 }
 
 func (c *Client) ListProjectLegalHolds(ctx context.Context, options RequestOptions) (*http.Response, error) {
 	return c.request(ctx, "GET", "/v1/projects/{projectId}/legal-holds", options)
+}
+
+func (c *Client) ListProjectToolchainInstallations(ctx context.Context, options RequestOptions) (*http.Response, error) {
+	return c.request(ctx, "GET", "/v1/projects/{projectId}/toolchain-installations", options)
+}
+
+func (c *Client) ListProjects(ctx context.Context, options RequestOptions) (*http.Response, error) {
+	return c.request(ctx, "GET", "/v1/projects", options)
 }
 
 func (c *Client) ListTaskAudits(ctx context.Context, options RequestOptions) (*http.Response, error) {
@@ -233,6 +261,10 @@ func (c *Client) ListTaskSubmissions(ctx context.Context, options RequestOptions
 
 func (c *Client) ListTasks(ctx context.Context, options RequestOptions) (*http.Response, error) {
 	return c.request(ctx, "GET", "/v1/projects/{projectId}/tasks", options)
+}
+
+func (c *Client) ListToolchains(ctx context.Context, options RequestOptions) (*http.Response, error) {
+	return c.request(ctx, "GET", "/v1/toolchains", options)
 }
 
 func (c *Client) PauseProject(ctx context.Context, options RequestOptions) (*http.Response, error) {
@@ -249,6 +281,22 @@ func (c *Client) ProbeSandboxes(ctx context.Context, options RequestOptions) (*h
 
 func (c *Client) ProposeKnowledgeUpdate(ctx context.Context, options RequestOptions) (*http.Response, error) {
 	return c.request(ctx, "POST", "/v1/projects/{projectId}/knowledge:propose-update", options)
+}
+
+func (c *Client) PutModelProviderSettings(ctx context.Context, options RequestOptions) (*http.Response, error) {
+	return c.request(ctx, "PUT", "/v1/settings/model-providers/{providerId}", options)
+}
+
+func (c *Client) PutModelRouteSettings(ctx context.Context, options RequestOptions) (*http.Response, error) {
+	return c.request(ctx, "PUT", "/v1/settings/model-routes", options)
+}
+
+func (c *Client) PutModelSamplingSettings(ctx context.Context, options RequestOptions) (*http.Response, error) {
+	return c.request(ctx, "PUT", "/v1/settings/model-sampling", options)
+}
+
+func (c *Client) QueueProjectActivityMessage(ctx context.Context, options RequestOptions) (*http.Response, error) {
+	return c.request(ctx, "POST", "/v1/projects/{projectId}/activity/messages", options)
 }
 
 func (c *Client) ReadKnowledgeRange(ctx context.Context, options RequestOptions) (*http.Response, error) {
@@ -291,12 +339,24 @@ func (c *Client) SendGoalMessage(ctx context.Context, options RequestOptions) (*
 	return c.request(ctx, "POST", "/v1/projects/{projectId}/goal/messages", options)
 }
 
+func (c *Client) StreamProjectActivity(ctx context.Context, options RequestOptions) (*http.Response, error) {
+	return c.request(ctx, "GET", "/v1/projects/{projectId}/activity/events", options)
+}
+
 func (c *Client) StreamProjectEvents(ctx context.Context, options RequestOptions) (*http.Response, error) {
 	return c.request(ctx, "GET", "/v1/projects/{projectId}/events", options)
 }
 
+func (c *Client) TestModelProvider(ctx context.Context, options RequestOptions) (*http.Response, error) {
+	return c.request(ctx, "POST", "/v1/settings/model-providers/{providerId}:test", options)
+}
+
 func (c *Client) TestPolicies(ctx context.Context, options RequestOptions) (*http.Response, error) {
 	return c.request(ctx, "POST", "/v1/admin/policies:test", options)
+}
+
+func (c *Client) UploadToolchainArchive(ctx context.Context, options RequestOptions) (*http.Response, error) {
+	return c.request(ctx, "POST", "/v1/projects/{projectId}/toolchain-archives", options)
 }
 
 func (c *Client) VerifyBackup(ctx context.Context, options RequestOptions) (*http.Response, error) {
