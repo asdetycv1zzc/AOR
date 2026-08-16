@@ -192,7 +192,7 @@ func (recorder *PostgresActivityRecorder) RecordAttempt(ctx context.Context, req
 		// Attempt rows are activity events, not model-call identities. Leaving
 		// request_id empty avoids the model-call uniqueness constraint while the
 		// stable event ID retains the parent request binding.
-		RequestID: "", Flow: activityFlowForRole(request.Role),
+		RequestID: "", Flow: activityFlowForRole(request.Role), AgentInstanceID: request.AgentInstanceID,
 		Role: activityDisplayRole(request), Sender: projectactivity.SenderAgent, State: stateValue,
 		Content: content, ErrorCode: errorCode, Provider: attempt.Provider, Model: attempt.Model,
 		CreatedAt: occurredAt.UTC(), UpdatedAt: occurredAt.UTC(),

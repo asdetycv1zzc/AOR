@@ -234,6 +234,11 @@ function flowState(flow: ProjectActivityFlow, agents: ProjectActivityAgent[], me
   return "QUEUED";
 }
 
+function messageBelongsToConversation(message: ProjectActivityMessage, flow: ProjectActivityFlow, agentID: string): boolean {
+  if (message.flow !== flow) return false;
+  return !agentID || message.agentId === agentID;
+}
+
 function activityStateRank(state: ProjectActivityMessage["state"]): number {
   if (state === "COMPLETED" || state === "FAILED") return 2;
   if (state === "STREAMING" || state === "RUNNING") return 1;
@@ -377,7 +382,7 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
   const queuedInputs = messages.filter((item) => item.sender === "USER" && (item.state === "QUEUED" || item.state === "STREAMING"));
   const flows = activity?.flows?.length ? activity.flows : fallbackFlows;
   const visibleAgents = agents.filter((agent) => agent.flow === activeFlow);
-  const visibleMessages = messages.filter((item) => item.flow === activeFlow);
+  const visibleMessages = messages.filter((item) => messageBelongsToConversation(item, activeFlow, selectedAgent));
   const visibleMessageVersion = visibleMessages.map((item) => `${item.id}:${item.updatedAt || item.createdAt}:${item.content.length}:${item.reasoningSummary?.length || 0}`).join("|");
   const crosstoolTool = pendingCrosstoolTool(goalSpec);
   const goalProcessing = activity?.goalProcessing ?? project.goalProcessing;
