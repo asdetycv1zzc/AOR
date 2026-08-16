@@ -110,11 +110,24 @@ func TestGenerateUsesResponsesAndPreservesToolHistory(t *testing.T) {
 		if request.Header.Get("Idempotency-Key") != expectedRequestID || request.Header.Get("X-Request-ID") != expectedRequestID {
 			t.Fatalf("request headers = %#v", request.Header)
 		}
-		var payload responsesRequest
-		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+		if request.Header.Get("User-Agent") != codexCompatibleUserAgent {
+			t.Fatalf("user agent = %q", request.Header.Get("User-Agent"))
+		}
+		if request.Header.Get("OpenAI-Beta") != "responses=experimental" || request.Header.Get("originator") != codexOriginator {
+			t.Fatalf("Codex headers = %#v", request.Header)
+		}
+		encoded, err := io.ReadAll(request.Body)
+		if err != nil {
 			t.Fatal(err)
 		}
-		if payload.Model != "gpt-5.6-sol" || payload.MaxOutputTokens != 16 || payload.Reasoning == nil || payload.Reasoning.Effort != "high" || payload.Reasoning.Context != "current_turn" || payload.Reasoning.Summary != "auto" || payload.Temperature != nil || payload.TopP != nil || len(payload.Tools) != 1 || payload.Text == nil || payload.Text.Format.Type != "json_schema" || payload.PromptCacheKey == "" || payload.PromptCacheOptions == nil || payload.PromptCacheOptions.Mode != "explicit" {
+		var payload responsesRequest
+		if err := json.Unmarshal(encoded, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(encoded), "prompt_cache_breakpoint") || strings.Contains(string(encoded), "prompt_cache_options") || strings.Contains(string(encoded), `"context":`) {
+			t.Fatalf("explicit cache controls = %s", encoded)
+		}
+		if payload.Model != "gpt-5.6-sol" || payload.MaxOutputTokens != 16 || payload.Reasoning == nil || payload.Reasoning.Effort != "high" || payload.Reasoning.Summary != "auto" || payload.Temperature != nil || payload.TopP != nil || len(payload.Tools) != 1 || payload.Text == nil || payload.Text.Format.Type != "json_schema" || payload.PromptCacheKey == "" {
 			t.Fatalf("payload = %#v", payload)
 		}
 		switch providerCalls {
@@ -122,9 +135,8 @@ func TestGenerateUsesResponsesAndPreservesToolHistory(t *testing.T) {
 			if len(payload.Input) != 2 || payload.Input[0].Role != "system" || payload.Input[1].Role != "user" {
 				t.Fatalf("first input = %#v", payload.Input)
 			}
-			var blocks []responsesContentBlock
-			if json.Unmarshal(payload.Input[0].Content, &blocks) != nil || len(blocks) != 1 || blocks[0].PromptCacheBreakpoint == nil || blocks[0].PromptCacheBreakpoint.Mode != "explicit" {
-				t.Fatalf("cache breakpoint = %s", payload.Input[0].Content)
+			if payload.Input[0].Content != "rules" {
+				t.Fatalf("system content = %q", payload.Input[0].Content)
 			}
 			_, _ = writer.Write([]byte(`{"id":"resp-1","model":"gpt-test-2026-08","status":"completed","output":[{"type":"reasoning","id":"rs-1","encrypted_content":"opaque-reasoning"},{"type":"function_call","id":"fc-1","call_id":"call-1","name":"repo.read","arguments":"{\"path\":\"README.md\"}"}],"usage":{"input_tokens":12,"output_tokens":5,"total_tokens":17,"input_tokens_details":{"cached_tokens":9,"cache_write_tokens":2}}}`))
 		case 2:
@@ -245,32 +257,30 @@ func TestGenerateClassifiesOnlyAdapterTimeoutAsKnownProviderFailure(t *testing.T
 	}
 }
 
-func TestGenerateSendsStablePromptCacheKeyAndRequestHeaders(t *testing.T) {
+func TestGenerateSendsStableImplicitPromptCacheKeyAndCodexUserAgent(t *testing.T) {
 	type observedRequest struct {
 		idempotencyKey string
 		requestID      string
+		userAgent      string
 		promptCacheKey string
-		cacheMode      string
-		breakpoint     bool
+		explicitCache  bool
 	}
 	observed := make(chan observedRequest, 3)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		var payload chatRequest
-		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+		encoded, err := io.ReadAll(request.Body)
+		if err != nil {
 			t.Fatal(err)
 		}
-		var blocks []chatContentBlock
-		breakpoint := len(payload.Messages) != 0 && json.Unmarshal(payload.Messages[0].Content, &blocks) == nil && len(blocks) == 1 && blocks[0].PromptCacheBreakpoint != nil
-		cacheMode := ""
-		if payload.PromptCacheOptions != nil {
-			cacheMode = payload.PromptCacheOptions.Mode
+		var payload chatRequest
+		if err := json.Unmarshal(encoded, &payload); err != nil {
+			t.Fatal(err)
 		}
 		observed <- observedRequest{
 			idempotencyKey: request.Header.Get("Idempotency-Key"),
 			requestID:      request.Header.Get("X-Request-ID"),
+			userAgent:      request.Header.Get("User-Agent"),
 			promptCacheKey: payload.PromptCacheKey,
-			cacheMode:      cacheMode,
-			breakpoint:     breakpoint,
+			explicitCache:  strings.Contains(string(encoded), "prompt_cache_breakpoint") || strings.Contains(string(encoded), "prompt_cache_options"),
 		}
 		_, _ = writer.Write([]byte(`{"id":"chatcmpl-cache","model":"gpt-test-v1","choices":[{"message":{"content":"{\"ok\":true}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":2,"total_tokens":10}}`))
 	}))
@@ -304,7 +314,7 @@ func TestGenerateSendsStablePromptCacheKeyAndRequestHeaders(t *testing.T) {
 	if first.idempotencyKey != "request-cache-1" || first.requestID != "request-cache-1" || second.idempotencyKey != "request-cache-2" || second.requestID != "request-cache-2" || third.idempotencyKey != "request-cache-3" || third.requestID != "request-cache-3" {
 		t.Fatalf("request headers = %#v, %#v, %#v", first, second, third)
 	}
-	if first.cacheMode != "explicit" || second.cacheMode != "explicit" || third.cacheMode != "explicit" || !first.breakpoint || !second.breakpoint || !third.breakpoint {
+	if first.userAgent != codexCompatibleUserAgent || second.userAgent != codexCompatibleUserAgent || third.userAgent != codexCompatibleUserAgent || first.explicitCache || second.explicitCache || third.explicitCache {
 		t.Fatalf("cache controls = %#v, %#v, %#v", first, second, third)
 	}
 	if first.promptCacheKey == "" || first.promptCacheKey != second.promptCacheKey || first.promptCacheKey == third.promptCacheKey {

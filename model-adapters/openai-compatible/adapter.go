@@ -29,6 +29,8 @@ const (
 	DefaultMaxResponseBytes    = 64 << 20
 	DefaultMaxStreamEventBytes = 64 << 20
 	maximumBodyBytes           = 528 << 20
+	codexOriginator            = "codex_cli_rs"
+	codexCompatibleUserAgent   = "codex_cli_rs/0.0.0 (AOR)"
 )
 
 var errAdapterRequestTimeout = errors.New("openai-compatible adapter request timed out")
@@ -430,18 +432,13 @@ func (a *Adapter) encodeChatRequest(request modelgateway.NormalizedRequest, stre
 		TopP: request.TopP, TopK: request.TopK, ReasoningEffort: reasoningEffort, ThinkingBudget: request.ThinkingBudget, Stream: stream,
 	}
 	value.PromptCacheKey = a.promptCacheKey(request)
-	cacheBreakpoint := value.PromptCacheKey != "" && supportsExplicitPromptCaching(request.Model)
-	if cacheBreakpoint {
-		value.PromptCacheOptions = &promptCacheOptions{Mode: "explicit"}
-	}
 	if stream {
 		value.StreamOptions = &chatStreamOptions{IncludeUsage: true}
 	}
-	breakpointIndex := promptCacheBreakpointIndex(request.Messages)
-	for index, message := range request.Messages {
+	for _, message := range request.Messages {
 		wireMessage := chatRequestMessage{Role: message.Role, ToolCallID: message.ToolCallID}
 		if message.Content != "" {
-			content, err := encodeChatContent(message.Content, cacheBreakpoint && index == breakpointIndex)
+			content, err := json.Marshal(message.Content)
 			if err != nil {
 				return nil, modelgateway.ErrInvalidRequest
 			}
@@ -541,6 +538,11 @@ func (a *Adapter) doWithAccept(ctx context.Context, requestID string, payload []
 	request.Header.Set("Accept", accept)
 	request.Header.Set("Idempotency-Key", requestID)
 	request.Header.Set("X-Request-ID", requestID)
+	request.Header.Set("User-Agent", codexCompatibleUserAgent)
+	if a.wireFormat == WireFormatResponses {
+		request.Header.Set("OpenAI-Beta", "responses=experimental")
+		request.Header.Set("originator", codexOriginator)
+	}
 	response, err := a.client.Do(request)
 	if err != nil {
 		contextErr := adapterRequestContextError(ctx, requestCtx)
@@ -817,19 +819,6 @@ func promptCacheBreakpointIndex(messages []modelgateway.Message) int {
 	return index
 }
 
-func supportsExplicitPromptCaching(model string) bool {
-	return strings.HasPrefix(model, "gpt-5.6")
-}
-
-func encodeChatContent(content string, breakpoint bool) (json.RawMessage, error) {
-	if !breakpoint {
-		return json.Marshal(content)
-	}
-	return json.Marshal([]chatContentBlock{{
-		Type: "text", Text: content, PromptCacheBreakpoint: &promptCacheBreakpoint{Mode: "explicit"},
-	}})
-}
-
 func normalizedChatUsage(value chatUsage) modelgateway.Usage {
 	usage := modelgateway.Usage{InputTokens: value.PromptTokens, OutputTokens: value.CompletionTokens}
 	usage.CacheReadTokens, usage.CacheWriteTokens = normalizedCacheTokens(value.PromptTokensDetails)
@@ -878,21 +867,20 @@ func unknownFailure(cause error) error {
 }
 
 type chatRequest struct {
-	Model              string               `json:"model"`
-	Messages           []chatRequestMessage `json:"messages"`
-	Tools              []chatTool           `json:"tools,omitempty"`
-	ResponseFormat     *chatResponseFormat  `json:"response_format,omitempty"`
-	MaxTokens          int                  `json:"max_tokens"`
-	Temperature        float64              `json:"temperature"`
-	TopP               float64              `json:"top_p"`
-	TopK               int                  `json:"top_k,omitempty"`
-	ReasoningEffort    string               `json:"reasoning_effort,omitempty"`
-	ThinkingBudget     int                  `json:"thinking_budget,omitempty"`
-	PromptCacheKey     string               `json:"prompt_cache_key,omitempty"`
-	PromptCacheOptions *promptCacheOptions  `json:"prompt_cache_options,omitempty"`
-	Seed               *int64               `json:"seed,omitempty"`
-	Stream             bool                 `json:"stream,omitempty"`
-	StreamOptions      *chatStreamOptions   `json:"stream_options,omitempty"`
+	Model           string               `json:"model"`
+	Messages        []chatRequestMessage `json:"messages"`
+	Tools           []chatTool           `json:"tools,omitempty"`
+	ResponseFormat  *chatResponseFormat  `json:"response_format,omitempty"`
+	MaxTokens       int                  `json:"max_tokens"`
+	Temperature     float64              `json:"temperature"`
+	TopP            float64              `json:"top_p"`
+	TopK            int                  `json:"top_k,omitempty"`
+	ReasoningEffort string               `json:"reasoning_effort,omitempty"`
+	ThinkingBudget  int                  `json:"thinking_budget,omitempty"`
+	PromptCacheKey  string               `json:"prompt_cache_key,omitempty"`
+	Seed            *int64               `json:"seed,omitempty"`
+	Stream          bool                 `json:"stream,omitempty"`
+	StreamOptions   *chatStreamOptions   `json:"stream_options,omitempty"`
 }
 
 func validReasoningEffort(value string) bool {
@@ -908,25 +896,11 @@ type chatStreamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
 }
 
-type promptCacheOptions struct {
-	Mode string `json:"mode"`
-}
-
-type promptCacheBreakpoint struct {
-	Mode string `json:"mode"`
-}
-
 type chatRequestMessage struct {
 	Role       string          `json:"role"`
 	Content    json.RawMessage `json:"content"`
 	ToolCalls  []chatToolCall  `json:"tool_calls,omitempty"`
 	ToolCallID string          `json:"tool_call_id,omitempty"`
-}
-
-type chatContentBlock struct {
-	Type                  string                 `json:"type"`
-	Text                  string                 `json:"text"`
-	PromptCacheBreakpoint *promptCacheBreakpoint `json:"prompt_cache_breakpoint,omitempty"`
 }
 
 type chatMessage struct {

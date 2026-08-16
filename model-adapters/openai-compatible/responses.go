@@ -21,10 +21,6 @@ func (a *Adapter) encodeResponsesRequest(request modelgateway.NormalizedRequest,
 		Model: request.Model, MaxOutputTokens: request.MaxOutputTokens,
 		Store: false, Stream: stream, PromptCacheKey: a.promptCacheKey(request),
 	}
-	cacheBreakpoint := value.PromptCacheKey != "" && supportsExplicitPromptCaching(request.Model)
-	if cacheBreakpoint {
-		value.PromptCacheOptions = &promptCacheOptions{Mode: "explicit"}
-	}
 	if request.ReasoningEffort == "" || request.ReasoningEffort == "none" || !a.supportsReasoningEffort {
 		temperature := request.Temperature
 		value.Temperature = &temperature
@@ -38,26 +34,14 @@ func (a *Adapter) encodeResponsesRequest(request modelgateway.NormalizedRequest,
 		if request.ReasoningEffort != "none" {
 			value.Reasoning.Summary = "auto"
 		}
-		if supportsExplicitPromptCaching(request.Model) {
-			value.Reasoning.Context = "current_turn"
-		}
 	}
-	breakpointIndex := promptCacheBreakpointIndex(request.Messages)
-	for index, message := range request.Messages {
+	for _, message := range request.Messages {
 		switch message.Role {
 		case "system", "user":
-			content, err := encodeResponsesContent(message.Content, cacheBreakpoint && index == breakpointIndex)
-			if err != nil {
-				return nil, modelgateway.ErrInvalidRequest
-			}
-			value.Input = append(value.Input, responsesInputItem{Role: message.Role, Content: content})
+			value.Input = append(value.Input, responsesInputItem{Role: message.Role, Content: message.Content})
 		case "assistant":
 			if message.Content != "" {
-				content, err := encodeResponsesContent(message.Content, false)
-				if err != nil {
-					return nil, modelgateway.ErrInvalidRequest
-				}
-				value.Input = append(value.Input, responsesInputItem{Role: message.Role, Content: content})
+				value.Input = append(value.Input, responsesInputItem{Role: message.Role, Content: message.Content})
 				continue
 			}
 			if output, found := a.responsesContinuation(request, message.ToolCalls); found {
@@ -303,31 +287,30 @@ func responsesContinuationKey(request modelgateway.NormalizedRequest, callID str
 }
 
 type responsesRequest struct {
-	Model              string               `json:"model"`
-	Input              []responsesInputItem `json:"input"`
-	Tools              []responsesTool      `json:"tools,omitempty"`
-	Text               *responsesText       `json:"text,omitempty"`
-	Reasoning          *responsesReasoning  `json:"reasoning,omitempty"`
-	MaxOutputTokens    int                  `json:"max_output_tokens"`
-	Temperature        *float64             `json:"temperature,omitempty"`
-	TopP               *float64             `json:"top_p,omitempty"`
-	PromptCacheKey     string               `json:"prompt_cache_key,omitempty"`
-	PromptCacheOptions *promptCacheOptions  `json:"prompt_cache_options,omitempty"`
-	Store              bool                 `json:"store"`
-	Stream             bool                 `json:"stream,omitempty"`
+	Model           string               `json:"model"`
+	Input           []responsesInputItem `json:"input"`
+	Tools           []responsesTool      `json:"tools,omitempty"`
+	Text            *responsesText       `json:"text,omitempty"`
+	Reasoning       *responsesReasoning  `json:"reasoning,omitempty"`
+	MaxOutputTokens int                  `json:"max_output_tokens"`
+	Temperature     *float64             `json:"temperature,omitempty"`
+	TopP            *float64             `json:"top_p,omitempty"`
+	PromptCacheKey  string               `json:"prompt_cache_key,omitempty"`
+	Store           bool                 `json:"store"`
+	Stream          bool                 `json:"stream,omitempty"`
 }
 
 type responsesInputItem struct {
 	raw              json.RawMessage
-	Type             string          `json:"type,omitempty"`
-	ID               string          `json:"id,omitempty"`
-	Role             string          `json:"role,omitempty"`
-	Content          json.RawMessage `json:"content,omitempty"`
-	CallID           string          `json:"call_id,omitempty"`
-	Name             string          `json:"name,omitempty"`
-	Arguments        string          `json:"arguments,omitempty"`
-	Output           string          `json:"output,omitempty"`
-	EncryptedContent string          `json:"encrypted_content,omitempty"`
+	Type             string `json:"type,omitempty"`
+	ID               string `json:"id,omitempty"`
+	Role             string `json:"role,omitempty"`
+	Content          string `json:"content,omitempty"`
+	CallID           string `json:"call_id,omitempty"`
+	Name             string `json:"name,omitempty"`
+	Arguments        string `json:"arguments,omitempty"`
+	Output           string `json:"output,omitempty"`
+	EncryptedContent string `json:"encrypted_content,omitempty"`
 }
 
 func (item responsesInputItem) MarshalJSON() ([]byte, error) {
@@ -358,23 +341,7 @@ type responsesTextFormat struct {
 
 type responsesReasoning struct {
 	Effort  string `json:"effort,omitempty"`
-	Context string `json:"context,omitempty"`
 	Summary string `json:"summary,omitempty"`
-}
-
-type responsesContentBlock struct {
-	Type                  string                 `json:"type"`
-	Text                  string                 `json:"text"`
-	PromptCacheBreakpoint *promptCacheBreakpoint `json:"prompt_cache_breakpoint,omitempty"`
-}
-
-func encodeResponsesContent(content string, breakpoint bool) (json.RawMessage, error) {
-	if !breakpoint {
-		return json.Marshal(content)
-	}
-	return json.Marshal([]responsesContentBlock{{
-		Type: "input_text", Text: content, PromptCacheBreakpoint: &promptCacheBreakpoint{Mode: "explicit"},
-	}})
 }
 
 type responsesResponse struct {
