@@ -536,7 +536,7 @@ WHERE t.tenant_id = $1::uuid AND t.project_id = $2::uuid AND t.id = $3::uuid
 			task.HostileMultiTenant = module.WorkloadProfile.HostileMultiTenant
 			task.RequiresNetworkIsolation = module.WorkloadProfile.RequiresNetworkIsolation
 			task.RequiresHiddenConfidentiality = module.WorkloadProfile.RequiresHiddenTestConfidentiality
-		} else if role != authn.RoleModulePlanner || operation != "generate" || planStatus != "DRAFT" || task.State != "QUEUED_PLANNING" && task.State != "PLANNING" || platform.Valid || isolation.Valid || len(moduleJSON) != 0 {
+		} else if role != authn.RoleModulePlanner || !validModulePlanningOperation(operation) || planStatus != "DRAFT" || task.State != "QUEUED_PLANNING" && task.State != "PLANNING" || platform.Valid || isolation.Valid || len(moduleJSON) != 0 {
 			return modelProjectProjection{}, authz.TaskScope{}, modelAccountProjection{}, modelReservationProjection{}, modelgateway.ErrAuthorizationDenied
 		}
 	}
@@ -607,6 +607,10 @@ func modelPolicyPrincipal(transport authn.Principal, tenantID, projectID, agentI
 
 func validModelOperation(operation string) bool {
 	return operation == "generate" || operation == "stream" || operation == "cancel" || operation == "reconcile" || operation == "capabilities"
+}
+
+func validModulePlanningOperation(operation string) bool {
+	return operation == "generate" || operation == "stream"
 }
 
 func validModelRole(role string) bool {

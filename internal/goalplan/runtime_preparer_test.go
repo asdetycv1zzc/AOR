@@ -72,6 +72,28 @@ func TestAuthoritativeRuntimePreparerBuildsInitialGoalInvocation(t *testing.T) {
 	}
 }
 
+func TestAuthoritativeRuntimePreparerReissuesExpiredIdempotentLease(t *testing.T) {
+	now := time.Date(2035, 4, 5, 6, 7, 8, 0, time.UTC)
+	project := state.Project{
+		TenantID: "tenant_1", ID: "project_1", Version: 3, State: contracts.ProjectGoalNegotiating,
+		PromptBundleVersion: prompts.BaselineVersion, DataClassification: "INTERNAL",
+	}
+	message := runtimePreparerArtifact(t, now, ArtifactUserMessage, "message_1", 1, []byte("Build an auditable service"), "")
+	issuer := &runtimePreparerIssuer{now: now, project: project, expiredCalls: 2}
+	preparer := newRuntimePreparer(t, now, project, state.ModuleTask{}, issuer, message)
+	request := AgentInvocation{
+		InvocationID: "run_goal_expired_lease", TenantID: project.TenantID, ProjectID: project.ID,
+		Role: agentruntime.RoleGoalProposer, Stage: "GOAL_DRAFT", Inputs: []ArtifactPointer{artifactPointer(message)},
+	}
+
+	if _, err := preparer.Prepare(context.Background(), request); err != nil {
+		t.Fatalf("prepare with expired idempotent lease: %v", err)
+	}
+	if issuer.calls != 3 || len(issuer.requests) != 3 || issuer.requests[0].IdempotencyKey == issuer.requests[1].IdempotencyKey || issuer.requests[1].IdempotencyKey == issuer.requests[2].IdempotencyKey {
+		t.Fatalf("lease retry requests = calls %d requests %#v", issuer.calls, issuer.requests)
+	}
+}
+
 func TestAuthoritativeRuntimePreparerBuildsProjectCuratorDraft(t *testing.T) {
 	now := time.Date(2035, 4, 5, 6, 7, 8, 0, time.UTC)
 	project := state.Project{
@@ -312,16 +334,21 @@ func (reader runtimePreparerReader) Task(_ context.Context, tenantID, projectID,
 }
 
 type runtimePreparerIssuer struct {
-	now       time.Time
-	project   state.Project
-	task      state.ModuleTask
-	principal authn.Principal
-	request   leaseauthority.GrantRequest
-	lease     authz.CapabilityLease
+	now          time.Time
+	project      state.Project
+	task         state.ModuleTask
+	principal    authn.Principal
+	request      leaseauthority.GrantRequest
+	requests     []leaseauthority.GrantRequest
+	calls        int
+	expiredCalls int
+	lease        authz.CapabilityLease
 }
 
 func (issuer *runtimePreparerIssuer) Issue(_ context.Context, principal authn.Principal, request leaseauthority.GrantRequest) (authz.CapabilityLease, error) {
 	issuer.principal, issuer.request = principal, request
+	issuer.calls++
+	issuer.requests = append(issuer.requests, request)
 	lease := authz.CapabilityLease{
 		ID: stableRuntimeID("lease_", principal.ID, request.IdempotencyKey), AgentInstanceID: principal.ID,
 		PrincipalID: principal.ID, PrincipalType: principal.Type, TenantID: request.TenantID, ProjectID: request.ProjectID,
@@ -332,6 +359,11 @@ func (issuer *runtimePreparerIssuer) Issue(_ context.Context, principal authn.Pr
 		PolicyVersion: runtimePreparerPolicy, BudgetAccountID: request.BudgetAccountID,
 		Nonce:        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		FencingToken: 1, State: authz.LeaseActive, Signature: "hmac-sha256:test",
+	}
+	if issuer.calls <= issuer.expiredCalls {
+		lease.IssuedAt = issuer.now.Add(-10 * time.Minute)
+		lease.ExpiresAt = issuer.now.Add(-5 * time.Minute)
+		lease.LastHeartbeatAt = lease.IssuedAt
 	}
 	if request.TaskID != "" {
 		lease.TaskVersion = issuer.task.Version

@@ -10,6 +10,7 @@ import (
 	"io"
 	"math"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -169,6 +170,16 @@ func normalizeGenerateOptions(options GenerateOptions) (GenerateOptions, error) 
 	return options, nil
 }
 
+// DeepSeek-compatible endpoints expose high as their strongest supported
+// effort. Preserve the project-level max setting while sending the provider's
+// accepted wire value.
+func normalizeProviderReasoningEffort(provider, effort string) string {
+	if (strings.EqualFold(provider, "deepseek") || strings.EqualFold(provider, "deepseek-audit")) && effort == "max" {
+		return "high"
+	}
+	return effort
+}
+
 // Capabilities returns provider metadata only for a registered provider/model
 // pair. Callers cannot probe arbitrary adapters through the gateway.
 func (g *Gateway) Capabilities(ctx context.Context, provider, model string) (ModelCapabilities, error) {
@@ -210,6 +221,7 @@ func (g *Gateway) Stream(ctx context.Context, request NormalizedRequest, options
 	if err != nil {
 		return nil, err
 	}
+	request.ReasoningEffort = normalizeProviderReasoningEffort(options.Provider, request.ReasoningEffort)
 	if !state.ValidModelReasoningEffort(options.Provider, request.ReasoningEffort) {
 		return nil, ErrInvalidRequest
 	}
@@ -305,6 +317,7 @@ func (g *Gateway) streamWithPolicy(ctx context.Context, request NormalizedReques
 		call.LogicalModel = request.Model
 		call.ActualModelVersion = selection.caps.ActualModelVersion
 		call.InputTokens = selection.estimate.InputTokens
+		selection.request.ReasoningEffort = normalizeProviderReasoningEffort(selection.candidate.Provider, selection.request.ReasoningEffort)
 		for attempt := 0; attempt < options.MaxAttempts; attempt++ {
 			stream, streamErr := selection.adapter.Stream(ctx, selection.request)
 			if streamErr == nil {
@@ -435,6 +448,7 @@ func (g *Gateway) Generate(ctx context.Context, request NormalizedRequest, optio
 	if err != nil {
 		return NormalizedResponse{}, err
 	}
+	request.ReasoningEffort = normalizeProviderReasoningEffort(options.Provider, request.ReasoningEffort)
 	if !state.ValidModelReasoningEffort(options.Provider, request.ReasoningEffort) {
 		return NormalizedResponse{}, ErrInvalidRequest
 	}
@@ -1038,6 +1052,7 @@ func (g *Gateway) generateWithPolicy(ctx context.Context, request NormalizedRequ
 		call.Provider = selection.candidate.Provider
 		call.LogicalModel = request.Model
 		call.ActualModelVersion = selection.caps.ActualModelVersion
+		selection.request.ReasoningEffort = normalizeProviderReasoningEffort(selection.candidate.Provider, selection.request.ReasoningEffort)
 		selectionAttempts := remainingAttempts
 		if selectionIndex+1 < len(selections) {
 			selectionAttempts = 1

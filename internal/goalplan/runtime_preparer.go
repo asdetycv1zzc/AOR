@@ -186,8 +186,9 @@ func (preparer *AuthoritativeRuntimePreparer) Prepare(ctx context.Context, reque
 		return RuntimeInvocation{}, err
 	}
 	now := preparer.clock().UTC()
-	if !validIssuedRuntimeLease(lease, principal, project, request, stage, resource, parameterDigest, now) {
-		return RuntimeInvocation{}, ErrInvalidRequest
+	lease, err = preparer.ensureFreshRuntimeLease(ctx, principal, project, request, stage, resource, parameterDigest, lease, now)
+	if err != nil {
+		return RuntimeInvocation{}, err
 	}
 	trace, ok := observability.TraceFromContext(ctx)
 	if !ok {
@@ -251,6 +252,36 @@ func (preparer *AuthoritativeRuntimePreparer) Prepare(ctx context.Context, reque
 		return RuntimeInvocation{}, err
 	}
 	return prepared, nil
+}
+
+const maximumRuntimeLeaseRefreshes = 8
+
+// ensureFreshRuntimeLease handles durable idempotency records that outlived
+// their lease. Each expired generation gets a deterministic successor key;
+// this lets recovery progress even when an earlier successor also expired.
+func (preparer *AuthoritativeRuntimePreparer) ensureFreshRuntimeLease(ctx context.Context, principal authn.Principal, project state.Project, request AgentInvocation, stage preparedStageContext, resource authz.Resource, parameterDigest string, lease authz.CapabilityLease, now time.Time) (authz.CapabilityLease, error) {
+	for generation := 0; generation < maximumRuntimeLeaseRefreshes; generation++ {
+		if validIssuedRuntimeLease(lease, principal, project, request, stage, resource, parameterDigest, now) {
+			return lease, nil
+		}
+		if lease.State != authz.LeaseActive || lease.ExpiresAt.IsZero() || lease.ExpiresAt.After(now) {
+			return authz.CapabilityLease{}, ErrInvalidRequest
+		}
+		leaseContext, err := authn.ContextWithPrincipal(ctx, principal)
+		if err != nil {
+			return authz.CapabilityLease{}, ErrInvalidRequest
+		}
+		retryKey := stableRuntimeID("goalplan-lease-retry_", request.InvocationID, parameterDigest, lease.ExpiresAt.UTC().Format(time.RFC3339Nano), strconv.Itoa(generation))
+		lease, err = preparer.leases.Issue(leaseContext, principal, leaseauthority.GrantRequest{
+			TenantID: request.TenantID, ProjectID: request.ProjectID, TaskID: request.TaskID,
+			Action: authz.ActionModelGenerate, Resource: resource, ParameterDigest: parameterDigest,
+			BudgetAccountID: project.ID, IdempotencyKey: retryKey, TTL: preparer.leaseTTL,
+		})
+		if err != nil {
+			return authz.CapabilityLease{}, err
+		}
+	}
+	return authz.CapabilityLease{}, ErrInvalidRequest
 }
 
 type preparedStageContext struct {

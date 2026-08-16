@@ -101,3 +101,16 @@ func TestModelPolicyPrincipalUsesAuthoritativeDelegatedAgent(t *testing.T) {
 		t.Fatalf("reconcile principal = %#v", reconciler)
 	}
 }
+
+func TestValidModulePlanningOperationAllowsStreaming(t *testing.T) {
+	for _, operation := range []string{"generate", "stream"} {
+		if !validModulePlanningOperation(operation) {
+			t.Fatalf("validModulePlanningOperation(%q) = false", operation)
+		}
+	}
+	for _, operation := range []string{"cancel", "reconcile", "capabilities", ""} {
+		if validModulePlanningOperation(operation) {
+			t.Fatalf("validModulePlanningOperation(%q) = true", operation)
+		}
+	}
+}
