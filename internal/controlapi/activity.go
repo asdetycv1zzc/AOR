@@ -26,12 +26,14 @@ import (
 type activityFlow string
 
 const (
-	activityFlowGoal            activityFlow = "GOAL"
-	activityFlowPlan            activityFlow = "PLAN"
-	activityFlowExecution       activityFlow = "EXECUTION"
-	activityFlowAudit           activityFlow = "AUDIT"
-	activityFlowKnowledge       activityFlow = "KNOWLEDGE"
-	maximumActivityMessageBytes              = 1 << 20
+	activityFlowGoal              activityFlow = "GOAL"
+	activityFlowPlan              activityFlow = "PLAN"
+	activityFlowExecution         activityFlow = "EXECUTION"
+	activityFlowAudit             activityFlow = "AUDIT"
+	activityFlowKnowledge         activityFlow = "KNOWLEDGE"
+	maximumActivityMessageBytes                = 1 << 20
+	projectActivityEventInterval               = 100 * time.Millisecond
+	projectActivityHeartbeatTicks              = 150
 )
 
 type activityState string
@@ -893,7 +895,7 @@ func (handler *Handler) projectActivityEvents(response http.ResponseWriter, requ
 			flusher.Flush()
 		}
 	}
-	ticker := time.NewTicker(time.Second)
+	ticker := time.NewTicker(projectActivityEventInterval)
 	defer ticker.Stop()
 	idleTicks := 0
 	for {
@@ -910,7 +912,7 @@ func (handler *Handler) projectActivityEvents(response http.ResponseWriter, requ
 			if err := writeActivityMessages(response, pending); err != nil {
 				return
 			}
-			if len(pending) == 0 && idleTicks >= 15 {
+			if len(pending) == 0 && idleTicks >= projectActivityHeartbeatTicks {
 				if _, err := io.WriteString(response, ": heartbeat\n\n"); err != nil {
 					return
 				}
