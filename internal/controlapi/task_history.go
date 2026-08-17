@@ -6,8 +6,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/akimisaka/aor/internal/artifact"
 	"github.com/akimisaka/aor/internal/audit"
@@ -233,7 +233,7 @@ LIMIT $6`, tenantID, projectID, taskID, position.CreatedAt, cursorUUID(position.
 	}
 	if reader.outputs != nil {
 		for index := range pageItems {
-			if pageItems[index].run.Phase != "DETERMINISTIC" {
+			if pageItems[index].attemptSeriesID == "" || pageItems[index].attempt < 1 {
 				continue
 			}
 			moduleTest, loadErr := reader.loadModuleTest(ctx, tenantID, projectID, taskID, pageItems[index].attemptSeriesID, pageItems[index].attempt)
@@ -259,7 +259,7 @@ func (reader *PostgresTaskHistoryReader) loadModuleTest(ctx context.Context, ten
 		ExitCode int      `json:"exitCode"`
 		Status   string   `json:"status"`
 	}
-	if !json.Valid(outputs.Result) || json.Unmarshal(outputs.Result, &report) != nil || len(report.Command) == 0 || report.ExitCode < -1 || report.Status != "PASS" && report.Status != "FAIL" && report.Status != "ERROR" || !utf8.Valid(outputs.Stdout) || !utf8.Valid(outputs.Stderr) {
+	if !json.Valid(outputs.Result) || json.Unmarshal(outputs.Result, &report) != nil || len(report.Command) == 0 || report.ExitCode < -1 || report.Status != "PASS" && report.Status != "FAIL" && report.Status != "ERROR" {
 		return nil, artifact.ErrIntegrity
 	}
 	for _, argument := range report.Command {
@@ -269,7 +269,7 @@ func (reader *PostgresTaskHistoryReader) loadModuleTest(ctx context.Context, ten
 	}
 	return &TaskModuleTestOutput{
 		Status: report.Status, Command: append([]string(nil), report.Command...), ExitCode: report.ExitCode,
-		Stdout: string(outputs.Stdout), Stderr: string(outputs.Stderr),
+		Stdout: strings.ToValidUTF8(string(outputs.Stdout), "\uFFFD"), Stderr: strings.ToValidUTF8(string(outputs.Stderr), "\uFFFD"),
 		StdoutRef: outputs.StdoutRef, StderrRef: outputs.StderrRef, ResultRef: outputs.ResultRef,
 	}, nil
 }

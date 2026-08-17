@@ -68,7 +68,20 @@ func readPersistedCheckOutput(ctx context.Context, opener PersistedOutputOpener,
 	if closeErr != nil {
 		return nil, "", closeErr
 	}
-	if record.URI == "" {
+	expectedDigest := digestBytes(content)
+	expectedURI, uriErr := artifact.URIFromDigest(expectedDigest)
+	if uriErr != nil || record.TenantID != tenantID || record.ProjectID != projectID || record.URI != expectedURI || record.SHA256 != expectedDigest || record.SizeBytes != int64(len(content)) || record.CreatedByPrincipal != "aor-audit-service" {
+		return nil, "", artifact.ErrIntegrity
+	}
+	expectedContentType := "application/octet-stream"
+	if kind == "stdout" || kind == "stderr" {
+		expectedContentType = "text/plain; charset=utf-8"
+	}
+	if record.ContentType != expectedContentType || record.Metadata == nil || record.Metadata["kind"] != "audit-check-output" || record.Metadata["sourceArtifactId"] != artifactID || record.Metadata["retentionPolicy"] != "audit-evidence" {
+		return nil, "", artifact.ErrIntegrity
+	}
+	encrypted, ok := record.Metadata["encrypted"].(bool)
+	if !ok || !encrypted {
 		return nil, "", artifact.ErrIntegrity
 	}
 	return content, record.URI, nil
