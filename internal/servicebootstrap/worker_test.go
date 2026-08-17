@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/akimisaka/aor/internal/audit"
+	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/authz"
+	"github.com/akimisaka/aor/internal/execution"
 	"github.com/akimisaka/aor/internal/goalplan"
 	"github.com/akimisaka/aor/internal/runtimeconfig"
 	"github.com/akimisaka/aor/internal/sandbox"
@@ -46,6 +48,18 @@ type planCompletionPublisherStub struct {
 	result   goalplan.PlanCompletionResult
 	err      error
 	requests []goalplan.PlanCompletionRequest
+}
+
+type executionRunnerStub struct {
+	principal    authn.Principal
+	hasPrincipal bool
+	requests     []execution.Request
+}
+
+func (runner *executionRunnerStub) Execute(ctx context.Context, request execution.Request) (execution.Result, error) {
+	runner.principal, runner.hasPrincipal = authn.PrincipalFromContext(ctx)
+	runner.requests = append(runner.requests, request)
+	return execution.Result{}, nil
 }
 
 func (publisher *planCompletionPublisherStub) Publish(_ context.Context, request goalplan.PlanCompletionRequest) (goalplan.PlanCompletionResult, error) {
@@ -101,6 +115,33 @@ func TestModuleAuditActivityDoesNotPublishCompletionAfterAuditError(t *testing.T
 	}, uuid.Must(uuid.NewV7()).String())
 	if !errors.Is(err, auditErr) || len(completion.requests) != 0 {
 		t.Fatalf("audit error = %v completion requests = %#v", err, completion.requests)
+	}
+}
+
+func TestWorkerExecutionActivityBindsScopedServicePrincipal(t *testing.T) {
+	runner := &executionRunnerStub{}
+	payload, err := json.Marshal(executionActivityInput{Action: ExecutionActivityAction, ExecutionID: "execution_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	activities, err := aorworkflow.NewActivities(workerActivityEffect{execution: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestActivityEnvironment()
+	env.RegisterActivityWithOptions(activities.Execute, activity.RegisterOptions{Name: aorworkflow.ExecuteActivityName})
+	input := aorworkflow.ExecutionInput{
+		TenantID: "tenant_1", ProjectID: "project_1", TaskID: "task_1", ActivityID: "activity_1", Payload: payload,
+	}
+	if _, err := env.ExecuteActivity(aorworkflow.ExecuteActivityName, input); err != nil {
+		t.Fatal(err)
+	}
+	if !runner.hasPrincipal || runner.principal.ID != executionServicePrincipalID || runner.principal.Type != authn.PrincipalService || runner.principal.Role != authn.RoleService || runner.principal.TenantID != input.TenantID || runner.principal.ProjectID != input.ProjectID {
+		t.Fatalf("execution principal = %#v, found=%v", runner.principal, runner.hasPrincipal)
+	}
+	if len(runner.requests) != 1 || runner.requests[0] != (execution.Request{ExecutionID: "execution_1", TenantID: input.TenantID, ProjectID: input.ProjectID, TaskID: input.TaskID}) {
+		t.Fatalf("execution requests = %#v", runner.requests)
 	}
 }
 

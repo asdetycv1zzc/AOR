@@ -44,7 +44,10 @@ var (
 	ErrWorkerUnavailable   = errors.New("worker execution provider unavailable")
 )
 
-const ExecutionActivityAction = aorworkflow.ExecutionActivityAction
+const (
+	ExecutionActivityAction     = aorworkflow.ExecutionActivityAction
+	executionServicePrincipalID = "aor-execution-service"
+)
 
 // sandboxActivityInput is intentionally narrow: workflow code can only ask a
 // worker to execute a validated sandbox command. Network, model, repository,
@@ -96,6 +99,10 @@ type planCompletionPublisher interface {
 	Publish(context.Context, goalplan.PlanCompletionRequest) (goalplan.PlanCompletionResult, error)
 }
 
+type executionRunner interface {
+	Execute(context.Context, execution.Request) (execution.Result, error)
+}
+
 type moduleAuditActivity struct {
 	service     moduleAuditRunner
 	completion  planCompletionPublisher
@@ -107,7 +114,7 @@ type moduleAuditActivity struct {
 
 type workerActivityEffect struct {
 	sandbox       sandboxActivityEffect
-	execution     *execution.Service
+	execution     executionRunner
 	moduleAuditor *moduleAuditActivity
 	globalAuditor *globalaudit.Service
 	integration   *integrationActivity
@@ -235,7 +242,14 @@ func (effect workerActivityEffect) Execute(ctx context.Context, key string, payl
 	if !found {
 		return nil, aorworkflow.ErrInvalidExecution
 	}
-	result, err := effect.execution.Execute(ctx, execution.Request{
+	principalContext, err := authn.ContextWithPrincipal(ctx, authn.Principal{
+		ID: executionServicePrincipalID, Type: authn.PrincipalService, Role: authn.RoleService,
+		TenantID: scope.TenantID, ProjectID: scope.ProjectID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	result, err := effect.execution.Execute(principalContext, execution.Request{
 		ExecutionID: input.ExecutionID, TenantID: scope.TenantID,
 		ProjectID: scope.ProjectID, TaskID: scope.TaskID,
 	})
