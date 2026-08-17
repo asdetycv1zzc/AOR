@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -33,15 +34,16 @@ var (
 )
 
 type ReadyExecution struct {
-	TenantID     string
-	ProjectID    string
-	TaskID       string
-	TaskVersion  int64
-	TaskState    contracts.ModuleTaskState
-	FencingToken int64
-	Recovery     bool
-	Traceparent  string
-	Tracestate   string
+	TenantID            string
+	ProjectID           string
+	TaskID              string
+	TaskVersion         int64
+	TaskState           contracts.ModuleTaskState
+	FencingToken        int64
+	Recovery            bool
+	ReusableExecutionID string
+	Traceparent         string
+	Tracestate          string
 }
 
 type ReadyExecutionSource interface {
@@ -64,9 +66,9 @@ func (source *PostgresReadyExecutionSource) ReadyExecutions(ctx context.Context,
 		return nil, ErrInvalidExecutionScheduler
 	}
 	rows, err := source.database.QueryContext(ctx, `
-SELECT tenant_id::text, project_id::text, task_id::text, state_version
-       , task_state, fencing_token, recovery
-FROM aor_ready_execution_tasks_v2($1)`, limit)
+	SELECT tenant_id::text, project_id::text, task_id::text, state_version,
+	       task_state, fencing_token, recovery, reusable_execution_id
+	FROM aor_ready_execution_tasks_v3($1)`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -74,8 +76,12 @@ FROM aor_ready_execution_tasks_v2($1)`, limit)
 	ready := make([]ReadyExecution, 0, limit)
 	for rows.Next() {
 		var item ReadyExecution
-		if err := rows.Scan(&item.TenantID, &item.ProjectID, &item.TaskID, &item.TaskVersion, &item.TaskState, &item.FencingToken, &item.Recovery); err != nil {
+		var reusableExecutionID sql.NullString
+		if err := rows.Scan(&item.TenantID, &item.ProjectID, &item.TaskID, &item.TaskVersion, &item.TaskState, &item.FencingToken, &item.Recovery, &reusableExecutionID); err != nil {
 			return nil, err
+		}
+		if reusableExecutionID.Valid {
+			item.ReusableExecutionID = reusableExecutionID.String
 		}
 		if !validReadyExecution(item) {
 			return nil, ErrInvalidExecutionScheduler
@@ -121,22 +127,37 @@ func (starter *ProjectExecutionStarter) Ensure(ctx context.Context, ready ReadyE
 	if starter == nil || starter.client == nil || ctx == nil || !validReadyExecution(ready) {
 		return ProjectExecutionStartResult{}, ErrInvalidExecutionScheduler
 	}
-	// One task version identifies one READY_EXECUTION opportunity. Rework gets a
-	// new version, while repeated scans and controller restarts reuse this ID.
+	// One task version identifies one execution opportunity. An unbound durable
+	// assignment reuses the identity of the workflow that created it.
 	identity := readyExecutionIdentity(ready)
 	executionPrefix := "exec_"
 	activityPrefix := "execute_"
-	if ready.Recovery {
+	payloadRecovery := ready.Recovery
+	if ready.ReusableExecutionID != "" {
+		var valid bool
+		identity, payloadRecovery, valid = reusableExecutionIdentity(ready.ReusableExecutionID)
+		if !valid {
+			return ProjectExecutionStartResult{}, ErrInvalidExecutionScheduler
+		}
+	} else if ready.Recovery {
 		executionPrefix = "recover_"
 		activityPrefix = "recover_"
 	}
-	executionID := executionPrefix + identity
+	executionID := ready.ReusableExecutionID
+	if executionID == "" {
+		executionID = executionPrefix + identity
+	}
+	if payloadRecovery {
+		activityPrefix = "recover_"
+	} else {
+		activityPrefix = "execute_"
+	}
 	activityID := activityPrefix + identity
 	payload, err := json.Marshal(struct {
 		Action      string `json:"action"`
 		ExecutionID string `json:"executionId"`
 		Recovery    bool   `json:"recovery,omitempty"`
-	}{Action: ExecutionActivityAction, ExecutionID: executionID, Recovery: ready.Recovery})
+	}{Action: ExecutionActivityAction, ExecutionID: executionID, Recovery: payloadRecovery})
 	if err != nil {
 		return ProjectExecutionStartResult{}, err
 	}
@@ -249,6 +270,13 @@ func validReadyExecution(ready ReadyExecution) bool {
 		!identifierPattern.MatchString(ready.TaskID) || ready.TaskVersion <= 0 {
 		return false
 	}
+	if ready.ReusableExecutionID != "" {
+		if ready.TaskState != contracts.TaskExecuting || !ready.Recovery || ready.FencingToken <= 0 {
+			return false
+		}
+		_, _, valid := reusableExecutionIdentity(ready.ReusableExecutionID)
+		return valid
+	}
 	if ready.TaskState == contracts.TaskExecuting {
 		return ready.Recovery && ready.FencingToken > 0
 	}
@@ -265,6 +293,27 @@ func normalizeReadyExecution(ready ReadyExecution) ReadyExecution {
 func readyExecutionIdentity(ready ReadyExecution) string {
 	digest := sha256.Sum256([]byte(ready.TenantID + "\x00" + ready.ProjectID + "\x00" + ready.TaskID + "\x00" + strconv.FormatInt(ready.TaskVersion, 10) + "\x00" + string(ready.TaskState) + "\x00" + strconv.FormatInt(ready.FencingToken, 10)))
 	return hex.EncodeToString(digest[:])
+}
+
+func reusableExecutionIdentity(executionID string) (string, bool, bool) {
+	recovery := false
+	identity := ""
+	switch {
+	case strings.HasPrefix(executionID, "exec_"):
+		identity = strings.TrimPrefix(executionID, "exec_")
+	case strings.HasPrefix(executionID, "recover_"):
+		identity = strings.TrimPrefix(executionID, "recover_")
+		recovery = true
+	default:
+		return "", false, false
+	}
+	if len(identity) != sha256.Size*2 || identity != strings.ToLower(identity) {
+		return "", false, false
+	}
+	if _, err := hex.DecodeString(identity); err != nil {
+		return "", false, false
+	}
+	return identity, recovery, true
 }
 
 var _ ReadyExecutionSource = (*PostgresReadyExecutionSource)(nil)

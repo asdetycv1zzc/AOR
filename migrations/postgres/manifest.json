@@ -449,6 +449,13 @@
       "file": "000064_project_activity_model_trace.up.sql",
       "sha256": "sha256:cba34c69fde9be053ee88f8f726de4e337b799a91c7f7a6052c49cd546d39df7",
       "destructive": false
+    },
+    {
+      "version": 65,
+      "mode": "EXPAND",
+      "file": "000065_execution_assignment_retry.up.sql",
+      "sha256": "sha256:fd8bf1083759abf8a64732cd6d07a286ec33af3509fc4c1fda1009c4d2277583",
+      "destructive": false
     }
   ]
 }
