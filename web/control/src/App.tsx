@@ -453,6 +453,14 @@ function findingField(value: unknown, key: string): string {
   return typeof field === "string" ? field : "";
 }
 
+function moduleTestExitReason(exitCode: number): string {
+  if (exitCode === 126) return "Shell 无法执行命令";
+  if (exitCode === 127) return "Shell 未找到命令";
+  if (exitCode === 137) return "进程被强制终止（常见于内存限制）";
+  if (exitCode === 143) return "进程收到终止信号";
+  return "";
+}
+
 function latestByVersion<T>(items: T[], version: (item: T) => number): T | undefined {
   return [...items].sort((left, right) => version(right) - version(left))[0];
 }
@@ -1322,6 +1330,7 @@ function AuditList({ runs }: { runs: AuditRun[] }) {
                 <strong>module-tests</strong>
                 <span>{run.moduleTest.status} · exit {run.moduleTest.exitCode}</span>
               </div>
+              {moduleTestExitReason(run.moduleTest.exitCode) && <p className="audit-exit-reason">{moduleTestExitReason(run.moduleTest.exitCode)}</p>}
               <code className="audit-command">{JSON.stringify(run.moduleTest.command)}</code>
               <div className="audit-output-grid">
                 <div className="audit-output"><strong>stdout</strong><pre>{run.moduleTest.stdout || "无输出"}</pre></div>

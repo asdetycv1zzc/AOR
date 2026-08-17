@@ -1448,6 +1448,12 @@ button {
   white-space: nowrap;
 }
 
+.audit-exit-reason {
+  margin: 0;
+  color: var(--color-status-danger-foreground-1);
+  font-size: 12px;
+}
+
 .audit-output-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
