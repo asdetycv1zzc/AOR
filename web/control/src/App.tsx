@@ -542,10 +542,13 @@ function ControlConsole({ client }: { client: AorClient }) {
   const [auditLoading, setAuditLoading] = useState("");
   const [projectView, setProjectView] = useState<"workbench" | "details">("details");
   const mainRef = useRef<HTMLDivElement>(null);
+  const loadProjectSequence = useRef(0);
   const project = bundle.project;
 
   const loadProject = useCallback(async (projectId: string, silent = false) => {
-    if (!projectId) return;
+    if (!projectId) return false;
+    const sequence = loadProjectSequence.current + 1;
+    loadProjectSequence.current = sequence;
     if (silent) setRefreshing(true); else setLoading(true);
     if (!silent) setError("");
     try {
@@ -562,6 +565,7 @@ function ControlConsole({ client }: { client: AorClient }) {
         client.getToolchains(),
       ]);
       const loadedResult = result.status === "fulfilled" ? result.value : undefined;
+      if (sequence !== loadProjectSequence.current) return true;
       if (inventory.status === "fulfilled") setToolchainInventory(inventory.value);
       setBundle({
         project: current,
@@ -572,11 +576,15 @@ function ControlConsole({ client }: { client: AorClient }) {
         result: loadedResult,
       });
       setRecent(rememberProject(current, loadedResult));
+      return true;
     } catch (cause) {
-      if (!silent) setError(errorMessage(cause));
+      if (sequence === loadProjectSequence.current && !silent) setError(errorMessage(cause));
+      return sequence !== loadProjectSequence.current;
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (sequence === loadProjectSequence.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, [client]);
 
@@ -728,14 +736,17 @@ function ControlConsole({ client }: { client: AorClient }) {
   const taskDecisionAccepted = useCallback(async (taskId: string) => {
     if (!project) return;
     setNotice("已授权新的尝试序列，任务将重新进入执行队列");
-    const [auditResult] = await Promise.allSettled([
+    const [auditResult, projectResult] = await Promise.allSettled([
       client.getAudits(project.id, taskId),
       loadProject(project.id, true),
     ]);
     if (auditResult.status === "fulfilled") {
       setAudits((current) => ({ ...current, [taskId]: auditResult.value.items }));
     } else {
-      setError(errorMessage(auditResult.reason));
+      setError("决策已接受，但审计记录刷新失败：" + errorMessage(auditResult.reason));
+    }
+    if (projectResult.status === "rejected" || !projectResult.value) {
+      setError("决策已接受，但项目状态刷新失败，请点击顶部刷新按钮。");
     }
   }, [client, loadProject, project?.id]);
 
