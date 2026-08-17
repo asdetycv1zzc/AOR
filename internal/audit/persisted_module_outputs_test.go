@@ -83,6 +83,6 @@ func persistedOutputRecord(tenantID, projectID, artifactID, kind string, content
 	return artifact.Record{
 		TenantID: tenantID, ProjectID: projectID, URI: uri, SHA256: digest, SizeBytes: int64(len(content)),
 		ContentType: contentType, CreatedByPrincipal: "aor-audit-service",
-		Metadata: map[string]any{"kind": "audit-check-output", "sourceArtifactId": artifactID, "taskId": "task-1", "retentionPolicy": "audit-evidence", "encrypted": true},
+		Metadata: map[string]any{"kind": "audit-check-output", "sourceArtifactId": "deduplicated-" + artifactID, "taskId": "first-publisher-task", "retentionPolicy": "audit-evidence", "encrypted": true},
 	}
 }
