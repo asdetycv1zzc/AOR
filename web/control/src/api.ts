@@ -1,5 +1,6 @@
 import type {
   AuditRun,
+  CommandAccepted,
   GoalSpec,
   ModelProvider,
   ModelProviderSettings,
@@ -23,6 +24,8 @@ import type {
   ToolchainArchiveUpload,
   ToolchainInstallationBatch,
   ToolchainInventory,
+  TaskDecision,
+  TaskDecisionReport,
 } from "./types";
 
 interface ProblemResponse {
@@ -272,6 +275,26 @@ export class AorClient {
   getAudits(projectId: string, taskId: string): Promise<Page<AuditRun>> {
     return this.request(
       `/v1/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/audits`,
+    );
+  }
+
+  getTaskDecisionReport(projectId: string, taskId: string): Promise<TaskDecisionReport> {
+    return this.request(
+      `/v1/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/decision-report`,
+    );
+  }
+
+  decideTask(task: Pick<ModuleTask, "projectId" | "id" | "version">, decision: TaskDecision): Promise<CommandAccepted> {
+    return this.request(
+      `/v1/projects/${encodeURIComponent(task.projectId)}/tasks/${encodeURIComponent(task.id)}/decisions`,
+      {
+        method: "POST",
+        headers: {
+          "Idempotency-Key": idempotencyKey(),
+          "If-Match": `"v${task.version}"`,
+        },
+        body: JSON.stringify({ decision, expectedVersion: task.version }),
+      },
     );
   }
 

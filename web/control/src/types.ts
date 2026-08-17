@@ -383,6 +383,66 @@ export interface ModuleTask {
   blockedFromState?: string;
 }
 
+export type TaskDecision =
+  | "ABORT_PROJECT"
+  | "ABORT_MODULE"
+  | "REVISE_GOAL"
+  | "REVISE_MODULE_SPEC"
+  | "HAND_OFF_TO_HUMAN"
+  | "AUTHORIZE_NEW_ATTEMPT_SERIES";
+
+export interface TaskDecisionAttempt {
+  attempt: number;
+  submissionCommit: string;
+  failureStage: "DETERMINISTIC_AUDIT" | "LLM_AUDIT";
+  findingIds: string[];
+  evidenceUri: string;
+}
+
+export interface TaskDecisionFinding {
+  id: string;
+  severity: string;
+  category: string;
+  summary: string;
+  location: string;
+  reproductionUri: string;
+  firstObservedAttempt: number;
+  lastObservedAttempt: number;
+}
+
+export interface TaskDecisionReport {
+  reportVersion: "1.0";
+  projectId: string;
+  goalSpec: SpecReference;
+  moduleTaskId: string;
+  moduleName: string;
+  state: "BLOCKED_USER_DECISION";
+  attemptLimit: 3;
+  attempts: TaskDecisionAttempt[];
+  blockingFindings: TaskDecisionFinding[];
+  dependencyImpact: {
+    frozenTaskIds: string[];
+    criticalPathImpact: boolean;
+  };
+  costSummary: {
+    inputTokens: number;
+    outputTokens: number;
+    estimatedCost: string;
+    currency: string;
+  };
+  allowedDecisions: TaskDecision[];
+  generatedAt: string;
+  signature: {
+    type: string;
+    kid: string;
+    jws: string;
+  };
+}
+
+export interface CommandAccepted {
+  commandId: string;
+}
+
 export interface AuditFinding {
   id: string;
   stableFingerprint: string;

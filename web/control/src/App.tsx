@@ -77,6 +77,7 @@ import type {
   ToolchainInstallationBatch,
   ToolchainInventory,
   ToolchainInventoryTool,
+  TaskDecisionReport,
 } from "./types";
 
 gsap.registerPlugin(ScrollTrigger, useGSAP);
@@ -109,9 +110,14 @@ const taskStateLabels: Record<string, string> = {
   DETERMINISTIC_AUDIT: "自动审计",
   LLM_AUDIT: "模型审计",
   REWORK: "返工",
+  READY_EXECUTION: "等待执行",
+  QUEUED_EXECUTION: "已入执行队列",
+  REWORK_REQUIRED: "需要返工",
   PASSED: "通过",
   INTEGRATED: "已集成",
   BLOCKED: "已阻塞",
+  BLOCKED_DEPENDENCY: "等待依赖",
+  BLOCKED_USER_DECISION: "等待人工决策",
   FAILED: "失败",
   SUPERSEDED: "已替换",
 };
@@ -719,6 +725,20 @@ function ControlConsole({ client }: { client: AorClient }) {
     if (project) void loadProject(project.id, true);
   }, [loadProject, project?.id]);
 
+  const taskDecisionAccepted = useCallback(async (taskId: string) => {
+    if (!project) return;
+    setNotice("已授权新的尝试序列，任务将重新进入执行队列");
+    const [auditResult] = await Promise.allSettled([
+      client.getAudits(project.id, taskId),
+      loadProject(project.id, true),
+    ]);
+    if (auditResult.status === "fulfilled") {
+      setAudits((current) => ({ ...current, [taskId]: auditResult.value.items }));
+    } else {
+      setError(errorMessage(auditResult.reason));
+    }
+  }, [client, loadProject, project?.id]);
+
   const copyProjectID = useCallback(async (projectID: string) => {
     try {
       if (navigator.clipboard) {
@@ -797,6 +817,7 @@ function ControlConsole({ client }: { client: AorClient }) {
               }}
               onOpenWorkbench={() => setProjectView("workbench")}
               onReload={() => void loadProject(project.id)}
+              onTaskDecisionAccepted={taskDecisionAccepted}
               onNotice={setNotice}
               onError={(cause) => setError(errorMessage(cause))}
               client={client}
@@ -911,7 +932,7 @@ function ContextRail({ project, result, recent, view, onView, onSelect, onResult
   );
 }
 
-function Workspace({ bundle, toolchains, selectedTask, audits, auditLoading, onSelectTask, onProjectChanged, onOpenWorkbench, onReload, onNotice, onError, client }: {
+function Workspace({ bundle, toolchains, selectedTask, audits, auditLoading, onSelectTask, onProjectChanged, onOpenWorkbench, onReload, onTaskDecisionAccepted, onNotice, onError, client }: {
   bundle: ProjectBundle;
   toolchains: ToolchainInventoryTool[];
   selectedTask: string;
@@ -921,6 +942,7 @@ function Workspace({ bundle, toolchains, selectedTask, audits, auditLoading, onS
   onProjectChanged: (project: Project) => void;
   onOpenWorkbench: () => void;
   onReload: () => void;
+  onTaskDecisionAccepted: (taskId: string) => void | Promise<void>;
   onNotice: (notice: string) => void;
   onError: (error: unknown) => void;
   client: AorClient;
@@ -1095,7 +1117,16 @@ function Workspace({ bundle, toolchains, selectedTask, audits, auditLoading, onS
           meta={bundle.tasks.length ? `${bundle.tasks.filter((task) => task.state === "PASSED" || task.state === "INTEGRATED").length}/${bundle.tasks.length} 通过` : "无任务"}
         />
         {bundle.tasks.length ? (
-          <TaskTable tasks={bundle.tasks} selectedTask={selectedTask} audits={audits} auditLoading={auditLoading} onSelect={onSelectTask} />
+          <TaskTable
+            tasks={bundle.tasks}
+            selectedTask={selectedTask}
+            audits={audits}
+            auditLoading={auditLoading}
+            client={client}
+            onSelect={onSelectTask}
+            onDecisionAccepted={onTaskDecisionAccepted}
+            onReload={onReload}
+          />
         ) : (
           <PendingLine label="计划发布后显示模块任务" active={false} />
         )}
@@ -1273,12 +1304,15 @@ function ToolchainSummary({ inventory, selection, batches }: {
   );
 }
 
-function TaskTable({ tasks, selectedTask, audits, auditLoading, onSelect }: {
+function TaskTable({ tasks, selectedTask, audits, auditLoading, client, onSelect, onDecisionAccepted, onReload }: {
   tasks: ModuleTask[];
   selectedTask: string;
   audits: Record<string, AuditRun[]>;
   auditLoading: string;
+  client: AorClient;
   onSelect: (taskId: string) => void;
+  onDecisionAccepted: (taskId: string) => void | Promise<void>;
+  onReload: () => void | Promise<void>;
 }) {
   return (
     <div className="task-table">
@@ -1287,7 +1321,7 @@ function TaskTable({ tasks, selectedTask, audits, auditLoading, onSelect }: {
         const expanded = selectedTask === task.id;
         return (
           <div className={`task-item ${expanded ? "is-expanded" : ""}`} key={task.id}>
-            <button className="task-row" onClick={() => onSelect(task.id)} aria-expanded={expanded}>
+            <button className="task-row" onClick={() => onSelect(task.id)} aria-expanded={expanded} aria-controls={"task-detail-" + task.id}>
               <span className="task-name"><Code /><span><strong>{task.moduleId || shortId(task.id)}</strong><small>{shortId(task.id, 12)}</small></span></span>
               <StatusMark state={task.state} />
               <span>{task.attempt || 0} / 3</span>
@@ -1295,12 +1329,20 @@ function TaskTable({ tasks, selectedTask, audits, auditLoading, onSelect }: {
               <span className="task-expand">{expanded ? <CaretDown /> : <CaretRight />}</span>
             </button>
             {expanded && (
-              <div className="task-detail">
+              <div className="task-detail" id={"task-detail-" + task.id}>
                 <div className="task-facts">
                   <span><small>Task version</small><strong>v{task.version}</strong></span>
                   <span><small>Fence</small><strong>{task.fencingToken || "-"}</strong></span>
                   <span><small>Spec</small><strong>v{task.moduleSpecRef?.version || "-"}</strong></span>
                 </div>
+                {task.state === "BLOCKED_USER_DECISION" && (
+                  <TaskDecisionPanel
+                    task={task}
+                    client={client}
+                    onAccepted={() => onDecisionAccepted(task.id)}
+                    onReload={onReload}
+                  />
+                )}
                 {auditLoading === task.id ? <Spinner size="tiny" label="读取审计记录" /> : <AuditList runs={audits[task.id] || []} />}
               </div>
             )}
@@ -1308,6 +1350,145 @@ function TaskTable({ tasks, selectedTask, audits, auditLoading, onSelect }: {
         );
       })}
     </div>
+  );
+}
+
+function TaskDecisionPanel({ task, client, onAccepted, onReload }: {
+  task: ModuleTask;
+  client: AorClient;
+  onAccepted: () => void | Promise<void>;
+  onReload: () => void | Promise<void>;
+}) {
+  const [report, setReport] = useState<TaskDecisionReport>();
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [error, setError] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError("");
+    setReport(undefined);
+    setConfirming(false);
+    void client.getTaskDecisionReport(task.projectId, task.id)
+      .then((next) => {
+        if (active) setReport(next);
+      })
+      .catch((cause) => {
+        if (active) setError(errorMessage(cause));
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [client, reloadKey, task.id, task.projectId, task.version]);
+
+  const authorizeNewSeries = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      await client.decideTask(task, "AUTHORIZE_NEW_ATTEMPT_SERIES");
+      setConfirming(false);
+      await onAccepted();
+    } catch (cause) {
+      const stale = cause instanceof ApiError && (cause.status === 409 || cause.status === 412);
+      setError(stale ? "任务状态已变化，页面已刷新，请核对最新状态后重新确认。" : errorMessage(cause));
+      if (stale) await onReload();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (loading) {
+    return <div className="task-decision-loading" role="status"><Spinner size="tiny" label="读取人工决策报告" /></div>;
+  }
+
+  if (!report) {
+    return (
+      <section className="task-decision task-decision-error" aria-live="polite">
+        <div><WarningCircle weight="fill" /><strong>无法读取人工决策报告</strong></div>
+        <p>{error || "报告暂不可用。"}</p>
+        <Button appearance="outline" icon={<ArrowClockwise />} onClick={() => setReloadKey((value) => value + 1)}>重试</Button>
+      </section>
+    );
+  }
+
+  const canAuthorize = report.allowedDecisions.includes("AUTHORIZE_NEW_ATTEMPT_SERIES");
+  return (
+    <section className="task-decision" aria-labelledby={"task-decision-" + task.id} aria-busy={busy}>
+      <header className="task-decision-head">
+        <WarningCircle weight="fill" />
+        <div>
+          <h3 id={"task-decision-" + task.id}>需要人工决策</h3>
+          <p>当前尝试序列已达到上限。系统会停在这里，直到你明确授权下一轮执行。</p>
+        </div>
+        <span title={"签名密钥 " + report.signature.kid}><ShieldCheck />服务端已校验签名</span>
+      </header>
+
+      <div className="task-decision-metrics">
+        <span><small>已用尝试</small><strong>{report.attempts.length} / {report.attemptLimit}</strong></span>
+        <span><small>受阻模块</small><strong>{report.dependencyImpact.frozenTaskIds.length}</strong></span>
+        <span><small>输入 / 输出 Token</small><strong>{report.costSummary.inputTokens.toLocaleString("zh-CN")} / {report.costSummary.outputTokens.toLocaleString("zh-CN")}</strong></span>
+        <span><small>估算成本</small><strong>{report.costSummary.currency} {report.costSummary.estimatedCost}</strong></span>
+      </div>
+
+      <div className="task-decision-section">
+        <strong>尝试记录</strong>
+        <div className="task-decision-attempts">
+          {report.attempts.map((attempt) => (
+            <div key={attempt.attempt}>
+              <span>第 {attempt.attempt} 次</span>
+              <strong>{attempt.failureStage === "DETERMINISTIC_AUDIT" ? "确定性审计失败" : "模型审计失败"}</strong>
+              <code title={attempt.submissionCommit}>{shortId(attempt.submissionCommit, 10)}</code>
+              <small>{attempt.findingIds.length} 项发现</small>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="task-decision-section">
+        <strong>阻断原因</strong>
+        <div className="task-decision-findings">
+          {report.blockingFindings.map((finding) => (
+            <div key={finding.id}>
+              <span className={"severity severity-" + finding.severity.toLowerCase()}>{finding.severity}</span>
+              <div>
+                <strong>{finding.summary}</strong>
+                <p>{finding.location || finding.category}</p>
+                <small>第 {finding.firstObservedAttempt}–{finding.lastObservedAttempt} 次尝试持续出现</small>
+              </div>
+            </div>
+          ))}
+        </div>
+        {report.dependencyImpact.criticalPathImpact && (
+          <p className="task-decision-impact">该模块位于关键路径，另有 {report.dependencyImpact.frozenTaskIds.length} 个模块会继续等待它通过。</p>
+        )}
+      </div>
+
+      <footer className="task-decision-actions">
+        {error && <p role="alert">{error}</p>}
+        {!canAuthorize ? (
+          <span>报告没有提供当前 Web 控制台可执行的决策。</span>
+        ) : confirming ? (
+          <div className="task-decision-confirm" role="alert">
+            <p>授权后会保留已有审计历史，并创建新的尝试序列。执行 Agent 将根据这些失败证据重新处理该模块。</p>
+            <div>
+              <Button appearance="primary" icon={busy ? <Spinner size="tiny" /> : <ArrowRight />} disabled={busy} onClick={() => void authorizeNewSeries()}>
+                {busy ? "正在提交" : "确认授权"}
+              </Button>
+              <Button appearance="subtle" disabled={busy} onClick={() => setConfirming(false)}>取消</Button>
+            </div>
+          </div>
+        ) : (
+          <Button appearance="primary" icon={<ArrowClockwise />} onClick={() => setConfirming(true)}>授权新一轮尝试</Button>
+        )}
+        <time>报告生成于 {formatTime(report.generatedAt)}</time>
+      </footer>
+    </section>
   );
 }
 
