@@ -1636,6 +1636,23 @@ components:
           maxItems: 100
           items: {$ref: '../json-schema/submission-manifest.v1.schema.json'}
         nextCursor: {type: string, maxLength: 512}
+    TaskModuleTestOutput:
+      type: object
+      additionalProperties: false
+      required: [status, command, exitCode, stdout, stderr, stdoutRef, stderrRef, resultRef]
+      properties:
+        status: {enum: [PASS, FAIL, ERROR]}
+        command:
+          type: array
+          minItems: 1
+          maxItems: 256
+          items: {type: string, minLength: 1, maxLength: 4096}
+        exitCode: {type: integer, minimum: -1}
+        stdout: {type: string, maxLength: 1048576}
+        stderr: {type: string, maxLength: 1048576}
+        stdoutRef: {type: string, pattern: '^artifact://sha256/[0-9a-f]{64}$'}
+        stderrRef: {type: string, pattern: '^artifact://sha256/[0-9a-f]{64}$'}
+        resultRef: {type: string, pattern: '^artifact://sha256/[0-9a-f]{64}$'}
     TaskAuditFinding:
       type: object
       additionalProperties: false
@@ -1678,6 +1695,7 @@ components:
         findings:
           type: array
           items: {$ref: '#/components/schemas/TaskAuditFinding'}
+        moduleTest: {$ref: '#/components/schemas/TaskModuleTestOutput'}
     TaskAuditPage:
       type: object
       additionalProperties: false

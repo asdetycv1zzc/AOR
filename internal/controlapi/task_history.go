@@ -5,8 +5,12 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"time"
+	"unicode/utf8"
 
+	"github.com/akimisaka/aor/internal/artifact"
+	"github.com/akimisaka/aor/internal/audit"
 	"github.com/akimisaka/aor/pkg/contracts"
 	aorerrors "github.com/akimisaka/aor/pkg/errors"
 )
@@ -29,22 +33,34 @@ type TaskAuditPage struct {
 }
 
 type TaskAuditRun struct {
-	ID                 string             `json:"id"`
-	ProjectID          string             `json:"projectId"`
-	TaskID             string             `json:"taskId"`
-	SubmissionID       string             `json:"submissionId"`
-	Phase              string             `json:"phase"`
-	State              string             `json:"state"`
-	PipelineVersion    string             `json:"pipelineVersion"`
-	ExecutionPlatform  string             `json:"executionPlatform"`
-	IsolationLevel     string             `json:"isolationLevel"`
-	SandboxImageDigest string             `json:"sandboxImageDigest,omitempty"`
-	AuditorAgentID     string             `json:"auditorAgentId,omitempty"`
-	StartedAt          time.Time          `json:"startedAt"`
-	CompletedAt        *time.Time         `json:"completedAt,omitempty"`
-	Verdict            string             `json:"verdict,omitempty"`
-	EvidenceBundleRef  string             `json:"evidenceBundleRef,omitempty"`
-	Findings           []TaskAuditFinding `json:"findings"`
+	ID                 string                `json:"id"`
+	ProjectID          string                `json:"projectId"`
+	TaskID             string                `json:"taskId"`
+	SubmissionID       string                `json:"submissionId"`
+	Phase              string                `json:"phase"`
+	State              string                `json:"state"`
+	PipelineVersion    string                `json:"pipelineVersion"`
+	ExecutionPlatform  string                `json:"executionPlatform"`
+	IsolationLevel     string                `json:"isolationLevel"`
+	SandboxImageDigest string                `json:"sandboxImageDigest,omitempty"`
+	AuditorAgentID     string                `json:"auditorAgentId,omitempty"`
+	StartedAt          time.Time             `json:"startedAt"`
+	CompletedAt        *time.Time            `json:"completedAt,omitempty"`
+	Verdict            string                `json:"verdict,omitempty"`
+	EvidenceBundleRef  string                `json:"evidenceBundleRef,omitempty"`
+	Findings           []TaskAuditFinding    `json:"findings"`
+	ModuleTest         *TaskModuleTestOutput `json:"moduleTest,omitempty"`
+}
+
+type TaskModuleTestOutput struct {
+	Status    string   `json:"status"`
+	Command   []string `json:"command"`
+	ExitCode  int      `json:"exitCode"`
+	Stdout    string   `json:"stdout"`
+	Stderr    string   `json:"stderr"`
+	StdoutRef string   `json:"stdoutRef"`
+	StderrRef string   `json:"stderrRef"`
+	ResultRef string   `json:"resultRef"`
 }
 
 type TaskAuditFinding struct {
@@ -72,13 +88,21 @@ type taskHistoryCursor struct {
 
 type PostgresTaskHistoryReader struct {
 	database *sql.DB
+	outputs  audit.PersistedOutputOpener
 }
 
-func NewPostgresTaskHistoryReader(database *sql.DB) (*PostgresTaskHistoryReader, error) {
+func NewPostgresTaskHistoryReader(database *sql.DB, outputs ...audit.PersistedOutputOpener) (*PostgresTaskHistoryReader, error) {
 	if database == nil {
 		return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "task history database"})
 	}
-	return &PostgresTaskHistoryReader{database: database}, nil
+	if len(outputs) > 1 || len(outputs) == 1 && outputs[0] == nil {
+		return nil, aorerrors.New(aorerrors.CodeInvalidArgument, "", map[string]any{"scope": "task history audit outputs"})
+	}
+	reader := &PostgresTaskHistoryReader{database: database}
+	if len(outputs) == 1 {
+		reader.outputs = outputs[0]
+	}
+	return reader, nil
 }
 
 func (reader *PostgresTaskHistoryReader) ListSubmissions(ctx context.Context, tenantID, projectID, taskID, cursor string) (TaskSubmissionPage, error) {
@@ -149,7 +173,7 @@ func (reader *PostgresTaskHistoryReader) ListAudits(ctx context.Context, tenantI
 SELECT ar.id::text, ar.project_id::text, s.module_task_id::text, ar.submission_id::text,
        ar.phase, ar.state, ar.pipeline_version, ar.execution_platform, ar.isolation_level,
        ar.sandbox_image_digest, ar.auditor_agent_id, ar.started_at, ar.completed_at,
-       ar.verdict, ar.evidence_bundle_ref
+	       ar.verdict, ar.evidence_bundle_ref, s.attempt_series_id::text, s.attempt
 FROM audit_runs ar
 JOIN submissions s ON s.tenant_id = ar.tenant_id AND s.id = ar.submission_id
 WHERE ar.tenant_id = $1::uuid AND ar.project_id = $2::uuid AND s.module_task_id::text = $3
@@ -160,23 +184,28 @@ LIMIT $6`, tenantID, projectID, taskID, position.CreatedAt, cursorUUID(position.
 		return TaskAuditPage{}, err
 	}
 	defer rows.Close()
-	items := make([]TaskAuditRun, 0, taskHistoryPageSize+1)
+	type auditItem struct {
+		run             TaskAuditRun
+		attemptSeriesID string
+		attempt         int
+	}
+	items := make([]auditItem, 0, taskHistoryPageSize+1)
 	for rows.Next() {
-		var run TaskAuditRun
+		var item auditItem
 		var sandboxDigest, auditorID, verdict, evidenceRef sql.NullString
 		var completedAt sql.NullTime
-		if err := rows.Scan(&run.ID, &run.ProjectID, &run.TaskID, &run.SubmissionID, &run.Phase, &run.State, &run.PipelineVersion, &run.ExecutionPlatform, &run.IsolationLevel, &sandboxDigest, &auditorID, &run.StartedAt, &completedAt, &verdict, &evidenceRef); err != nil {
+		if err := rows.Scan(&item.run.ID, &item.run.ProjectID, &item.run.TaskID, &item.run.SubmissionID, &item.run.Phase, &item.run.State, &item.run.PipelineVersion, &item.run.ExecutionPlatform, &item.run.IsolationLevel, &sandboxDigest, &auditorID, &item.run.StartedAt, &completedAt, &verdict, &evidenceRef, &item.attemptSeriesID, &item.attempt); err != nil {
 			return TaskAuditPage{}, err
 		}
-		run.SandboxImageDigest = sandboxDigest.String
-		run.AuditorAgentID = auditorID.String
-		run.Verdict = verdict.String
-		run.EvidenceBundleRef = evidenceRef.String
+		item.run.SandboxImageDigest = sandboxDigest.String
+		item.run.AuditorAgentID = auditorID.String
+		item.run.Verdict = verdict.String
+		item.run.EvidenceBundleRef = evidenceRef.String
 		if completedAt.Valid {
 			value := completedAt.Time
-			run.CompletedAt = &value
+			item.run.CompletedAt = &value
 		}
-		items = append(items, run)
+		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
 		return TaskAuditPage{}, err
@@ -185,20 +214,64 @@ LIMIT $6`, tenantID, projectID, taskID, position.CreatedAt, cursorUUID(position.
 		return TaskAuditPage{}, err
 	}
 	for index := range items {
-		items[index].Findings, err = listTaskAuditFindings(ctx, tx, tenantID, items[index].ID)
+		items[index].run.Findings, err = listTaskAuditFindings(ctx, tx, tenantID, items[index].run.ID)
 		if err != nil {
 			return TaskAuditPage{}, err
 		}
 	}
-	result := TaskAuditPage{Items: append([]TaskAuditRun(nil), items[:min(len(items), taskHistoryPageSize)]...)}
+	pageItems := items[:min(len(items), taskHistoryPageSize)]
+	result := TaskAuditPage{Items: make([]TaskAuditRun, len(pageItems))}
+	for index := range pageItems {
+		result.Items[index] = pageItems[index].run
+	}
 	if len(items) > taskHistoryPageSize {
-		last := items[taskHistoryPageSize-1]
+		last := items[taskHistoryPageSize-1].run
 		result.NextCursor = encodeTaskHistoryCursor(taskHistoryCursor{Kind: "audit", ProjectID: projectID, TaskID: taskID, CreatedAt: last.StartedAt, ID: last.ID})
 	}
 	if err := tx.Commit(); err != nil {
 		return TaskAuditPage{}, err
 	}
+	if reader.outputs != nil {
+		for index := range pageItems {
+			if pageItems[index].run.Phase != "DETERMINISTIC" {
+				continue
+			}
+			moduleTest, loadErr := reader.loadModuleTest(ctx, tenantID, projectID, taskID, pageItems[index].attemptSeriesID, pageItems[index].attempt)
+			if errors.Is(loadErr, artifact.ErrNotFound) {
+				continue
+			}
+			if loadErr != nil {
+				return TaskAuditPage{}, loadErr
+			}
+			result.Items[index].ModuleTest = moduleTest
+		}
+	}
 	return result, nil
+}
+
+func (reader *PostgresTaskHistoryReader) loadModuleTest(ctx context.Context, tenantID, projectID, taskID, attemptSeriesID string, attempt int) (*TaskModuleTestOutput, error) {
+	outputs, err := audit.ReadPersistedModuleTestOutputs(ctx, reader.outputs, tenantID, projectID, taskID, attemptSeriesID, attempt)
+	if err != nil {
+		return nil, err
+	}
+	var report struct {
+		Command  []string `json:"command"`
+		ExitCode int      `json:"exitCode"`
+		Status   string   `json:"status"`
+	}
+	if !json.Valid(outputs.Result) || json.Unmarshal(outputs.Result, &report) != nil || len(report.Command) == 0 || report.ExitCode < -1 || report.Status != "PASS" && report.Status != "FAIL" && report.Status != "ERROR" || !utf8.Valid(outputs.Stdout) || !utf8.Valid(outputs.Stderr) {
+		return nil, artifact.ErrIntegrity
+	}
+	for _, argument := range report.Command {
+		if argument == "" {
+			return nil, artifact.ErrIntegrity
+		}
+	}
+	return &TaskModuleTestOutput{
+		Status: report.Status, Command: append([]string(nil), report.Command...), ExitCode: report.ExitCode,
+		Stdout: string(outputs.Stdout), Stderr: string(outputs.Stderr),
+		StdoutRef: outputs.StdoutRef, StderrRef: outputs.StderrRef, ResultRef: outputs.ResultRef,
+	}, nil
 }
 
 func listTaskAuditFindings(ctx context.Context, tx *sql.Tx, tenantID, auditID string) ([]TaskAuditFinding, error) {

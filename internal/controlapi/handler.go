@@ -20,6 +20,7 @@ import (
 
 	"github.com/akimisaka/aor/internal/agentruntime"
 	"github.com/akimisaka/aor/internal/artifact"
+	"github.com/akimisaka/aor/internal/audit"
 	"github.com/akimisaka/aor/internal/authn"
 	"github.com/akimisaka/aor/internal/authz"
 	"github.com/akimisaka/aor/internal/eventing"
@@ -319,7 +320,17 @@ func New(config Config) (*Handler, error) {
 		autoBudget = true
 	}
 	if config.TaskHistory == nil && config.Database != nil {
-		reader, err := NewPostgresTaskHistoryReader(config.Database)
+		var outputs audit.PersistedOutputOpener
+		if candidate, ok := config.Artifacts.(audit.PersistedOutputOpener); ok {
+			outputs = candidate
+		}
+		var reader *PostgresTaskHistoryReader
+		var err error
+		if outputs == nil {
+			reader, err = NewPostgresTaskHistoryReader(config.Database)
+		} else {
+			reader, err = NewPostgresTaskHistoryReader(config.Database, outputs)
+		}
 		if err != nil {
 			return nil, err
 		}

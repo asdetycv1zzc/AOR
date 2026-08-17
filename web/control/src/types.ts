@@ -398,6 +398,17 @@ export interface AuditFinding {
   createdAt: string;
 }
 
+export interface TaskModuleTestOutput {
+  status: "PASS" | "FAIL" | "ERROR";
+  command: string[];
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  stdoutRef: string;
+  stderrRef: string;
+  resultRef: string;
+}
+
 export interface AuditRun {
   id: string;
   projectId: string;
@@ -413,6 +424,7 @@ export interface AuditRun {
   verdict?: "PASS" | "FAIL" | "INCONCLUSIVE";
   evidenceBundleRef?: string;
   findings: AuditFinding[];
+  moduleTest?: TaskModuleTestOutput;
 }
 
 export interface PlanCompletionModule {

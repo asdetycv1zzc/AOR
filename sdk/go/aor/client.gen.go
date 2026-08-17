@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-const OpenAPISHA256 = "sha256:522998eff5185a4a6e4f9f290bfdf6a3425a648978846293246542d22c7e243d"
+const OpenAPISHA256 = "sha256:f28c96a714957637c722c84c6727d171028b9fea7ea5af2d03564043e0e4839e"
 
 type TokenProvider func(context.Context) (string, error)
 

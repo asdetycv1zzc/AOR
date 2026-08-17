@@ -440,11 +440,17 @@ function findingText(value: unknown): string {
   if (typeof value === "string") return value;
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>;
-    for (const key of ["message", "summary", "description", "detail"]) {
+    for (const key of ["observedBehavior", "message", "summary", "description", "detail"]) {
       if (typeof record[key] === "string") return record[key];
     }
   }
-  return JSON.stringify(value);
+  return JSON.stringify(value) || "未提供问题详情";
+}
+
+function findingField(value: unknown, key: string): string {
+  if (!value || typeof value !== "object") return "";
+  const field = (value as Record<string, unknown>)[key];
+  return typeof field === "string" ? field : "";
 }
 
 function latestByVersion<T>(items: T[], version: (item: T) => number): T | undefined {
@@ -1310,12 +1316,31 @@ function AuditList({ runs }: { runs: AuditRun[] }) {
             <StatusMark state={run.verdict || run.state} />
             <time>{formatTime(run.completedAt || run.startedAt)}</time>
           </div>
+          {run.moduleTest && (
+            <section className="audit-check" aria-label="模块测试结果">
+              <div className="audit-check-head">
+                <strong>module-tests</strong>
+                <span>{run.moduleTest.status} · exit {run.moduleTest.exitCode}</span>
+              </div>
+              <code className="audit-command">{JSON.stringify(run.moduleTest.command)}</code>
+              <div className="audit-output-grid">
+                <div className="audit-output"><strong>stdout</strong><pre>{run.moduleTest.stdout || "无输出"}</pre></div>
+                <div className="audit-output"><strong>stderr</strong><pre>{run.moduleTest.stderr || "无输出"}</pre></div>
+              </div>
+            </section>
+          )}
           {run.findings.length > 0 ? (
             <div className="finding-list">
               {run.findings.map((finding) => (
                 <div className="finding" key={finding.id}>
                   <span className={`severity severity-${finding.severity.toLowerCase()}`}>{finding.severity}</span>
-                  <div><strong>{finding.ruleId}</strong><p>{findingText(finding.content)}</p>{finding.filePath && <small>{finding.filePath}{finding.lineStart ? `:${finding.lineStart}` : ""}</small>}</div>
+                  <div>
+                    <strong>{finding.ruleId}</strong>
+                    <p>{findingText(finding.content)}</p>
+                    {findingField(finding.content, "expectedBehavior") && <small>预期：{findingField(finding.content, "expectedBehavior")}</small>}
+                    {findingField(finding.content, "remediationConstraint") && <small>修复约束：{findingField(finding.content, "remediationConstraint")}</small>}
+                    {finding.filePath && <small>{finding.filePath}{finding.lineStart ? `:${finding.lineStart}` : ""}</small>}
+                  </div>
                 </div>
               ))}
             </div>

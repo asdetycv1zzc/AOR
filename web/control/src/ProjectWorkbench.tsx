@@ -218,10 +218,12 @@ function messageAvatar(sender: ProjectActivityMessage["sender"]) {
 
 function messageContent(message: ProjectActivityMessage) {
   const content = message.content || (message.state === "FAILED" ? "处理失败，详情见错误码。" : "");
-  const hasTrace = Boolean(message.inputPrompt || message.reasoningContent || message.reasoningSummary);
+  const inputUnavailable = message.sender === "AGENT" && Boolean(content) && !message.inputPrompt;
+  const hasTrace = Boolean(message.inputPrompt || message.reasoningContent || message.reasoningSummary || inputUnavailable);
   const output = <p>{content}{message.state === "STREAMING" && <span className="typing-indicator" aria-label={content ? undefined : "Agent 正在响应"} aria-hidden={content ? "true" : undefined}><i /><i /><i /></span>}</p>;
   return <>
     {message.inputPrompt && <section className="message-trace is-input"><strong>输入提示词</strong><pre>{message.inputPrompt}</pre></section>}
+    {inputUnavailable && <section className="message-trace is-input"><strong>输入提示词</strong><pre>未采集（该记录生成于输入追踪功能启用前）</pre></section>}
     {message.reasoningContent && <section className="message-trace is-reasoning"><strong>思考链</strong><pre>{message.reasoningContent}</pre></section>}
     {message.reasoningSummary && <section className="message-trace is-summary"><strong>思考摘要</strong><pre>{message.reasoningSummary}</pre></section>}
     {hasTrace ? <section className="message-output"><strong>输出文本</strong>{output}</section> : output}

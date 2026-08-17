@@ -1420,6 +1420,62 @@ button {
   font-weight: 700;
 }
 
+.audit-check {
+  display: grid;
+  gap: 10px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.audit-check-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+}
+
+.audit-check-head span {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.audit-command {
+  overflow-x: auto;
+  color: var(--ink);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.audit-output-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.audit-output {
+  min-width: 0;
+}
+
+.audit-output > strong {
+  color: var(--quiet);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.audit-output pre {
+  max-height: 220px;
+  margin: 5px 0 0;
+  overflow: auto;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .finding-list {
   display: grid;
   border-top: 1px solid var(--line);
@@ -1486,6 +1542,12 @@ button {
   gap: 7px;
   color: var(--green);
   font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  .audit-output-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .audit-empty {

@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -106,6 +107,66 @@ func TestPipelineFailsClosedWhenCheckOmitsFindings(t *testing.T) {
 	if !errors.Is(err, ErrDeterministicGate) || result.Verdict != "FAIL" || factory.calls != 0 || len(result.Bundle.Findings) != 1 || result.Bundle.Checks[0].Status != "FAIL" {
 		t.Fatalf("empty finding bypassed deterministic gate: %v %#v calls=%d", err, result, factory.calls)
 	}
+}
+
+func TestPipelineAddsPersistedCheckOutputsToFindingEvidence(t *testing.T) {
+	signer, _ := NewHMACSigner([]byte("0123456789abcdef0123456789abcdef"))
+	pipeline, err := NewPipelineWithArtifactStore([]Check{outputFindingCheck{}}, nil, signer, NewMemoryEvidenceStore(), &contentArtifactPublisher{}, "1.0.0", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := testManifest()
+	result, err := pipeline.Run(context.Background(), DeterministicInput{TenantID: "tenant-1", Manifest: manifest, ModuleSpecRef: manifest.ModuleSpecRef, AllowedPaths: []string{"owned/..."}, RequiredCriteria: []string{"criterion-1"}, PolicyDigest: digestBytes([]byte("policy")), Platform: contracts.PlatformLinux, Isolation: contracts.IsolationContainer, SandboxAttestation: "oci:sha256:container"})
+	if !errors.Is(err, ErrDeterministicGate) {
+		t.Fatalf("pipeline error = %v", err)
+	}
+	if len(result.Bundle.Checks) != 1 || len(result.Bundle.Findings) != 1 {
+		t.Fatalf("audit bundle = %#v", result.Bundle)
+	}
+	check := result.Bundle.Checks[0]
+	refs := result.Bundle.Findings[0].EvidenceRefs
+	for _, reference := range []string{check.StdoutURI, check.StderrURI, check.ResultURI} {
+		found := false
+		for _, candidate := range refs {
+			if candidate == reference {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("finding evidence refs %v do not contain check output %q", refs, reference)
+		}
+	}
+}
+
+type outputFindingCheck struct{}
+
+func (outputFindingCheck) ID() string { return "output-finding" }
+
+func (outputFindingCheck) Run(context.Context, DeterministicInput) CheckResult {
+	return CheckResult{
+		Status:   StatusFail,
+		Stdout:   []byte("module stdout\n"),
+		Stderr:   []byte("module stderr\n"),
+		Result:   []byte(`{"status":"FAIL"}`),
+		Findings: []contracts.AuditFinding{deterministicFinding(contracts.FindingHigh, "DETERMINISTIC", "module-test-failed", "", "module-tests", "module-test-exit", "module test passes", "module test failed", "fix the module test failure")},
+	}
+}
+
+type contentArtifactPublisher struct{}
+
+func (*contentArtifactPublisher) Put(_ context.Context, request artifact.PutRequest, produce func(io.Writer) error) (artifact.Manifest, error) {
+	var content bytes.Buffer
+	if err := produce(&content); err != nil {
+		return artifact.Manifest{}, err
+	}
+	digest := digestBytes(content.Bytes())
+	return artifact.Manifest{
+		ArtifactID: request.ArtifactID,
+		URI:        "artifact://sha256/" + digest[len("sha256:"):],
+		SHA256:     digest,
+		Size:       int64(content.Len()),
+	}, nil
 }
 
 func TestPipelineEnforcesBlockingFindingAndCriterionGate(t *testing.T) {

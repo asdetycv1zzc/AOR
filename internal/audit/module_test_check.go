@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -114,18 +115,19 @@ func (check *ModuleTestCheck) Run(ctx context.Context, input DeterministicInput)
 		status = StatusError
 		runErr = errors.New("module test output exceeded the configured limit")
 	}
+	exitCode := moduleTestExitCode(runErr)
 	encodedResult, marshalErr := json.Marshal(struct {
 		Command    []string                  `json:"command"`
 		Toolchains []contracts.VersionedTool `json:"toolchains"`
 		ExitCode   int                       `json:"exitCode"`
 		Status     string                    `json:"status"`
-	}{Command: append([]string(nil), argv...), Toolchains: append([]contracts.VersionedTool(nil), input.ModuleSpec.Toolchains...), ExitCode: moduleTestExitCode(runErr), Status: string(status)})
+	}{Command: append([]string(nil), argv...), Toolchains: append([]contracts.VersionedTool(nil), input.ModuleSpec.Toolchains...), ExitCode: exitCode, Status: string(status)})
 	if marshalErr != nil {
 		return moduleTestFailure(StatusError, "module test result could not be encoded", "module-test-result")
 	}
 	checkResult := CheckResult{Status: status, Stdout: stdout.Bytes(), Stderr: stderr.Bytes(), Result: encodedResult}
 	if status != StatusPass {
-		reason := "planned module verification failed"
+		reason := "planned module verification failed with exit code " + strconv.Itoa(exitCode)
 		if testContext.Err() != nil {
 			reason = testContext.Err().Error()
 		}

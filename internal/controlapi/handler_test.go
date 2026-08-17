@@ -731,7 +731,11 @@ func TestTaskHistoryEndpointsAreScopedAuthorizedAndVersioned(t *testing.T) {
 			ID: "22222222-2222-4222-8222-222222222222", ProjectID: project.ID, TaskID: "task_history",
 			SubmissionID: "33333333-3333-4333-8333-333333333333", Phase: "DETERMINISTIC", State: "COMPLETED",
 			PipelineVersion: "pipeline-1", ExecutionPlatform: "LINUX", IsolationLevel: "CONTAINER", StartedAt: controlAPITestTime,
-			Verdict: "PASS", Findings: []TaskAuditFinding{},
+			Verdict: "FAIL", Findings: []TaskAuditFinding{},
+			ModuleTest: &TaskModuleTestOutput{
+				Status: "FAIL", Command: []string{"/bin/sh", "verify-fail.sh"}, ExitCode: 7,
+				Stdout: "", Stderr: "", StdoutRef: "artifact://stdout", StderrRef: "artifact://stderr", ResultRef: "artifact://result",
+			},
 		}}},
 	}
 	handler.taskHistory = reader
@@ -741,7 +745,9 @@ func TestTaskHistoryEndpointsAreScopedAuthorizedAndVersioned(t *testing.T) {
 		t.Fatalf("submissions status=%d etag=%q reader=%#v body=%s", submissions.Code, submissions.Header().Get("ETag"), reader, submissions.Body.String())
 	}
 	audits := performRequest(handler, http.MethodGet, "/v1/projects/"+project.ID+"/tasks/task_history/audits", nil, map[string]string{"Authorization": "Bearer " + testBearer})
-	if audits.Code != http.StatusOK || audits.Header().Get("ETag") == "" || !strings.Contains(audits.Body.String(), `"pipelineVersion":"pipeline-1"`) {
+	if audits.Code != http.StatusOK || audits.Header().Get("ETag") == "" || !strings.Contains(audits.Body.String(), `"pipelineVersion":"pipeline-1"`) ||
+		!strings.Contains(audits.Body.String(), `"command":["/bin/sh","verify-fail.sh"]`) || !strings.Contains(audits.Body.String(), `"exitCode":7`) ||
+		!strings.Contains(audits.Body.String(), `"stdout":""`) || !strings.Contains(audits.Body.String(), `"stderr":""`) {
 		t.Fatalf("audits status=%d etag=%q body=%s", audits.Code, audits.Header().Get("ETag"), audits.Body.String())
 	}
 	if last := authorizer.inputs[len(authorizer.inputs)-1]; last.Action != authz.ActionTaskRead || last.Resource.Type != "task-audits" || last.Resource.ID != "task_history" {

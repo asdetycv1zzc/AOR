@@ -110,11 +110,14 @@ func (p *Pipeline) run(ctx context.Context, input DeterministicInput, gate func(
 				result.Findings = cloneFindings(result.Findings)
 			}
 		}
-		findings = append(findings, result.Findings...)
 		outputs, err := p.persistCheckOutputs(ctx, input, check.ID(), result)
 		if err != nil {
 			return AuditResult{}, err
 		}
+		for index := range result.Findings {
+			result.Findings[index].EvidenceRefs = appendUnique(result.Findings[index].EvidenceRefs, outputs.refs...)
+		}
+		findings = append(findings, result.Findings...)
 		artifactRefs = appendUnique(artifactRefs, outputs.refs...)
 		checks = append(checks, contracts.EvidenceCheck{CheckID: check.ID(), Ordinal: ordinal + 1, Type: "DETERMINISTIC", Status: string(status), Tool: contracts.CheckTool{Name: "aor-audit", Version: p.version, Digest: digestBytes([]byte(p.version))}, StartedAt: started.Format(time.RFC3339), CompletedAt: ended.Format(time.RFC3339), StdoutURI: outputs.stdout, StderrURI: outputs.stderr, ResultURI: outputs.result, ResultSHA256: outputs.resultDigest})
 	}

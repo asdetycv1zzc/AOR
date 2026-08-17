@@ -73,6 +73,22 @@ func TestModuleTestCheckRunsTheImmutableSubmissionCommit(t *testing.T) {
 	if result.Status != StatusFail || len(result.Findings) != 1 {
 		t.Fatalf("failing result = %#v", result)
 	}
+	if string(result.Stdout) != "module test stdout\n" || string(result.Stderr) != "module test stderr\n" {
+		t.Fatalf("failing output stdout=%q stderr=%q", result.Stdout, result.Stderr)
+	}
+	var failureReport struct {
+		ExitCode int    `json:"exitCode"`
+		Status   string `json:"status"`
+	}
+	if err := json.Unmarshal(result.Result, &failureReport); err != nil {
+		t.Fatal(err)
+	}
+	if failureReport.ExitCode != 7 || failureReport.Status != string(StatusFail) {
+		t.Fatalf("failing report = %#v", failureReport)
+	}
+	if !strings.Contains(result.Findings[0].ObservedBehavior, "exit code 7") {
+		t.Fatalf("failing finding observed behavior = %q", result.Findings[0].ObservedBehavior)
+	}
 }
 
 func testAuditRepository(t *testing.T) (string, string, string) {
@@ -88,7 +104,7 @@ func testAuditRepository(t *testing.T) (string, string, string) {
 	if err := os.WriteFile(filepath.Join(source, "verify-pass.sh"), []byte("exit 0\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(source, "verify-fail.sh"), []byte("exit 1\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(source, "verify-fail.sh"), []byte("echo 'module test stdout'\necho 'module test stderr' >&2\nexit 7\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	runAuditGit(t, source, "add", "file.txt", "verify-pass.sh", "verify-fail.sh")
