@@ -13,7 +13,7 @@ import {
   UserCircle,
   WarningCircle,
 } from "@phosphor-icons/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AorClient, ApiError } from "./api";
 import type {
   ModelRole,
@@ -216,14 +216,222 @@ function messageAvatar(sender: ProjectActivityMessage["sender"]) {
   return <Robot weight="duotone" aria-hidden="true" />;
 }
 
+type PromptMessageRole = "system" | "user" | "assistant" | "tool";
+
+interface PromptToolCall {
+  id: string;
+  name: string;
+  arguments?: unknown;
+}
+
+interface PromptConversationMessage {
+  role: PromptMessageRole;
+  content: string;
+  toolCalls: PromptToolCall[];
+  toolCallId: string;
+}
+
+type ConversationRow =
+  | { kind: "activity"; key: string; activity: ProjectActivityMessage }
+  | { kind: "prompt"; key: string; source: ProjectActivityMessage; message: PromptConversationMessage }
+  | { kind: "notice"; key: string; source: ProjectActivityMessage; content: string };
+
+const parsedPromptCache = new Map<string, { source: string; messages: PromptConversationMessage[] | undefined }>();
+const formattedPromptContentCache = new WeakMap<PromptConversationMessage, string>();
+const maximumParsedPromptCacheEntries = 256;
+
+const structuredFieldLabels: Record<string, string> = {
+  section: "区段",
+  version: "版本",
+  kind: "类型",
+  reference: "引用",
+  sha256: "摘要",
+  content: "内容",
+  id: "标识",
+  name: "名称",
+  role: "角色",
+  status: "状态",
+  error: "错误",
+  message: "消息",
+  result: "结果",
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function structuredString(value: string): unknown | undefined {
+  const trimmed = value.trim();
+  if (!(trimmed.startsWith("{") && trimmed.endsWith("}")) && !(trimmed.startsWith("[") && trimmed.endsWith("]"))) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    return isRecord(parsed) || Array.isArray(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function indentText(value: string, depth: number): string {
+  const indentation = "  ".repeat(depth);
+  return value.split("\n").map((line) => `${indentation}${line}`).join("\n");
+}
+
+function formatStructuredValue(value: unknown, depth = 0): string {
+  const indentation = "  ".repeat(depth);
+  if (depth > 16) return `${indentation}内容层级过深`;
+  if (value === null || value === undefined) return `${indentation}空`;
+  if (typeof value === "string") {
+    const nested = structuredString(value);
+    if (nested !== undefined) return formatStructuredValue(nested, depth);
+    return indentText(value, depth);
+  }
+  if (typeof value === "number" || typeof value === "boolean") return `${indentation}${String(value)}`;
+  if (Array.isArray(value)) {
+    if (value.length === 0) return `${indentation}（空列表）`;
+    return value.map((item, index) => {
+      if (isRecord(item) || Array.isArray(item)) return `${indentation}${index + 1}.\n${formatStructuredValue(item, depth + 1)}`;
+      return `${indentation}${index + 1}. ${formatStructuredValue(item, 0).trimStart()}`;
+    }).join("\n");
+  }
+  if (!isRecord(value)) return `${indentation}${String(value)}`;
+  const entries = Object.entries(value);
+  if (entries.length === 0) return `${indentation}（空对象）`;
+  return entries.map(([key, item]) => {
+    const label = structuredFieldLabels[key] || key;
+    if (typeof item === "string") {
+      const nested = structuredString(item);
+      if (nested !== undefined) return `${indentation}${label}：\n${formatStructuredValue(nested, depth + 1)}`;
+      if (item.includes("\n")) return `${indentation}${label}：\n${indentText(item, depth + 1)}`;
+      return `${indentation}${label}：${item}`;
+    }
+    if (isRecord(item) || Array.isArray(item)) return `${indentation}${label}：\n${formatStructuredValue(item, depth + 1)}`;
+    return `${indentation}${label}：${item === null || item === undefined ? "空" : String(item)}`;
+  }).join("\n");
+}
+
+function parseInputPrompt(value: string): PromptConversationMessage[] | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(parsed) || !Array.isArray(parsed.messages)) return undefined;
+  const messages: PromptConversationMessage[] = [];
+  for (const item of parsed.messages) {
+    if (!isRecord(item) || typeof item.role !== "string") return undefined;
+    const normalizedRole = item.role.toLowerCase();
+    const role: PromptMessageRole = normalizedRole === "user" || normalizedRole === "assistant" || normalizedRole === "tool"
+      ? normalizedRole
+      : "system";
+    const toolCalls = Array.isArray(item.toolCalls) ? item.toolCalls.map((call): PromptToolCall | undefined => {
+      if (!isRecord(call)) return undefined;
+      return {
+        id: typeof call.id === "string" ? call.id : "",
+        name: typeof call.name === "string" ? call.name : "未命名工具",
+        arguments: call.arguments,
+      };
+    }).filter((call): call is PromptToolCall => call !== undefined) : [];
+    messages.push({
+      role,
+      content: typeof item.content === "string" ? item.content : "",
+      toolCalls,
+      toolCallId: typeof item.toolCallId === "string" ? item.toolCallId : "",
+    });
+  }
+  return messages;
+}
+
+function activityPromptMessages(activity: ProjectActivityMessage): PromptConversationMessage[] | undefined {
+  if (!activity.inputPrompt) return undefined;
+  const cached = parsedPromptCache.get(activity.id);
+  if (cached?.source === activity.inputPrompt) return cached.messages;
+  const messages = parseInputPrompt(activity.inputPrompt);
+  parsedPromptCache.set(activity.id, { source: activity.inputPrompt, messages });
+  if (parsedPromptCache.size > maximumParsedPromptCacheEntries) {
+    const oldest = parsedPromptCache.keys().next().value;
+    if (typeof oldest === "string") parsedPromptCache.delete(oldest);
+  }
+  return messages;
+}
+
+function promptMessageContent(message: PromptConversationMessage): string {
+  const cached = formattedPromptContentCache.get(message);
+  if (cached !== undefined) return cached;
+  const sections: string[] = [];
+  if (message.content.trim()) sections.push(formatStructuredValue(message.content));
+  for (const call of message.toolCalls) {
+    const details = [`调用工具：${call.name}`];
+    if (call.arguments !== undefined) details.push(`参数：\n${formatStructuredValue(call.arguments, 1)}`);
+    sections.push(details.join("\n"));
+  }
+  if (message.role === "tool" && message.toolCallId) sections.unshift(`工具调用：${message.toolCallId}`);
+  const content = sections.join("\n\n") || "（空消息）";
+  formattedPromptContentCache.set(message, content);
+  return content;
+}
+
+function promptMessagesEqual(left: PromptConversationMessage, right: PromptConversationMessage): boolean {
+  return left.role === right.role
+    && left.content === right.content
+    && left.toolCallId === right.toolCallId
+    && JSON.stringify(left.toolCalls) === JSON.stringify(right.toolCalls);
+}
+
+function buildConversationRows(activities: ProjectActivityMessage[]): ConversationRow[] {
+  const rows: ConversationRow[] = [];
+  const previousPrompts = new Map<string, PromptConversationMessage[]>();
+  for (const activity of activities) {
+    if (activity.sender === "AGENT") {
+      if (activity.inputPrompt) {
+        const prompt = activityPromptMessages(activity);
+        if (!prompt) {
+          rows.push({ kind: "notice", key: `${activity.id}:prompt-invalid`, source: activity, content: "本轮输入提示词无法解析，原始 JSON 未在对话中展示。" });
+        } else {
+          const conversationKey = activity.agentId || `${activity.role || "AGENT"}:${activity.taskId || "project"}`;
+          const previousPrompt = previousPrompts.get(conversationKey);
+          let commonPrefix = 0;
+          if (previousPrompt) {
+            const maximumCommon = Math.min(previousPrompt.length, prompt.length);
+            while (commonPrefix < maximumCommon && promptMessagesEqual(previousPrompt[commonPrefix], prompt[commonPrefix])) commonPrefix += 1;
+            if (commonPrefix < previousPrompt.length) {
+              rows.push({ kind: "notice", key: `${activity.id}:prompt-rebuilt`, source: activity, content: "本轮模型输入上下文已压缩或重建。" });
+            } else if (commonPrefix === prompt.length) {
+              rows.push({ kind: "notice", key: `${activity.id}:prompt-reused`, source: activity, content: "本轮沿用上一轮输入上下文。" });
+            }
+          }
+          prompt.slice(commonPrefix).forEach((message, index) => {
+            rows.push({ kind: "prompt", key: `${activity.id}:prompt:${commonPrefix + index}`, source: activity, message });
+          });
+          previousPrompts.set(conversationKey, prompt);
+        }
+      } else if (activity.content && activity.id.startsWith("model:")) {
+        rows.push({ kind: "notice", key: `${activity.id}:prompt-unavailable`, source: activity, content: "本轮输入未采集（该记录生成于输入追踪功能启用前）。" });
+      }
+    }
+    rows.push({ kind: "activity", key: activity.id, activity });
+  }
+  return rows;
+}
+
+function promptSender(message: PromptConversationMessage, source: ProjectActivityMessage): string {
+  if (message.role === "user") return "你";
+  if (message.role === "tool") return "工具";
+  if (message.role === "assistant") return source.role ? roleLabels[source.role] || source.role : "Agent";
+  return "系统";
+}
+
+function promptSenderClass(role: PromptMessageRole): "user" | "system" | "agent" {
+  if (role === "user") return "user";
+  if (role === "assistant") return "agent";
+  return "system";
+}
+
 function messageContent(message: ProjectActivityMessage) {
   const content = message.content || (message.state === "FAILED" ? "处理失败，详情见错误码。" : "");
-  const inputUnavailable = message.sender === "AGENT" && Boolean(content) && !message.inputPrompt;
-  const hasTrace = Boolean(message.inputPrompt || message.reasoningContent || message.reasoningSummary || inputUnavailable);
+  const hasTrace = Boolean(message.reasoningContent || message.reasoningSummary);
   const output = <p>{content}{message.state === "STREAMING" && <span className="typing-indicator" aria-label={content ? undefined : "Agent 正在响应"} aria-hidden={content ? "true" : undefined}><i /><i /><i /></span>}</p>;
   return <>
-    {message.inputPrompt && <section className="message-trace is-input"><strong>输入提示词</strong><pre>{message.inputPrompt}</pre></section>}
-    {inputUnavailable && <section className="message-trace is-input"><strong>输入提示词</strong><pre>未采集（该记录生成于输入追踪功能启用前）</pre></section>}
     {message.reasoningContent && <section className="message-trace is-reasoning"><strong>思考链</strong><pre>{message.reasoningContent}</pre></section>}
     {message.reasoningSummary && <section className="message-trace is-summary"><strong>思考摘要</strong><pre>{message.reasoningSummary}</pre></section>}
     {hasTrace ? <section className="message-output"><strong>输出文本</strong>{output}</section> : output}
@@ -388,7 +596,11 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
   const queuedInputs = messages.filter((item) => item.sender === "USER" && (item.state === "QUEUED" || item.state === "STREAMING"));
   const flows = activity?.flows?.length ? activity.flows : fallbackFlows;
   const visibleAgents = agents.filter((agent) => agent.flow === activeFlow);
-  const visibleMessages = messages.filter((item) => messageBelongsToConversation(item, activeFlow, selectedAgent));
+  const visibleMessages = useMemo(
+    () => messages.filter((item) => messageBelongsToConversation(item, activeFlow, selectedAgent)),
+    [activeFlow, messages, selectedAgent],
+  );
+  const conversationRows = useMemo(() => buildConversationRows(visibleMessages), [visibleMessages]);
   const visibleMessageVersion = visibleMessages.map((item) => `${item.id}:${item.updatedAt || item.createdAt}:${item.content.length}:${item.inputPrompt?.length || 0}:${item.reasoningContent?.length || 0}:${item.reasoningSummary?.length || 0}`).join("|");
   const crosstoolTool = pendingCrosstoolTool(goalSpec);
   const goalProcessing = activity?.goalProcessing ?? project.goalProcessing;
@@ -550,7 +762,7 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
         </aside>
 
         <section className="workbench-thread" aria-labelledby="workbench-chat-title">
-          <header className="workbench-panel-heading"><ChatCircleText /><div><h2 id="workbench-chat-title">{flowLabels[activeFlow]}对话</h2><span>{visibleMessages.length} 条</span></div></header>
+          <header className="workbench-panel-heading"><ChatCircleText /><div><h2 id="workbench-chat-title">{flowLabels[activeFlow]}对话</h2><span>{conversationRows.length} 条</span></div></header>
           <div
             className="workbench-messages"
             aria-live="polite"
@@ -560,15 +772,34 @@ export function ProjectWorkbench({ project, client, onBack, onReload, onNotice }
               followLatest.current = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
             }}
           >
-            {visibleMessages.length ? visibleMessages.map((item) => (
-              <article className={`workbench-message is-${item.sender.toLowerCase()} is-${item.state.toLowerCase()}${item.id.startsWith("model-attempt:") ? " is-model-attempt" : ""}`} key={item.id}>
+            {conversationRows.length ? conversationRows.map((row) => {
+              if (row.kind === "prompt") {
+                const senderClass = promptSenderClass(row.message.role);
+                const avatarSender: ProjectActivityMessage["sender"] = senderClass === "agent" ? "AGENT" : senderClass === "user" ? "USER" : "SYSTEM";
+                return <article className={`workbench-message is-${senderClass} is-prompt`} key={row.key}>
+                  <div className="message-avatar">{messageAvatar(avatarSender)}</div>
+                  <div className="message-bubble"><header><strong>{promptSender(row.message, row.source)}</strong><span>输入上下文</span><time>{formatActivityTime(row.source.createdAt)}</time></header>
+                    <div className="message-content"><p>{promptMessageContent(row.message)}</p></div>
+                  </div>
+                </article>;
+              }
+              if (row.kind === "notice") {
+                return <article className="workbench-message is-system is-prompt is-notice" key={row.key}>
+                  <div className="message-avatar">{messageAvatar("SYSTEM")}</div>
+                  <div className="message-bubble"><header><strong>系统</strong><span>输入上下文</span><time>{formatActivityTime(row.source.createdAt)}</time></header>
+                    <div className="message-content"><p>{row.content}</p></div>
+                  </div>
+                </article>;
+              }
+              const item = row.activity;
+              return <article className={`workbench-message is-${item.sender.toLowerCase()} is-${item.state.toLowerCase()}${item.id.startsWith("model-attempt:") ? " is-model-attempt" : ""}`} key={row.key}>
                 <div className="message-avatar">{messageAvatar(item.sender)}</div>
                 <div className="message-bubble"><header><strong>{messageSender(item)}</strong><span>{flowLabels[item.flow]}</span><time>{formatActivityTime(item.createdAt)}</time></header>
-                <div className="message-content">{messageContent(item)}</div>
-                <footer><WorkbenchState state={item.state} />{item.latencyMs !== undefined && <small>{item.latencyMs} ms</small>}{item.errorCode && <small>{item.errorCode}</small>}</footer>
+                  <div className="message-content">{messageContent(item)}</div>
+                  <footer><WorkbenchState state={item.state} />{item.latencyMs !== undefined && <small>{item.latencyMs} ms</small>}{item.errorCode && <small>{item.errorCode}</small>}</footer>
                 </div>
-              </article>
-            )) : <div className="workbench-empty"><ChatCircleText /><span>暂无对话记录</span></div>}
+              </article>;
+            }) : <div className="workbench-empty"><ChatCircleText /><span>暂无对话记录</span></div>}
           </div>
           {showArchiveUpload && crosstoolTool && (
             <section className="workbench-toolchain-upload" aria-labelledby="toolchain-upload-title">

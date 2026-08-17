@@ -352,6 +352,28 @@
   margin-top: 16px;
 }
 
+.workbench-agent-list {
+  max-height: clamp(190px, 46dvh, 560px);
+  padding-right: 5px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  align-content: start;
+}
+
+.workbench-agent-list::-webkit-scrollbar {
+  width: 7px;
+}
+
+.workbench-agent-list::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  background: #aab5ad;
+}
+
+.workbench-agent-list::-webkit-scrollbar-track {
+  background: #e8ece8;
+}
+
 .workbench-agent {
   display: grid;
   width: 100%;
@@ -493,19 +515,37 @@
   gap: 9px;
 }
 
-.workbench-message.is-user {
+.workbench-message.is-user,
+.workbench-message.is-system {
   grid-template-columns: minmax(0, 1fr) 28px;
 }
 
-.workbench-message.is-user .message-avatar {
+.workbench-message.is-user .message-avatar,
+.workbench-message.is-system .message-avatar {
   grid-column: 2;
 }
 
-.workbench-message.is-user .message-bubble {
+.workbench-message.is-user .message-bubble,
+.workbench-message.is-system .message-bubble {
   grid-column: 1;
   grid-row: 1;
   justify-self: end;
+}
+
+.workbench-message.is-user .message-bubble {
   background: #eaf2ec;
+}
+
+.workbench-message.is-system .message-bubble {
+  background: #edf3f5;
+}
+
+.workbench-message.is-prompt .message-bubble {
+  border-style: dashed;
+}
+
+.workbench-message.is-prompt.is-notice .message-bubble {
+  color: var(--muted);
 }
 
 .message-avatar {
@@ -973,6 +1013,10 @@
     gap: 20px;
   }
 
+  .workbench-agent-list {
+    max-height: 300px;
+  }
+
   .workbench-agent-rail .workbench-inputs {
     margin-top: 0;
     padding-top: 0;
@@ -1018,6 +1062,10 @@
 
   .workbench-agent-rail {
     grid-template-columns: 1fr;
+  }
+
+  .workbench-agent-list {
+    max-height: 240px;
   }
 
   .workbench-agent-rail .workbench-inputs {
