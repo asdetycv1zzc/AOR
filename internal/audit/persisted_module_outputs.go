@@ -77,7 +77,7 @@ func readPersistedCheckOutput(ctx context.Context, opener PersistedOutputOpener,
 	if kind == "stdout" || kind == "stderr" {
 		expectedContentType = "text/plain; charset=utf-8"
 	}
-	if record.ContentType != expectedContentType || record.Metadata == nil || record.Metadata["kind"] != "audit-check-output" || record.Metadata["sourceArtifactId"] != artifactID || record.Metadata["retentionPolicy"] != "audit-evidence" {
+	if record.ContentType != expectedContentType || record.Metadata == nil || record.Metadata["kind"] != "audit-check-output" || record.Metadata["sourceArtifactId"] != artifactID || record.Metadata["taskId"] != taskID || record.Metadata["retentionPolicy"] != "audit-evidence" {
 		return nil, "", artifact.ErrIntegrity
 	}
 	encrypted, ok := record.Metadata["encrypted"].(bool)

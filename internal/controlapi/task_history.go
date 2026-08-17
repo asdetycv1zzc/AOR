@@ -233,7 +233,7 @@ LIMIT $6`, tenantID, projectID, taskID, position.CreatedAt, cursorUUID(position.
 	}
 	if reader.outputs != nil {
 		for index := range pageItems {
-			if pageItems[index].attemptSeriesID == "" || pageItems[index].attempt < 1 {
+			if (pageItems[index].run.Phase != "DETERMINISTIC" && pageItems[index].run.Phase != "LLM") || pageItems[index].attemptSeriesID == "" || pageItems[index].attempt < 1 {
 				continue
 			}
 			moduleTest, loadErr := reader.loadModuleTest(ctx, tenantID, projectID, taskID, pageItems[index].attemptSeriesID, pageItems[index].attempt)
