@@ -370,6 +370,60 @@ WHERE tenant_id = $1::uuid AND aggregate_type = 'task' AND aggregate_id = $2`, t
 	if _, err := store.LoadReconciliationSnapshot(ctx, tenantID); err != nil {
 		t.Fatalf("restored relational projection: %v", err)
 	}
+
+	secondSeriesID := uuid.Must(uuid.NewV7()).String()
+	approvalID := uuid.Must(uuid.NewV7()).String()
+	var authorizedState map[string]any
+	if err := json.Unmarshal(taskState, &authorizedState); err != nil {
+		t.Fatal(err)
+	}
+	authorizedState["state"] = "READY_EXECUTION"
+	authorizedState["version"] = int64(4)
+	authorizedState["attemptSeriesId"] = secondSeriesID
+	authorizedState["attemptSeriesIds"] = []string{seriesID, secondSeriesID}
+	authorizedJSON, err := json.Marshal(authorizedState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorize := relationalTestTaskTransaction(t, tenantID, projectID, taskID, "authorize-second-series", "io.aor.module.attempt-series-authorized.v1", 3, authorizedJSON)
+	authorize.PrincipalID = "user"
+	authorize.Approvals = []ApprovalRecord{{
+		ID: approvalID, TenantID: tenantID, ProjectID: projectID,
+		ApprovalType: "AUTHORIZE_NEW_ATTEMPT_SERIES", SubjectType: "MODULE_TASK", SubjectID: taskID,
+		SubjectVersion: 1, SubjectSHA256: moduleSHA, PrincipalID: "user", Reason: "test authorization",
+		IssuedAt: now, Signature: "test-signature",
+	}}
+	if _, err := store.Execute(ctx, authorize); err != nil {
+		t.Fatalf("authorize second attempt series: %v", err)
+	}
+
+	var executingState map[string]any
+	if err := json.Unmarshal(authorizedJSON, &executingState); err != nil {
+		t.Fatal(err)
+	}
+	executingState["state"] = "EXECUTING"
+	executingState["version"] = int64(5)
+	executingState["fencingToken"] = int64(1)
+	executingJSON, err := json.Marshal(executingState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := relationalTestTaskTransaction(t, tenantID, projectID, taskID, "lease-second-series", "io.aor.module.execution-leased.v1", 4, executingJSON)
+	if _, err := store.Execute(ctx, lease); err != nil {
+		t.Fatalf("reuse authorized attempt series without repeated approval: %v", err)
+	}
+
+	var storedApprovalID, storedActiveSeries, storedExecutionState string
+	if err := admin.QueryRowContext(ctx, `
+SELECT series.authorized_by_approval_id::text, task.active_attempt_series_id::text, task.state
+FROM module_tasks AS task
+JOIN attempt_series AS series ON series.tenant_id = task.tenant_id AND series.id = task.active_attempt_series_id
+WHERE task.tenant_id = $1::uuid AND task.id = $2::uuid`, tenantID, taskID).Scan(&storedApprovalID, &storedActiveSeries, &storedExecutionState); err != nil {
+		t.Fatal(err)
+	}
+	if storedApprovalID != approvalID || storedActiveSeries != secondSeriesID || storedExecutionState != "EXECUTING" {
+		t.Fatalf("approval=%q active series=%q task state=%q", storedApprovalID, storedActiveSeries, storedExecutionState)
+	}
 }
 
 func relationalTestTaskTransaction(t *testing.T, tenantID, projectID, taskID, key, eventType string, expectedVersion int64, taskState []byte) TransactionRequest {

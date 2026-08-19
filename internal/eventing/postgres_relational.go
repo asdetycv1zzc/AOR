@@ -244,7 +244,18 @@ FOR UPDATE`, request.TenantID, task.ProjectID, task.ID).Scan(&active, &moduleSpe
 	}
 	for index, seriesID := range task.AttemptSeriesIDs {
 		seriesNumber := index + 1
-		if seriesID == task.AttemptSeriesID {
+		var storedTaskID string
+		var storedNumber int
+		var storedApproval sql.NullString
+		err := tx.QueryRowContext(ctx, `
+SELECT module_task_id::text, series_number, authorized_by_approval_id::text
+FROM attempt_series
+WHERE tenant_id = $1::uuid AND id = $2::uuid
+FOR SHARE`, request.TenantID, seriesID).Scan(&storedTaskID, &storedNumber, &storedApproval)
+		if errors.Is(err, sql.ErrNoRows) {
+			if seriesID != task.AttemptSeriesID {
+				return relationalError("attempt series relational projection")
+			}
 			var approvalID any
 			if seriesNumber > 1 {
 				approval, err := newAttemptSeriesApproval(request, task.ID)
@@ -257,20 +268,18 @@ FOR UPDATE`, request.TenantID, task.ProjectID, task.ID).Scan(&active, &moduleSpe
 INSERT INTO attempt_series
   (id, tenant_id, module_task_id, module_spec_id, series_number, authorized_by_approval_id, created_at)
 VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, transaction_timestamp())
-ON CONFLICT DO NOTHING`, seriesID, request.TenantID, task.ID, moduleSpecID, seriesNumber, approvalID); err != nil {
+`, seriesID, request.TenantID, task.ID, moduleSpecID, seriesNumber, approvalID); err != nil {
 				return err
 			}
-		}
-		var storedTaskID string
-		var storedNumber int
-		if err := tx.QueryRowContext(ctx, `
-SELECT module_task_id::text, series_number
-FROM attempt_series
-WHERE tenant_id = $1::uuid AND id = $2::uuid
-FOR SHARE`, request.TenantID, seriesID).Scan(&storedTaskID, &storedNumber); err != nil {
+			storedTaskID = task.ID
+			storedNumber = seriesNumber
+			if approvalID != nil {
+				storedApproval = sql.NullString{String: approvalID.(string), Valid: true}
+			}
+		} else if err != nil {
 			return err
 		}
-		if storedTaskID != task.ID || storedNumber != seriesNumber {
+		if storedTaskID != task.ID || storedNumber != seriesNumber || storedApproval.Valid != (seriesNumber > 1) {
 			return relationalError("attempt series relational projection")
 		}
 	}
